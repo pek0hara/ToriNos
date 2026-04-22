@@ -10,5 +10,12 @@ build/
 # Local environment
 local.properties
 
+# Kotlin incremental/caches
+.kotlin/
+
+# Xcode user-specific state
+**/xcuserdata/
+*.xcuserstate
+
 # macOS
 .DS_Store
