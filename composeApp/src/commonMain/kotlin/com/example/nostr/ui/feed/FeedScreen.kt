@@ -56,7 +56,7 @@ fun FeedScreen(
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text(if (authorPubkey != null) "投稿" else "ToraNosu") },
+                title = { Text(if (authorPubkey != null) "投稿" else "ToriNos") },
                 actions = {
                     if (authorPubkey == null) {
                         IconButton(onClick = onOpenSearch) {

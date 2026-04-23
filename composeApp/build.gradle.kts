@@ -58,11 +58,11 @@ kotlin {
 }
 
 android {
-    namespace = "com.nostr.ToraNosu"
+    namespace = "com.nostr.ToriNos"
     compileSdk = libs.versions.android.compileSdk.get().toInt()
 
     defaultConfig {
-        applicationId = "com.nostr.ToraNosu"
+        applicationId = "com.nostr.ToriNos"
         minSdk = libs.versions.android.minSdk.get().toInt()
         targetSdk = libs.versions.android.targetSdk.get().toInt()
         versionCode = 1

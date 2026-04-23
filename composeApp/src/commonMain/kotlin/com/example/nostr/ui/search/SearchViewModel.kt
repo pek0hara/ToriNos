@@ -120,6 +120,7 @@ class SearchViewModel : ViewModel() {
                 if (event.kind != 0) return@collect
                 val profile = event.toProfile() ?: return@collect
                 println("[Search] profile received pubkey=${event.pubkey.take(8)} name=${profile.name}")
+                pendingPubkeys.remove(event.pubkey)
                 currentProfiles = currentProfiles + (event.pubkey to profile)
                 syncReadyState()
             }
@@ -210,9 +211,11 @@ class SearchViewModel : ViewModel() {
         profileBatchJob = viewModelScope.launch {
             delay(500)
             if (pendingPubkeys.isEmpty()) return@launch
+            val authors = pendingPubkeys.toList()
+            pendingPubkeys.removeAll(authors)
             NostrRepository.subscribe(
                 profileSubId,
-                NostrFilter(kinds = listOf(0), authors = pendingPubkeys.toList()),
+                NostrFilter(kinds = listOf(0), authors = authors),
             )
         }
     }

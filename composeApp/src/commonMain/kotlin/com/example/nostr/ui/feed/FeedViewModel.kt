@@ -143,6 +143,7 @@ class FeedViewModel(
             NostrRepository.events(profileSubId).collect { event ->
                 if (event.kind != 0) return@collect
                 val profile = event.toProfile() ?: return@collect
+                pendingPubkeys.remove(event.pubkey)
                 _state.value = _state.value.copy(
                     profiles = _state.value.profiles + (event.pubkey to profile),
                 )
@@ -259,9 +260,11 @@ class FeedViewModel(
         profileBatchJob = viewModelScope.launch {
             delay(500)
             if (pendingPubkeys.isEmpty()) return@launch
+            val authors = pendingPubkeys.toList()
+            pendingPubkeys.removeAll(authors)
             NostrRepository.subscribe(
                 profileSubId,
-                NostrFilter(kinds = listOf(0), authors = pendingPubkeys.toList()),
+                NostrFilter(kinds = listOf(0), authors = authors),
             )
         }
     }

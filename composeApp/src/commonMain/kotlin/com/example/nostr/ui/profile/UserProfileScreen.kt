@@ -212,7 +212,7 @@ private val avatarPalette = listOf(
 )
 
 internal fun avatarColor(pubkey: String): Color {
-    val index = (pubkey.hashCode().let { if (it < 0) -it else it }) % avatarPalette.size
+    val index = pubkey.hashCode().mod(avatarPalette.size)
     return avatarPalette[index]
 }
 

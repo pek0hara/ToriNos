@@ -115,6 +115,7 @@ class ChannelViewModel(private val channelId: String) : ViewModel() {
             NostrRepository.events(profSubId).collect { event ->
                 if (event.kind != 0) return@collect
                 val profile = event.toProfile() ?: return@collect
+                pendingPubkeys.remove(event.pubkey)
                 currentProfiles = currentProfiles + (event.pubkey to profile)
                 syncReadyState()
             }
@@ -190,9 +191,11 @@ class ChannelViewModel(private val channelId: String) : ViewModel() {
         profileBatchJob = viewModelScope.launch {
             delay(500)
             if (pendingPubkeys.isEmpty()) return@launch
+            val authors = pendingPubkeys.toList()
+            pendingPubkeys.removeAll(authors)
             NostrRepository.subscribe(
                 profSubId,
-                NostrFilter(kinds = listOf(0), authors = pendingPubkeys.toList()),
+                NostrFilter(kinds = listOf(0), authors = authors),
             )
         }
     }

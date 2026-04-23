@@ -27,7 +27,7 @@ class NostrRelay(
     private val _connected = MutableSharedFlow<Unit>(replay = 1, extraBufferCapacity = 1)
     val connected: SharedFlow<Unit> = _connected.asSharedFlow()
 
-    private val sendQueue = Channel<String>(Channel.UNLIMITED)
+    private val sendQueue = Channel<String>(capacity = 512)
     private var job: Job? = null
 
     fun connect(scope: CoroutineScope) {
