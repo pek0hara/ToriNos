@@ -1,4 +1,4 @@
-rootProject.name = "ToraNosu"
+rootProject.name = "ToriNos"
 include(":composeApp")
 
 pluginManagement {
