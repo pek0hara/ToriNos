@@ -1,0 +1,32 @@
+package com.nostr.torinos.crypto
+
+/** SHA-256 ハッシュ */
+expect fun sha256(data: ByteArray): ByteArray
+
+/** 32バイトの秘密鍵をランダム生成 */
+expect fun generatePrivateKey(): ByteArray
+
+/** 秘密鍵から x-only 公開鍵（32バイト）を導出 */
+expect fun derivePublicKey(privateKey: ByteArray): ByteArray
+
+/** secp256k1 Schnorr 署名（64バイト） */
+expect fun schnorrSign(data: ByteArray, privateKey: ByteArray): ByteArray
+
+// ---- Hex ユーティリティ ----
+
+private val HEX = "0123456789abcdef".toCharArray()
+
+fun ByteArray.toHex(): String = buildString(size * 2) {
+    for (b in this@toHex) {
+        val i = b.toInt() and 0xFF
+        append(HEX[i ushr 4])
+        append(HEX[i and 0x0F])
+    }
+}
+
+fun String.fromHex(): ByteArray {
+    check(length % 2 == 0) { "Invalid hex string length: $length" }
+    return ByteArray(length / 2) { i ->
+        ((this[i * 2].digitToInt(16) shl 4) or this[i * 2 + 1].digitToInt(16)).toByte()
+    }
+}

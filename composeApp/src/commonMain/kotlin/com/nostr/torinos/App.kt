@@ -1,0 +1,258 @@
+package com.nostr.torinos
+
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.List
+import androidx.compose.material.icons.filled.Create
+import androidx.compose.material.icons.filled.Home
+import androidx.compose.material3.FloatingActionButton
+import androidx.compose.material3.Icon
+import androidx.compose.material3.NavigationBar
+import androidx.compose.material3.NavigationBarItem
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import kotlin.coroutines.cancellation.CancellationException
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
+import kotlinx.coroutines.launch
+import androidx.compose.foundation.layout.padding
+import androidx.compose.ui.Modifier
+import androidx.navigation.compose.NavHost
+import androidx.navigation.compose.composable
+import androidx.navigation.compose.currentBackStackEntryAsState
+import androidx.navigation.compose.rememberNavController
+import androidx.navigation.toRoute
+import com.nostr.torinos.crypto.KeyStorage
+import com.nostr.torinos.crypto.isWriteSupported
+import com.nostr.torinos.crypto.loadPublicKey
+import com.nostr.torinos.model.NostrFilter
+import com.nostr.torinos.model.NostrProfile
+import com.nostr.torinos.model.toProfile
+import com.nostr.torinos.network.NostrRepository
+import com.nostr.torinos.ui.channel.ChannelListScreen
+import com.nostr.torinos.ui.channel.ChannelScreen
+import com.nostr.torinos.ui.feed.FeedScreen
+import com.nostr.torinos.ui.post.PostSheet
+import com.nostr.torinos.ui.profile.FollowListMode
+import com.nostr.torinos.ui.profile.FollowListScreen
+import com.nostr.torinos.ui.profile.MyProfileScreen
+import com.nostr.torinos.ui.profile.UserProfileScreen
+import com.nostr.torinos.ui.relay.RelaySettingsScreen
+import com.nostr.torinos.ui.search.SearchScreen
+import com.nostr.torinos.ui.setup.KeySetupScreen
+import com.nostr.torinos.ui.theme.NostrTheme
+import com.nostr.torinos.util.appLog
+import com.nostr.torinos.util.loggingExceptionHandler
+import com.nostr.torinos.util.logException
+import kotlinx.serialization.Serializable
+
+// 型安全なルート定義（パラメータ付き画面）
+@Serializable data class ChannelRoute(val channelId: String)
+@Serializable data class ProfileRoute(val pubkey: String)
+@Serializable data class FollowingRoute(val pubkey: String)
+@Serializable data class FollowersRoute(val pubkey: String)
+
+@Composable
+fun App() {
+    NostrTheme {
+        val nav = rememberNavController()
+        val backStackEntry by nav.currentBackStackEntryAsState()
+        val currentRoute = backStackEntry?.destination?.route
+        var showPostSheet by remember { mutableStateOf(false) }
+        var showKeySetup by remember { mutableStateOf(false) }
+        val scope = rememberCoroutineScope()
+        val uiExceptionHandler = remember {
+            loggingExceptionHandler("App", "Uncaught UI coroutine exception")
+        }
+
+        var ownPubkey by remember { mutableStateOf<String?>(null) }
+        var ownProfile by remember { mutableStateOf<NostrProfile?>(null) }
+
+        // 起動時に保存済み秘密鍵から公開鍵を読み込む
+        LaunchedEffect(Unit) {
+            appLog("[App] startup: loading saved public key")
+            try {
+                ownPubkey = loadPublicKey()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                logException("App", e, "Failed to load public key on startup")
+            }
+        }
+
+        // ownPubkey が確定したらプロフィールを購読（ログイン後の再実行にも対応）
+        LaunchedEffect(ownPubkey) {
+            val pk = ownPubkey ?: return@LaunchedEffect
+            try {
+                NostrRepository.subscribe(
+                    "app-self-profile",
+                    NostrFilter(kinds = listOf(0), authors = listOf(pk), limit = 1),
+                )
+                NostrRepository.events("app-self-profile").collect { event ->
+                    if (event.kind == 0) {
+                        ownProfile = event.toProfile()
+                        NostrRepository.close("app-self-profile")
+                    }
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                logException("App", e, "Failed to load own profile")
+            }
+        }
+
+        val bottomBarRoutes = setOf("feed", "channels")
+
+        Scaffold(
+            floatingActionButton = {
+                if (isWriteSupported && currentRoute == "feed") {
+                    FloatingActionButton(onClick = {
+                        scope.launch(uiExceptionHandler) {
+                            if (KeyStorage.hasKey()) showPostSheet = true else showKeySetup = true
+                        }
+                    }) {
+                        Icon(Icons.Default.Create, contentDescription = "投稿")
+                    }
+                }
+            },
+            bottomBar = {
+                if (currentRoute in bottomBarRoutes) {
+                    NavigationBar {
+                        NavigationBarItem(
+                            icon = { Icon(Icons.Default.Home, contentDescription = null) },
+                            label = { Text("フィード") },
+                            selected = currentRoute == "feed",
+                            onClick = {
+                                nav.navigate("feed") {
+                                    popUpTo("feed") { inclusive = false }
+                                    launchSingleTop = true
+                                }
+                            },
+                        )
+                        NavigationBarItem(
+                            icon = { Icon(Icons.AutoMirrored.Filled.List, contentDescription = null) },
+                            label = { Text("チャンネル") },
+                            selected = currentRoute == "channels",
+                            onClick = {
+                                nav.navigate("channels") {
+                                    popUpTo("feed") { inclusive = false }
+                                    launchSingleTop = true
+                                }
+                            },
+                        )
+                    }
+                }
+            },
+        ) { padding ->
+            Column(modifier = Modifier.fillMaxSize().padding(bottom = padding.calculateBottomPadding())) {
+                NavHost(
+                    navController = nav,
+                    startDestination = "feed",
+                    modifier = Modifier.weight(1f),
+                ) {
+                    composable("feed") {
+                        FeedScreen(
+                            onOpenSettings = { nav.navigate("relays") },
+                            onOpenSearch = { nav.navigate("search") },
+                            onUserClick = { pubkey -> nav.navigate(ProfileRoute(pubkey)) },
+                            onOpenProfile = {
+                                scope.launch(uiExceptionHandler) {
+                                    if (KeyStorage.hasKey()) {
+                                        nav.navigate("myprofile") { launchSingleTop = true }
+                                    } else {
+                                        showKeySetup = true
+                                    }
+                                }
+                            },
+                            ownPubkey = ownPubkey,
+                            ownProfile = ownProfile,
+                        )
+                    }
+                    composable("channels") {
+                        ChannelListScreen(
+                            onChannelClick = { id -> nav.navigate(ChannelRoute(id)) },
+                        )
+                    }
+                    composable<ChannelRoute> { backStack ->
+                        val route = backStack.toRoute<ChannelRoute>()
+                        ChannelScreen(
+                            channelId = route.channelId,
+                            onBack = { nav.popBackStack() },
+                            onUserClick = { pubkey -> nav.navigate(ProfileRoute(pubkey)) },
+                        )
+                    }
+                    composable("relays") {
+                        RelaySettingsScreen(onBack = { nav.popBackStack() })
+                    }
+                    composable("search") {
+                        SearchScreen(
+                            onBack = { nav.popBackStack() },
+                            onUserClick = { pubkey -> nav.navigate(ProfileRoute(pubkey)) },
+                        )
+                    }
+                    composable("myprofile") {
+                        val pubkey = ownPubkey ?: return@composable
+                        MyProfileScreen(
+                            onOpenFollowing = { nav.navigate(FollowingRoute(pubkey)) },
+                            onOpenFollowers = { nav.navigate(FollowersRoute(pubkey)) },
+                        )
+                    }
+                    composable<FollowingRoute> { backStack ->
+                        val route = backStack.toRoute<FollowingRoute>()
+                        FollowListScreen(
+                            mode = FollowListMode.FOLLOWING,
+                            ownPubkey = route.pubkey,
+                            onBack = { nav.popBackStack() },
+                            onUserClick = { pk -> nav.navigate(ProfileRoute(pk)) },
+                        )
+                    }
+                    composable<FollowersRoute> { backStack ->
+                        val route = backStack.toRoute<FollowersRoute>()
+                        FollowListScreen(
+                            mode = FollowListMode.FOLLOWERS,
+                            ownPubkey = route.pubkey,
+                            onBack = { nav.popBackStack() },
+                            onUserClick = { pk -> nav.navigate(ProfileRoute(pk)) },
+                        )
+                    }
+                    composable<ProfileRoute> { backStack ->
+                        val route = backStack.toRoute<ProfileRoute>()
+                        UserProfileScreen(
+                            pubkey = route.pubkey,
+                            onBack = { nav.popBackStack() },
+                            isOwnProfile = false,
+                        )
+                    }
+                }
+            }
+        }
+
+        if (showPostSheet) {
+            PostSheet(onDismiss = { showPostSheet = false })
+        }
+
+        if (showKeySetup) {
+            KeySetupScreen(
+                onSetupComplete = {
+                    showKeySetup = false
+                    showPostSheet = true
+                    // ログイン直後に公開鍵を更新してプロフィール購読をトリガー
+                    scope.launch(uiExceptionHandler) {
+                        try {
+                            ownPubkey = loadPublicKey()
+                        } catch (e: Exception) {
+                            logException("App", e, "Failed to refresh public key after setup")
+                        }
+                    }
+                },
+                onDismiss = { showKeySetup = false },
+            )
+        }
+    }
+}
