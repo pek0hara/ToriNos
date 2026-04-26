@@ -7,7 +7,11 @@ actual object KeyStorage {
     private val defaults = NSUserDefaults.standardUserDefaults
 
     actual suspend fun savePrivateKey(hexKey: String) {
-        defaults.setObject(hexKey, KEY_PRIVATE)
+        val normalized = normalizePrivateKey(hexKey)
+        val bytes = normalized.fromHex()
+        derivePublicKey(bytes)
+
+        defaults.setObject(normalized, KEY_PRIVATE)
         defaults.synchronize()
     }
 
@@ -18,8 +22,7 @@ actual object KeyStorage {
             val bytes = normalized.fromHex()
             derivePublicKey(bytes)
             if (normalized != raw) {
-                defaults.setObject(normalized, KEY_PRIVATE)
-                defaults.synchronize()
+                savePrivateKey(normalized)
             }
             normalized
         }.getOrElse {

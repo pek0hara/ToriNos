@@ -66,6 +66,7 @@ fun App() {
         val currentRoute = backStackEntry?.destination?.route
         var showPostSheet by remember { mutableStateOf(false) }
         var showKeySetup by remember { mutableStateOf(false) }
+        var pendingPostAfterKeySetup by remember { mutableStateOf(false) }
         val scope = rememberCoroutineScope()
         val uiExceptionHandler = remember {
             loggingExceptionHandler("App", "Uncaught UI coroutine exception")
@@ -104,6 +105,13 @@ fun App() {
                 throw e
             } catch (e: Throwable) {
                 logException("App", e, "Failed to load own profile")
+            }
+        }
+
+        LaunchedEffect(showKeySetup, pendingPostAfterKeySetup) {
+            if (!showKeySetup && pendingPostAfterKeySetup) {
+                pendingPostAfterKeySetup = false
+                showPostSheet = true
             }
         }
 
@@ -241,7 +249,7 @@ fun App() {
             KeySetupScreen(
                 onSetupComplete = {
                     showKeySetup = false
-                    showPostSheet = true
+                    pendingPostAfterKeySetup = true
                     // ログイン直後に公開鍵を更新してプロフィール購読をトリガー
                     scope.launch(uiExceptionHandler) {
                         try {
@@ -251,7 +259,10 @@ fun App() {
                         }
                     }
                 },
-                onDismiss = { showKeySetup = false },
+                onDismiss = {
+                    pendingPostAfterKeySetup = false
+                    showKeySetup = false
+                },
             )
         }
     }

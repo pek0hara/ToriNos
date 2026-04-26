@@ -66,11 +66,15 @@ actual object KeyStorage {
     }
 
     actual suspend fun savePrivateKey(hexKey: String) {
+        val normalized = normalizePrivateKey(hexKey)
+        val privateKeyBytes = normalized.fromHex()
+        derivePublicKey(privateKeyBytes)
+
         val encryptedPayload = runCatching {
             val cipher = Cipher.getInstance(TRANSFORMATION).also {
                 it.init(Cipher.ENCRYPT_MODE, getOrCreateKeystoreKey())
             }
-            Base64.encodeToString(cipher.doFinal(hexKey.toByteArray(Charsets.UTF_8)), Base64.NO_WRAP) to
+            Base64.encodeToString(cipher.doFinal(normalized.toByteArray(Charsets.UTF_8)), Base64.NO_WRAP) to
                 Base64.encodeToString(cipher.iv, Base64.NO_WRAP)
         }.recoverCatching {
             // Keystore が失効している端末では古い alias を消して再生成する。
@@ -78,7 +82,7 @@ actual object KeyStorage {
             val cipher = Cipher.getInstance(TRANSFORMATION).also {
                 it.init(Cipher.ENCRYPT_MODE, getOrCreateKeystoreKey())
             }
-            Base64.encodeToString(cipher.doFinal(hexKey.toByteArray(Charsets.UTF_8)), Base64.NO_WRAP) to
+            Base64.encodeToString(cipher.doFinal(normalized.toByteArray(Charsets.UTF_8)), Base64.NO_WRAP) to
                 Base64.encodeToString(cipher.iv, Base64.NO_WRAP)
         }.getOrThrow()
 
@@ -101,9 +105,14 @@ actual object KeyStorage {
             val cipher = Cipher.getInstance(TRANSFORMATION).also {
                 it.init(Cipher.DECRYPT_MODE, getOrCreateKeystoreKey(), GCMParameterSpec(GCM_TAG_LENGTH, iv))
             }
-            String(cipher.doFinal(Base64.decode(encryptedB64, Base64.NO_WRAP)), Charsets.UTF_8).also { hexKey ->
-                derivePublicKey(hexKey.fromHex())
+            val decrypted = String(cipher.doFinal(Base64.decode(encryptedB64, Base64.NO_WRAP)), Charsets.UTF_8)
+            val normalized = normalizePrivateKey(decrypted)
+            derivePublicKey(normalized.fromHex())
+
+            if (normalized != decrypted) {
+                savePrivateKey(normalized)
             }
+            normalized
         } catch (_: Exception) {
             clearStoredKey()
             deleteKeystoreKey()

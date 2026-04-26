@@ -9,5 +9,7 @@ expect object KeyStorage {
 
 suspend fun loadPublicKey(): String? =
     runCatching {
-        KeyStorage.loadPrivateKey()?.let { derivePublicKey(it.fromHex()).toHex() }
+        KeyStorage.loadPrivateKey()?.let { normalizePrivateKey(it) }?.let {
+            derivePublicKey(it.fromHex()).toHex()
+        }
     }.getOrNull()

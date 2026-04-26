@@ -104,13 +104,13 @@ fun KeySetupScreen(onSetupComplete: () -> Unit, onDismiss: (() -> Unit)? = null)
             Button(
                 onClick = {
                     scope.launch(uiExceptionHandler) {
-                        error = runCatching {
+                        val err = runCatching {
                             KeyStorage.savePrivateKey(priv)
-                            onSetupComplete()
                         }.exceptionOrNull()?.let {
                             logException("KeySetupScreen", it, "Failed to save generated private key")
                             "秘密鍵を保存できませんでした: ${it.message}"
                         }
+                        if (err == null) onSetupComplete() else error = err
                     }
                 },
                 modifier = Modifier.fillMaxWidth(),
@@ -141,7 +141,8 @@ fun KeySetupScreen(onSetupComplete: () -> Unit, onDismiss: (() -> Unit)? = null)
         Button(
             onClick = {
                 scope.launch(uiExceptionHandler) {
-                    error = validateAndSave(importKey) { onSetupComplete() }
+                    val err = validateAndSave(importKey)
+                    if (err == null) onSetupComplete() else error = err
                 }
             },
             modifier = Modifier.fillMaxWidth(),
@@ -153,7 +154,7 @@ fun KeySetupScreen(onSetupComplete: () -> Unit, onDismiss: (() -> Unit)? = null)
     } // Box
 }
 
-private suspend fun validateAndSave(input: String, onSuccess: () -> Unit): String? {
+private suspend fun validateAndSave(input: String): String? {
     return try {
         val hexKey = normalizePrivateKey(input)
         val bytes = hexKey.fromHex()
@@ -164,7 +165,6 @@ private suspend fun validateAndSave(input: String, onSuccess: () -> Unit): Strin
             logException("KeySetupScreen", e, "Failed to save imported private key")
             return "秘密鍵を保存できませんでした: ${e.message}"
         }
-        onSuccess()
         null
     } catch (e: Exception) {
         logException("KeySetupScreen", e, "Invalid private key input")

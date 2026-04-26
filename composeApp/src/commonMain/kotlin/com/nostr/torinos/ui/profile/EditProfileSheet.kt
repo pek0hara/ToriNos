@@ -34,6 +34,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
+import androidx.compose.material3.Card
+import androidx.compose.ui.window.Dialog
+import com.nostr.torinos.crypto.supportsModalBottomSheet
 import com.nostr.torinos.ui.components.rememberImagePickerLauncher
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -59,109 +62,129 @@ fun EditProfileSheet(
         }
     }
 
-    ModalBottomSheet(
-        onDismissRequest = onDismiss,
-        sheetState = sheetState,
-    ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 16.dp)
-                .verticalScroll(rememberScrollState())
-                .imePadding(),
-            verticalArrangement = Arrangement.spacedBy(12.dp),
+    if (supportsModalBottomSheet) {
+        ModalBottomSheet(
+            onDismissRequest = onDismiss,
+            sheetState = sheetState,
         ) {
-            Text("プロフィール編集", style = MaterialTheme.typography.titleMedium)
-
-            OutlinedTextField(
-                value = state.name,
-                onValueChange = viewModel::onNameChange,
-                label = { Text("ユーザー名 (name)") },
-                singleLine = true,
-                modifier = Modifier.fillMaxWidth(),
-            )
-
-            OutlinedTextField(
-                value = state.displayName,
-                onValueChange = viewModel::onDisplayNameChange,
-                label = { Text("表示名 (display_name)") },
-                singleLine = true,
-                modifier = Modifier.fillMaxWidth(),
-            )
-
-            OutlinedTextField(
-                value = state.about,
-                onValueChange = viewModel::onAboutChange,
-                label = { Text("自己紹介 (about)") },
-                modifier = Modifier.fillMaxWidth().height(100.dp),
-                maxLines = 4,
-            )
-
-            // アイコン画像フィールド + アップロードボタン
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                OutlinedTextField(
-                    value = state.picture,
-                    onValueChange = viewModel::onPictureChange,
-                    label = { Text("アイコンURL (picture)") },
-                    singleLine = true,
-                    modifier = Modifier.weight(1f),
-                    trailingIcon = {
-                        if (state.isUploadingImage) {
-                            CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
-                        }
-                    },
-                )
-                IconButton(
-                    onClick = pickImage,
-                    enabled = !state.isUploadingImage,
-                ) {
-                    Icon(
-                        Icons.Default.AddPhotoAlternate,
-                        contentDescription = "画像を選択してアップロード",
-                        tint = MaterialTheme.colorScheme.primary,
-                    )
-                }
-            }
-
-            OutlinedTextField(
-                value = state.nip05,
-                onValueChange = viewModel::onNip05Change,
-                label = { Text("NIP-05アドレス") },
-                singleLine = true,
-                modifier = Modifier.fillMaxWidth(),
-            )
-
-            if (state.error != null) {
-                Text(
-                    text = state.error!!,
-                    color = MaterialTheme.colorScheme.error,
-                    style = MaterialTheme.typography.labelSmall,
-                )
-            }
-
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.End,
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                TextButton(onClick = onDismiss) { Text("キャンセル") }
-                Button(
-                    onClick = viewModel::save,
-                    enabled = !state.isSaving && !state.isUploadingImage,
-                ) {
-                    if (state.isSaving) {
-                        CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
-                    } else {
-                        Text("保存")
-                    }
-                }
-            }
-
-            Spacer(modifier = Modifier.height(8.dp))
+            EditProfileSheetContent(state = state, onDismiss = onDismiss, onPickImage = pickImage, viewModel = viewModel)
         }
+    } else {
+        Dialog(onDismissRequest = onDismiss) {
+            Card {
+                Box(modifier = Modifier.padding(top = 8.dp)) {
+                    EditProfileSheetContent(state = state, onDismiss = onDismiss, onPickImage = pickImage, viewModel = viewModel)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun EditProfileSheetContent(
+    state: EditProfileState,
+    onDismiss: () -> Unit,
+    onPickImage: () -> Unit,
+    viewModel: EditProfileViewModel,
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp)
+            .verticalScroll(rememberScrollState())
+            .imePadding(),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        Text("プロフィール編集", style = MaterialTheme.typography.titleMedium)
+
+        OutlinedTextField(
+            value = state.name,
+            onValueChange = viewModel::onNameChange,
+            label = { Text("ユーザー名 (name)") },
+            singleLine = true,
+            modifier = Modifier.fillMaxWidth(),
+        )
+
+        OutlinedTextField(
+            value = state.displayName,
+            onValueChange = viewModel::onDisplayNameChange,
+            label = { Text("表示名 (display_name)") },
+            singleLine = true,
+            modifier = Modifier.fillMaxWidth(),
+        )
+
+        OutlinedTextField(
+            value = state.about,
+            onValueChange = viewModel::onAboutChange,
+            label = { Text("自己紹介 (about)") },
+            modifier = Modifier.fillMaxWidth().height(100.dp),
+            maxLines = 4,
+        )
+
+        // アイコン画像フィールド + アップロードボタン
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            OutlinedTextField(
+                value = state.picture,
+                onValueChange = viewModel::onPictureChange,
+                label = { Text("アイコンURL (picture)") },
+                singleLine = true,
+                modifier = Modifier.weight(1f),
+                trailingIcon = {
+                    if (state.isUploadingImage) {
+                        CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
+                    }
+                },
+            )
+            IconButton(
+                onClick = onPickImage,
+                enabled = !state.isUploadingImage,
+            ) {
+                Icon(
+                    Icons.Default.AddPhotoAlternate,
+                    contentDescription = "画像を選択してアップロード",
+                    tint = MaterialTheme.colorScheme.primary,
+                )
+            }
+        }
+
+        OutlinedTextField(
+            value = state.nip05,
+            onValueChange = viewModel::onNip05Change,
+            label = { Text("NIP-05アドレス") },
+            singleLine = true,
+            modifier = Modifier.fillMaxWidth(),
+        )
+
+        if (state.error != null) {
+            Text(
+                text = state.error!!,
+                color = MaterialTheme.colorScheme.error,
+                style = MaterialTheme.typography.labelSmall,
+            )
+        }
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.End,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            TextButton(onClick = onDismiss) { Text("キャンセル") }
+            Button(
+                onClick = viewModel::save,
+                enabled = !state.isSaving && !state.isUploadingImage,
+            ) {
+                if (state.isSaving) {
+                    CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+                } else {
+                    Text("保存")
+                }
+            }
+        }
+
+        Spacer(modifier = Modifier.height(8.dp))
     }
 }
