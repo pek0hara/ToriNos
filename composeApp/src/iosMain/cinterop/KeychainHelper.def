@@ -19,10 +19,64 @@ static OSStatus KeychainCopyMatching(id _Nonnull query,
     return SecItemCopyMatching((__bridge CFDictionaryRef)query, result);
 }
 
+static NSMutableDictionary * _Nonnull KeychainBaseQuery(NSString * _Nonnull service,
+                                                        NSString * _Nonnull account,
+                                                        BOOL includeSynchronizable,
+                                                        BOOL synchronizable) {
+    NSMutableDictionary *query = [@{
+        (__bridge id)kSecClass: (__bridge id)kSecClassGenericPassword,
+        (__bridge id)kSecAttrService: service,
+        (__bridge id)kSecAttrAccount: account
+    } mutableCopy];
+    if (includeSynchronizable) {
+        query[(__bridge id)kSecAttrSynchronizable] = synchronizable ? @YES : @NO;
+    }
+    return query;
+}
+
+static NSData * _Nullable KeychainCopyData(id _Nonnull query) {
+    CFTypeRef result = NULL;
+    OSStatus status = SecItemCopyMatching((__bridge CFDictionaryRef)query, &result);
+    if (status != errSecSuccess || result == NULL) {
+        return nil;
+    }
+    return (__bridge_transfer NSData *)result;
+}
+
+static NSData * _Nullable KeychainLoadData(NSString * _Nonnull service,
+                                           NSString * _Nonnull account,
+                                           BOOL includeSynchronizable,
+                                           BOOL synchronizable) {
+    NSMutableDictionary *query = KeychainBaseQuery(service, account, includeSynchronizable, synchronizable);
+    query[(__bridge id)kSecMatchLimit] = (__bridge id)kSecMatchLimitOne;
+    query[(__bridge id)kSecReturnData] = @YES;
+    return KeychainCopyData(query);
+}
+
 static OSStatus KeychainItemDelete(id _Nonnull attrs) {
     return SecItemDelete((__bridge CFDictionaryRef)attrs);
 }
 
 static OSStatus KeychainItemAdd(id _Nonnull attrs) {
+    return SecItemAdd((__bridge CFDictionaryRef)attrs, NULL);
+}
+
+static OSStatus KeychainDeleteData(NSString * _Nonnull service,
+                                   NSString * _Nonnull account,
+                                   BOOL includeSynchronizable,
+                                   BOOL synchronizable) {
+    NSMutableDictionary *query = KeychainBaseQuery(service, account, includeSynchronizable, synchronizable);
+    return SecItemDelete((__bridge CFDictionaryRef)query);
+}
+
+static OSStatus KeychainSaveData(NSString * _Nonnull service,
+                                 NSString * _Nonnull account,
+                                 NSData * _Nonnull data) {
+    KeychainDeleteData(service, account, NO, NO);
+    KeychainDeleteData(service, account, YES, YES);
+
+    NSMutableDictionary *attrs = KeychainBaseQuery(service, account, NO, NO);
+    attrs[(__bridge id)kSecValueData] = data;
+    attrs[(__bridge id)kSecAttrAccessible] = (__bridge id)kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly;
     return SecItemAdd((__bridge CFDictionaryRef)attrs, NULL);
 }

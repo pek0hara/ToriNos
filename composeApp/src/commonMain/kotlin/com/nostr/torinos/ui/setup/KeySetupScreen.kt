@@ -111,7 +111,7 @@ fun KeySetupScreen(onSetupComplete: (pubkeyHex: String) -> Unit, onDismiss: (() 
                     onClick = {
                         scope.launch(uiExceptionHandler) {
                             val err = runCatching {
-                                KeyStorage.savePrivateKey(priv)
+                                savePrivateKeyAndVerify(priv)
                                 saveToPasswordManager(nsec, npub)
                             }.exceptionOrNull()?.let {
                                 logException("KeySetupScreen", it, "Failed to save generated private key")
@@ -173,7 +173,7 @@ private suspend fun validateAndSave(
         val nsec = hexToNsec(hexKey)
         val npub = hexToNpub(pubkeyHex)
         try {
-            KeyStorage.savePrivateKey(hexKey)
+            savePrivateKeyAndVerify(hexKey)
             saveToPasswordManager(nsec, npub)
         } catch (e: Exception) {
             logException("KeySetupScreen", e, "Failed to save imported private key")
@@ -183,5 +183,15 @@ private suspend fun validateAndSave(
     } catch (e: Exception) {
         logException("KeySetupScreen", e, "Invalid private key input")
         Pair("無効な秘密鍵です: ${e.message}", null)
+    }
+}
+
+private suspend fun savePrivateKeyAndVerify(hexKey: String) {
+    val normalized = normalizePrivateKey(hexKey)
+    KeyStorage.savePrivateKey(normalized)
+    val saved = KeyStorage.loadPrivateKey()
+        ?: error("保存した秘密鍵を読み戻せませんでした")
+    check(normalizePrivateKey(saved) == normalized) {
+        "保存した秘密鍵が一致しません"
     }
 }
