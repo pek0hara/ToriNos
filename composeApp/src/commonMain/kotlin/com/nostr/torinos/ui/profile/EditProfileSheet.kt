@@ -17,15 +17,12 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AddPhotoAlternate
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -33,21 +30,17 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.compose.material3.Card
 import androidx.compose.ui.window.Dialog
-import com.nostr.torinos.crypto.supportsModalBottomSheet
 import com.nostr.torinos.ui.components.rememberImagePickerLauncher
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun EditProfileSheet(
     onDismiss: () -> Unit,
+    viewModel: EditProfileViewModel,
     onSaved: (NostrProfile) -> Unit = {},
-    viewModel: EditProfileViewModel = viewModel(),
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
-    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
 
     val pickImage = rememberImagePickerLauncher { bytes, mime ->
         if (bytes != null && mime != null) viewModel.uploadProfileImage(bytes, mime)
@@ -62,19 +55,10 @@ fun EditProfileSheet(
         }
     }
 
-    if (supportsModalBottomSheet) {
-        ModalBottomSheet(
-            onDismissRequest = onDismiss,
-            sheetState = sheetState,
-        ) {
-            EditProfileSheetContent(state = state, onDismiss = onDismiss, onPickImage = pickImage, viewModel = viewModel)
-        }
-    } else {
-        Dialog(onDismissRequest = onDismiss) {
-            Card {
-                Box(modifier = Modifier.padding(top = 8.dp)) {
-                    EditProfileSheetContent(state = state, onDismiss = onDismiss, onPickImage = pickImage, viewModel = viewModel)
-                }
+    Dialog(onDismissRequest = onDismiss) {
+        Card {
+            Box(modifier = Modifier.padding(top = 8.dp)) {
+                EditProfileSheetContent(state = state, onDismiss = onDismiss, onPickImage = pickImage, viewModel = viewModel)
             }
         }
     }

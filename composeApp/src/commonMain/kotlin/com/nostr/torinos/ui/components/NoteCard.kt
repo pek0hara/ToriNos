@@ -13,10 +13,19 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.MailOutline
+import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.Repeat
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -35,8 +44,16 @@ fun NoteCard(
     profile: NostrProfile?,
     replyCount: Int,
     reactionCount: Int,
+    repostCount: Int = 0,
+    isLiked: Boolean = false,
     onUserClick: (pubkey: String) -> Unit = {},
+    onLike: (() -> Unit)? = null,
+    onReply: (() -> Unit)? = null,
+    onRepost: (() -> Unit)? = null,
+    ownPubkey: String? = null,
+    onDelete: (() -> Unit)? = null,
 ) {
+    var showMenu by remember { mutableStateOf(false) }
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -63,11 +80,38 @@ fun NoteCard(
                     color = MaterialTheme.colorScheme.primary,
                     modifier = Modifier.clickable { onUserClick(event.pubkey) },
                 )
-                Text(
-                    text = formatTimestamp(event.createdAt),
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        text = formatTimestamp(event.createdAt),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    if (ownPubkey != null && event.pubkey == ownPubkey && onDelete != null) {
+                        IconButton(
+                            onClick = { showMenu = true },
+                            modifier = Modifier.size(24.dp),
+                        ) {
+                            Icon(
+                                Icons.Default.MoreVert,
+                                contentDescription = "メニュー",
+                                modifier = Modifier.size(16.dp),
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        DropdownMenu(
+                            expanded = showMenu,
+                            onDismissRequest = { showMenu = false },
+                        ) {
+                            DropdownMenuItem(
+                                text = { Text("削除", color = MaterialTheme.colorScheme.error) },
+                                onClick = {
+                                    showMenu = false
+                                    onDelete()
+                                },
+                            )
+                        }
+                    }
+                }
             }
             Spacer(modifier = Modifier.height(4.dp))
             val imageUrls = extractImageUrls(event.content)
@@ -88,29 +132,30 @@ fun NoteCard(
                         .heightIn(max = 400.dp),
                 )
             }
-            Spacer(modifier = Modifier.height(8.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(20.dp)) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
                 EngagementCount(
-                    icon = {
-                        Icon(
-                            Icons.Default.MailOutline,
-                            contentDescription = "返信",
-                            modifier = Modifier.size(14.dp),
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    },
+                    icon = Icons.Default.MailOutline,
+                    contentDescription = "返信",
                     count = replyCount,
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    onClick = onReply,
                 )
                 EngagementCount(
-                    icon = {
-                        Icon(
-                            Icons.Default.Favorite,
-                            contentDescription = "いいね",
-                            modifier = Modifier.size(14.dp),
-                            tint = if (reactionCount > 0) Color(0xFFE17055) else MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    },
+                    icon = Icons.Default.Repeat,
+                    contentDescription = "リポスト",
+                    count = repostCount,
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    onClick = onRepost,
+                )
+                EngagementCount(
+                    icon = Icons.Default.Favorite,
+                    contentDescription = "いいね",
                     count = reactionCount,
+                    tint = if (isLiked) Color(0xFFE17055) else MaterialTheme.colorScheme.onSurfaceVariant,
+                    onClick = onLike,
                 )
             }
         }
@@ -118,12 +163,29 @@ fun NoteCard(
 }
 
 @Composable
-fun EngagementCount(icon: @Composable () -> Unit, count: Int) {
+fun EngagementCount(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    contentDescription: String,
+    count: Int,
+    tint: androidx.compose.ui.graphics.Color,
+    onClick: (() -> Unit)? = null,
+) {
     Row(
-        horizontalArrangement = Arrangement.spacedBy(4.dp),
         verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(2.dp),
     ) {
-        icon()
+        IconButton(
+            onClick = onClick ?: {},
+            enabled = onClick != null,
+            modifier = Modifier.size(32.dp),
+        ) {
+            Icon(
+                imageVector = icon,
+                contentDescription = contentDescription,
+                modifier = Modifier.size(16.dp),
+                tint = tint,
+            )
+        }
         Text(
             text = count.toString(),
             style = MaterialTheme.typography.labelSmall,

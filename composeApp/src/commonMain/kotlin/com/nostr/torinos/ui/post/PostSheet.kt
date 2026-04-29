@@ -15,15 +15,12 @@ import androidx.compose.material.icons.filled.AddPhotoAlternate
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -33,12 +30,10 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import com.nostr.torinos.crypto.supportsModalBottomSheet
 import com.nostr.torinos.ui.components.rememberImagePickerLauncher
 
 private const val MAX_CHARS = 800
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun PostSheet(
     onDismiss: () -> Unit,
@@ -48,7 +43,6 @@ fun PostSheet(
 ) {
     val postViewModel = viewModel ?: remember { PostViewModel() }
     val state by postViewModel.state.collectAsStateWithLifecycle()
-    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
 
     val pickImage = rememberImagePickerLauncher { bytes, mime ->
         if (bytes != null && mime != null) postViewModel.uploadAndAppendImage(bytes, mime)
@@ -61,33 +55,17 @@ fun PostSheet(
         }
     }
 
-    if (supportsModalBottomSheet) {
-        ModalBottomSheet(
-            onDismissRequest = onDismiss,
-            sheetState = sheetState,
-        ) {
-            PostSheetContent(
-                state = state,
-                title = if (replyToId != null) "返信" else "新しい投稿",
-                onDismiss = onDismiss,
-                onPickImage = pickImage,
-                onTextChange = postViewModel::onTextChange,
-                onPost = { postViewModel.post(replyToId, replyToPubkey) },
-            )
-        }
-    } else {
-        Dialog(onDismissRequest = onDismiss) {
-            Card {
-                Box(modifier = Modifier.padding(top = 8.dp)) {
-                    PostSheetContent(
-                        state = state,
-                        title = if (replyToId != null) "返信" else "新しい投稿",
-                        onDismiss = onDismiss,
-                        onPickImage = pickImage,
-                        onTextChange = postViewModel::onTextChange,
-                        onPost = { postViewModel.post(replyToId, replyToPubkey) },
-                    )
-                }
+    Dialog(onDismissRequest = onDismiss) {
+        Card {
+            Box(modifier = Modifier.padding(top = 8.dp)) {
+                PostSheetContent(
+                    state = state,
+                    title = if (replyToId != null) "返信" else "新しい投稿",
+                    onDismiss = onDismiss,
+                    onPickImage = pickImage,
+                    onTextChange = postViewModel::onTextChange,
+                    onPost = { postViewModel.post(replyToId, replyToPubkey) },
+                )
             }
         }
     }

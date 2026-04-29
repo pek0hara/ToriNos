@@ -204,6 +204,7 @@ class ChannelViewModel(private val channelId: String) : SafeViewModel() {
 
     private fun appendMessage(event: NostrEvent): Int {
         if (!seenIds.add(event.id)) return 0
+        while (seenIds.size > MAX_SEEN_IDS) seenIds.remove(seenIds.first())
         currentMessages = (currentMessages + event).sortedByDescending { it.createdAt }
         oldestCreatedAt = currentMessages.lastOrNull()?.createdAt
         syncReadyState()
@@ -255,5 +256,6 @@ class ChannelViewModel(private val channelId: String) : SafeViewModel() {
 
     companion object {
         private const val PAGE_SIZE = 30
+        private const val MAX_SEEN_IDS = 1000
     }
 }

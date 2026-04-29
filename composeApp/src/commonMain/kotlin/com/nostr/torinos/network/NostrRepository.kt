@@ -32,7 +32,8 @@ object NostrRepository {
 
     internal val httpClient = createHttpClient()
     private val activeRelays = mutableMapOf<String, NostrRelay>()
-    private val activeSubscriptions = mutableMapOf<String, NostrFilter>()
+    /** subId → (filter, targetRelayUrl) targetRelayUrl=null は全リレー対象 */
+    private val activeSubscriptions = mutableMapOf<String, Pair<NostrFilter, String?>>()
 
     init {
         scope.launch {
@@ -68,8 +69,11 @@ object NostrRepository {
                         try {
                             relay.connected.collect {
                                 appLog("[Repo] relay connected: ${relay.url} resending ${activeSubscriptions.size} subscriptions")
-                                activeSubscriptions.forEach { (subId, filter) ->
-                                    relay.send(buildReqMessage(subId, filter))
+                                activeSubscriptions.forEach { (subId, filterAndRelay) ->
+                                    val (filter, targetUrl) = filterAndRelay
+                                    if (targetUrl == null || targetUrl == relay.url) {
+                                        relay.send(buildReqMessage(subId, filter))
+                                    }
                                 }
                             }
                         } catch (e: CancellationException) {
@@ -89,11 +93,12 @@ object NostrRepository {
         }
     }
 
-    suspend fun subscribe(subscriptionId: String, filter: NostrFilter) {
-        appLog("[Repo] subscribe() subId='$subscriptionId' relayCount=${activeRelays.size} filter=$filter")
-        activeSubscriptions[subscriptionId] = filter
+    suspend fun subscribe(subscriptionId: String, filter: NostrFilter, relayUrl: String? = null) {
+        appLog("[Repo] subscribe() subId='$subscriptionId' relay=${relayUrl ?: "all"} filter=$filter")
+        activeSubscriptions[subscriptionId] = Pair(filter, relayUrl)
         val message = buildReqMessage(subscriptionId, filter)
-        activeRelays.values.forEach { relay ->
+        val targets = if (relayUrl != null) listOfNotNull(activeRelays[relayUrl]) else activeRelays.values.toList()
+        targets.forEach { relay ->
             appLog("[Repo] sending REQ to ${relay.url}")
             relay.send(message)
         }

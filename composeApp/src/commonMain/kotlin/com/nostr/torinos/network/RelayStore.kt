@@ -11,6 +11,8 @@ data class RelayEntry(val url: String, val enabled: Boolean)
 object RelayStore {
     val defaults = listOf(
         RelayEntry("wss://yabu.me", enabled = true),
+        RelayEntry("wss://relay-jp.nostr.wirednet.jp", enabled = true),
+        RelayEntry("wss://r.kojira.io", enabled = true),
         RelayEntry("wss://relay.damus.io", enabled = false),
         RelayEntry("wss://nos.lol", enabled = false),
         RelayEntry("wss://relay.nostr.band", enabled = false),

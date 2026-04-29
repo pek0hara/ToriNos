@@ -1,14 +1,13 @@
 package com.nostr.torinos.ui.profile
 
-import androidx.lifecycle.ViewModel
 import com.nostr.torinos.ui.SafeViewModel
 import com.nostr.torinos.model.NostrFilter
 import com.nostr.torinos.model.NostrProfile
 import com.nostr.torinos.model.toProfile
-import com.nostr.torinos.network.FollowRepository
 import com.nostr.torinos.network.NostrRepository
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -31,14 +30,22 @@ class FollowListViewModel(
     private val _state = MutableStateFlow(FollowListState())
     val state: StateFlow<FollowListState> = _state.asStateFlow()
 
-    private val profileSubId = "fl-profiles-${mode.name}"
-    private val followerSubId = "fl-followers"
+    private val profileSubId = "fl-profiles-${mode.name}-${ownPubkey.take(8)}"
+    private val followerSubId = "fl-followers-${ownPubkey.take(8)}"
+    private val followingListSubId = "fl-kind3-${ownPubkey.take(16)}"
     private val collectorJobs = mutableListOf<Job>()
+    private val activeProfileSubIds = mutableSetOf<String>()
+    private val queuedProfilePubkeys = linkedSetOf<String>()
+    private val requestedProfilePubkeys = mutableSetOf<String>()
 
     // pubkey → profile
     private val profileMap = mutableMapOf<String, NostrProfile?>()
     // 取得済みpubkeyセット
     private val knownPubkeys = linkedSetOf<String>()
+    private var profileRequestSerial = 0
+    private var pendingProfileSubscriptions = 0
+    private var profileBatchJob: Job? = null
+    private var publishJob: Job? = null
 
     init {
         launch { start() }
@@ -52,43 +59,64 @@ class FollowListViewModel(
     }
 
     private suspend fun loadFollowing() {
-        // FollowRepositoryのロード完了を待つ
-        FollowRepository.loaded.first { it }
-        val pubkeys = FollowRepository.followedPubkeys.value.toList()
-        if (pubkeys.isEmpty()) {
-            _state.update { it.copy(isLoading = false) }
-            return
+        var latestAt = -1L
+        var latestPubkeys: List<String> = emptyList()
+
+        collectorJobs += launch(start = CoroutineStart.UNDISPATCHED) {
+            NostrRepository.events(followingListSubId).collect { event ->
+                if (event.kind != 3) return@collect
+                if (event.createdAt > latestAt) {
+                    latestAt = event.createdAt
+                    latestPubkeys = event.tags
+                        .filter { it.size >= 2 && it[0] == "p" }
+                        .map { it[1] }
+                }
+            }
         }
-        initPubkeys(pubkeys)
-        subscribeProfiles(pubkeys)
+
+        collectorJobs += launch(start = CoroutineStart.UNDISPATCHED) {
+            NostrRepository.eose(followingListSubId).collect {
+                NostrRepository.close(followingListSubId)
+                val pubkeys = latestPubkeys
+                if (pubkeys.isEmpty()) {
+                    _state.update { it.copy(isLoading = false) }
+                    return@collect
+                }
+                initPubkeys(pubkeys)
+                queueProfileRequests(pubkeys)
+            }
+        }
+
+        NostrRepository.subscribe(
+            followingListSubId,
+            NostrFilter(kinds = listOf(3), authors = listOf(ownPubkey), limit = 1),
+        )
     }
 
     private suspend fun loadFollowers() {
-        // 自分のpubkeyをpタグに持つkind:3を取得
-        NostrRepository.subscribe(
-            followerSubId,
-            NostrFilter(kinds = listOf(3), pTags = listOf(ownPubkey), limit = 1000),
-        )
-
-        collectorJobs += launch {
+        collectorJobs += launch(start = CoroutineStart.UNDISPATCHED) {
             NostrRepository.events(followerSubId).collect { event ->
                 if (event.kind != 3) return@collect
                 val pubkey = event.pubkey
                 if (knownPubkeys.add(pubkey)) {
                     profileMap[pubkey] = null
-                    publishEntries()
-                    // プロフィールをリクエスト
-                    subscribeProfiles(listOf(pubkey))
+                    schedulePublishEntries()
+                    queueProfileRequests(listOf(pubkey))
                 }
             }
         }
 
         // EOSE 後にローディング終了
-        collectorJobs += launch {
+        collectorJobs += launch(start = CoroutineStart.UNDISPATCHED) {
             NostrRepository.eose(followerSubId).collect {
                 _state.update { it.copy(isLoading = false) }
             }
         }
+
+        NostrRepository.subscribe(
+            followerSubId,
+            NostrFilter(kinds = listOf(3), pTags = listOf(ownPubkey), limit = 1000),
+        )
     }
 
     private fun initPubkeys(pubkeys: List<String>) {
@@ -96,48 +124,105 @@ class FollowListViewModel(
             knownPubkeys.add(pk)
             profileMap[pk] = null
         }
-        publishEntries()
+        schedulePublishEntries()
     }
 
-    private fun subscribeProfiles(pubkeys: List<String>) {
-        if (pubkeys.isEmpty()) return
-        val subId = "$profileSubId-${pubkeys.first().take(8)}"
-        launch {
-            NostrRepository.subscribe(
-                subId,
-                NostrFilter(kinds = listOf(0), authors = pubkeys, limit = pubkeys.size),
-            )
+    private fun queueProfileRequests(pubkeys: List<String>) {
+        val newPubkeys = pubkeys.filter { pk ->
+            pk in knownPubkeys && requestedProfilePubkeys.add(pk)
         }
-        collectorJobs += launch {
+        if (newPubkeys.isEmpty()) return
+
+        queuedProfilePubkeys.addAll(newPubkeys)
+        scheduleProfileBatch()
+    }
+
+    private fun scheduleProfileBatch() {
+        if (profileBatchJob?.isActive == true) return
+
+        profileBatchJob = launch {
+            try {
+                delay(PROFILE_BATCH_DELAY_MS)
+                flushProfileBatches()
+            } finally {
+                profileBatchJob = null
+                if (queuedProfilePubkeys.isNotEmpty()) {
+                    scheduleProfileBatch()
+                }
+            }
+        }
+    }
+
+    private suspend fun flushProfileBatches() {
+        while (queuedProfilePubkeys.isNotEmpty()) {
+            val batch = queuedProfilePubkeys.take(PROFILE_BATCH_SIZE)
+            queuedProfilePubkeys.removeAll(batch.toSet())
+            subscribeProfileBatch(batch)
+        }
+    }
+
+    private suspend fun subscribeProfileBatch(pubkeys: List<String>) {
+        val subId = "$profileSubId-${profileRequestSerial++}"
+        activeProfileSubIds.add(subId)
+        pendingProfileSubscriptions++
+
+        val eventJob = launch(start = CoroutineStart.UNDISPATCHED) {
             NostrRepository.events(subId).collect { event ->
                 if (event.kind != 0) return@collect
                 if (event.pubkey in knownPubkeys) {
                     profileMap[event.pubkey] = event.toProfile()
-                    publishEntries()
+                    schedulePublishEntries()
                 }
             }
         }
+        collectorJobs += eventJob
+
         // EOSE 後に購読解除 & ローディング終了
-        launch {
-            NostrRepository.eose(subId).collect {
-                NostrRepository.close(subId)
-                if (mode == FollowListMode.FOLLOWING) {
-                    _state.update { it.copy(isLoading = false) }
-                }
+        collectorJobs += launch(start = CoroutineStart.UNDISPATCHED) {
+            NostrRepository.eose(subId).first()
+            NostrRepository.close(subId)
+            activeProfileSubIds.remove(subId)
+            pendingProfileSubscriptions--
+            if (mode == FollowListMode.FOLLOWING && pendingProfileSubscriptions == 0) {
+                _state.update { it.copy(isLoading = false) }
             }
+        }
+
+        NostrRepository.subscribe(
+            subId,
+            NostrFilter(kinds = listOf(0), authors = pubkeys, limit = pubkeys.size),
+        )
+    }
+
+    private fun schedulePublishEntries() {
+        if (publishJob?.isActive == true) return
+
+        publishJob = launch {
+            delay(PUBLISH_DELAY_MS)
+            publishEntries()
         }
     }
 
     private fun publishEntries() {
-        val sorted = knownPubkeys
+        val entries = knownPubkeys
             .map { pk -> pk to profileMap[pk] }
-            .sortedBy { (_, profile) -> profile?.bestName ?: "\uFFFF" }
-        _state.update { it.copy(entries = sorted) }
+        _state.update { it.copy(entries = entries) }
     }
 
     override fun onCleared() {
         super.onCleared()
+        profileBatchJob?.cancel()
+        publishJob?.cancel()
         collectorJobs.forEach { it.cancel() }
         NostrRepository.close(followerSubId)
+        NostrRepository.close(followingListSubId)
+        activeProfileSubIds.forEach { NostrRepository.close(it) }
+        activeProfileSubIds.clear()
+    }
+
+    companion object {
+        private const val PROFILE_BATCH_SIZE = 100
+        private const val PROFILE_BATCH_DELAY_MS = 120L
+        private const val PUBLISH_DELAY_MS = 180L
     }
 }

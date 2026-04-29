@@ -1,0 +1,86 @@
+package com.nostr.torinos.ui.components
+
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.lazy.LazyListScope
+import androidx.compose.foundation.lazy.items
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Text
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
+import com.nostr.torinos.ui.feed.FeedViewModel
+
+fun LazyListScope.noteListItems(
+    state: FeedViewModel.UiState,
+    ownPubkey: String?,
+    onUserClick: (String) -> Unit,
+    onLike: (eventId: String, authorPubkey: String) -> Unit,
+    onUnlike: (eventId: String) -> Unit,
+    onDelete: (eventId: String) -> Unit,
+    onReply: ((eventId: String, authorPubkey: String) -> Unit)? = null,
+    onRepost: ((eventId: String, authorPubkey: String) -> Unit)? = null,
+    emptyText: String = "投稿がありません",
+) {
+    when {
+        state.isInitialLoad && state.events.isEmpty() -> item {
+            Box(
+                modifier = Modifier.fillMaxWidth().padding(48.dp),
+                contentAlignment = Alignment.Center,
+            ) { CircularProgressIndicator() }
+        }
+        state.events.isEmpty() -> item {
+            Box(
+                modifier = Modifier.fillMaxWidth().padding(48.dp),
+                contentAlignment = Alignment.Center,
+            ) {
+                Text(
+                    text = emptyText,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+        else -> {
+            items(state.events, key = { it.id }) { event ->
+                NoteCard(
+                    event = event,
+                    profile = state.profiles[event.pubkey],
+                    replyCount = state.replyCounts[event.id] ?: 0,
+                    repostCount = state.repostCounts[event.id] ?: 0,
+                    reactionCount = state.reactionCounts[event.id] ?: 0,
+                    isLiked = state.likedReactions.containsKey(event.id),
+                    onUserClick = onUserClick,
+                    onLike = if (ownPubkey != null) {
+                        {
+                            if (state.likedReactions.containsKey(event.id))
+                                onUnlike(event.id)
+                            else
+                                onLike(event.id, event.pubkey)
+                        }
+                    } else null,
+                    onReply = if (ownPubkey != null && onReply != null) {
+                        { onReply(event.id, event.pubkey) }
+                    } else null,
+                    onRepost = if (ownPubkey != null && onRepost != null) {
+                        { onRepost(event.id, event.pubkey) }
+                    } else null,
+                    ownPubkey = ownPubkey,
+                    onDelete = { onDelete(event.id) },
+                )
+                HorizontalDivider()
+            }
+            if (state.canLoadMore) {
+                item {
+                    Box(
+                        modifier = Modifier.fillMaxWidth().padding(16.dp),
+                        contentAlignment = Alignment.Center,
+                    ) { CircularProgressIndicator() }
+                }
+            }
+        }
+    }
+}

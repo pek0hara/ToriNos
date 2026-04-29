@@ -36,11 +36,14 @@ class NostrRelay(
     fun connect(scope: CoroutineScope) {
         job = scope.launch {
             try {
+                var retryDelay = 2_000L
+                val maxDelay = 30_000L
                 while (isActive) {
                     appLog("[Relay] connecting to $url")
                     runCatching {
                         client.webSocket(urlString = url) {
                             appLog("[Relay] connected: $url")
+                            retryDelay = 2_000L
                             _connected.emit(Unit)
                             val sender = launch {
                                 try {
@@ -66,9 +69,9 @@ class NostrRelay(
                     }.onFailure { e ->
                         logException("Relay", e, "WebSocket loop failed for $url")
                     }
-                    // 接続が切れたら 5 秒後に再試行
-                    appLog("[Relay] disconnected from $url, retrying in 5s")
-                    delay(5_000)
+                    appLog("[Relay] disconnected from $url, retrying in ${retryDelay / 1000}s")
+                    delay(retryDelay)
+                    retryDelay = (retryDelay * 2).coerceAtMost(maxDelay)
                 }
             } catch (e: CancellationException) {
                 throw e

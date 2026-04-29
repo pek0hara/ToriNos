@@ -28,7 +28,6 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.toRoute
-import com.nostr.torinos.crypto.KeyStorage
 import com.nostr.torinos.crypto.isWriteSupported
 import com.nostr.torinos.crypto.loadPublicKey
 import com.nostr.torinos.model.NostrFilter
@@ -58,6 +57,12 @@ import kotlinx.serialization.Serializable
 @Serializable data class FollowingRoute(val pubkey: String)
 @Serializable data class FollowersRoute(val pubkey: String)
 
+private enum class PendingKeyAction {
+    NewPost,
+    Reply,
+    Profile,
+}
+
 @Composable
 fun App() {
     NostrTheme {
@@ -65,8 +70,10 @@ fun App() {
         val backStackEntry by nav.currentBackStackEntryAsState()
         val currentRoute = backStackEntry?.destination?.route
         var showPostSheet by remember { mutableStateOf(false) }
+        var replyToId by remember { mutableStateOf<String?>(null) }
+        var replyToPubkey by remember { mutableStateOf<String?>(null) }
         var showKeySetup by remember { mutableStateOf(false) }
-        var pendingPostAfterKeySetup by remember { mutableStateOf(false) }
+        var pendingKeyAction by remember { mutableStateOf<PendingKeyAction?>(null) }
         val scope = rememberCoroutineScope()
         val uiExceptionHandler = remember {
             loggingExceptionHandler("App", "Uncaught UI coroutine exception")
@@ -108,10 +115,27 @@ fun App() {
             }
         }
 
-        LaunchedEffect(showKeySetup, pendingPostAfterKeySetup) {
-            if (!showKeySetup && pendingPostAfterKeySetup) {
-                pendingPostAfterKeySetup = false
-                showPostSheet = true
+        fun runWithPrivateKey(
+            missingAction: PendingKeyAction,
+            onAvailable: (pubkeyHex: String) -> Unit,
+        ) {
+            scope.launch(uiExceptionHandler) {
+                val pubkey = ownPubkey ?: try {
+                    loadPublicKey()
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Throwable) {
+                    logException("App", e, "Failed to load public key before protected action")
+                    null
+                }
+
+                if (pubkey != null) {
+                    ownPubkey = pubkey
+                    onAvailable(pubkey)
+                } else {
+                    pendingKeyAction = missingAction
+                    showKeySetup = true
+                }
             }
         }
 
@@ -121,8 +145,10 @@ fun App() {
             floatingActionButton = {
                 if (isWriteSupported && currentRoute == "feed") {
                     FloatingActionButton(onClick = {
-                        scope.launch(uiExceptionHandler) {
-                            if (KeyStorage.hasKey()) showPostSheet = true else showKeySetup = true
+                        runWithPrivateKey(PendingKeyAction.NewPost) {
+                            replyToId = null
+                            replyToPubkey = null
+                            showPostSheet = true
                         }
                     }) {
                         Icon(Icons.Default.Create, contentDescription = "投稿")
@@ -170,12 +196,15 @@ fun App() {
                             onOpenSearch = { nav.navigate("search") },
                             onUserClick = { pubkey -> nav.navigate(ProfileRoute(pubkey)) },
                             onOpenProfile = {
-                                scope.launch(uiExceptionHandler) {
-                                    if (KeyStorage.hasKey()) {
-                                        nav.navigate("myprofile") { launchSingleTop = true }
-                                    } else {
-                                        showKeySetup = true
-                                    }
+                                runWithPrivateKey(PendingKeyAction.Profile) {
+                                    nav.navigate("myprofile") { launchSingleTop = true }
+                                }
+                            },
+                            onReply = { eventId, authorPk ->
+                                replyToId = eventId
+                                replyToPubkey = authorPk
+                                runWithPrivateKey(PendingKeyAction.Reply) {
+                                    showPostSheet = true
                                 }
                             },
                             ownPubkey = ownPubkey,
@@ -207,6 +236,7 @@ fun App() {
                     composable("myprofile") {
                         val pubkey = ownPubkey ?: return@composable
                         MyProfileScreen(
+                            ownPubkey = pubkey,
                             onOpenFollowing = { nav.navigate(FollowingRoute(pubkey)) },
                             onOpenFollowers = { nav.navigate(FollowersRoute(pubkey)) },
                         )
@@ -235,6 +265,9 @@ fun App() {
                             pubkey = route.pubkey,
                             onBack = { nav.popBackStack() },
                             isOwnProfile = false,
+                            ownPubkey = ownPubkey,
+                            onOpenFollowing = { nav.navigate(FollowingRoute(route.pubkey)) },
+                            onOpenFollowers = { nav.navigate(FollowersRoute(route.pubkey)) },
                         )
                     }
                 }
@@ -242,25 +275,40 @@ fun App() {
         }
 
         if (showPostSheet) {
-            PostSheet(onDismiss = { showPostSheet = false })
+            PostSheet(
+                onDismiss = {
+                    showPostSheet = false
+                    replyToId = null
+                    replyToPubkey = null
+                },
+                replyToId = replyToId,
+                replyToPubkey = replyToPubkey,
+            )
         }
 
         if (showKeySetup) {
             KeySetupScreen(
-                onSetupComplete = {
+                onSetupComplete = { pubkeyHex ->
+                    val action = pendingKeyAction
                     showKeySetup = false
-                    pendingPostAfterKeySetup = true
-                    // ログイン直後に公開鍵を更新してプロフィール購読をトリガー
-                    scope.launch(uiExceptionHandler) {
-                        try {
-                            ownPubkey = loadPublicKey()
-                        } catch (e: Exception) {
-                            logException("App", e, "Failed to refresh public key after setup")
+                    pendingKeyAction = null
+                    // 保存直後に導出済みの公開鍵を直接セット（Keychain 再読み込み不要）
+                    ownPubkey = pubkeyHex
+                    when (action) {
+                        PendingKeyAction.NewPost -> {
+                            replyToId = null
+                            replyToPubkey = null
+                            showPostSheet = true
                         }
+                        PendingKeyAction.Reply -> showPostSheet = true
+                        PendingKeyAction.Profile -> nav.navigate("myprofile") { launchSingleTop = true }
+                        null -> Unit
                     }
                 },
                 onDismiss = {
-                    pendingPostAfterKeySetup = false
+                    pendingKeyAction = null
+                    replyToId = null
+                    replyToPubkey = null
                     showKeySetup = false
                 },
             )

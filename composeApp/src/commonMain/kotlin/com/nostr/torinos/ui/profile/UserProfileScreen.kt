@@ -1,6 +1,7 @@
 package com.nostr.torinos.ui.profile
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -13,13 +14,12 @@ import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -34,6 +34,7 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
@@ -45,16 +46,14 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
-import com.nostr.torinos.model.NostrEvent
 import com.nostr.torinos.model.NostrProfile
 import coil3.compose.LocalPlatformContext
 import coil3.compose.SubcomposeAsyncImage
 import coil3.request.ImageRequest
 import coil3.request.crossfade
 import com.nostr.torinos.ui.components.LinkedText
-import kotlinx.datetime.Instant
-import kotlinx.datetime.TimeZone
-import kotlinx.datetime.toLocalDateTime
+import com.nostr.torinos.ui.components.noteListItems
+import com.nostr.torinos.ui.feed.FeedViewModel
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -62,11 +61,33 @@ fun UserProfileScreen(
     pubkey: String,
     onBack: (() -> Unit)? = null,
     isOwnProfile: Boolean = false,
+    ownPubkey: String? = null,
+    onUserClick: (String) -> Unit = {},
+    onOpenFollowing: (() -> Unit)? = null,
+    onOpenFollowers: (() -> Unit)? = null,
     viewModel: UserProfileViewModel = viewModel(key = pubkey) { UserProfileViewModel(pubkey) },
+    feedViewModel: FeedViewModel = viewModel(key = "feed") { FeedViewModel(pubkey) },
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
+    val feedState by feedViewModel.state.collectAsStateWithLifecycle()
     val displayName = state.profile?.bestName ?: (pubkey.take(8) + "…" + pubkey.takeLast(8))
     val snackbarHostState = remember { SnackbarHostState() }
+
+    val listState = rememberLazyListState()
+    val reachedBottom by remember {
+        derivedStateOf {
+            val lastVisible = listState.layoutInfo.visibleItemsInfo.lastOrNull()
+            lastVisible != null && lastVisible.index >= listState.layoutInfo.totalItemsCount - 3
+        }
+    }
+    LaunchedEffect(reachedBottom, feedState.canLoadMore) {
+        if (reachedBottom && feedState.canLoadMore) feedViewModel.loadMore()
+    }
+
+    LaunchedEffect(state.profile) {
+        val profile = state.profile ?: return@LaunchedEffect
+        feedViewModel.injectProfile(pubkey, profile)
+    }
 
     LaunchedEffect(state.followError) {
         if (state.followError != null) {
@@ -100,6 +121,7 @@ fun UserProfileScreen(
         },
     ) { padding ->
         LazyColumn(
+            state = listState,
             modifier = Modifier
                 .fillMaxSize()
                 .padding(padding),
@@ -118,54 +140,35 @@ fun UserProfileScreen(
                 HorizontalDivider()
             }
 
-            if (state.isLoading && state.events.isEmpty()) {
-                item {
-                    Box(
+            item {
+                Row(modifier = Modifier.fillMaxWidth()) {
+                    UserStatCell(
+                        label = "フォロー",
+                        count = state.followingCount,
                         modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(48.dp),
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        CircularProgressIndicator()
-                    }
+                            .weight(1f)
+                            .then(if (onOpenFollowing != null) Modifier.clickable { onOpenFollowing() } else Modifier),
+                    )
+                    UserStatCell(
+                        label = "フォロワー",
+                        count = state.followersCount,
+                        modifier = Modifier
+                            .weight(1f)
+                            .then(if (onOpenFollowers != null) Modifier.clickable { onOpenFollowers() } else Modifier),
+                    )
                 }
-            } else {
-                if (state.events.isEmpty()) {
-                    item {
-                        Box(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(48.dp),
-                            contentAlignment = Alignment.Center,
-                        ) {
-                            Text(
-                                text = "このユーザーの投稿はありません",
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                        }
-                    }
-                } else {
-                    items(state.events, key = { it.id }) { event ->
-                        PostItem(event = event)
-                        HorizontalDivider()
-                    }
-                    if (state.canLoadMore) {
-                        item {
-                            Box(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(16.dp),
-                                contentAlignment = Alignment.Center,
-                            ) {
-                                FilledTonalButton(onClick = viewModel::loadMore) {
-                                    Text("さらに読み込む")
-                                }
-                            }
-                        }
-                    }
-                }
+                HorizontalDivider()
             }
+
+            noteListItems(
+                state = feedState,
+                ownPubkey = ownPubkey,
+                onUserClick = onUserClick,
+                onLike = feedViewModel::react,
+                onUnlike = feedViewModel::unreact,
+                onDelete = feedViewModel::deleteEvent,
+                emptyText = "このユーザーの投稿はありません",
+            )
         }
     }
 }
@@ -232,21 +235,21 @@ private fun ProfileHeader(
 }
 
 @Composable
-private fun PostItem(event: NostrEvent) {
+internal fun UserStatCell(label: String, count: Int, modifier: Modifier = Modifier) {
     Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 16.dp, vertical = 12.dp),
-        verticalArrangement = Arrangement.spacedBy(4.dp),
+        modifier = modifier.padding(vertical = 12.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(2.dp),
     ) {
         Text(
-            text = formatTimestamp(event.createdAt),
+            text = count.toString(),
+            style = MaterialTheme.typography.titleMedium,
+            fontWeight = FontWeight.Bold,
+        )
+        Text(
+            text = label,
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-        LinkedText(
-            text = event.content,
-            style = MaterialTheme.typography.bodyMedium,
         )
     }
 }
@@ -300,20 +303,4 @@ private val avatarPalette = listOf(
 internal fun avatarColor(pubkey: String): Color {
     val index = pubkey.hashCode().mod(avatarPalette.size)
     return avatarPalette[index]
-}
-
-private fun formatTimestamp(epochSeconds: Long): String = try {
-    val local = Instant.fromEpochSeconds(epochSeconds)
-        .toLocalDateTime(TimeZone.currentSystemDefault())
-    buildString {
-        append(local.monthNumber.toString().padStart(2, '0'))
-        append('/')
-        append(local.dayOfMonth.toString().padStart(2, '0'))
-        append(' ')
-        append(local.hour.toString().padStart(2, '0'))
-        append(':')
-        append(local.minute.toString().padStart(2, '0'))
-    }
-} catch (_: Exception) {
-    ""
 }

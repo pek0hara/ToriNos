@@ -15,6 +15,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.firstOrNull
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.buildJsonObject
@@ -34,10 +35,14 @@ data class EditProfileState(
 )
 
 class EditProfileViewModel : SafeViewModel() {
+    companion object {
+        private var instanceCounter = 0
+    }
     private val _state = MutableStateFlow(EditProfileState())
     val state: StateFlow<EditProfileState> = _state.asStateFlow()
 
-    private val subId = "ep-current"
+    // インスタンスごとにユニークな subId を生成（同時に複数開いた場合の競合を防ぐ）
+    private val subId = "ep-${instanceCounter++}"
 
     init {
         launch {
@@ -48,7 +53,10 @@ class EditProfileViewModel : SafeViewModel() {
                 NostrFilter(kinds = listOf(0), authors = listOf(pubkey), limit = 1),
             )
 
-            val event = NostrRepository.events(subId).firstOrNull { it.kind == 0 }
+            // リレーが応答しない場合に無限待機しないようタイムアウトを設定
+            val event = withTimeoutOrNull(10_000) {
+                NostrRepository.events(subId).firstOrNull { it.kind == 0 }
+            }
             NostrRepository.close(subId)
 
             val profile = event?.toProfile() ?: return@launch

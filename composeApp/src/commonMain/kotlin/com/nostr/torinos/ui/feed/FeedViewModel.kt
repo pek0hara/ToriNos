@@ -2,11 +2,16 @@ package com.nostr.torinos.ui.feed
 
 import androidx.lifecycle.ViewModel
 import com.nostr.torinos.ui.SafeViewModel
+import com.nostr.torinos.crypto.KeyStorage
+import com.nostr.torinos.crypto.isWriteSupported
+import com.nostr.torinos.crypto.loadPublicKey
+import com.nostr.torinos.crypto.signEvent
 import com.nostr.torinos.model.NostrEvent
 import com.nostr.torinos.model.NostrFilter
 import com.nostr.torinos.model.NostrProfile
 import com.nostr.torinos.model.toProfile
 import com.nostr.torinos.network.NostrRepository
+import kotlinx.serialization.json.Json
 import kotlinx.coroutines.Job
 import kotlin.time.Clock
 import kotlinx.coroutines.delay
@@ -17,6 +22,7 @@ import kotlinx.coroutines.launch
 
 class FeedViewModel(
     private val authorPubkey: String? = null,
+    private val relayUrl: String? = null,
 ) : SafeViewModel() {
 
     data class UiState(
@@ -24,6 +30,9 @@ class FeedViewModel(
         val profiles: Map<String, NostrProfile> = emptyMap(),
         val reactionCounts: Map<String, Int> = emptyMap(),
         val replyCounts: Map<String, Int> = emptyMap(),
+        val repostCounts: Map<String, Int> = emptyMap(),
+        /** postId → 自分のリアクションイベントID */
+        val likedReactions: Map<String, String> = emptyMap(),
         val canLoadMore: Boolean = false,
         /** true = 初回 EOSE 待ち（ローディングスピナー表示） */
         val isInitialLoad: Boolean = true,
@@ -38,16 +47,19 @@ class FeedViewModel(
     private val profileSubId = "prof-$shortKey"
     private val reactionSubId = "reac-$shortKey"
     private val replySubId = "repl-$shortKey"
+    private val repostSubId = "repo-$shortKey"
 
     private val subscriptionJobs = mutableListOf<Job>()
     private val pendingPubkeys = mutableSetOf<String>()
     private var profileBatchJob: Job? = null
     private val watchedEventIds = linkedSetOf<String>()
     private var engagementBatchJob: Job? = null
-    private val seenReactionIds = mutableSetOf<String>()
-    private val seenReplyIds = mutableSetOf<String>()
+    private val seenReactionIds = linkedSetOf<String>()
+    private val seenReplyIds = linkedSetOf<String>()
+    private val seenRepostIds = linkedSetOf<String>()
     private val seenEventIds = linkedSetOf<String>()
     private var subscriptionsStarted = false
+    private var ownPubkey: String? = null
 
     private var oldestCreatedAt: Long? = null
     private var loadingMore = false
@@ -58,7 +70,100 @@ class FeedViewModel(
     private var initialHistoryRequested = false
 
     init {
+        if (isWriteSupported) launch { ownPubkey = loadPublicKey() }
         startSubscriptions()
+    }
+
+    fun injectProfile(pubkey: String, profile: com.nostr.torinos.model.NostrProfile) {
+        if (_state.value.profiles.containsKey(pubkey)) return
+        _state.value = _state.value.copy(profiles = _state.value.profiles + (pubkey to profile))
+    }
+
+    fun deleteEvent(eventId: String) {
+        launch {
+            val privateKeyHex = KeyStorage.loadPrivateKey() ?: return@launch
+            runCatching {
+                val deletion = signEvent(
+                    privateKeyHex = privateKeyHex,
+                    content = "",
+                    kind = 5,
+                    tags = listOf(listOf("e", eventId)),
+                )
+                NostrRepository.publish(deletion)
+            }
+            val cur = _state.value
+            _state.value = cur.copy(events = cur.events.filter { it.id != eventId })
+            seenEventIds.remove(eventId)
+        }
+    }
+
+    fun react(eventId: String, eventPubkey: String) {
+        val cur = _state.value
+        if (cur.likedReactions.containsKey(eventId)) return
+        // 楽観的UI更新（reactionEventIdは署名後に確定）
+        _state.value = cur.copy(
+            likedReactions = cur.likedReactions + (eventId to ""),
+            reactionCounts = cur.reactionCounts + (eventId to (cur.reactionCounts[eventId] ?: 0) + 1),
+        )
+        launch {
+            val privateKeyHex = KeyStorage.loadPrivateKey() ?: return@launch
+            runCatching {
+                val reaction = signEvent(
+                    privateKeyHex = privateKeyHex,
+                    content = "+",
+                    kind = 7,
+                    tags = listOf(listOf("e", eventId), listOf("p", eventPubkey)),
+                )
+                NostrRepository.publish(reaction)
+                // 署名済みイベントIDを保存（後でキャンセルに使用）
+                _state.value = _state.value.copy(
+                    likedReactions = _state.value.likedReactions + (eventId to reaction.id),
+                )
+            }
+        }
+    }
+
+    fun unreact(eventId: String) {
+        val cur = _state.value
+        val reactionEventId = cur.likedReactions[eventId] ?: return
+        // 楽観的UI更新
+        _state.value = cur.copy(
+            likedReactions = cur.likedReactions - eventId,
+            reactionCounts = cur.reactionCounts + (eventId to maxOf(0, (cur.reactionCounts[eventId] ?: 0) - 1)),
+        )
+        if (reactionEventId.isEmpty()) return
+        launch {
+            val privateKeyHex = KeyStorage.loadPrivateKey() ?: return@launch
+            runCatching {
+                val deletion = signEvent(
+                    privateKeyHex = privateKeyHex,
+                    content = "",
+                    kind = 5,
+                    tags = listOf(listOf("e", reactionEventId)),
+                )
+                NostrRepository.publish(deletion)
+            }
+        }
+    }
+
+    fun repost(event: NostrEvent) {
+        launch {
+            val privateKeyHex = KeyStorage.loadPrivateKey() ?: return@launch
+            runCatching {
+                val repostEvent = signEvent(
+                    privateKeyHex = privateKeyHex,
+                    content = Json.encodeToString(NostrEvent.serializer(), event),
+                    kind = 6,
+                    tags = listOf(listOf("e", event.id), listOf("p", event.pubkey)),
+                )
+                NostrRepository.publish(repostEvent)
+                // 楽観的UI更新
+                val cur = _state.value
+                _state.value = cur.copy(
+                    repostCounts = cur.repostCounts + (event.id to (cur.repostCounts[event.id] ?: 0) + 1),
+                )
+            }
+        }
     }
 
     fun loadMore() {
@@ -87,6 +192,7 @@ class FeedViewModel(
                         authors = authorPubkey?.let { listOf(it) },
                         since = nowSec,
                     ),
+                    relayUrl = relayUrl,
                 )
             }
         }
@@ -158,12 +264,17 @@ class FeedViewModel(
             NostrRepository.events(reactionSubId).collect { event ->
                 if (event.kind != 7) return@collect
                 if (!seenReactionIds.add(event.id)) return@collect
+                while (seenReactionIds.size > MAX_SEEN_IDS) seenReactionIds.remove(seenReactionIds.first())
                 val targetId = event.tags.lastOrNull { it.firstOrNull() == "e" }?.getOrNull(1)
                     ?: return@collect
                 val cur = _state.value
+                val isOwn = ownPubkey != null && event.pubkey == ownPubkey
                 _state.value = cur.copy(
                     reactionCounts = cur.reactionCounts +
                         (targetId to (cur.reactionCounts[targetId] ?: 0) + 1),
+                    likedReactions = if (isOwn && !cur.likedReactions.containsKey(targetId))
+                        cur.likedReactions + (targetId to event.id)
+                    else cur.likedReactions,
                 )
             }
         }
@@ -173,12 +284,29 @@ class FeedViewModel(
             NostrRepository.events(replySubId).collect { event ->
                 if (event.kind != 1) return@collect
                 if (!seenReplyIds.add(event.id)) return@collect
+                while (seenReplyIds.size > MAX_SEEN_IDS) seenReplyIds.remove(seenReplyIds.first())
                 val targetId = event.tags.lastOrNull { it.firstOrNull() == "e" }?.getOrNull(1)
                     ?: return@collect
                 val cur = _state.value
                 _state.value = cur.copy(
                     replyCounts = cur.replyCounts +
                         (targetId to (cur.replyCounts[targetId] ?: 0) + 1),
+                )
+            }
+        }
+
+        // リポスト受信（kind:6）
+        subscriptionJobs += launch {
+            NostrRepository.events(repostSubId).collect { event ->
+                if (event.kind != 6) return@collect
+                if (!seenRepostIds.add(event.id)) return@collect
+                while (seenRepostIds.size > MAX_SEEN_IDS) seenRepostIds.remove(seenRepostIds.first())
+                val targetId = event.tags.lastOrNull { it.firstOrNull() == "e" }?.getOrNull(1)
+                    ?: return@collect
+                val cur = _state.value
+                _state.value = cur.copy(
+                    repostCounts = cur.repostCounts +
+                        (targetId to (cur.repostCounts[targetId] ?: 0) + 1),
                 )
             }
         }
@@ -199,6 +327,7 @@ class FeedViewModel(
         NostrRepository.close(profileSubId)
         NostrRepository.close(reactionSubId)
         NostrRepository.close(replySubId)
+        NostrRepository.close(repostSubId)
     }
 
     override fun onCleared() {
@@ -211,7 +340,7 @@ class FeedViewModel(
         lastHistoryBatchReceivedCount = 0
         lastHistoryBatchUniqueCount = 0
         receivedEoseCount = 0
-        expectedEoseCount = NostrRepository.relayCount.coerceAtLeast(1)
+        expectedEoseCount = if (relayUrl != null) 1 else NostrRepository.relayCount.coerceAtLeast(1)
         _state.value = _state.value.copy(canLoadMore = false)
 
         // 初回のみライブ購読も開始（since=現在時刻でライブイベントのみ）
@@ -225,6 +354,7 @@ class FeedViewModel(
                     authors = authorPubkey?.let { listOf(it) },
                     since = nowSec,
                 ),
+                relayUrl = relayUrl,
             )
         }
         NostrRepository.subscribe(
@@ -235,6 +365,7 @@ class FeedViewModel(
                 until = until,
                 limit = FEED_PAGE_SIZE,
             ),
+            relayUrl = relayUrl,
         )
     }
 
@@ -251,6 +382,7 @@ class FeedViewModel(
     private fun appendEvent(event: NostrEvent): Int {
         if (event.kind != 1) return 0
         if (!seenEventIds.add(event.id)) return 0
+        while (seenEventIds.size > MAX_SEEN_IDS) seenEventIds.remove(seenEventIds.first())
         val cur = _state.value
         val updated = (cur.events + event).sortedByDescending { it.createdAt }
         oldestCreatedAt = updated.lastOrNull()?.createdAt
@@ -285,11 +417,13 @@ class FeedViewModel(
             val ids = watchedEventIds.toList()
             NostrRepository.subscribe(reactionSubId, NostrFilter(kinds = listOf(7), eTags = ids))
             NostrRepository.subscribe(replySubId, NostrFilter(kinds = listOf(1), eTags = ids))
+            NostrRepository.subscribe(repostSubId, NostrFilter(kinds = listOf(6), eTags = ids))
         }
     }
 
     companion object {
         private const val FEED_PAGE_SIZE = 30
         private const val MAX_TRACKED_ENGAGEMENT_EVENTS = 20
+        private const val MAX_SEEN_IDS = 2000
     }
 }
