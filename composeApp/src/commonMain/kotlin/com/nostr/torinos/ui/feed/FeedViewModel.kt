@@ -23,6 +23,7 @@ import kotlinx.coroutines.launch
 class FeedViewModel(
     private val authorPubkey: String? = null,
     private val relayUrl: String? = null,
+    private val autoStart: Boolean = true,
 ) : SafeViewModel() {
 
     data class UiState(
@@ -71,7 +72,7 @@ class FeedViewModel(
 
     init {
         if (isWriteSupported) launch { ownPubkey = loadPublicKey() }
-        startSubscriptions()
+        if (autoStart) startSubscriptions()
     }
 
     fun injectProfile(pubkey: String, profile: com.nostr.torinos.model.NostrProfile) {

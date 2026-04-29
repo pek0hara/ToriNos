@@ -36,7 +36,9 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -51,9 +53,14 @@ import coil3.compose.LocalPlatformContext
 import coil3.compose.SubcomposeAsyncImage
 import coil3.request.ImageRequest
 import coil3.request.crossfade
+import com.nostr.torinos.network.RelayStore
 import com.nostr.torinos.ui.components.LinkedText
 import com.nostr.torinos.ui.components.noteListItems
 import com.nostr.torinos.ui.feed.FeedViewModel
+import kotlinx.coroutines.delay
+
+private const val DEFERRED_PROFILE_CONTENT_DELAY_MS = 800L
+private const val FOLLOWERS_COUNT_DELAY_MS = 1_000L
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -65,13 +72,23 @@ fun UserProfileScreen(
     onUserClick: (String) -> Unit = {},
     onOpenFollowing: (() -> Unit)? = null,
     onOpenFollowers: (() -> Unit)? = null,
-    viewModel: UserProfileViewModel = viewModel(key = pubkey) { UserProfileViewModel(pubkey) },
-    feedViewModel: FeedViewModel = viewModel(key = "feed") { FeedViewModel(pubkey) },
 ) {
+    val relays by RelayStore.relays.collectAsStateWithLifecycle(
+        initialValue = RelayStore.defaults.filter { it.enabled }.map { it.url },
+    )
+    val contentRelayUrl = relays.firstOrNull()
+    val viewModel: UserProfileViewModel = viewModel(key = "profile-$pubkey-${contentRelayUrl ?: "all"}") {
+        UserProfileViewModel(pubkey, deferredRelayUrl = contentRelayUrl)
+    }
+    val feedViewModel: FeedViewModel = viewModel(key = "user-feed-$pubkey-${contentRelayUrl ?: "all"}") {
+        FeedViewModel(authorPubkey = pubkey, relayUrl = contentRelayUrl, autoStart = false)
+    }
     val state by viewModel.state.collectAsStateWithLifecycle()
     val feedState by feedViewModel.state.collectAsStateWithLifecycle()
     val displayName = state.profile?.bestName ?: (pubkey.take(8) + "…" + pubkey.takeLast(8))
     val snackbarHostState = remember { SnackbarHostState() }
+    var deferredContentStarted by remember(pubkey) { mutableStateOf(false) }
+    var followersCountStarted by remember(pubkey) { mutableStateOf(false) }
 
     val listState = rememberLazyListState()
     val reachedBottom by remember {
@@ -87,6 +104,28 @@ fun UserProfileScreen(
     LaunchedEffect(state.profile) {
         val profile = state.profile ?: return@LaunchedEffect
         feedViewModel.injectProfile(pubkey, profile)
+        if (!deferredContentStarted) {
+            deferredContentStarted = true
+            viewModel.loadFollowingCount()
+            feedViewModel.startSubscriptions()
+        }
+    }
+
+    LaunchedEffect(pubkey) {
+        delay(DEFERRED_PROFILE_CONTENT_DELAY_MS)
+        if (!deferredContentStarted) {
+            deferredContentStarted = true
+            viewModel.loadFollowingCount()
+            feedViewModel.startSubscriptions()
+        }
+    }
+
+    LaunchedEffect(pubkey) {
+        delay(FOLLOWERS_COUNT_DELAY_MS)
+        if (!followersCountStarted) {
+            followersCountStarted = true
+            viewModel.loadFollowersCount()
+        }
     }
 
     LaunchedEffect(state.followError) {
@@ -152,6 +191,8 @@ fun UserProfileScreen(
                     UserStatCell(
                         label = "フォロワー",
                         count = state.followersCount,
+                        countSuffix = if (state.isFollowersCountLimited) "+" else "",
+                        isLoading = !followersCountStarted || state.isFollowersLoading,
                         modifier = Modifier
                             .weight(1f)
                             .then(if (onOpenFollowers != null) Modifier.clickable { onOpenFollowers() } else Modifier),
@@ -235,17 +276,27 @@ private fun ProfileHeader(
 }
 
 @Composable
-internal fun UserStatCell(label: String, count: Int, modifier: Modifier = Modifier) {
+internal fun UserStatCell(
+    label: String,
+    count: Int,
+    modifier: Modifier = Modifier,
+    isLoading: Boolean = false,
+    countSuffix: String = "",
+) {
     Column(
         modifier = modifier.padding(vertical = 12.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(2.dp),
     ) {
-        Text(
-            text = count.toString(),
-            style = MaterialTheme.typography.titleMedium,
-            fontWeight = FontWeight.Bold,
-        )
+        if (isLoading) {
+            CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
+        } else {
+            Text(
+                text = count.toString() + countSuffix,
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold,
+            )
+        }
         Text(
             text = label,
             style = MaterialTheme.typography.labelSmall,

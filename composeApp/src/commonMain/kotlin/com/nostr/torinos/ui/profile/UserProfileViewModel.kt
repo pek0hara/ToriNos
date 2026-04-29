@@ -25,9 +25,14 @@ data class UserProfileState(
     val canFollow: Boolean = false,
     val followingCount: Int = 0,
     val followersCount: Int = 0,
+    val isFollowersCountLimited: Boolean = false,
+    val isFollowersLoading: Boolean = false,
 )
 
-class UserProfileViewModel(private val pubkey: String) : SafeViewModel() {
+class UserProfileViewModel(
+    private val pubkey: String,
+    private val deferredRelayUrl: String? = null,
+) : SafeViewModel() {
     private val _state = MutableStateFlow(UserProfileState())
     val state: StateFlow<UserProfileState> = _state.asStateFlow()
 
@@ -37,6 +42,8 @@ class UserProfileViewModel(private val pubkey: String) : SafeViewModel() {
     private val followersSubId = "ur-$shortKey"
 
     private val collectorJobs = mutableListOf<Job>()
+    private var followingCountStarted = false
+    private var followersCountStarted = false
 
     init {
         start()
@@ -88,16 +95,29 @@ class UserProfileViewModel(private val pubkey: String) : SafeViewModel() {
                 NostrFilter(kinds = listOf(0), authors = listOf(pubkey), limit = 1),
             )
         }
+    }
+
+    fun loadFollowingCount() {
+        if (followingCountStarted) return
+        followingCountStarted = true
         launch {
             NostrRepository.subscribe(
                 followingSubId,
                 NostrFilter(kinds = listOf(3), authors = listOf(pubkey), limit = 1),
+                relayUrl = deferredRelayUrl,
             )
         }
+    }
+
+    fun loadFollowersCount() {
+        if (followersCountStarted) return
+        followersCountStarted = true
+        _state.update { it.copy(isFollowersLoading = true) }
         launch {
             NostrRepository.subscribe(
                 followersSubId,
-                NostrFilter(kinds = listOf(3), pTags = listOf(pubkey), limit = 500),
+                NostrFilter(kinds = listOf(3), pTags = listOf(pubkey), limit = FOLLOWERS_FETCH_LIMIT),
+                relayUrl = deferredRelayUrl,
             )
         }
     }
@@ -124,11 +144,24 @@ class UserProfileViewModel(private val pubkey: String) : SafeViewModel() {
         }
 
         val followerPubkeys = linkedSetOf<String>()
+        var receivedFollowerEvents = 0
         collectorJobs += launch {
             NostrRepository.events(followersSubId).collect { event ->
                 if (event.kind != 3) return@collect
+                receivedFollowerEvents++
                 if (followerPubkeys.add(event.pubkey)) {
                     _state.update { it.copy(followersCount = followerPubkeys.size) }
+                }
+            }
+        }
+
+        collectorJobs += launch {
+            NostrRepository.eose(followersSubId).collect {
+                _state.update {
+                    it.copy(
+                        isFollowersLoading = false,
+                        isFollowersCountLimited = receivedFollowerEvents >= FOLLOWERS_FETCH_LIMIT,
+                    )
                 }
             }
         }
@@ -140,5 +173,9 @@ class UserProfileViewModel(private val pubkey: String) : SafeViewModel() {
         NostrRepository.close(profileSubId)
         NostrRepository.close(followingSubId)
         NostrRepository.close(followersSubId)
+    }
+
+    companion object {
+        private const val FOLLOWERS_FETCH_LIMIT = 500
     }
 }
