@@ -1,0 +1,28 @@
+language = Objective-C
+headers =
+linkerOpts = -framework Security -framework Foundation
+
+---
+#import <Security/Security.h>
+#import <Foundation/Foundation.h>
+
+/**
+ * ObjC ARC wrappers that use (__bridge CFDictionaryRef) to toll-free bridge
+ * an NSDictionary to CFDictionaryRef for Security framework calls.
+ *
+ * Using `id` for the dict parameter so Kotlin/Native maps it to `Any?` and
+ * avoids the NSDictionary/Map<Any?,*> type-variance mismatch.
+ */
+
+static OSStatus KeychainCopyMatching(id _Nonnull query,
+                                     CFTypeRef _Nullable * _Nullable result) {
+    return SecItemCopyMatching((__bridge CFDictionaryRef)query, result);
+}
+
+static OSStatus KeychainItemDelete(id _Nonnull attrs) {
+    return SecItemDelete((__bridge CFDictionaryRef)attrs);
+}
+
+static OSStatus KeychainItemAdd(id _Nonnull attrs) {
+    return SecItemAdd((__bridge CFDictionaryRef)attrs, NULL);
+}

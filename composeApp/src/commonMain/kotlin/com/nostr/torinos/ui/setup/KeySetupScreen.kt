@@ -31,13 +31,16 @@ import com.nostr.torinos.crypto.KeyStorage
 import com.nostr.torinos.crypto.derivePublicKey
 import com.nostr.torinos.crypto.fromHex
 import com.nostr.torinos.crypto.generateKeyPair
+import com.nostr.torinos.crypto.hexToNpub
+import com.nostr.torinos.crypto.hexToNsec
 import com.nostr.torinos.crypto.normalizePrivateKey
+import com.nostr.torinos.crypto.rememberPasswordManagerSaver
 import com.nostr.torinos.crypto.toHex
 import com.nostr.torinos.util.loggingExceptionHandler
 import com.nostr.torinos.util.logException
 
 @Composable
-fun KeySetupScreen(onSetupComplete: () -> Unit, onDismiss: (() -> Unit)? = null) {
+fun KeySetupScreen(onSetupComplete: (pubkeyHex: String) -> Unit, onDismiss: (() -> Unit)? = null) {
     var importKey by remember { mutableStateOf("") }
     var error by remember { mutableStateOf<String?>(null) }
     var generatedInfo by remember { mutableStateOf<Pair<String, String>?>(null) } // priv, pub
@@ -45,129 +48,140 @@ fun KeySetupScreen(onSetupComplete: () -> Unit, onDismiss: (() -> Unit)? = null)
     val uiExceptionHandler = remember {
         loggingExceptionHandler("KeySetupScreen", "Uncaught UI coroutine exception")
     }
+    val saveToPasswordManager = rememberPasswordManagerSaver()
 
     Box(
         modifier = Modifier
             .fillMaxSize()
             .background(MaterialTheme.colorScheme.background),
     ) {
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(24.dp),
-        verticalArrangement = Arrangement.Center,
-        horizontalAlignment = Alignment.CenterHorizontally,
-    ) {
-        if (onDismiss != null) {
-            TextButton(
-                onClick = onDismiss,
-                modifier = Modifier.align(Alignment.End),
-            ) { Text("キャンセル") }
-        }
-        Text("ToriNos へようこそ", style = MaterialTheme.typography.headlineSmall)
-        Spacer(modifier = Modifier.height(8.dp))
-        Text(
-            text = "投稿するには Nostr の秘密鍵が必要です",
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            textAlign = TextAlign.Center,
-        )
-        Spacer(modifier = Modifier.height(32.dp))
-
-        // ---- 新規生成 ----
-        if (generatedInfo == null) {
-            Button(
-                onClick = {
-                    val kp = generateKeyPair()
-                    generatedInfo = Pair(kp.privateKeyHex, kp.publicKeyHex)
-                },
-                modifier = Modifier.fillMaxWidth(),
-            ) {
-                Text("新しい鍵を生成する")
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(24.dp),
+            verticalArrangement = Arrangement.Center,
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            if (onDismiss != null) {
+                TextButton(
+                    onClick = onDismiss,
+                    modifier = Modifier.align(Alignment.End),
+                ) { Text("キャンセル") }
             }
-        } else {
-            val (priv, pub) = generatedInfo!!
-            Text("公開鍵（npub相当）", style = MaterialTheme.typography.labelMedium)
+            Text("ToriNos へようこそ", style = MaterialTheme.typography.headlineSmall)
+            Spacer(modifier = Modifier.height(8.dp))
             Text(
-                text = pub,
-                style = MaterialTheme.typography.bodySmall,
+                text = "投稿するには Nostr の秘密鍵が必要です",
+                style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
+                textAlign = TextAlign.Center,
+            )
+            Spacer(modifier = Modifier.height(32.dp))
+
+            // ---- 新規生成 ----
+            if (generatedInfo == null) {
+                Button(
+                    onClick = {
+                        val kp = generateKeyPair()
+                        generatedInfo = Pair(kp.privateKeyHex, kp.publicKeyHex)
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Text("新しい鍵を生成する")
+                }
+            } else {
+                val (priv, pub) = generatedInfo!!
+                val nsec = remember(priv) { runCatching { hexToNsec(priv) }.getOrDefault(priv) }
+                val npub = remember(pub) { runCatching { hexToNpub(pub) }.getOrDefault(pub) }
+                Text("公開鍵（npub）", style = MaterialTheme.typography.labelMedium)
+                Text(
+                    text = npub,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(modifier = Modifier.height(8.dp))
+                Text("秘密鍵（必ずメモしてください）", style = MaterialTheme.typography.labelMedium)
+                Text(
+                    text = nsec,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error,
+                )
+                Spacer(modifier = Modifier.height(16.dp))
+                Button(
+                    onClick = {
+                        scope.launch(uiExceptionHandler) {
+                            val err = runCatching {
+                                KeyStorage.savePrivateKey(priv)
+                                saveToPasswordManager(nsec, npub)
+                            }.exceptionOrNull()?.let {
+                                logException("KeySetupScreen", it, "Failed to save generated private key")
+                                "秘密鍵を保存できませんでした: ${it.message}"
+                            }
+                            if (err == null) onSetupComplete(pub) else error = err
+                        }
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Text("この鍵で始める")
+                }
+                TextButton(onClick = { generatedInfo = null }) { Text("やり直す") }
+            }
+
+            Spacer(modifier = Modifier.height(24.dp))
+            HorizontalDivider()
+            Spacer(modifier = Modifier.height(24.dp))
+
+            // ---- 既存鍵インポート ----
+            Text("既存の秘密鍵をインポート", style = MaterialTheme.typography.titleSmall)
+            Spacer(modifier = Modifier.height(8.dp))
+            OutlinedTextField(
+                value = importKey,
+                onValueChange = { importKey = it.trim(); error = null },
+                modifier = Modifier.fillMaxWidth(),
+                label = { Text("秘密鍵（nsec1... または hex）") },
+                visualTransformation = PasswordVisualTransformation(),
+                singleLine = true,
+                isError = error != null,
+                supportingText = error?.let { { Text(it) } },
             )
             Spacer(modifier = Modifier.height(8.dp))
-            Text("秘密鍵（必ずメモしてください）", style = MaterialTheme.typography.labelMedium)
-            Text(
-                text = priv,
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.error,
-            )
-            Spacer(modifier = Modifier.height(16.dp))
             Button(
                 onClick = {
                     scope.launch(uiExceptionHandler) {
-                        val err = runCatching {
-                            KeyStorage.savePrivateKey(priv)
-                        }.exceptionOrNull()?.let {
-                            logException("KeySetupScreen", it, "Failed to save generated private key")
-                            "秘密鍵を保存できませんでした: ${it.message}"
-                        }
-                        if (err == null) onSetupComplete() else error = err
+                        val (err, pubkey) = validateAndSave(importKey, saveToPasswordManager)
+                        if (err == null && pubkey != null) onSetupComplete(pubkey) else error = err
                     }
                 },
                 modifier = Modifier.fillMaxWidth(),
+                enabled = importKey.isNotBlank(),
             ) {
-                Text("この鍵で始める")
+                Text("インポートして始める")
             }
-            TextButton(onClick = { generatedInfo = null }) { Text("やり直す") }
-        }
-
-        Spacer(modifier = Modifier.height(24.dp))
-        HorizontalDivider()
-        Spacer(modifier = Modifier.height(24.dp))
-
-        // ---- 既存鍵インポート ----
-        Text("既存の秘密鍵をインポート", style = MaterialTheme.typography.titleSmall)
-        Spacer(modifier = Modifier.height(8.dp))
-        OutlinedTextField(
-            value = importKey,
-            onValueChange = { importKey = it.trim(); error = null },
-            modifier = Modifier.fillMaxWidth(),
-            label = { Text("秘密鍵（nsec1... または hex）") },
-            visualTransformation = PasswordVisualTransformation(),
-            singleLine = true,
-            isError = error != null,
-            supportingText = error?.let { { Text(it) } },
-        )
-        Spacer(modifier = Modifier.height(8.dp))
-        Button(
-            onClick = {
-                scope.launch(uiExceptionHandler) {
-                    val err = validateAndSave(importKey)
-                    if (err == null) onSetupComplete() else error = err
-                }
-            },
-            modifier = Modifier.fillMaxWidth(),
-            enabled = importKey.isNotBlank(),
-        ) {
-            Text("インポートして始める")
         }
     }
-    } // Box
 }
 
-private suspend fun validateAndSave(input: String): String? {
+/** (errorMessage, pubkeyHex) を返す。成功時は errorMessage = null、pubkeyHex = 公開鍵 hex */
+private suspend fun validateAndSave(
+    input: String,
+    saveToPasswordManager: suspend (nsec: String, npub: String) -> Unit,
+): Pair<String?, String?> {
     return try {
         val hexKey = normalizePrivateKey(input)
         val bytes = hexKey.fromHex()
-        derivePublicKey(bytes)
+        val pubkeyHex = derivePublicKey(bytes).toHex()
+        val nsec = hexToNsec(hexKey)
+        val npub = hexToNpub(pubkeyHex)
         try {
             KeyStorage.savePrivateKey(hexKey)
+            saveToPasswordManager(nsec, npub)
         } catch (e: Exception) {
             logException("KeySetupScreen", e, "Failed to save imported private key")
-            return "秘密鍵を保存できませんでした: ${e.message}"
+            return Pair("秘密鍵を保存できませんでした: ${e.message}", null)
         }
-        null
+        Pair(null, pubkeyHex)
     } catch (e: Exception) {
         logException("KeySetupScreen", e, "Invalid private key input")
-        "無効な秘密鍵です: ${e.message}"
+        Pair("無効な秘密鍵です: ${e.message}", null)
     }
 }

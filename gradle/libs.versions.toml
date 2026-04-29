@@ -36,6 +36,8 @@ secp256k1-kmp = { module = "fr.acinq.secp256k1:secp256k1-kmp", version.ref = "se
 secp256k1-kmp-jni-android = { module = "fr.acinq.secp256k1:secp256k1-kmp-jni-android", version.ref = "secp256k1-kmp" }
 datastore-preferences = { module = "androidx.datastore:datastore-preferences", version.ref = "datastore" }
 activity-compose = { module = "androidx.activity:activity-compose", version = "1.10.1" }
+credentials = { module = "androidx.credentials:credentials", version = "1.5.0" }
+credentials-play-services-auth = { module = "androidx.credentials:credentials-play-services-auth", version = "1.5.0" }
 
 [plugins]
 androidApplication = { id = "com.android.application", version.ref = "agp" }

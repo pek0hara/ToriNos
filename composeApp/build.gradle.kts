@@ -32,6 +32,12 @@ kotlin {
             baseName = "ComposeApp"
             isStatic = true
         }
+        iosTarget.compilations["main"].cinterops {
+            val keychainHelper by creating {
+                defFile(project.file("src/iosMain/cinterop/KeychainHelper.def"))
+                packageName("com.nostr.torinos.crypto.interop")
+            }
+        }
     }
 
     @OptIn(ExperimentalWasmDsl::class)
@@ -49,6 +55,8 @@ kotlin {
             implementation(libs.secp256k1.kmp.jni.android)
             implementation(libs.datastore.preferences)
             implementation(libs.activity.compose)
+            implementation(libs.credentials)
+            implementation(libs.credentials.play.services.auth)
         }
         val wasmJsMain by getting {
             dependencies {

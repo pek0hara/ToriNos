@@ -19,3 +19,6 @@ local.properties
 
 # macOS
 .DS_Store
+
+# local captures
+screenshot.png

@@ -78,7 +78,43 @@ object Bech32 {
 
     private fun verifyChecksum(hrp: String, data: IntArray): Boolean =
         polymod(hrpExpand(hrp) + data) == 1
+
+    /** ByteArray (8-bit) を 5-bit IntArray に変換（エンコード用） */
+    private fun convertBitsFrom8(data: ByteArray): IntArray {
+        var acc = 0
+        var bits = 0
+        val result = mutableListOf<Int>()
+        for (b in data) {
+            acc = (acc shl 8) or (b.toInt() and 0xFF)
+            bits += 8
+            while (bits >= 5) {
+                bits -= 5
+                result.add((acc shr bits) and 31)
+            }
+        }
+        if (bits > 0) result.add((acc shl (5 - bits)) and 31)
+        return result.toIntArray()
+    }
+
+    private fun createChecksum(hrp: String, data: IntArray): IntArray {
+        val values = hrpExpand(hrp) + data + IntArray(6)
+        val poly = polymod(values) xor 1
+        return IntArray(6) { i -> (poly shr (5 * (5 - i))) and 31 }
+    }
+
+    /** bytes を bech32 エンコードして hrp1... 形式の文字列を返す */
+    fun encode(hrp: String, bytes: ByteArray): String {
+        val data = convertBitsFrom8(bytes)
+        val checksum = createChecksum(hrp, data)
+        return hrp + "1" + (data.toList() + checksum.toList()).joinToString("") { CHARSET[it].toString() }
+    }
 }
+
+/** hex 秘密鍵を nsec1... 形式に変換する */
+fun hexToNsec(hexPrivKey: String): String = Bech32.encode("nsec", hexPrivKey.fromHex())
+
+/** hex 公開鍵を npub1... 形式に変換する */
+fun hexToNpub(hexPubKey: String): String = Bech32.encode("npub", hexPubKey.fromHex())
 
 /**
  * nsec1... 形式の文字列を hex 秘密鍵文字列に変換する。
