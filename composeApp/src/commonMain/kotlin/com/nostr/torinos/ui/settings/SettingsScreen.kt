@@ -4,7 +4,9 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
@@ -12,9 +14,11 @@ import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.ExitToApp
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
@@ -22,6 +26,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -33,31 +38,43 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.nostr.torinos.crypto.hexToNpub
+import com.nostr.torinos.network.RelayEntry
+import com.nostr.torinos.ui.relay.RelaySettingsViewModel
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SettingsScreen(
-    ownPubkey: String,
+    ownPubkey: String?,
     onBack: () -> Unit = {},
     onAccountCleared: () -> Unit = {},
-    viewModel: SettingsViewModel = viewModel(),
+    relayViewModel: RelaySettingsViewModel = viewModel(key = "settings-relays") { RelaySettingsViewModel() },
 ) {
-    val state by viewModel.state.collectAsStateWithLifecycle()
+    val accountViewModel = if (ownPubkey != null) {
+        viewModel(key = "settings-account") { SettingsViewModel() }
+    } else {
+        null
+    }
+    val state by accountViewModel?.state?.collectAsStateWithLifecycle()
+        ?: remember { mutableStateOf(SettingsState()) }
+    val relayEntries by relayViewModel.entries.collectAsStateWithLifecycle()
     var nsec by remember { mutableStateOf<String?>(null) }
+    var relayInput by remember { mutableStateOf("") }
     var showLogoutDialog by remember { mutableStateOf(false) }
     var showDeleteAccountDialog by remember { mutableStateOf(false) }
+    var selectedVanishRelays by remember { mutableStateOf<Set<String>>(emptySet()) }
     val npub = remember(ownPubkey) {
-        runCatching { hexToNpub(ownPubkey) }.getOrDefault(ownPubkey)
+        ownPubkey?.let { pubkey -> runCatching { hexToNpub(pubkey) }.getOrDefault(pubkey) }
     }
 
-    LaunchedEffect(viewModel) {
-        viewModel.secretKeyEvent.collect { nsec = it }
+    LaunchedEffect(accountViewModel) {
+        accountViewModel?.secretKeyEvent?.collect { nsec = it }
     }
 
     LaunchedEffect(state.isSecretKeyVisible) {
@@ -85,31 +102,59 @@ fun SettingsScreen(
             )
         },
     ) { padding ->
-        LazyColumn(modifier = Modifier.padding(padding)) {
+        LazyColumn(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(padding),
+        ) {
             item {
-                KeySection(
-                    npub = npub,
-                    nsec = nsec,
-                    isSecretVisible = state.isSecretKeyVisible,
-                    error = state.keyError,
-                    onShowSecret = viewModel::showSecretKey,
-                    onHideSecret = viewModel::hideSecretKey,
+                RelaySection(
+                    entries = relayEntries,
+                    input = relayInput,
+                    onInputChange = { relayInput = it },
+                    onAdd = {
+                        if (relayInput.isNotBlank()) {
+                            relayViewModel.add(relayInput)
+                            relayInput = ""
+                        }
+                    },
+                    onToggle = relayViewModel::setEnabled,
+                    onDelete = relayViewModel::remove,
                 )
                 HorizontalDivider()
             }
-            item {
-                AccountSection(
-                    isProcessing = state.isAccountActionProcessing,
-                    error = state.accountActionError,
-                    onLogoutClick = {
-                        viewModel.clearAccountActionError()
-                        showLogoutDialog = true
-                    },
-                    onDeleteAccountClick = {
-                        viewModel.clearAccountActionError()
-                        showDeleteAccountDialog = true
-                    },
-                )
+            val account = accountViewModel
+            if (npub != null && account != null) {
+                item {
+                    KeySection(
+                        npub = npub,
+                        nsec = nsec,
+                        isSecretVisible = state.isSecretKeyVisible,
+                        error = state.keyError,
+                        onShowSecret = account::showSecretKey,
+                        onHideSecret = account::hideSecretKey,
+                    )
+                    HorizontalDivider()
+                }
+                item {
+                    AccountSection(
+                        isProcessing = state.isAccountActionProcessing,
+                        error = state.accountActionError,
+                        onLogoutClick = {
+                            account.clearAccountActionError()
+                            showLogoutDialog = true
+                        },
+                        onDeleteAccountClick = {
+                            account.clearAccountActionError()
+                            selectedVanishRelays = relayEntries
+                                .filter { it.enabled }
+                                .map { it.url }
+                                .toSet()
+                                .ifEmpty { relayEntries.map { it.url }.toSet() }
+                            showDeleteAccountDialog = true
+                        },
+                    )
+                }
             }
         }
     }
@@ -122,7 +167,7 @@ fun SettingsScreen(
             isProcessing = state.isAccountActionProcessing,
             onDismiss = { showLogoutDialog = false },
             onConfirm = {
-                viewModel.clearAccount {
+                accountViewModel?.clearAccount {
                     showLogoutDialog = false
                     onAccountCleared()
                 }
@@ -131,20 +176,189 @@ fun SettingsScreen(
     }
 
     if (showDeleteAccountDialog) {
-        ConfirmAccountDialog(
-            title = "アカウント削除",
-            text = "この端末に保存されている秘密鍵を削除します。Nostr上に公開済みの投稿やプロフィールは削除されません。秘密鍵を控えていない場合、このアカウントは復元できません。",
-            confirmText = "削除",
+        ConfirmDeleteAccountDialog(
+            relayEntries = relayEntries,
+            selectedRelayUrls = selectedVanishRelays,
             isProcessing = state.isAccountActionProcessing,
-            destructive = true,
+            error = state.accountActionError,
             onDismiss = { showDeleteAccountDialog = false },
+            onRelayToggle = { url, checked ->
+                selectedVanishRelays = if (checked) {
+                    selectedVanishRelays + url
+                } else {
+                    selectedVanishRelays - url
+                }
+            },
             onConfirm = {
-                viewModel.clearAccount {
+                accountViewModel?.requestVanishAndClearAccount(selectedVanishRelays) {
                     showDeleteAccountDialog = false
                     onAccountCleared()
                 }
             },
         )
+    }
+}
+
+@Composable
+private fun ConfirmDeleteAccountDialog(
+    relayEntries: List<RelayEntry>,
+    selectedRelayUrls: Set<String>,
+    isProcessing: Boolean,
+    error: String?,
+    onDismiss: () -> Unit,
+    onRelayToggle: (String, Boolean) -> Unit,
+    onConfirm: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = { if (!isProcessing) onDismiss() },
+        title = { Text("アカウント削除") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text("選択したリレーへ NIP-62 の削除要求を送信してから、この端末に保存されている秘密鍵を削除します。対応していないリレーやキャッシュ済みデータからの削除は保証されません。")
+                Text(
+                    text = "送信先リレー",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                LazyColumn(
+                    modifier = Modifier.heightIn(max = 260.dp),
+                    verticalArrangement = Arrangement.spacedBy(2.dp),
+                ) {
+                    items(relayEntries.size) { index ->
+                        val entry = relayEntries[index]
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Checkbox(
+                                checked = entry.url in selectedRelayUrls,
+                                onCheckedChange = { checked -> onRelayToggle(entry.url, checked) },
+                                enabled = !isProcessing,
+                            )
+                            Text(
+                                text = entry.url,
+                                style = MaterialTheme.typography.bodySmall,
+                                modifier = Modifier.weight(1f),
+                            )
+                        }
+                    }
+                }
+                if (error != null) {
+                    Text(
+                        text = error,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(
+                onClick = onConfirm,
+                enabled = !isProcessing && selectedRelayUrls.isNotEmpty(),
+                colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error),
+            ) {
+                if (isProcessing) {
+                    CircularProgressIndicator(
+                        modifier = Modifier
+                            .padding(end = 8.dp)
+                            .size(16.dp),
+                        strokeWidth = 2.dp,
+                    )
+                }
+                Text("削除要求を送信")
+            }
+        },
+        dismissButton = {
+            TextButton(
+                onClick = onDismiss,
+                enabled = !isProcessing,
+            ) {
+                Text("キャンセル")
+            }
+        },
+    )
+}
+
+@Composable
+private fun RelaySection(
+    entries: List<RelayEntry>,
+    input: String,
+    onInputChange: (String) -> Unit,
+    onAdd: () -> Unit,
+    onToggle: (String, Boolean) -> Unit,
+    onDelete: (String) -> Unit,
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        Text(
+            text = "リレー",
+            style = MaterialTheme.typography.titleSmall,
+            fontWeight = FontWeight.Bold,
+        )
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            OutlinedTextField(
+                value = input,
+                onValueChange = onInputChange,
+                modifier = Modifier.weight(1f),
+                label = { Text("wss://relay.example.com") },
+                singleLine = true,
+            )
+            IconButton(onClick = onAdd) {
+                Icon(Icons.Default.Add, contentDescription = "追加")
+            }
+        }
+
+        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            entries.forEach { entry ->
+                RelayRow(
+                    entry = entry,
+                    onToggle = { enabled -> onToggle(entry.url, enabled) },
+                    onDelete = { onDelete(entry.url) },
+                )
+                HorizontalDivider()
+            }
+        }
+    }
+}
+
+@Composable
+private fun RelayRow(
+    entry: RelayEntry,
+    onToggle: (Boolean) -> Unit,
+    onDelete: () -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.SpaceBetween,
+    ) {
+        Checkbox(
+            checked = entry.enabled,
+            onCheckedChange = onToggle,
+        )
+        Text(
+            text = entry.url,
+            style = MaterialTheme.typography.bodySmall,
+            modifier = Modifier.weight(1f),
+        )
+        IconButton(onClick = onDelete) {
+            Icon(
+                Icons.Default.Delete,
+                contentDescription = "削除",
+                tint = MaterialTheme.colorScheme.error,
+            )
+        }
     }
 }
 

@@ -80,3 +80,33 @@ static OSStatus KeychainSaveData(NSString * _Nonnull service,
     attrs[(__bridge id)kSecAttrAccessible] = (__bridge id)kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly;
     return SecItemAdd((__bridge CFDictionaryRef)attrs, NULL);
 }
+
+/**
+ * kSecClassInternetPassword で iCloud Keychain に保存する。
+ * iOS の「パスワード」アプリ（設定 > パスワード / iOS 18 の Passwords アプリ）に表示される。
+ * server: ToriNos のサービス識別子（例: "nostr.torinos.app"）
+ * account: npub（公開鍵）
+ * data: nsec（秘密鍵）のバイト列
+ */
+static OSStatus KeychainSaveInternetPassword(NSString * _Nonnull server,
+                                             NSString * _Nonnull account,
+                                             NSData * _Nonnull data) {
+    // 既存エントリを削除（synchronizable の有無を問わず）
+    NSDictionary *deleteQuery = @{
+        (__bridge id)kSecClass: (__bridge id)kSecClassInternetPassword,
+        (__bridge id)kSecAttrServer: server,
+        (__bridge id)kSecAttrAccount: account,
+        (__bridge id)kSecAttrSynchronizable: (__bridge id)kSecAttrSynchronizableAny,
+    };
+    SecItemDelete((__bridge CFDictionaryRef)deleteQuery);
+
+    NSDictionary *attrs = @{
+        (__bridge id)kSecClass: (__bridge id)kSecClassInternetPassword,
+        (__bridge id)kSecAttrServer: server,
+        (__bridge id)kSecAttrAccount: account,
+        (__bridge id)kSecValueData: data,
+        (__bridge id)kSecAttrSynchronizable: @YES,
+        (__bridge id)kSecAttrAccessible: (__bridge id)kSecAttrAccessibleAfterFirstUnlock,
+    };
+    return SecItemAdd((__bridge CFDictionaryRef)attrs, NULL);
+}

@@ -2,6 +2,8 @@ package com.nostr.torinos.ui.settings
 
 import com.nostr.torinos.crypto.KeyStorage
 import com.nostr.torinos.crypto.hexToNsec
+import com.nostr.torinos.crypto.signEvent
+import com.nostr.torinos.network.NostrRepository
 import com.nostr.torinos.ui.SafeViewModel
 import com.nostr.torinos.util.logException
 import kotlinx.coroutines.CancellationException
@@ -84,6 +86,58 @@ class SettingsViewModel : SafeViewModel() {
                         accountActionError = e.message
                     ?.let { "アカウント情報を削除できませんでした: $it" }
                     ?: "アカウント情報を削除できませんでした",
+                    )
+                }
+            }
+        }
+    }
+
+    fun requestVanishAndClearAccount(relayUrls: Collection<String>, onCleared: () -> Unit) {
+        if (_state.value.isAccountActionProcessing) return
+
+        launch {
+            val targets = relayUrls.map { it.trim() }.filter { it.isNotBlank() }.distinct()
+            if (targets.isEmpty()) {
+                _state.update { it.copy(accountActionError = "送信先リレーを選択してください") }
+                return@launch
+            }
+
+            _state.update {
+                it.copy(
+                    isAccountActionProcessing = true,
+                    accountActionError = null,
+                )
+            }
+            try {
+                val privateKeyHex = KeyStorage.loadPrivateKey()
+                    ?: error("秘密鍵が保存されていません")
+                val vanishRequest = signEvent(
+                    privateKeyHex = privateKeyHex,
+                    content = "",
+                    kind = 62,
+                    tags = targets.map { listOf("relay", it) },
+                )
+                NostrRepository.publishToRelays(vanishRequest, targets)
+                KeyStorage.deleteKey()
+                _state.update {
+                    it.copy(
+                        isSecretKeyVisible = false,
+                        keyError = null,
+                        isAccountActionProcessing = false,
+                        accountActionError = null,
+                    )
+                }
+                onCleared()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                logException("SettingsViewModel", e, "Failed to request vanish and clear account key")
+                _state.update {
+                    it.copy(
+                        isAccountActionProcessing = false,
+                        accountActionError = e.message
+                            ?.let { "アカウント削除要求を送信できませんでした: $it" }
+                            ?: "アカウント削除要求を送信できませんでした",
                     )
                 }
             }
