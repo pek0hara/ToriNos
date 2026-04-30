@@ -143,9 +143,9 @@ private fun EditProfileSheetContent(
             modifier = Modifier.fillMaxWidth(),
         )
 
-        if (state.error != null) {
+        state.error?.let { error ->
             Text(
-                text = state.error!!,
+                text = error,
                 color = MaterialTheme.colorScheme.error,
                 style = MaterialTheme.typography.labelSmall,
             )

@@ -124,15 +124,15 @@ private fun UserRow(pubkey: String, profile: NostrProfile?, onClick: () -> Unit)
                 style = MaterialTheme.typography.bodyMedium,
                 fontWeight = FontWeight.Medium,
             )
-            if (!profile?.nip05.isNullOrBlank()) {
+            profile?.nip05?.takeIf { it.isNotBlank() }?.let { nip05 ->
                 Text(
-                    text = profile!!.nip05!!,
+                    text = nip05,
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.primary,
                 )
-            } else if (!profile?.about.isNullOrBlank()) {
+            } ?: profile?.about?.takeIf { it.isNotBlank() }?.let { about ->
                 Text(
-                    text = profile!!.about!!,
+                    text = about,
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 1,

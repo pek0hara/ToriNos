@@ -152,9 +152,9 @@ private fun PostSheetContent(
             }
         }
 
-        if (state.error != null) {
+        state.error?.let { error ->
             Text(
-                text = state.error!!,
+                text = error,
                 color = MaterialTheme.colorScheme.error,
                 style = MaterialTheme.typography.labelSmall,
                 modifier = Modifier.padding(bottom = 8.dp),

@@ -57,11 +57,11 @@ object Bech32 {
         for (v in values) {
             val top = chk ushr 25
             chk = ((chk and 0x1FFFFFF) shl 5) xor v
-            if (top and 1 != 0) chk = chk xor 0x3B6A57B2.toInt()
-            if (top and 2 != 0) chk = chk xor 0x26508E6D.toInt()
-            if (top and 4 != 0) chk = chk xor 0x1EA119FA.toInt()
-            if (top and 8 != 0) chk = chk xor 0x3D4233DD.toInt()
-            if (top and 16 != 0) chk = chk xor 0x2A1462B3.toInt()
+            if (top and 1 != 0) chk = chk xor 0x3B6A57B2
+            if (top and 2 != 0) chk = chk xor 0x26508E6D
+            if (top and 4 != 0) chk = chk xor 0x1EA119FA
+            if (top and 8 != 0) chk = chk xor 0x3D4233DD
+            if (top and 16 != 0) chk = chk xor 0x2A1462B3
         }
         return chk
     }
