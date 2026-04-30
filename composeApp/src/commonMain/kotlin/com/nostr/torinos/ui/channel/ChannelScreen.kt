@@ -113,10 +113,12 @@ fun ChannelScreen(
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
                         } else {
-                            LaunchedEffect(channelId, s.messages.firstOrNull()?.id) {
-                                if (!didScrollToInitialTop) {
+                            LaunchedEffect(channelId, s.messages.firstOrNull()?.id, s.keepScrolledToTop) {
+                                if (s.keepScrolledToTop || !didScrollToInitialTop) {
                                     listState.scrollToItem(0)
-                                    didScrollToInitialTop = true
+                                    if (!s.keepScrolledToTop) {
+                                        didScrollToInitialTop = true
+                                    }
                                 }
                             }
 

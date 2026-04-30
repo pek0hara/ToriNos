@@ -29,6 +29,7 @@ class ChannelViewModel(private val channelId: String) : SafeViewModel() {
             val messages: List<NostrEvent> = emptyList(),
             val profiles: Map<String, NostrProfile> = emptyMap(),
             val canLoadMore: Boolean = false,
+            val keepScrolledToTop: Boolean = true,
             val draftText: String = "",
             val isPosting: Boolean = false,
             val postError: String? = null,
@@ -151,7 +152,7 @@ class ChannelViewModel(private val channelId: String) : SafeViewModel() {
         jobs += launch {
             delay(10_000)
             if (_state.value is UiState.Loading) {
-                _state.value = readyState(canLoadMore = false)
+                _state.value = readyState(canLoadMore = false, keepScrolledToTop = true)
             }
         }
 
@@ -208,7 +209,7 @@ class ChannelViewModel(private val channelId: String) : SafeViewModel() {
     private fun onPageCompleted() {
         loadingMore = false
         val hasMore = lastBatchCount >= PAGE_SIZE
-        _state.value = readyState(canLoadMore = hasMore)
+        _state.value = readyState(canLoadMore = hasMore, keepScrolledToTop = false)
         if (!hasMore) NostrRepository.close(histSubId)
     }
 
@@ -221,12 +222,16 @@ class ChannelViewModel(private val channelId: String) : SafeViewModel() {
         return 1
     }
 
-    private fun readyState(canLoadMore: Boolean): UiState.Ready =
+    private fun readyState(
+        canLoadMore: Boolean,
+        keepScrolledToTop: Boolean,
+    ): UiState.Ready =
         UiState.Ready(
             channelMeta = currentChannelMeta,
             messages = filteredMessages(),
             profiles = currentProfiles,
             canLoadMore = canLoadMore,
+            keepScrolledToTop = keepScrolledToTop,
         )
 
     private fun syncReadyState() {
