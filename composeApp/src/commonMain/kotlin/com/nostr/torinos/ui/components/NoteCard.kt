@@ -55,6 +55,8 @@ fun NoteCard(
     onLike: (() -> Unit)? = null,
     onReply: (() -> Unit)? = null,
     onOpenReplies: (() -> Unit)? = null,
+    onOpenLikes: (() -> Unit)? = null,
+    onOpenReposts: (() -> Unit)? = null,
     onRepost: (() -> Unit)? = null,
     quotedEvents: List<QuotedEvent> = emptyList(),
     ownPubkey: String? = null,
@@ -185,6 +187,7 @@ fun NoteCard(
                     count = replyCount,
                     tint = MaterialTheme.colorScheme.onSurfaceVariant,
                     onClick = if (replyCount > 0) onOpenReplies ?: onReply else onReply,
+                    onCountClick = if (replyCount > 0) onOpenReplies else null,
                 )
                 EngagementCount(
                     icon = Icons.Default.Repeat,
@@ -192,6 +195,7 @@ fun NoteCard(
                     count = repostCount,
                     tint = if (isReposted) Color(0xFF2BAE66) else MaterialTheme.colorScheme.onSurfaceVariant,
                     onClick = onRepost,
+                    onCountClick = onOpenReposts,
                 )
                 EngagementCount(
                     icon = Icons.Default.Favorite,
@@ -199,6 +203,7 @@ fun NoteCard(
                     count = reactionCount,
                     tint = if (isLiked) Color(0xFFE17055) else MaterialTheme.colorScheme.onSurfaceVariant,
                     onClick = onLike,
+                    onCountClick = onOpenLikes,
                 )
             }
         }
@@ -277,6 +282,7 @@ fun EngagementCount(
     count: Int,
     tint: androidx.compose.ui.graphics.Color,
     onClick: (() -> Unit)? = null,
+    onCountClick: (() -> Unit)? = null,
 ) {
     Row(
         verticalAlignment = Alignment.CenterVertically,
@@ -298,6 +304,7 @@ fun EngagementCount(
             text = count.toString(),
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.clickable(enabled = onCountClick != null) { onCountClick?.invoke() },
         )
     }
 }

@@ -44,6 +44,8 @@ fun UserProfileScreen(
     onOpenFollowers: (() -> Unit)? = null,
     onReply: ((eventId: String, authorPubkey: String) -> Unit)? = null,
     onOpenReplies: (eventId: String) -> Unit = {},
+    onOpenLikes: (eventId: String) -> Unit = {},
+    onOpenReposts: (eventId: String) -> Unit = {},
 ) {
     val relays by RelayStore.relays.collectAsStateWithLifecycle(
         initialValue = RelayStore.defaults.filter { it.enabled }.map { it.url },
@@ -128,6 +130,8 @@ fun UserProfileScreen(
                 .padding(padding),
             onReply = onReply,
             onOpenReplies = onOpenReplies,
+            onOpenLikes = onOpenLikes,
+            onOpenReposts = onOpenReposts,
             onRepost = feedViewModel::repost,
             onUnrepost = feedViewModel::unrepost,
             emptyText = "このユーザーの投稿はありません",

@@ -40,6 +40,8 @@ fun MyProfileScreen(
     onUserClick: (String) -> Unit = {},
     onReply: ((eventId: String, authorPubkey: String) -> Unit)? = null,
     onOpenReplies: (eventId: String) -> Unit = {},
+    onOpenLikes: (eventId: String) -> Unit = {},
+    onOpenReposts: (eventId: String) -> Unit = {},
     viewModel: MyProfileViewModel = viewModel(
         factory = viewModelFactory { initializer { MyProfileViewModel(ownPubkey) } },
     ),
@@ -119,6 +121,8 @@ fun MyProfileScreen(
                 .padding(padding),
             onReply = onReply,
             onOpenReplies = onOpenReplies,
+            onOpenLikes = onOpenLikes,
+            onOpenReposts = onOpenReposts,
             onRepost = feedViewModel::repost,
             onUnrepost = feedViewModel::unrepost,
             header = {

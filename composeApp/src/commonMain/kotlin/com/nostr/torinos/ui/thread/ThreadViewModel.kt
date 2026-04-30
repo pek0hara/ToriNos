@@ -19,6 +19,8 @@ class ThreadViewModel(
         val replies: List<NostrEvent> = emptyList(),
         val profiles: Map<String, NostrProfile> = emptyMap(),
         val replyCounts: Map<String, Int> = emptyMap(),
+        val reactionPubkeys: List<String> = emptyList(),
+        val repostPubkeys: List<String> = emptyList(),
         val isLoading: Boolean = true,
     )
 
@@ -30,10 +32,14 @@ class ThreadViewModel(
     private val repliesSubId = "thread-replies-$shortId"
     private val profileSubId = "thread-prof-$shortId"
     private val replyCountSubId = "thread-count-$shortId"
+    private val reactionSubId = "thread-react-$shortId"
+    private val repostSubId = "thread-repost-$shortId"
 
     private val subscriptionJobs = mutableListOf<Job>()
     private val seenReplyIds = linkedSetOf<String>()
     private val seenReplyCountIds = linkedSetOf<String>()
+    private val seenReactionIds = linkedSetOf<String>()
+    private val seenRepostIds = linkedSetOf<String>()
     private val watchedEventIds = linkedSetOf<String>()
     private val pendingPubkeys = linkedSetOf<String>()
     private var profileBatchJob: Job? = null
@@ -53,6 +59,8 @@ class ThreadViewModel(
         subscriptionJobs += launch {
             NostrRepository.subscribe(rootSubId, NostrFilter(ids = listOf(eventId), kinds = listOf(1), limit = 1))
             NostrRepository.subscribe(repliesSubId, NostrFilter(kinds = listOf(1), eTags = listOf(eventId), limit = 100))
+            NostrRepository.subscribe(reactionSubId, NostrFilter(kinds = listOf(7), eTags = listOf(eventId), limit = 500))
+            NostrRepository.subscribe(repostSubId, NostrFilter(kinds = listOf(6), eTags = listOf(eventId), limit = 500))
         }
 
         subscriptionJobs += launch {
@@ -103,6 +111,28 @@ class ThreadViewModel(
         }
 
         subscriptionJobs += launch {
+            NostrRepository.events(reactionSubId).collect { event ->
+                if (event.kind != 7 || !seenReactionIds.add(event.id)) return@collect
+                if (event.tags.lastOrNull { it.firstOrNull() == "e" }?.getOrNull(1) != eventId) return@collect
+                val cur = _state.value
+                if (event.pubkey in cur.reactionPubkeys) return@collect
+                _state.value = cur.copy(reactionPubkeys = cur.reactionPubkeys + event.pubkey)
+                scheduleProfileFetch(event.pubkey)
+            }
+        }
+
+        subscriptionJobs += launch {
+            NostrRepository.events(repostSubId).collect { event ->
+                if (event.kind != 6 || !seenRepostIds.add(event.id)) return@collect
+                if (event.tags.lastOrNull { it.firstOrNull() == "e" }?.getOrNull(1) != eventId) return@collect
+                val cur = _state.value
+                if (event.pubkey in cur.repostPubkeys) return@collect
+                _state.value = cur.copy(repostPubkeys = cur.repostPubkeys + event.pubkey)
+                scheduleProfileFetch(event.pubkey)
+            }
+        }
+
+        subscriptionJobs += launch {
             delay(10_000)
             if (_state.value.isLoading) {
                 _state.value = _state.value.copy(isLoading = false)
@@ -121,6 +151,8 @@ class ThreadViewModel(
         NostrRepository.close(repliesSubId)
         NostrRepository.close(profileSubId)
         NostrRepository.close(replyCountSubId)
+        NostrRepository.close(reactionSubId)
+        NostrRepository.close(repostSubId)
     }
 
     override fun onCleared() {

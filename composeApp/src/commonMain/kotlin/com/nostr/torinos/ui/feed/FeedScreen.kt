@@ -51,6 +51,8 @@ fun FeedScreen(
     onOpenProfile: () -> Unit = {},
     onReply: ((eventId: String, authorPubkey: String) -> Unit)? = null,
     onOpenReplies: (eventId: String) -> Unit = {},
+    onOpenLikes: (eventId: String) -> Unit = {},
+    onOpenReposts: (eventId: String) -> Unit = {},
     ownPubkey: String? = null,
     ownProfile: NostrProfile? = null,
     scrollToTopRequest: Int = 0,
@@ -58,15 +60,15 @@ fun FeedScreen(
     authorPubkey: String? = null,
 ) {
     val relays by RelayStore.relays.collectAsStateWithLifecycle(initialValue = emptyList())
+    val selectedRelayUrl by RelayStore.selectedRelayUrl.collectAsStateWithLifecycle()
     val followedPubkeys by FollowRepository.followedPubkeys.collectAsStateWithLifecycle()
-    var selectedRelayUrl by remember { mutableStateOf<String?>(null) }
     var showRelayMenu by remember { mutableStateOf(false) }
     var feedTab by remember { mutableStateOf(FeedTab.Following) }
 
     // リレーリストが変わったら選択中 URL を有効なものに補正
-    LaunchedEffect(relays) {
+    LaunchedEffect(relays, selectedRelayUrl) {
         if (selectedRelayUrl == null || selectedRelayUrl !in relays) {
-            selectedRelayUrl = relays.firstOrNull()
+            RelayStore.setSelectedRelayUrl(relays.firstOrNull())
         }
     }
 
@@ -75,7 +77,7 @@ fun FeedScreen(
         feedTab == FeedTab.Following -> followedPubkeys.toList()
         else -> null
     }
-    val activeRelayUrl = if (authorPubkey != null) selectedRelayUrl else null
+    val activeRelayUrl = selectedRelayUrl
     val includeRepostsInFeed = authorPubkey == null && feedTab == FeedTab.Following
 
     val viewModel: FeedViewModel = viewModel(
@@ -126,7 +128,7 @@ fun FeedScreen(
                                     DropdownMenuItem(
                                         text = { Text(url.relayDisplayName()) },
                                         onClick = {
-                                            selectedRelayUrl = url
+                                            RelayStore.setSelectedRelayUrl(url)
                                             showRelayMenu = false
                                         },
                                         trailingIcon = if (url == selectedRelayUrl) {
@@ -208,6 +210,8 @@ fun FeedScreen(
                 ),
             onReply = onReply,
             onOpenReplies = onOpenReplies,
+            onOpenLikes = onOpenLikes,
+            onOpenReposts = onOpenReposts,
             onRepost = viewModel::repost,
             onUnrepost = viewModel::unrepost,
             scrollToTopRequest = scrollToTopRequest,

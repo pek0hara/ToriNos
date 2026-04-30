@@ -24,6 +24,8 @@ fun LazyListScope.noteListItems(
     onDelete: (eventId: String) -> Unit,
     onReply: ((eventId: String, authorPubkey: String) -> Unit)? = null,
     onOpenReplies: ((eventId: String) -> Unit)? = null,
+    onOpenLikes: ((eventId: String) -> Unit)? = null,
+    onOpenReposts: ((eventId: String) -> Unit)? = null,
     onRepost: ((eventId: String, authorPubkey: String) -> Unit)? = null,
     onUnrepost: ((eventId: String) -> Unit)? = null,
     emptyText: String = "投稿がありません",
@@ -74,6 +76,12 @@ fun LazyListScope.noteListItems(
                     } else null,
                     onOpenReplies = if (onOpenReplies != null) {
                         { onOpenReplies(event.id) }
+                    } else null,
+                    onOpenLikes = if (onOpenLikes != null) {
+                        { onOpenLikes(event.id) }
+                    } else null,
+                    onOpenReposts = if (onOpenReposts != null) {
+                        { onOpenReposts(event.id) }
                     } else null,
                     onRepost = if (ownPubkey != null && onRepost != null) {
                         {

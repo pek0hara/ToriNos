@@ -25,6 +25,8 @@ fun NoteTimeline(
     modifier: Modifier = Modifier,
     onReply: ((eventId: String, authorPubkey: String) -> Unit)? = null,
     onOpenReplies: (eventId: String) -> Unit = {},
+    onOpenLikes: (eventId: String) -> Unit = {},
+    onOpenReposts: (eventId: String) -> Unit = {},
     onRepost: (NostrEvent) -> Unit,
     onUnrepost: (eventId: String) -> Unit,
     emptyText: String = "投稿がありません",
@@ -64,6 +66,8 @@ fun NoteTimeline(
             onDelete = onDelete,
             onReply = onReply,
             onOpenReplies = onOpenReplies,
+            onOpenLikes = onOpenLikes,
+            onOpenReposts = onOpenReposts,
             onRepost = { eventId, _ ->
                 state.events.find { it.id == eventId }?.let(onRepost)
             },

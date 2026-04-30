@@ -57,7 +57,7 @@ import kotlinx.serialization.Serializable
 @Serializable data class ProfileRoute(val pubkey: String)
 @Serializable data class FollowingRoute(val pubkey: String)
 @Serializable data class FollowersRoute(val pubkey: String)
-@Serializable data class ThreadRoute(val eventId: String)
+@Serializable data class ThreadRoute(val eventId: String, val initialTab: String = "replies")
 
 private enum class PendingKeyAction {
     NewPost,
@@ -229,6 +229,8 @@ fun App() {
                                 }
                             },
                             onOpenReplies = { eventId -> nav.navigate(ThreadRoute(eventId)) },
+                            onOpenLikes = { eventId -> nav.navigate(ThreadRoute(eventId, "likes")) },
+                            onOpenReposts = { eventId -> nav.navigate(ThreadRoute(eventId, "reposts")) },
                             ownPubkey = ownPubkey,
                             ownProfile = ownProfile,
                             scrollToTopRequest = feedScrollToTopRequest,
@@ -257,6 +259,7 @@ fun App() {
                         val route = backStack.toRoute<ThreadRoute>()
                         ThreadScreen(
                             eventId = route.eventId,
+                            initialTab = route.initialTab,
                             onBack = { nav.popBackStack() },
                             onUserClick = { pubkey -> nav.navigate(ProfileRoute(pubkey)) },
                             onReply = { eventId, authorPk ->
@@ -267,6 +270,8 @@ fun App() {
                                 }
                             },
                             onOpenThread = { eventId -> nav.navigate(ThreadRoute(eventId)) },
+                            onOpenLikes = { eventId -> nav.navigate(ThreadRoute(eventId, "likes")) },
+                            onOpenReposts = { eventId -> nav.navigate(ThreadRoute(eventId, "reposts")) },
                             ownPubkey = ownPubkey,
                         )
                     }
@@ -286,6 +291,8 @@ fun App() {
                                 }
                             },
                             onOpenReplies = { eventId -> nav.navigate(ThreadRoute(eventId)) },
+                            onOpenLikes = { eventId -> nav.navigate(ThreadRoute(eventId, "likes")) },
+                            onOpenReposts = { eventId -> nav.navigate(ThreadRoute(eventId, "reposts")) },
                         )
                     }
                     composable("settings") {
@@ -330,6 +337,8 @@ fun App() {
                                 }
                             },
                             onOpenReplies = { eventId -> nav.navigate(ThreadRoute(eventId)) },
+                            onOpenLikes = { eventId -> nav.navigate(ThreadRoute(eventId, "likes")) },
+                            onOpenReposts = { eventId -> nav.navigate(ThreadRoute(eventId, "reposts")) },
                         )
                     }
                 }
