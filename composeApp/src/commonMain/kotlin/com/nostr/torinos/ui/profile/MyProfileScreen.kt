@@ -1,16 +1,9 @@
 package com.nostr.torinos.ui.profile
 
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.WindowInsets
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -24,34 +17,35 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
-import com.nostr.torinos.ui.components.LinkedText
-import com.nostr.torinos.ui.components.noteListItems
+import com.nostr.torinos.ui.components.NoteTimeline
 import com.nostr.torinos.ui.feed.FeedViewModel
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun MyProfileScreen(
     ownPubkey: String,
+    onBack: (() -> Unit)? = null,
     onOpenFollowing: () -> Unit = {},
     onOpenFollowers: () -> Unit = {},
     onOpenSettings: () -> Unit = {},
     onUserClick: (String) -> Unit = {},
+    onReply: ((eventId: String, authorPubkey: String) -> Unit)? = null,
+    onOpenReplies: (eventId: String) -> Unit = {},
     viewModel: MyProfileViewModel = viewModel(
         factory = viewModelFactory { initializer { MyProfileViewModel(ownPubkey) } },
     ),
-    feedViewModel: FeedViewModel = viewModel(key = "feed") { FeedViewModel(ownPubkey) },
+    feedViewModel: FeedViewModel = viewModel(key = "my-feed-$ownPubkey-reposts") {
+        FeedViewModel(authorPubkey = ownPubkey, includeRepostsInFeed = true)
+    },
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val feedState by feedViewModel.state.collectAsStateWithLifecycle()
@@ -60,17 +54,6 @@ fun MyProfileScreen(
         key = "editProfile",
         factory = viewModelFactory { initializer { EditProfileViewModel() } },
     )
-
-    val listState = rememberLazyListState()
-    val reachedBottom by remember {
-        derivedStateOf {
-            val lastVisible = listState.layoutInfo.visibleItemsInfo.lastOrNull()
-            lastVisible != null && lastVisible.index >= listState.layoutInfo.totalItemsCount - 3
-        }
-    }
-    LaunchedEffect(reachedBottom, feedState.canLoadMore) {
-        if (reachedBottom && feedState.canLoadMore) feedViewModel.loadMore()
-    }
 
     LaunchedEffect(state.profile) {
         val profile = state.profile ?: return@LaunchedEffect
@@ -82,6 +65,17 @@ fun MyProfileScreen(
         topBar = {
             TopAppBar(
                 title = { Text("プロフィール") },
+                navigationIcon = {
+                    if (onBack != null) {
+                        IconButton(onClick = onBack) {
+                            Icon(
+                                Icons.AutoMirrored.Filled.ArrowBack,
+                                contentDescription = "戻る",
+                                tint = MaterialTheme.colorScheme.onPrimary,
+                            )
+                        }
+                    }
+                },
                 actions = {
                     IconButton(onClick = onOpenSettings) {
                         Icon(
@@ -113,80 +107,43 @@ fun MyProfileScreen(
             )
         }
 
-        LazyColumn(
-            state = listState,
+        NoteTimeline(
+            state = feedState,
+            ownPubkey = ownPubkey,
+            onUserClick = onUserClick,
+            onLoadMore = feedViewModel::loadMore,
+            onLike = feedViewModel::react,
+            onUnlike = feedViewModel::unreact,
+            onDelete = feedViewModel::deleteEvent,
             modifier = Modifier
-                .fillMaxSize()
                 .padding(padding),
-        ) {
-            item {
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(16.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    AvatarCircle(
+            onReply = onReply,
+            onOpenReplies = onOpenReplies,
+            onRepost = feedViewModel::repost,
+            onUnrepost = feedViewModel::unrepost,
+            header = {
+                item {
+                    ProfileHeader(
                         pubkey = ownPubkey,
-                        name = state.profile?.bestName,
-                        pictureUrl = state.profile?.picture,
-                        size = 64,
+                        profile = state.profile,
+                        isOwnProfile = true,
                     )
-                    Text(
-                        text = state.profile?.bestName
-                            ?: (ownPubkey.take(8) + "…" + ownPubkey.takeLast(8)),
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.Bold,
-                    )
-                    if (!state.profile?.about.isNullOrBlank()) {
-                        LinkedText(
-                            text = state.profile!!.about!!,
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-                    if (!state.profile?.nip05.isNullOrBlank()) {
-                        Text(
-                            text = state.profile!!.nip05!!,
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.primary,
-                        )
-                    }
+                    HorizontalDivider()
                 }
-                HorizontalDivider()
-            }
 
-            item {
-                Row(modifier = Modifier.fillMaxWidth()) {
-                    UserStatCell(
-                        label = "フォロー",
-                        count = state.followingCount,
-                        modifier = Modifier
-                            .weight(1f)
-                            .clickable { onOpenFollowing() },
+                item {
+                    ProfileStatsRow(
+                        followingCount = state.followingCount,
+                        followersCount = state.followersCount,
+                        isFollowersLoading = state.isFollowersLoading,
+                        onFetchFollowers = viewModel::fetchFollowers,
+                        followersFetched = state.followersLoaded,
+                        onOpenFollowing = onOpenFollowing,
+                        onOpenFollowers = onOpenFollowers,
                     )
-                    UserStatCell(
-                        label = "フォロワー",
-                        count = state.followersCount,
-                        isLoading = state.isFollowersLoading,
-                        onFetch = viewModel::fetchFollowers,
-                        fetched = state.followersLoaded,
-                        modifier = Modifier
-                            .weight(1f)
-                            .clickable { onOpenFollowers() },
-                    )
+                    HorizontalDivider()
                 }
-                HorizontalDivider()
-            }
-
-            noteListItems(
-                state = feedState,
-                ownPubkey = ownPubkey,
-                onUserClick = onUserClick,
-                onLike = feedViewModel::react,
-                onUnlike = feedViewModel::unreact,
-                onDelete = feedViewModel::deleteEvent,
-            )
-        }
+            },
+        )
     }
 }

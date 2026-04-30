@@ -42,11 +42,11 @@ import com.nostr.torinos.ui.profile.FollowListMode
 import com.nostr.torinos.ui.profile.FollowListScreen
 import com.nostr.torinos.ui.profile.MyProfileScreen
 import com.nostr.torinos.ui.profile.UserProfileScreen
-import com.nostr.torinos.ui.relay.RelaySettingsScreen
 import com.nostr.torinos.ui.search.SearchScreen
 import com.nostr.torinos.ui.settings.SettingsScreen
 import com.nostr.torinos.ui.setup.KeySetupScreen
 import com.nostr.torinos.ui.theme.NostrTheme
+import com.nostr.torinos.ui.thread.ThreadScreen
 import com.nostr.torinos.util.appLog
 import com.nostr.torinos.util.loggingExceptionHandler
 import com.nostr.torinos.util.logException
@@ -57,6 +57,7 @@ import kotlinx.serialization.Serializable
 @Serializable data class ProfileRoute(val pubkey: String)
 @Serializable data class FollowingRoute(val pubkey: String)
 @Serializable data class FollowersRoute(val pubkey: String)
+@Serializable data class ThreadRoute(val eventId: String)
 
 private enum class PendingKeyAction {
     NewPost,
@@ -82,6 +83,7 @@ fun App() {
 
         var ownPubkey by remember { mutableStateOf<String?>(null) }
         var ownProfile by remember { mutableStateOf<NostrProfile?>(null) }
+        var feedScrollToTopRequest by remember { mutableStateOf(0) }
 
         // 起動時に保存済み秘密鍵から公開鍵を読み込む
         LaunchedEffect(Unit) {
@@ -178,9 +180,13 @@ fun App() {
                             label = { Text("フィード") },
                             selected = currentRoute == "feed",
                             onClick = {
-                                nav.navigate("feed") {
-                                    popUpTo("feed") { inclusive = false }
-                                    launchSingleTop = true
+                                if (currentRoute == "feed") {
+                                    feedScrollToTopRequest++
+                                } else {
+                                    nav.navigate("feed") {
+                                        popUpTo("feed") { inclusive = false }
+                                        launchSingleTop = true
+                                    }
                                 }
                             },
                         )
@@ -207,7 +213,7 @@ fun App() {
                 ) {
                     composable("feed") {
                         FeedScreen(
-                            onOpenSettings = { nav.navigate("relays") },
+                            onOpenSettings = { nav.navigate("settings") },
                             onOpenSearch = { nav.navigate("search") },
                             onUserClick = { pubkey -> nav.navigate(ProfileRoute(pubkey)) },
                             onOpenProfile = {
@@ -222,8 +228,10 @@ fun App() {
                                     showPostSheet = true
                                 }
                             },
+                            onOpenReplies = { eventId -> nav.navigate(ThreadRoute(eventId)) },
                             ownPubkey = ownPubkey,
                             ownProfile = ownProfile,
+                            scrollToTopRequest = feedScrollToTopRequest,
                         )
                     }
                     composable("channels") {
@@ -239,28 +247,50 @@ fun App() {
                             onUserClick = { pubkey -> nav.navigate(ProfileRoute(pubkey)) },
                         )
                     }
-                    composable("relays") {
-                        RelaySettingsScreen(onBack = { nav.popBackStack() })
-                    }
                     composable("search") {
                         SearchScreen(
                             onBack = { nav.popBackStack() },
                             onUserClick = { pubkey -> nav.navigate(ProfileRoute(pubkey)) },
                         )
                     }
+                    composable<ThreadRoute> { backStack ->
+                        val route = backStack.toRoute<ThreadRoute>()
+                        ThreadScreen(
+                            eventId = route.eventId,
+                            onBack = { nav.popBackStack() },
+                            onUserClick = { pubkey -> nav.navigate(ProfileRoute(pubkey)) },
+                            onReply = { eventId, authorPk ->
+                                replyToId = eventId
+                                replyToPubkey = authorPk
+                                runWithPrivateKey(PendingKeyAction.Reply) {
+                                    showPostSheet = true
+                                }
+                            },
+                            onOpenThread = { eventId -> nav.navigate(ThreadRoute(eventId)) },
+                            ownPubkey = ownPubkey,
+                        )
+                    }
                     composable("myprofile") {
                         val pubkey = ownPubkey ?: return@composable
                         MyProfileScreen(
                             ownPubkey = pubkey,
+                            onBack = { nav.popBackStack() },
                             onOpenFollowing = { nav.navigate(FollowingRoute(pubkey)) },
                             onOpenFollowers = { nav.navigate(FollowersRoute(pubkey)) },
                             onOpenSettings = { nav.navigate("settings") },
+                            onReply = { eventId, authorPk ->
+                                replyToId = eventId
+                                replyToPubkey = authorPk
+                                runWithPrivateKey(PendingKeyAction.Reply) {
+                                    showPostSheet = true
+                                }
+                            },
+                            onOpenReplies = { eventId -> nav.navigate(ThreadRoute(eventId)) },
                         )
                     }
                     composable("settings") {
-                        val pubkey = ownPubkey ?: return@composable
                         SettingsScreen(
-                            ownPubkey = pubkey,
+                            ownPubkey = ownPubkey,
                             onBack = { nav.popBackStack() },
                             onAccountCleared = ::clearLocalAccountState,
                         )
@@ -292,6 +322,14 @@ fun App() {
                             ownPubkey = ownPubkey,
                             onOpenFollowing = { nav.navigate(FollowingRoute(route.pubkey)) },
                             onOpenFollowers = { nav.navigate(FollowersRoute(route.pubkey)) },
+                            onReply = { eventId, authorPk ->
+                                replyToId = eventId
+                                replyToPubkey = authorPk
+                                runWithPrivateKey(PendingKeyAction.Reply) {
+                                    showPostSheet = true
+                                }
+                            },
+                            onOpenReplies = { eventId -> nav.navigate(ThreadRoute(eventId)) },
                         )
                     }
                 }

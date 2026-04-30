@@ -14,12 +14,16 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.flow.filterIsInstance
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 
 object NostrRepository {
     private val scope = CoroutineScope(
@@ -122,6 +126,41 @@ object NostrRepository {
         val message = buildEventMessage(event)
         appLog("[Repo] publish event id=${event.id.take(8)}")
         activeRelays.values.forEach { it.send(message) }
+    }
+
+    /** 署名済みイベントを指定リレーにだけ送信する。未接続リレーは一時接続して送る。 */
+    suspend fun publishToRelays(event: NostrEvent, relayUrls: Collection<String>) = coroutineScope {
+        val targets = relayUrls.map { it.trim() }.filter { it.isNotBlank() }.distinct()
+        if (targets.isEmpty()) return@coroutineScope
+
+        val message = buildEventMessage(event)
+        appLog("[Repo] publish event id=${event.id.take(8)} to ${targets.size} relays")
+
+        val failedRelays = mutableListOf<String>()
+        targets.forEach { url ->
+            val activeRelay = activeRelays[url]
+            if (activeRelay != null) {
+                activeRelay.send(message)
+            } else {
+                val relay = NostrRelay(url, httpClient)
+                relay.connect(this)
+                val connected = withTimeoutOrNull(10_000L) {
+                    relay.connected.first()
+                } != null
+                if (connected) {
+                    relay.send(message)
+                    delay(500L)
+                } else {
+                    appLog("[Repo] timeout connecting to relay for targeted publish: $url")
+                    failedRelays += url
+                }
+                relay.disconnect()
+            }
+        }
+
+        check(failedRelays.isEmpty()) {
+            "接続できないリレーがあります: ${failedRelays.joinToString()}"
+        }
     }
 
     fun events(subscriptionId: String): Flow<NostrEvent> =

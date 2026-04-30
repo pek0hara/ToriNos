@@ -33,6 +33,10 @@ data class ChannelItem(
 class ChannelListViewModel : SafeViewModel() {
 
     companion object {
+        private const val READY_FALLBACK_DELAY_MS = 2_500L
+        private const val DETAIL_SUBSCRIPTION_DELAY_MS = 500L
+        private const val EMIT_THROTTLE_MS = 250L
+
         val Factory: ViewModelProvider.Factory = object : ViewModelProvider.Factory {
             @Suppress("UNCHECKED_CAST")
             override fun <T : ViewModel> create(modelClass: KClass<T>, extras: CreationExtras): T =
@@ -73,7 +77,10 @@ class ChannelListViewModel : SafeViewModel() {
     private val authorProfiles = mutableMapOf<String, NostrProfile>()
 
     private val jobs = mutableListOf<Job>()
-    private var detailSubscriptionsStarted = false
+    private var emitJob: Job? = null
+    private var detailSubscriptionJob: Job? = null
+    private var subscribedChannelIds: Set<String> = emptySet()
+    private var subscribedAuthorPubkeys: Set<String> = emptySet()
 
     init {
         start()
@@ -87,7 +94,8 @@ class ChannelListViewModel : SafeViewModel() {
                 if (channelMap.containsKey(event.id)) return@collect
                 val meta = event.toChannelMeta() ?: return@collect
                 channelMap[event.id] = ChannelItem(event, meta)
-                emitReady()
+                emitReady(immediate = _state.value is UiState.Loading)
+                scheduleDetailSubscriptions()
             }
         }
 
@@ -121,34 +129,19 @@ class ChannelListViewModel : SafeViewModel() {
             }
         }
 
-        // kind:40 EOSE 後に統計・プロフィール購読を開始
+        // EOSE を待てるリレーでは即座に空表示/詳細購読へ進める。
         jobs += launch {
             NostrRepository.eose(listSubId).collect {
                 if (_state.value is UiState.Loading) {
                     _state.value = UiState.Ready(buildChannelList())
                 }
-                if (detailSubscriptionsStarted) return@collect
-                val channelIds = channelMap.keys.toList()
-                val authorPubkeys = channelMap.values.map { it.event.pubkey }.distinct()
-                detailSubscriptionsStarted = true
-                if (channelIds.isNotEmpty()) {
-                    NostrRepository.subscribe(
-                        msgsSubId,
-                        NostrFilter(kinds = listOf(42), eTags = channelIds, limit = 500),
-                    )
-                }
-                if (authorPubkeys.isNotEmpty()) {
-                    NostrRepository.subscribe(
-                        authorsSubId,
-                        NostrFilter(kinds = listOf(0), authors = authorPubkeys),
-                    )
-                }
+                refreshDetailSubscriptions()
             }
         }
 
-        // タイムアウトフォールバック
+        // EOSE を返さないリレーでもローディングを長く残さない。
         jobs += launch {
-            delay(10_000)
+            delay(READY_FALLBACK_DELAY_MS)
             if (_state.value is UiState.Loading) {
                 _state.value = UiState.Ready()
             }
@@ -208,9 +201,50 @@ class ChannelListViewModel : SafeViewModel() {
         }
     }
 
-    private fun emitReady() {
+    private fun emitReady(immediate: Boolean = false) {
+        if (immediate) {
+            emitJob?.cancel()
+            emitReadyNow()
+            return
+        }
+        if (emitJob?.isActive == true) return
+        emitJob = launch {
+            delay(EMIT_THROTTLE_MS)
+            emitReadyNow()
+        }
+    }
+
+    private fun emitReadyNow() {
         val current = _state.value as? UiState.Ready
         _state.value = UiState.Ready(buildChannelList(), current?.createDialog)
+    }
+
+    private fun scheduleDetailSubscriptions() {
+        detailSubscriptionJob?.cancel()
+        detailSubscriptionJob = launch {
+            delay(DETAIL_SUBSCRIPTION_DELAY_MS)
+            refreshDetailSubscriptions()
+        }
+    }
+
+    private suspend fun refreshDetailSubscriptions() {
+        val channelIds = channelMap.keys.toSet()
+        val authorPubkeys = channelMap.values.map { it.event.pubkey }.toSet()
+
+        if (channelIds.isNotEmpty() && channelIds != subscribedChannelIds) {
+            subscribedChannelIds = channelIds
+            NostrRepository.subscribe(
+                msgsSubId,
+                NostrFilter(kinds = listOf(42), eTags = channelIds.toList(), limit = 500),
+            )
+        }
+        if (authorPubkeys.isNotEmpty() && authorPubkeys != subscribedAuthorPubkeys) {
+            subscribedAuthorPubkeys = authorPubkeys
+            NostrRepository.subscribe(
+                authorsSubId,
+                NostrFilter(kinds = listOf(0), authors = authorPubkeys.toList()),
+            )
+        }
     }
 
     private fun buildChannelList(): List<ChannelItem> =

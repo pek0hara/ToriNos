@@ -23,8 +23,10 @@ import kotlinx.coroutines.launch
 
 class FeedViewModel(
     private val authorPubkey: String? = null,
+    private val authorPubkeys: List<String>? = authorPubkey?.let { listOf(it) },
     private val relayUrl: String? = null,
     private val autoStart: Boolean = true,
+    private val includeRepostsInFeed: Boolean = false,
 ) : SafeViewModel() {
 
     data class UiState(
@@ -34,6 +36,7 @@ class FeedViewModel(
         val replyCounts: Map<String, Int> = emptyMap(),
         val repostCounts: Map<String, Int> = emptyMap(),
         val quotedEvents: Map<String, NostrEvent> = emptyMap(),
+        val repostedByPubkeys: Map<String, String> = emptyMap(),
         /** postId → 自分のリアクションイベントID */
         val likedReactions: Map<String, String> = emptyMap(),
         /** postId → 自分のリポストイベントID */
@@ -46,13 +49,14 @@ class FeedViewModel(
     private val _state = MutableStateFlow(UiState())
     val state: StateFlow<UiState> = _state.asStateFlow()
 
-    private val shortKey = authorPubkey?.take(16) ?: "global"
+    private val shortKey = authorPubkey?.take(16) ?: authorPubkeys?.hashCode()?.toString() ?: "global"
     private val feedSubId = "feed-$shortKey"
     private val historySubId = "hist-$shortKey"
     private val profileSubId = "prof-$shortKey"
     private val reactionSubId = "reac-$shortKey"
     private val replySubId = "repl-$shortKey"
     private val repostSubId = "repo-$shortKey"
+    private val repostTargetSubId = "rpt-$shortKey"
     private val quoteSubId = "quot-$shortKey"
 
     private val subscriptionJobs = mutableListOf<Job>()
@@ -65,6 +69,7 @@ class FeedViewModel(
     private val seenRepostIds = linkedSetOf<String>()
     private val seenEventIds = linkedSetOf<String>()
     private val pendingQuoteIds = linkedSetOf<String>()
+    private val pendingRepostTargets = mutableMapOf<String, PendingRepostTarget>()
     private var subscriptionsStarted = false
     private var ownPubkey: String? = null
 
@@ -223,8 +228,8 @@ class FeedViewModel(
                 NostrRepository.subscribe(
                     feedSubId,
                     NostrFilter(
-                        kinds = listOf(1),
-                        authors = authorPubkey?.let { listOf(it) },
+                        kinds = feedKinds(),
+                        authors = authorPubkeys,
                         since = nowSec,
                     ),
                     relayUrl = relayUrl,
@@ -235,14 +240,7 @@ class FeedViewModel(
         // フィードイベント収集（ライブ：feedSubId）
         subscriptionJobs += launch {
             NostrRepository.events(feedSubId).collect { event ->
-                val parentId = event.tags.firstOrNull { it.firstOrNull() == "e" }?.getOrNull(1)
-                if (parentId != null) {
-                    scheduleEngagementFetch(parentId)
-                    return@collect
-                }
-                appendEvent(event)
-                scheduleProfileFetch(event.pubkey)
-                scheduleEngagementFetch(event.id)
+                appendFeedEvent(event)
             }
         }
 
@@ -250,14 +248,7 @@ class FeedViewModel(
         subscriptionJobs += launch {
             NostrRepository.events(historySubId).collect { event ->
                 lastHistoryBatchReceivedCount++
-                val parentId = event.tags.firstOrNull { it.firstOrNull() == "e" }?.getOrNull(1)
-                if (parentId != null) {
-                    scheduleEngagementFetch(parentId)
-                    return@collect
-                }
-                lastHistoryBatchUniqueCount += appendEvent(event)
-                scheduleProfileFetch(event.pubkey)
-                scheduleEngagementFetch(event.id)
+                lastHistoryBatchUniqueCount += appendFeedEvent(event)
             }
         }
 
@@ -358,6 +349,19 @@ class FeedViewModel(
                 scheduleProfileFetch(event.pubkey)
             }
         }
+
+        // content が空のリポストから元投稿を追加取得
+        subscriptionJobs += launch {
+            NostrRepository.events(repostTargetSubId).collect { event ->
+                if (event.kind != 1) return@collect
+                val pending = pendingRepostTargets.remove(event.id) ?: return@collect
+                appendEvent(event.copy(createdAt = pending.repostedAt))
+                markRepostedBy(event.id, pending.reposterPubkey)
+                scheduleProfileFetch(event.pubkey)
+                scheduleProfileFetch(pending.reposterPubkey)
+                scheduleEngagementFetch(event.id)
+            }
+        }
     }
 
     fun stopSubscriptions() {
@@ -376,6 +380,7 @@ class FeedViewModel(
         NostrRepository.close(reactionSubId)
         NostrRepository.close(replySubId)
         NostrRepository.close(repostSubId)
+        NostrRepository.close(repostTargetSubId)
         NostrRepository.close(quoteSubId)
     }
 
@@ -385,6 +390,12 @@ class FeedViewModel(
     }
 
     private suspend fun requestHistoryPage(until: Long?) {
+        if (authorPubkeys?.isEmpty() == true) {
+            loadingMore = false
+            _state.value = _state.value.copy(isInitialLoad = false, canLoadMore = false)
+            return
+        }
+
         loadingMore = true
         lastHistoryBatchReceivedCount = 0
         lastHistoryBatchUniqueCount = 0
@@ -399,8 +410,8 @@ class FeedViewModel(
             NostrRepository.subscribe(
                 feedSubId,
                 NostrFilter(
-                    kinds = listOf(1),
-                    authors = authorPubkey?.let { listOf(it) },
+                    kinds = feedKinds(),
+                    authors = authorPubkeys,
                     since = nowSec,
                 ),
                 relayUrl = relayUrl,
@@ -409,8 +420,8 @@ class FeedViewModel(
         NostrRepository.subscribe(
             historySubId,
             NostrFilter(
-                kinds = listOf(1),
-                authors = authorPubkey?.let { listOf(it) },
+                kinds = feedKinds(),
+                authors = authorPubkeys,
                 until = until,
                 limit = FEED_PAGE_SIZE,
             ),
@@ -427,6 +438,28 @@ class FeedViewModel(
         if (!hasMore) NostrRepository.close(historySubId)
     }
 
+    private fun feedKinds(): List<Int> = if (includeRepostsInFeed) listOf(1, 6) else listOf(1)
+
+    /** 投稿/リポストをフィード用に処理し、追加できた件数（0 or 1）を返す */
+    private fun appendFeedEvent(event: NostrEvent): Int = when (event.kind) {
+        1 -> {
+            val parentId = event.tags.firstOrNull { it.firstOrNull() == "e" }?.getOrNull(1)
+            if (parentId != null) {
+                scheduleEngagementFetch(parentId)
+                0
+            } else {
+                val appended = appendEvent(event)
+                if (appended > 0) {
+                    scheduleProfileFetch(event.pubkey)
+                    scheduleEngagementFetch(event.id)
+                }
+                appended
+            }
+        }
+        6 -> appendRepostedEvent(event)
+        else -> 0
+    }
+
     /** イベントをリストに追加し、追加できた件数（0 or 1）を返す */
     private fun appendEvent(event: NostrEvent): Int {
         if (event.kind != 1) return 0
@@ -437,6 +470,65 @@ class FeedViewModel(
         _state.value = cur.copy(events = updated)
         scheduleQuoteFetch(quotedEventIds(event))
         return 1
+    }
+
+    private fun appendRepostedEvent(repost: NostrEvent): Int {
+        if (!includeRepostsInFeed || !rememberSeenId(seenRepostIds, repost.id)) return 0
+        val targetId = repost.tags.lastOrNull { it.firstOrNull() == "e" }?.getOrNull(1)
+        val targetEvent = runCatching {
+            Json.decodeFromString(NostrEvent.serializer(), repost.content)
+        }.getOrNull()
+
+        updateRepostState(repost, targetId ?: targetEvent?.id)
+
+        if (targetEvent != null) {
+            val timelineEvent = targetEvent.copy(createdAt = repost.createdAt)
+            val appended = appendEvent(timelineEvent)
+            if (appended > 0) {
+                markRepostedBy(targetEvent.id, repost.pubkey)
+                scheduleProfileFetch(targetEvent.pubkey)
+                scheduleProfileFetch(repost.pubkey)
+                scheduleEngagementFetch(targetEvent.id)
+            }
+            return appended
+        }
+
+        if (targetId != null) {
+            val current = pendingRepostTargets[targetId]
+            if (current == null || repost.createdAt > current.repostedAt) {
+                pendingRepostTargets[targetId] = PendingRepostTarget(
+                    repostedAt = repost.createdAt,
+                    reposterPubkey = repost.pubkey,
+                )
+            }
+            launch {
+                NostrRepository.subscribe(
+                    repostTargetSubId,
+                    NostrFilter(ids = pendingRepostTargets.keys.toList(), kinds = listOf(1)),
+                )
+            }
+        }
+        return 0
+    }
+
+    private fun updateRepostState(repost: NostrEvent, targetId: String?) {
+        if (targetId == null) return
+        val cur = _state.value
+        val isOwn = ownPubkey != null && repost.pubkey == ownPubkey
+        _state.value = cur.copy(
+            repostCounts = cur.repostCounts +
+                (targetId to (cur.repostCounts[targetId] ?: 0) + 1),
+            repostedEvents = if (isOwn && !cur.repostedEvents.containsKey(targetId))
+                cur.repostedEvents + (targetId to repost.id)
+            else cur.repostedEvents,
+        )
+    }
+
+    private fun markRepostedBy(eventId: String, reposterPubkey: String) {
+        val cur = _state.value
+        _state.value = cur.copy(
+            repostedByPubkeys = cur.repostedByPubkeys + (eventId to reposterPubkey),
+        )
     }
 
     private fun rememberSeenId(seenIds: LinkedHashSet<String>, eventId: String): Boolean {
@@ -495,3 +587,8 @@ class FeedViewModel(
         private const val MAX_SEEN_IDS = 2000
     }
 }
+
+private data class PendingRepostTarget(
+    val repostedAt: Long,
+    val reposterPubkey: String,
+)

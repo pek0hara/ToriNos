@@ -36,14 +36,16 @@ import com.nostr.torinos.model.NostrEvent
 import com.nostr.torinos.model.NostrProfile
 import com.nostr.torinos.model.stripNostrEventUris
 import com.nostr.torinos.ui.profile.AvatarCircle
-import kotlinx.datetime.Instant
 import kotlinx.datetime.TimeZone
 import kotlinx.datetime.toLocalDateTime
+import kotlin.time.Instant
 
 @Composable
 fun NoteCard(
     event: NostrEvent,
     profile: NostrProfile?,
+    repostedByPubkey: String? = null,
+    repostedByProfile: NostrProfile? = null,
     replyCount: Int,
     reactionCount: Int,
     repostCount: Int = 0,
@@ -52,6 +54,7 @@ fun NoteCard(
     onUserClick: (pubkey: String) -> Unit = {},
     onLike: (() -> Unit)? = null,
     onReply: (() -> Unit)? = null,
+    onOpenReplies: (() -> Unit)? = null,
     onRepost: (() -> Unit)? = null,
     quotedEvents: List<QuotedEvent> = emptyList(),
     ownPubkey: String? = null,
@@ -72,6 +75,29 @@ fun NoteCard(
         )
 
         Column(modifier = Modifier.weight(1f)) {
+            if (repostedByPubkey != null) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { onUserClick(repostedByPubkey) },
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Repeat,
+                        contentDescription = null,
+                        modifier = Modifier.size(14.dp),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Text(
+                        text = "${repostedByProfile?.bestName ?: shortPubkey(repostedByPubkey)} がリポスト",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                Spacer(modifier = Modifier.height(4.dp))
+            }
+
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -158,7 +184,7 @@ fun NoteCard(
                     contentDescription = "返信",
                     count = replyCount,
                     tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                    onClick = onReply,
+                    onClick = if (replyCount > 0) onOpenReplies ?: onReply else onReply,
                 )
                 EngagementCount(
                     icon = Icons.Default.Repeat,
@@ -280,9 +306,9 @@ fun formatTimestamp(epochSeconds: Long): String = try {
     val local = Instant.fromEpochSeconds(epochSeconds)
         .toLocalDateTime(TimeZone.currentSystemDefault())
     buildString {
-        append(local.monthNumber.toString().padStart(2, '0'))
+        append((local.month.ordinal + 1).toString().padStart(2, '0'))
         append('/')
-        append(local.dayOfMonth.toString().padStart(2, '0'))
+        append(local.day.toString().padStart(2, '0'))
         append(' ')
         append(local.hour.toString().padStart(2, '0'))
         append(':')
@@ -291,3 +317,5 @@ fun formatTimestamp(epochSeconds: Long): String = try {
 } catch (_: Exception) {
     ""
 }
+
+private fun shortPubkey(pubkey: String): String = pubkey.take(8) + "…" + pubkey.takeLast(8)

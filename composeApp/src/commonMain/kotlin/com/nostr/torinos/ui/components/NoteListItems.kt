@@ -23,6 +23,7 @@ fun LazyListScope.noteListItems(
     onUnlike: (eventId: String) -> Unit,
     onDelete: (eventId: String) -> Unit,
     onReply: ((eventId: String, authorPubkey: String) -> Unit)? = null,
+    onOpenReplies: ((eventId: String) -> Unit)? = null,
     onRepost: ((eventId: String, authorPubkey: String) -> Unit)? = null,
     onUnrepost: ((eventId: String) -> Unit)? = null,
     emptyText: String = "投稿がありません",
@@ -48,9 +49,12 @@ fun LazyListScope.noteListItems(
         }
         else -> {
             items(state.events, key = { it.id }) { event ->
+                val repostedByPubkey = state.repostedByPubkeys[event.id]
                 NoteCard(
                     event = event,
                     profile = state.profiles[event.pubkey],
+                    repostedByPubkey = repostedByPubkey,
+                    repostedByProfile = repostedByPubkey?.let { state.profiles[it] },
                     replyCount = state.replyCounts[event.id] ?: 0,
                     repostCount = state.repostCounts[event.id] ?: 0,
                     reactionCount = state.reactionCounts[event.id] ?: 0,
@@ -67,6 +71,9 @@ fun LazyListScope.noteListItems(
                     } else null,
                     onReply = if (ownPubkey != null && onReply != null) {
                         { onReply(event.id, event.pubkey) }
+                    } else null,
+                    onOpenReplies = if (onOpenReplies != null) {
+                        { onOpenReplies(event.id) }
                     } else null,
                     onRepost = if (ownPubkey != null && onRepost != null) {
                         {

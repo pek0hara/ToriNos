@@ -1,12 +1,12 @@
 package com.nostr.torinos.ui.feed
 
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.Check
@@ -18,25 +18,28 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.PrimaryTabRow
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Tab
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.nostr.torinos.model.NostrProfile
+import com.nostr.torinos.network.FollowRepository
 import com.nostr.torinos.network.RelayStore
-import com.nostr.torinos.ui.components.noteListItems
+import com.nostr.torinos.ui.components.NoteTimeline
 import com.nostr.torinos.ui.profile.AvatarCircle
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -47,14 +50,18 @@ fun FeedScreen(
     onUserClick: (pubkey: String) -> Unit = {},
     onOpenProfile: () -> Unit = {},
     onReply: ((eventId: String, authorPubkey: String) -> Unit)? = null,
+    onOpenReplies: (eventId: String) -> Unit = {},
     ownPubkey: String? = null,
     ownProfile: NostrProfile? = null,
+    scrollToTopRequest: Int = 0,
     /** null = グローバルフィード、非null = 特定ユーザーの投稿 */
     authorPubkey: String? = null,
 ) {
     val relays by RelayStore.relays.collectAsStateWithLifecycle(initialValue = emptyList())
+    val followedPubkeys by FollowRepository.followedPubkeys.collectAsStateWithLifecycle()
     var selectedRelayUrl by remember { mutableStateOf<String?>(null) }
     var showRelayMenu by remember { mutableStateOf(false) }
+    var feedTab by remember { mutableStateOf(FeedTab.Following) }
 
     // リレーリストが変わったら選択中 URL を有効なものに補正
     LaunchedEffect(relays) {
@@ -63,10 +70,23 @@ fun FeedScreen(
         }
     }
 
+    val activeAuthorPubkeys = when {
+        authorPubkey != null -> listOf(authorPubkey)
+        feedTab == FeedTab.Following -> followedPubkeys.toList()
+        else -> null
+    }
+    val activeRelayUrl = if (authorPubkey != null) selectedRelayUrl else null
+    val includeRepostsInFeed = authorPubkey == null && feedTab == FeedTab.Following
+
     val viewModel: FeedViewModel = viewModel(
-        key = "${authorPubkey ?: "global"}-${selectedRelayUrl ?: "none"}",
+        key = "${authorPubkey ?: "global"}-${feedTab.name}-${activeRelayUrl ?: "all"}-${activeAuthorPubkeys?.hashCode() ?: "all"}-$includeRepostsInFeed",
     ) {
-        FeedViewModel(authorPubkey, selectedRelayUrl)
+        FeedViewModel(
+            authorPubkey = authorPubkey,
+            authorPubkeys = activeAuthorPubkeys,
+            relayUrl = activeRelayUrl,
+            includeRepostsInFeed = includeRepostsInFeed,
+        )
     }
     val state by viewModel.state.collectAsStateWithLifecycle()
 
@@ -77,26 +97,12 @@ fun FeedScreen(
         }
     }
 
-    val listState = rememberLazyListState()
-    val reachedBottom by remember {
-        derivedStateOf {
-            val lastVisible = listState.layoutInfo.visibleItemsInfo.lastOrNull()
-            lastVisible != null &&
-                lastVisible.index >= listState.layoutInfo.totalItemsCount - 3
-        }
-    }
-    LaunchedEffect(reachedBottom, state.canLoadMore) {
-        if (reachedBottom && state.canLoadMore) viewModel.loadMore()
-    }
-
     Scaffold(
         contentWindowInsets = WindowInsets(0),
         topBar = {
-            TopAppBar(
-                title = {
-                    if (authorPubkey != null) {
-                        Text("投稿")
-                    } else {
+            Column {
+                TopAppBar(
+                    title = {
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.Start,
@@ -135,67 +141,114 @@ fun FeedScreen(
                                 }
                             }
                         }
-                    }
-                },
-                navigationIcon = {
-                    if (authorPubkey == null && ownPubkey != null) {
-                        IconButton(onClick = onOpenProfile) {
-                            AvatarCircle(
-                                pubkey = ownPubkey,
-                                name = ownProfile?.bestName,
-                                pictureUrl = ownProfile?.picture,
-                                size = 32,
+                    },
+                    navigationIcon = {
+                        if (authorPubkey == null && ownPubkey != null) {
+                            IconButton(onClick = onOpenProfile) {
+                                AvatarCircle(
+                                    pubkey = ownPubkey,
+                                    name = ownProfile?.bestName,
+                                    pictureUrl = ownProfile?.picture,
+                                    size = 32,
+                                )
+                            }
+                        }
+                    },
+                    actions = {
+                        if (authorPubkey == null) {
+                            IconButton(onClick = onOpenSearch) {
+                                Icon(
+                                    Icons.Default.Search,
+                                    contentDescription = "検索",
+                                    tint = MaterialTheme.colorScheme.onPrimary,
+                                )
+                            }
+                            IconButton(onClick = onOpenSettings) {
+                                Icon(
+                                    Icons.Default.Settings,
+                                    contentDescription = "リレー設定",
+                                    tint = MaterialTheme.colorScheme.onPrimary,
+                                )
+                            }
+                        }
+                    },
+                    colors = TopAppBarDefaults.topAppBarColors(
+                        containerColor = MaterialTheme.colorScheme.primary,
+                        titleContentColor = MaterialTheme.colorScheme.onPrimary,
+                    ),
+                )
+                if (authorPubkey == null) {
+                    PrimaryTabRow(selectedTabIndex = feedTab.ordinal) {
+                        FeedTab.entries.forEach { tab ->
+                            Tab(
+                                selected = feedTab == tab,
+                                onClick = { feedTab = tab },
+                                text = { Text(tab.label) },
                             )
                         }
                     }
-                },
-                actions = {
-                    if (authorPubkey == null) {
-                        IconButton(onClick = onOpenSearch) {
-                            Icon(
-                                Icons.Default.Search,
-                                contentDescription = "検索",
-                                tint = MaterialTheme.colorScheme.onPrimary,
-                            )
-                        }
-                        IconButton(onClick = onOpenSettings) {
-                            Icon(
-                                Icons.Default.Settings,
-                                contentDescription = "リレー設定",
-                                tint = MaterialTheme.colorScheme.onPrimary,
-                            )
-                        }
-                    }
-                },
-                colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = MaterialTheme.colorScheme.primary,
-                    titleContentColor = MaterialTheme.colorScheme.onPrimary,
-                ),
-            )
+                }
+            }
         },
     ) { padding ->
-        LazyColumn(
-            state = listState,
+        NoteTimeline(
+            state = state,
+            ownPubkey = ownPubkey,
+            onUserClick = onUserClick,
+            onLoadMore = viewModel::loadMore,
+            onLike = viewModel::react,
+            onUnlike = viewModel::unreact,
+            onDelete = viewModel::deleteEvent,
             modifier = Modifier
-                .fillMaxSize()
-                .padding(padding),
-        ) {
-            noteListItems(
-                state = state,
-                ownPubkey = ownPubkey,
-                onUserClick = onUserClick,
-                onLike = viewModel::react,
-                onUnlike = viewModel::unreact,
-                onDelete = viewModel::deleteEvent,
-                onReply = onReply,
-                onRepost = { eventId, _ ->
-                    state.events.find { it.id == eventId }?.let { viewModel.repost(it) }
-                },
-                onUnrepost = viewModel::unrepost,
-            )
-        }
+                .padding(padding)
+                .feedTabSwipe(
+                    enabled = authorPubkey == null,
+                    currentTab = feedTab,
+                    onTabChange = { feedTab = it },
+                ),
+            onReply = onReply,
+            onOpenReplies = onOpenReplies,
+            onRepost = viewModel::repost,
+            onUnrepost = viewModel::unrepost,
+            scrollToTopRequest = scrollToTopRequest,
+        )
     }
 }
+
+private enum class FeedTab(val label: String) {
+    Following("フォロー"),
+    AllRelays("全リレー"),
+}
+
+private fun Modifier.feedTabSwipe(
+    enabled: Boolean,
+    currentTab: FeedTab,
+    onTabChange: (FeedTab) -> Unit,
+): Modifier {
+    if (!enabled) return this
+
+    return pointerInput(currentTab) {
+        var dragAmount = 0f
+        detectHorizontalDragGestures(
+            onDragStart = { dragAmount = 0f },
+            onHorizontalDrag = { change, amount ->
+                dragAmount += amount
+                change.consume()
+            },
+            onDragEnd = {
+                when {
+                    dragAmount < -SwipeThresholdPx && currentTab == FeedTab.Following ->
+                        onTabChange(FeedTab.AllRelays)
+                    dragAmount > SwipeThresholdPx && currentTab == FeedTab.AllRelays ->
+                        onTabChange(FeedTab.Following)
+                }
+            },
+            onDragCancel = { dragAmount = 0f },
+        )
+    }
+}
+
+private const val SwipeThresholdPx = 80f
 
 private fun String.relayDisplayName(): String =
     removePrefix("wss://").removePrefix("ws://").trimEnd('/')
