@@ -1,0 +1,96 @@
+package com.nostr.torinos.ui.settings
+
+import com.nostr.torinos.crypto.KeyStorage
+import com.nostr.torinos.crypto.hexToNsec
+import com.nostr.torinos.ui.SafeViewModel
+import com.nostr.torinos.util.logException
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
+
+data class SettingsState(
+    val isSecretKeyVisible: Boolean = false,
+    val keyError: String? = null,
+    val isAccountActionProcessing: Boolean = false,
+    val accountActionError: String? = null,
+)
+
+class SettingsViewModel : SafeViewModel() {
+    private val _state = MutableStateFlow(SettingsState())
+    val state: StateFlow<SettingsState> = _state.asStateFlow()
+
+    private val _secretKeyEvent = MutableSharedFlow<String>(replay = 0, extraBufferCapacity = 1)
+    val secretKeyEvent: SharedFlow<String> = _secretKeyEvent.asSharedFlow()
+
+    fun showSecretKey() {
+        launch {
+            val nsec = runCatching {
+                val privateKey = KeyStorage.loadPrivateKey()
+                    ?: error("秘密鍵が保存されていません")
+                hexToNsec(privateKey)
+            }.getOrElse { e ->
+                logException("SettingsViewModel", e, "Failed to load private key for display")
+                _state.update {
+                    it.copy(
+                        isSecretKeyVisible = false,
+                        keyError = e.message ?: "秘密鍵を読み込めませんでした",
+                    )
+                }
+                return@launch
+            }
+
+            _state.update { it.copy(isSecretKeyVisible = true, keyError = null) }
+            _secretKeyEvent.emit(nsec)
+        }
+    }
+
+    fun hideSecretKey() {
+        _state.update { it.copy(isSecretKeyVisible = false, keyError = null) }
+    }
+
+    fun clearAccount(onCleared: () -> Unit) {
+        if (_state.value.isAccountActionProcessing) return
+
+        launch {
+            _state.update {
+                it.copy(
+                    isAccountActionProcessing = true,
+                    accountActionError = null,
+                )
+            }
+            try {
+                KeyStorage.deleteKey()
+                _state.update {
+                    it.copy(
+                        isSecretKeyVisible = false,
+                        keyError = null,
+                        isAccountActionProcessing = false,
+                        accountActionError = null,
+                    )
+                }
+                onCleared()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                logException("SettingsViewModel", e, "Failed to clear account key")
+                _state.update {
+                    it.copy(
+                        isAccountActionProcessing = false,
+                        accountActionError = e.message
+                    ?.let { "アカウント情報を削除できませんでした: $it" }
+                    ?: "アカウント情報を削除できませんでした",
+                    )
+                }
+            }
+        }
+    }
+
+    fun clearAccountActionError() {
+        _state.update { it.copy(accountActionError = null) }
+    }
+}

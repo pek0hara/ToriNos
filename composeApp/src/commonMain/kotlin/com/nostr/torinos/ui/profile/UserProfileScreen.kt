@@ -18,6 +18,7 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.FileDownload
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -60,7 +61,6 @@ import com.nostr.torinos.ui.feed.FeedViewModel
 import kotlinx.coroutines.delay
 
 private const val DEFERRED_PROFILE_CONTENT_DELAY_MS = 800L
-private const val FOLLOWERS_COUNT_DELAY_MS = 1_000L
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -88,7 +88,6 @@ fun UserProfileScreen(
     val displayName = state.profile?.bestName ?: (pubkey.take(8) + "…" + pubkey.takeLast(8))
     val snackbarHostState = remember { SnackbarHostState() }
     var deferredContentStarted by remember(pubkey) { mutableStateOf(false) }
-    var followersCountStarted by remember(pubkey) { mutableStateOf(false) }
 
     val listState = rememberLazyListState()
     val reachedBottom by remember {
@@ -117,14 +116,6 @@ fun UserProfileScreen(
             deferredContentStarted = true
             viewModel.loadFollowingCount()
             feedViewModel.startSubscriptions()
-        }
-    }
-
-    LaunchedEffect(pubkey) {
-        delay(FOLLOWERS_COUNT_DELAY_MS)
-        if (!followersCountStarted) {
-            followersCountStarted = true
-            viewModel.loadFollowersCount()
         }
     }
 
@@ -192,7 +183,9 @@ fun UserProfileScreen(
                         label = "フォロワー",
                         count = state.followersCount,
                         countSuffix = if (state.isFollowersCountLimited) "+" else "",
-                        isLoading = !followersCountStarted || state.isFollowersLoading,
+                        isLoading = state.isFollowersLoading,
+                        onFetch = viewModel::loadFollowersCount,
+                        fetched = state.followersLoaded,
                         modifier = Modifier
                             .weight(1f)
                             .then(if (onOpenFollowers != null) Modifier.clickable { onOpenFollowers() } else Modifier),
@@ -282,16 +275,28 @@ internal fun UserStatCell(
     modifier: Modifier = Modifier,
     isLoading: Boolean = false,
     countSuffix: String = "",
+    onFetch: (() -> Unit)? = null,
+    fetched: Boolean = true,
 ) {
     Column(
         modifier = modifier.padding(vertical = 12.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(2.dp),
     ) {
-        if (isLoading) {
-            CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
-        } else {
-            Text(
+        when {
+            isLoading -> CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
+            onFetch != null && !fetched -> IconButton(
+                onClick = onFetch,
+                modifier = Modifier.size(20.dp),
+            ) {
+                Icon(
+                    imageVector = Icons.Default.FileDownload,
+                    contentDescription = "フォロワー数を取得",
+                    modifier = Modifier.size(18.dp),
+                    tint = MaterialTheme.colorScheme.primary,
+                )
+            }
+            else -> Text(
                 text = count.toString() + countSuffix,
                 style = MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.Bold,

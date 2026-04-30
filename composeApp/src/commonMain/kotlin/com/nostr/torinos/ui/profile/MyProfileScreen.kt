@@ -10,9 +10,9 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.rememberLazyListState
-import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -20,7 +20,6 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
@@ -37,7 +36,6 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
-import com.nostr.torinos.crypto.hexToNpub
 import com.nostr.torinos.ui.components.LinkedText
 import com.nostr.torinos.ui.components.noteListItems
 import com.nostr.torinos.ui.feed.FeedViewModel
@@ -48,6 +46,7 @@ fun MyProfileScreen(
     ownPubkey: String,
     onOpenFollowing: () -> Unit = {},
     onOpenFollowers: () -> Unit = {},
+    onOpenSettings: () -> Unit = {},
     onUserClick: (String) -> Unit = {},
     viewModel: MyProfileViewModel = viewModel(
         factory = viewModelFactory { initializer { MyProfileViewModel(ownPubkey) } },
@@ -57,10 +56,6 @@ fun MyProfileScreen(
     val state by viewModel.state.collectAsStateWithLifecycle()
     val feedState by feedViewModel.state.collectAsStateWithLifecycle()
     var showEditSheet by remember { mutableStateOf(false) }
-    var nsec by remember { mutableStateOf<String?>(null) }
-    val npub = remember(ownPubkey) {
-        runCatching { hexToNpub(ownPubkey) }.getOrDefault(ownPubkey)
-    }
     val editProfileViewModel = viewModel<EditProfileViewModel>(
         key = "editProfile",
         factory = viewModelFactory { initializer { EditProfileViewModel() } },
@@ -77,14 +72,6 @@ fun MyProfileScreen(
         if (reachedBottom && feedState.canLoadMore) feedViewModel.loadMore()
     }
 
-    LaunchedEffect(viewModel) {
-        viewModel.secretKeyEvent.collect { nsec = it }
-    }
-
-    LaunchedEffect(state.isSecretKeyVisible) {
-        if (!state.isSecretKeyVisible) nsec = null
-    }
-
     LaunchedEffect(state.profile) {
         val profile = state.profile ?: return@LaunchedEffect
         feedViewModel.injectProfile(ownPubkey, profile)
@@ -96,6 +83,13 @@ fun MyProfileScreen(
             TopAppBar(
                 title = { Text("プロフィール") },
                 actions = {
+                    IconButton(onClick = onOpenSettings) {
+                        Icon(
+                            Icons.Default.Settings,
+                            contentDescription = "設定",
+                            tint = MaterialTheme.colorScheme.onPrimary,
+                        )
+                    }
                     IconButton(onClick = { showEditSheet = true }) {
                         Icon(
                             Icons.Default.Edit,
@@ -174,23 +168,14 @@ fun MyProfileScreen(
                     UserStatCell(
                         label = "フォロワー",
                         count = state.followersCount,
+                        isLoading = state.isFollowersLoading,
+                        onFetch = viewModel::fetchFollowers,
+                        fetched = state.followersLoaded,
                         modifier = Modifier
                             .weight(1f)
                             .clickable { onOpenFollowers() },
                     )
                 }
-                HorizontalDivider()
-            }
-
-            item {
-                KeySection(
-                    npub = npub,
-                    nsec = nsec,
-                    isSecretVisible = state.isSecretKeyVisible,
-                    error = state.keyError,
-                    onShowSecret = viewModel::showSecretKey,
-                    onHideSecret = viewModel::hideSecretKey,
-                )
                 HorizontalDivider()
             }
 
@@ -201,81 +186,6 @@ fun MyProfileScreen(
                 onLike = feedViewModel::react,
                 onUnlike = feedViewModel::unreact,
                 onDelete = feedViewModel::deleteEvent,
-            )
-        }
-    }
-}
-
-@Composable
-private fun KeySection(
-    npub: String,
-    nsec: String?,
-    isSecretVisible: Boolean,
-    error: String?,
-    onShowSecret: () -> Unit,
-    onHideSecret: () -> Unit,
-) {
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(16.dp),
-        verticalArrangement = Arrangement.spacedBy(8.dp),
-    ) {
-        Text(
-            text = "鍵",
-            style = MaterialTheme.typography.titleSmall,
-            fontWeight = FontWeight.Bold,
-        )
-        Text(
-            text = "公開鍵",
-            style = MaterialTheme.typography.labelMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-        SelectionContainer {
-            Text(
-                text = npub,
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
-
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-        ) {
-            Text(
-                text = "秘密鍵",
-                style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.error,
-            )
-            TextButton(
-                onClick = if (isSecretVisible) onHideSecret else onShowSecret,
-            ) {
-                Text(if (isSecretVisible) "隠す" else "表示")
-            }
-        }
-
-        if (isSecretVisible && nsec != null) {
-            SelectionContainer {
-                Text(
-                    text = nsec,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.error,
-                )
-            }
-        } else {
-            Text(
-                text = "秘密鍵は表示操作をしたときだけ読み込みます",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
-
-        if (error != null) {
-            Text(
-                text = error,
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.error,
             )
         }
     }

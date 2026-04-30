@@ -27,6 +27,7 @@ data class UserProfileState(
     val followersCount: Int = 0,
     val isFollowersCountLimited: Boolean = false,
     val isFollowersLoading: Boolean = false,
+    val followersLoaded: Boolean = false,
 )
 
 class UserProfileViewModel(
@@ -43,7 +44,6 @@ class UserProfileViewModel(
 
     private val collectorJobs = mutableListOf<Job>()
     private var followingCountStarted = false
-    private var followersCountStarted = false
 
     init {
         start()
@@ -110,8 +110,7 @@ class UserProfileViewModel(
     }
 
     fun loadFollowersCount() {
-        if (followersCountStarted) return
-        followersCountStarted = true
+        if (_state.value.isFollowersLoading) return
         _state.update { it.copy(isFollowersLoading = true) }
         launch {
             NostrRepository.subscribe(
@@ -137,17 +136,22 @@ class UserProfileViewModel(
                 if (event.kind != 3) return@collect
                 if (event.createdAt > latestAt) {
                     latestAt = event.createdAt
-                    val count = event.tags.count { it.size >= 2 && it[0] == "p" }
+                    val count = event.tags
+                        .mapNotNull { tag -> tag.takeIf { it.size >= 2 && it[0] == "p" }?.get(1) }
+                        .distinct()
+                        .size
                     _state.update { it.copy(followingCount = count) }
                 }
             }
         }
 
         val followerPubkeys = linkedSetOf<String>()
+        val followerEventIds = linkedSetOf<String>()
         var receivedFollowerEvents = 0
         collectorJobs += launch {
             NostrRepository.events(followersSubId).collect { event ->
                 if (event.kind != 3) return@collect
+                if (!followerEventIds.add(event.id)) return@collect
                 receivedFollowerEvents++
                 if (followerPubkeys.add(event.pubkey)) {
                     _state.update { it.copy(followersCount = followerPubkeys.size) }
@@ -160,6 +164,7 @@ class UserProfileViewModel(
                 _state.update {
                     it.copy(
                         isFollowersLoading = false,
+                        followersLoaded = true,
                         isFollowersCountLimited = receivedFollowerEvents >= FOLLOWERS_FETCH_LIMIT,
                     )
                 }

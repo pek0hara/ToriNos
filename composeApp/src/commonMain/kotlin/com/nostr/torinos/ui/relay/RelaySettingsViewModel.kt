@@ -1,6 +1,5 @@
 package com.nostr.torinos.ui.relay
 
-import androidx.lifecycle.ViewModel
 import com.nostr.torinos.ui.SafeViewModel
 import com.nostr.torinos.network.RelayEntry
 import com.nostr.torinos.network.RelayStore

@@ -44,6 +44,7 @@ import com.nostr.torinos.ui.profile.MyProfileScreen
 import com.nostr.torinos.ui.profile.UserProfileScreen
 import com.nostr.torinos.ui.relay.RelaySettingsScreen
 import com.nostr.torinos.ui.search.SearchScreen
+import com.nostr.torinos.ui.settings.SettingsScreen
 import com.nostr.torinos.ui.setup.KeySetupScreen
 import com.nostr.torinos.ui.theme.NostrTheme
 import com.nostr.torinos.util.appLog
@@ -136,6 +137,20 @@ fun App() {
                     pendingKeyAction = missingAction
                     showKeySetup = true
                 }
+            }
+        }
+
+        fun clearLocalAccountState() {
+            ownPubkey = null
+            ownProfile = null
+            showPostSheet = false
+            showKeySetup = false
+            pendingKeyAction = null
+            replyToId = null
+            replyToPubkey = null
+            nav.navigate("feed") {
+                popUpTo("feed") { inclusive = true }
+                launchSingleTop = true
             }
         }
 
@@ -239,6 +254,15 @@ fun App() {
                             ownPubkey = pubkey,
                             onOpenFollowing = { nav.navigate(FollowingRoute(pubkey)) },
                             onOpenFollowers = { nav.navigate(FollowersRoute(pubkey)) },
+                            onOpenSettings = { nav.navigate("settings") },
+                        )
+                    }
+                    composable("settings") {
+                        val pubkey = ownPubkey ?: return@composable
+                        SettingsScreen(
+                            ownPubkey = pubkey,
+                            onBack = { nav.popBackStack() },
+                            onAccountCleared = ::clearLocalAccountState,
                         )
                     }
                     composable<FollowingRoute> { backStack ->

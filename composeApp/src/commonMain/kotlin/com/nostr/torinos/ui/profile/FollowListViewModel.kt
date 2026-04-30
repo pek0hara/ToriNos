@@ -70,6 +70,7 @@ class FollowListViewModel(
                     latestPubkeys = event.tags
                         .filter { it.size >= 2 && it[0] == "p" }
                         .map { it[1] }
+                        .distinct()
                 }
             }
         }
