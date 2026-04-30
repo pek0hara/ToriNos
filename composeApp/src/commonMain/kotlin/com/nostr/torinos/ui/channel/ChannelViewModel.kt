@@ -10,6 +10,8 @@ import com.nostr.torinos.model.NostrFilter
 import com.nostr.torinos.model.NostrProfile
 import com.nostr.torinos.model.toChannelMeta
 import com.nostr.torinos.model.toProfile
+import com.nostr.torinos.network.MuteStore
+import com.nostr.torinos.network.NgWordStore
 import com.nostr.torinos.network.NostrRepository
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -164,6 +166,14 @@ class ChannelViewModel(private val channelId: String) : SafeViewModel() {
             }
         }
 
+        // ミュート・NGワード変更時に表示リストを再フィルタ
+        jobs += launch {
+            MuteStore.mutedPubkeys.collect { syncReadyState() }
+        }
+        jobs += launch {
+            NgWordStore.ngWords.collect { syncReadyState() }
+        }
+
         launch {
             // チャンネルメタ取得
             NostrRepository.subscribe(metaSubId, NostrFilter(ids = listOf(channelId)))
@@ -214,7 +224,7 @@ class ChannelViewModel(private val channelId: String) : SafeViewModel() {
     private fun readyState(canLoadMore: Boolean): UiState.Ready =
         UiState.Ready(
             channelMeta = currentChannelMeta,
-            messages = currentMessages,
+            messages = filteredMessages(),
             profiles = currentProfiles,
             canLoadMore = canLoadMore,
         )
@@ -223,9 +233,18 @@ class ChannelViewModel(private val channelId: String) : SafeViewModel() {
         val current = _state.value as? UiState.Ready ?: return
         _state.value = current.copy(
             channelMeta = currentChannelMeta,
-            messages = currentMessages,
+            messages = filteredMessages(),
             profiles = currentProfiles,
         )
+    }
+
+    private fun filteredMessages(): List<NostrEvent> {
+        val muted = MuteStore.mutedPubkeys.value
+        val ngWords = NgWordStore.ngWords.value
+        return currentMessages.filter { msg ->
+            !muted.contains(msg.pubkey) &&
+                (ngWords.isEmpty() || ngWords.none { msg.content.contains(it, ignoreCase = true) })
+        }
     }
 
     private fun scheduleProfileFetch(pubkey: String) {

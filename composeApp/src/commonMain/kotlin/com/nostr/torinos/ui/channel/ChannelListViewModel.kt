@@ -36,6 +36,8 @@ class ChannelListViewModel : SafeViewModel() {
         private const val READY_FALLBACK_DELAY_MS = 2_500L
         private const val DETAIL_SUBSCRIPTION_DELAY_MS = 500L
         private const val EMIT_THROTTLE_MS = 250L
+        private const val MAX_ETAGS = 50
+        private const val MSGS_LIMIT = 200
 
         val Factory: ViewModelProvider.Factory = object : ViewModelProvider.Factory {
             @Suppress("UNCHECKED_CAST")
@@ -233,9 +235,13 @@ class ChannelListViewModel : SafeViewModel() {
 
         if (channelIds.isNotEmpty() && channelIds != subscribedChannelIds) {
             subscribedChannelIds = channelIds
+            val recentIds = channelMap.entries
+                .sortedByDescending { it.value.event.createdAt }
+                .take(MAX_ETAGS)
+                .map { it.key }
             NostrRepository.subscribe(
                 msgsSubId,
-                NostrFilter(kinds = listOf(42), eTags = channelIds.toList(), limit = 500),
+                NostrFilter(kinds = listOf(42), eTags = recentIds, limit = MSGS_LIMIT),
             )
         }
         if (authorPubkeys.isNotEmpty() && authorPubkeys != subscribedAuthorPubkeys) {

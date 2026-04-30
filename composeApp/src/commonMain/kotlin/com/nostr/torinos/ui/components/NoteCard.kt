@@ -61,8 +61,13 @@ fun NoteCard(
     quotedEvents: List<QuotedEvent> = emptyList(),
     ownPubkey: String? = null,
     onDelete: (() -> Unit)? = null,
+    isMuted: Boolean = false,
+    onMute: (() -> Unit)? = null,
+    onUnmute: (() -> Unit)? = null,
 ) {
     var showMenu by remember { mutableStateOf(false) }
+    val isOwnPost = ownPubkey != null && event.pubkey == ownPubkey
+    val hasMenu = (isOwnPost && onDelete != null) || (!isOwnPost && (onMute != null || onUnmute != null))
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -118,7 +123,7 @@ fun NoteCard(
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
-                    if (ownPubkey != null && event.pubkey == ownPubkey && onDelete != null) {
+                    if (hasMenu) {
                         IconButton(
                             onClick = { showMenu = true },
                             modifier = Modifier.size(24.dp),
@@ -134,13 +139,34 @@ fun NoteCard(
                             expanded = showMenu,
                             onDismissRequest = { showMenu = false },
                         ) {
-                            DropdownMenuItem(
-                                text = { Text("削除", color = MaterialTheme.colorScheme.error) },
-                                onClick = {
-                                    showMenu = false
-                                    onDelete()
-                                },
-                            )
+                            if (isOwnPost && onDelete != null) {
+                                DropdownMenuItem(
+                                    text = { Text("削除", color = MaterialTheme.colorScheme.error) },
+                                    onClick = {
+                                        showMenu = false
+                                        onDelete()
+                                    },
+                                )
+                            }
+                            if (!isOwnPost) {
+                                if (isMuted) {
+                                    DropdownMenuItem(
+                                        text = { Text("ミュートを解除") },
+                                        onClick = {
+                                            showMenu = false
+                                            onUnmute?.invoke()
+                                        },
+                                    )
+                                } else if (onMute != null) {
+                                    DropdownMenuItem(
+                                        text = { Text("ミュート") },
+                                        onClick = {
+                                            showMenu = false
+                                            onMute()
+                                        },
+                                    )
+                                }
+                            }
                         }
                     }
                 }

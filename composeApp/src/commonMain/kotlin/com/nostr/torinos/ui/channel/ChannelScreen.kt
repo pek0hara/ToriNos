@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -28,12 +29,17 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.nostr.torinos.network.MuteStore
 import com.nostr.torinos.ui.components.NoteCard
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -42,9 +48,13 @@ fun ChannelScreen(
     channelId: String,
     onBack: () -> Unit = {},
     onUserClick: (pubkey: String) -> Unit = {},
+    ownPubkey: String? = null,
     viewModel: ChannelViewModel = viewModel(key = channelId) { ChannelViewModel(channelId) },
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
+    val mutedPubkeys by MuteStore.mutedPubkeys.collectAsStateWithLifecycle()
+    val listState = remember(channelId) { LazyListState() }
+    var didScrollToInitialTop by remember(channelId) { mutableStateOf(false) }
 
     Scaffold(
         contentWindowInsets = WindowInsets(0),
@@ -103,7 +113,17 @@ fun ChannelScreen(
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
                         } else {
-                            LazyColumn(modifier = Modifier.fillMaxSize()) {
+                            LaunchedEffect(channelId, s.messages.firstOrNull()?.id) {
+                                if (!didScrollToInitialTop) {
+                                    listState.scrollToItem(0)
+                                    didScrollToInitialTop = true
+                                }
+                            }
+
+                            LazyColumn(
+                                state = listState,
+                                modifier = Modifier.fillMaxSize(),
+                            ) {
                                 items(s.messages, key = { it.id }) { message ->
                                     NoteCard(
                                         event = message,
@@ -111,6 +131,14 @@ fun ChannelScreen(
                                         replyCount = 0,
                                         reactionCount = 0,
                                         onUserClick = onUserClick,
+                                        ownPubkey = ownPubkey,
+                                        isMuted = mutedPubkeys.contains(message.pubkey),
+                                        onMute = if (message.pubkey != ownPubkey) {
+                                            { MuteStore.mute(message.pubkey) }
+                                        } else null,
+                                        onUnmute = if (message.pubkey != ownPubkey) {
+                                            { MuteStore.unmute(message.pubkey) }
+                                        } else null,
                                     )
                                     HorizontalDivider()
                                 }

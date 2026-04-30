@@ -30,6 +30,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -63,7 +64,7 @@ fun FeedScreen(
     val selectedRelayUrl by RelayStore.selectedRelayUrl.collectAsStateWithLifecycle()
     val followedPubkeys by FollowRepository.followedPubkeys.collectAsStateWithLifecycle()
     var showRelayMenu by remember { mutableStateOf(false) }
-    var feedTab by remember { mutableStateOf(FeedTab.Following) }
+    var feedTab by rememberSaveable { mutableStateOf(FeedTab.Following) }
 
     // リレーリストが変わったら選択中 URL を有効なものに補正
     LaunchedEffect(relays, selectedRelayUrl) {
@@ -74,14 +75,15 @@ fun FeedScreen(
 
     val activeAuthorPubkeys = when {
         authorPubkey != null -> listOf(authorPubkey)
-        feedTab == FeedTab.Following -> followedPubkeys.toList()
+        feedTab == FeedTab.Following -> followedPubkeys.sorted()
         else -> null
     }
     val activeRelayUrl = selectedRelayUrl
     val includeRepostsInFeed = authorPubkey == null && feedTab == FeedTab.Following
+    val activeAuthorKey = activeAuthorPubkeys?.joinToString(separator = ",") ?: "all"
 
     val viewModel: FeedViewModel = viewModel(
-        key = "${authorPubkey ?: "global"}-${feedTab.name}-${activeRelayUrl ?: "all"}-${activeAuthorPubkeys?.hashCode() ?: "all"}-$includeRepostsInFeed",
+        key = "${authorPubkey ?: "global"}-${feedTab.name}-${activeRelayUrl ?: "all"}-$activeAuthorKey-$includeRepostsInFeed",
     ) {
         FeedViewModel(
             authorPubkey = authorPubkey,

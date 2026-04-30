@@ -3,15 +3,18 @@ package com.nostr.torinos.ui.components
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListScope
-import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Modifier
 import com.nostr.torinos.model.NostrEvent
+import com.nostr.torinos.network.MuteStore
 import com.nostr.torinos.ui.feed.FeedViewModel
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 
 @Composable
 fun NoteTimeline(
@@ -33,7 +36,8 @@ fun NoteTimeline(
     scrollToTopRequest: Int = 0,
     header: LazyListScope.() -> Unit = {},
 ) {
-    val listState = rememberLazyListState()
+    val mutedPubkeys by MuteStore.mutedPubkeys.collectAsStateWithLifecycle()
+    val listState = rememberSaveable(saver = LazyListState.Saver) { LazyListState() }
     val reachedBottom by remember {
         derivedStateOf {
             val lastVisible = listState.layoutInfo.visibleItemsInfo.lastOrNull()
@@ -72,6 +76,7 @@ fun NoteTimeline(
                 state.events.find { it.id == eventId }?.let(onRepost)
             },
             onUnrepost = onUnrepost,
+            mutedPubkeys = mutedPubkeys,
             emptyText = emptyText,
         )
     }

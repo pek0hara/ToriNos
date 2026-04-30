@@ -1,5 +1,6 @@
 package com.nostr.torinos.ui.settings
 
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -14,6 +15,7 @@ import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.ExitToApp
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material3.AlertDialog
@@ -54,6 +56,8 @@ fun SettingsScreen(
     ownPubkey: String?,
     onBack: () -> Unit = {},
     onAccountCleared: () -> Unit = {},
+    onMuteListClick: () -> Unit = {},
+    onNgWordClick: () -> Unit = {},
     relayViewModel: RelaySettingsViewModel = viewModel(key = "settings-relays") { RelaySettingsViewModel() },
 ) {
     val accountViewModel = if (ownPubkey != null) {
@@ -120,6 +124,13 @@ fun SettingsScreen(
                     },
                     onToggle = relayViewModel::setEnabled,
                     onDelete = relayViewModel::remove,
+                )
+                HorizontalDivider()
+            }
+            item {
+                FilterSection(
+                    onMuteListClick = onMuteListClick,
+                    onNgWordClick = onNgWordClick,
                 )
                 HorizontalDivider()
             }
@@ -560,4 +571,49 @@ private fun ConfirmAccountDialog(
             }
         },
     )
+}
+
+@Composable
+private fun FilterSection(
+    onMuteListClick: () -> Unit,
+    onNgWordClick: () -> Unit,
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(0.dp),
+    ) {
+        Text(
+            text = "フィルタリング",
+            style = MaterialTheme.typography.titleSmall,
+            fontWeight = FontWeight.Bold,
+            modifier = Modifier.padding(bottom = 4.dp),
+        )
+        FilterNavRow(label = "ミュートリスト", onClick = onMuteListClick)
+        FilterNavRow(label = "NGワード", onClick = onNgWordClick)
+    }
+}
+
+@Composable
+private fun FilterNavRow(label: String, onClick: () -> Unit) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .padding(vertical = 10.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.bodyMedium,
+        )
+        Icon(
+            imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.size(20.dp),
+        )
+    }
 }

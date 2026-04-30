@@ -37,6 +37,8 @@ import com.nostr.torinos.network.NostrRepository
 import com.nostr.torinos.ui.channel.ChannelListScreen
 import com.nostr.torinos.ui.channel.ChannelScreen
 import com.nostr.torinos.ui.feed.FeedScreen
+import com.nostr.torinos.ui.settings.MuteListScreen
+import com.nostr.torinos.ui.settings.NgWordScreen
 import com.nostr.torinos.ui.post.PostSheet
 import com.nostr.torinos.ui.profile.FollowListMode
 import com.nostr.torinos.ui.profile.FollowListScreen
@@ -184,8 +186,9 @@ fun App() {
                                     feedScrollToTopRequest++
                                 } else {
                                     nav.navigate("feed") {
-                                        popUpTo("feed") { inclusive = false }
+                                        popUpTo("feed") { saveState = true; inclusive = false }
                                         launchSingleTop = true
+                                        restoreState = true
                                     }
                                 }
                             },
@@ -196,8 +199,9 @@ fun App() {
                             selected = currentRoute == "channels",
                             onClick = {
                                 nav.navigate("channels") {
-                                    popUpTo("feed") { inclusive = false }
+                                    popUpTo("feed") { saveState = true; inclusive = false }
                                     launchSingleTop = true
+                                    restoreState = true
                                 }
                             },
                         )
@@ -247,6 +251,7 @@ fun App() {
                             channelId = route.channelId,
                             onBack = { nav.popBackStack() },
                             onUserClick = { pubkey -> nav.navigate(ProfileRoute(pubkey)) },
+                            ownPubkey = ownPubkey,
                         )
                     }
                     composable("search") {
@@ -300,7 +305,15 @@ fun App() {
                             ownPubkey = ownPubkey,
                             onBack = { nav.popBackStack() },
                             onAccountCleared = ::clearLocalAccountState,
+                            onMuteListClick = { nav.navigate("mute-list") },
+                            onNgWordClick = { nav.navigate("ng-words") },
                         )
+                    }
+                    composable("mute-list") {
+                        MuteListScreen(onBack = { nav.popBackStack() })
+                    }
+                    composable("ng-words") {
+                        NgWordScreen(onBack = { nav.popBackStack() })
                     }
                     composable<FollowingRoute> { backStack ->
                         val route = backStack.toRoute<FollowingRoute>()

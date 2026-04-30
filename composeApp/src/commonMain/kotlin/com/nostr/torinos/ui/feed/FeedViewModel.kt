@@ -11,6 +11,8 @@ import com.nostr.torinos.model.NostrFilter
 import com.nostr.torinos.model.NostrProfile
 import com.nostr.torinos.model.quotedEventIds
 import com.nostr.torinos.model.toProfile
+import com.nostr.torinos.network.MuteStore
+import com.nostr.torinos.network.NgWordStore
 import com.nostr.torinos.network.NostrRepository
 import kotlinx.serialization.json.Json
 import kotlinx.coroutines.Job
@@ -68,6 +70,7 @@ class FeedViewModel(
     private val seenReplyIds = linkedSetOf<String>()
     private val seenRepostIds = linkedSetOf<String>()
     private val seenEventIds = linkedSetOf<String>()
+    private val rawEvents = linkedMapOf<String, NostrEvent>()
     private val pendingQuoteIds = linkedSetOf<String>()
     private val pendingRepostTargets = mutableMapOf<String, PendingRepostTarget>()
     private var subscriptionsStarted = false
@@ -350,6 +353,14 @@ class FeedViewModel(
             }
         }
 
+        // ミュート・NGワード変更時にフィルタ済みリストを再構築
+        subscriptionJobs += launch {
+            MuteStore.mutedPubkeys.collect { rebuildFilteredEvents() }
+        }
+        subscriptionJobs += launch {
+            NgWordStore.ngWords.collect { rebuildFilteredEvents() }
+        }
+
         // content が空のリポストから元投稿を追加取得
         subscriptionJobs += launch {
             NostrRepository.events(repostTargetSubId).collect { event ->
@@ -464,12 +475,29 @@ class FeedViewModel(
     private fun appendEvent(event: NostrEvent): Int {
         if (event.kind != 1) return 0
         if (!rememberSeenId(seenEventIds, event.id)) return 0
+        rawEvents[event.id] = event
+        while (rawEvents.size > MAX_SEEN_IDS) rawEvents.remove(rawEvents.keys.first())
+        if (oldestCreatedAt == null || event.createdAt < (oldestCreatedAt ?: Long.MAX_VALUE)) {
+            oldestCreatedAt = event.createdAt
+        }
+        if (isFiltered(event)) return 0
         val cur = _state.value
         val updated = (cur.events + event).sortedByDescending { it.createdAt }
-        oldestCreatedAt = updated.lastOrNull()?.createdAt
         _state.value = cur.copy(events = updated)
         scheduleQuoteFetch(quotedEventIds(event))
         return 1
+    }
+
+    private fun isFiltered(event: NostrEvent): Boolean {
+        if (MuteStore.isMuted(event.pubkey)) return true
+        return NgWordStore.matches(event.content)
+    }
+
+    private fun rebuildFilteredEvents() {
+        val filtered = rawEvents.values
+            .filter { !isFiltered(it) }
+            .sortedByDescending { it.createdAt }
+        _state.value = _state.value.copy(events = filtered)
     }
 
     private fun appendRepostedEvent(repost: NostrEvent): Int {
