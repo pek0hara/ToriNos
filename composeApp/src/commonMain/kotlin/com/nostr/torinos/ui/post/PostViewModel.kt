@@ -4,6 +4,7 @@ import androidx.lifecycle.ViewModel
 import com.nostr.torinos.ui.SafeViewModel
 import com.nostr.torinos.crypto.KeyStorage
 import com.nostr.torinos.crypto.signEvent
+import com.nostr.torinos.model.extractNostrEventReferences
 import com.nostr.torinos.network.ImageUploader
 import com.nostr.torinos.network.NostrRepository
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -62,6 +63,16 @@ class PostViewModel : SafeViewModel() {
             val tags = buildList {
                 if (replyToId != null) add(listOf("e", replyToId))
                 if (replyToPubkey != null) add(listOf("p", replyToPubkey))
+                extractNostrEventReferences(text).forEach { reference ->
+                    add(
+                        buildList {
+                            add("q")
+                            add(reference.eventId)
+                            reference.relayUrls.firstOrNull()?.let { add(it) }
+                        },
+                    )
+                    reference.authorPubkey?.let { add(listOf("p", it)) }
+                }
             }
 
             runCatching {

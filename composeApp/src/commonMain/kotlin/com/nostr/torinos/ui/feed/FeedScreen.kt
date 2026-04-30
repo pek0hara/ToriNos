@@ -191,6 +191,7 @@ fun FeedScreen(
                 onRepost = { eventId, _ ->
                     state.events.find { it.id == eventId }?.let { viewModel.repost(it) }
                 },
+                onUnrepost = viewModel::unrepost,
             )
         }
     }

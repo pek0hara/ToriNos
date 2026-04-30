@@ -9,6 +9,7 @@ import com.nostr.torinos.crypto.signEvent
 import com.nostr.torinos.model.NostrEvent
 import com.nostr.torinos.model.NostrFilter
 import com.nostr.torinos.model.NostrProfile
+import com.nostr.torinos.model.quotedEventIds
 import com.nostr.torinos.model.toProfile
 import com.nostr.torinos.network.NostrRepository
 import kotlinx.serialization.json.Json
@@ -32,8 +33,11 @@ class FeedViewModel(
         val reactionCounts: Map<String, Int> = emptyMap(),
         val replyCounts: Map<String, Int> = emptyMap(),
         val repostCounts: Map<String, Int> = emptyMap(),
+        val quotedEvents: Map<String, NostrEvent> = emptyMap(),
         /** postId → 自分のリアクションイベントID */
         val likedReactions: Map<String, String> = emptyMap(),
+        /** postId → 自分のリポストイベントID */
+        val repostedEvents: Map<String, String> = emptyMap(),
         val canLoadMore: Boolean = false,
         /** true = 初回 EOSE 待ち（ローディングスピナー表示） */
         val isInitialLoad: Boolean = true,
@@ -49,6 +53,7 @@ class FeedViewModel(
     private val reactionSubId = "reac-$shortKey"
     private val replySubId = "repl-$shortKey"
     private val repostSubId = "repo-$shortKey"
+    private val quoteSubId = "quot-$shortKey"
 
     private val subscriptionJobs = mutableListOf<Job>()
     private val pendingPubkeys = mutableSetOf<String>()
@@ -59,6 +64,7 @@ class FeedViewModel(
     private val seenReplyIds = linkedSetOf<String>()
     private val seenRepostIds = linkedSetOf<String>()
     private val seenEventIds = linkedSetOf<String>()
+    private val pendingQuoteIds = linkedSetOf<String>()
     private var subscriptionsStarted = false
     private var ownPubkey: String? = null
 
@@ -115,6 +121,7 @@ class FeedViewModel(
                     kind = 7,
                     tags = listOf(listOf("e", eventId), listOf("p", eventPubkey)),
                 )
+                rememberSeenId(seenReactionIds, reaction.id)
                 NostrRepository.publish(reaction)
                 // 署名済みイベントIDを保存（後でキャンセルに使用）
                 _state.value = _state.value.copy(
@@ -148,6 +155,12 @@ class FeedViewModel(
     }
 
     fun repost(event: NostrEvent) {
+        val cur = _state.value
+        if (cur.repostedEvents.containsKey(event.id)) return
+        _state.value = cur.copy(
+            repostedEvents = cur.repostedEvents + (event.id to ""),
+            repostCounts = cur.repostCounts + (event.id to (cur.repostCounts[event.id] ?: 0) + 1),
+        )
         launch {
             val privateKeyHex = KeyStorage.loadPrivateKey() ?: return@launch
             runCatching {
@@ -157,12 +170,33 @@ class FeedViewModel(
                     kind = 6,
                     tags = listOf(listOf("e", event.id), listOf("p", event.pubkey)),
                 )
+                rememberSeenId(seenRepostIds, repostEvent.id)
                 NostrRepository.publish(repostEvent)
-                // 楽観的UI更新
-                val cur = _state.value
-                _state.value = cur.copy(
-                    repostCounts = cur.repostCounts + (event.id to (cur.repostCounts[event.id] ?: 0) + 1),
+                _state.value = _state.value.copy(
+                    repostedEvents = _state.value.repostedEvents + (event.id to repostEvent.id),
                 )
+            }
+        }
+    }
+
+    fun unrepost(eventId: String) {
+        val cur = _state.value
+        val repostEventId = cur.repostedEvents[eventId] ?: return
+        _state.value = cur.copy(
+            repostedEvents = cur.repostedEvents - eventId,
+            repostCounts = cur.repostCounts + (eventId to maxOf(0, (cur.repostCounts[eventId] ?: 0) - 1)),
+        )
+        if (repostEventId.isEmpty()) return
+        launch {
+            val privateKeyHex = KeyStorage.loadPrivateKey() ?: return@launch
+            runCatching {
+                val deletion = signEvent(
+                    privateKeyHex = privateKeyHex,
+                    content = "",
+                    kind = 5,
+                    tags = listOf(listOf("e", repostEventId)),
+                )
+                NostrRepository.publish(deletion)
             }
         }
     }
@@ -264,8 +298,7 @@ class FeedViewModel(
         subscriptionJobs += launch {
             NostrRepository.events(reactionSubId).collect { event ->
                 if (event.kind != 7) return@collect
-                if (!seenReactionIds.add(event.id)) return@collect
-                while (seenReactionIds.size > MAX_SEEN_IDS) seenReactionIds.remove(seenReactionIds.first())
+                if (!rememberSeenId(seenReactionIds, event.id)) return@collect
                 val targetId = event.tags.lastOrNull { it.firstOrNull() == "e" }?.getOrNull(1)
                     ?: return@collect
                 val cur = _state.value
@@ -284,8 +317,7 @@ class FeedViewModel(
         subscriptionJobs += launch {
             NostrRepository.events(replySubId).collect { event ->
                 if (event.kind != 1) return@collect
-                if (!seenReplyIds.add(event.id)) return@collect
-                while (seenReplyIds.size > MAX_SEEN_IDS) seenReplyIds.remove(seenReplyIds.first())
+                if (!rememberSeenId(seenReplyIds, event.id)) return@collect
                 val targetId = event.tags.lastOrNull { it.firstOrNull() == "e" }?.getOrNull(1)
                     ?: return@collect
                 val cur = _state.value
@@ -300,15 +332,30 @@ class FeedViewModel(
         subscriptionJobs += launch {
             NostrRepository.events(repostSubId).collect { event ->
                 if (event.kind != 6) return@collect
-                if (!seenRepostIds.add(event.id)) return@collect
-                while (seenRepostIds.size > MAX_SEEN_IDS) seenRepostIds.remove(seenRepostIds.first())
+                if (!rememberSeenId(seenRepostIds, event.id)) return@collect
                 val targetId = event.tags.lastOrNull { it.firstOrNull() == "e" }?.getOrNull(1)
                     ?: return@collect
                 val cur = _state.value
+                val isOwn = ownPubkey != null && event.pubkey == ownPubkey
                 _state.value = cur.copy(
                     repostCounts = cur.repostCounts +
                         (targetId to (cur.repostCounts[targetId] ?: 0) + 1),
+                    repostedEvents = if (isOwn && !cur.repostedEvents.containsKey(targetId))
+                        cur.repostedEvents + (targetId to event.id)
+                    else cur.repostedEvents,
                 )
+            }
+        }
+
+        // 引用先イベント受信（nostr:note/nevent または q タグ）
+        subscriptionJobs += launch {
+            NostrRepository.events(quoteSubId).collect { event ->
+                if (event.kind != 1) return@collect
+                val cur = _state.value
+                if (cur.quotedEvents.containsKey(event.id)) return@collect
+                pendingQuoteIds.remove(event.id)
+                _state.value = cur.copy(quotedEvents = cur.quotedEvents + (event.id to event))
+                scheduleProfileFetch(event.pubkey)
             }
         }
     }
@@ -329,6 +376,7 @@ class FeedViewModel(
         NostrRepository.close(reactionSubId)
         NostrRepository.close(replySubId)
         NostrRepository.close(repostSubId)
+        NostrRepository.close(quoteSubId)
     }
 
     override fun onCleared() {
@@ -382,13 +430,19 @@ class FeedViewModel(
     /** イベントをリストに追加し、追加できた件数（0 or 1）を返す */
     private fun appendEvent(event: NostrEvent): Int {
         if (event.kind != 1) return 0
-        if (!seenEventIds.add(event.id)) return 0
-        while (seenEventIds.size > MAX_SEEN_IDS) seenEventIds.remove(seenEventIds.first())
+        if (!rememberSeenId(seenEventIds, event.id)) return 0
         val cur = _state.value
         val updated = (cur.events + event).sortedByDescending { it.createdAt }
         oldestCreatedAt = updated.lastOrNull()?.createdAt
         _state.value = cur.copy(events = updated)
+        scheduleQuoteFetch(quotedEventIds(event))
         return 1
+    }
+
+    private fun rememberSeenId(seenIds: LinkedHashSet<String>, eventId: String): Boolean {
+        if (!seenIds.add(eventId)) return false
+        while (seenIds.size > MAX_SEEN_IDS) seenIds.remove(seenIds.first())
+        return true
     }
 
     private fun scheduleProfileFetch(pubkey: String) {
@@ -419,6 +473,19 @@ class FeedViewModel(
             NostrRepository.subscribe(reactionSubId, NostrFilter(kinds = listOf(7), eTags = ids))
             NostrRepository.subscribe(replySubId, NostrFilter(kinds = listOf(1), eTags = ids))
             NostrRepository.subscribe(repostSubId, NostrFilter(kinds = listOf(6), eTags = ids))
+        }
+    }
+
+    private fun scheduleQuoteFetch(eventIds: List<String>) {
+        val missingIds = eventIds.filter { id ->
+            id !in _state.value.quotedEvents && pendingQuoteIds.add(id)
+        }
+        if (missingIds.isEmpty()) return
+        launch {
+            NostrRepository.subscribe(
+                quoteSubId,
+                NostrFilter(ids = pendingQuoteIds.toList(), kinds = listOf(1)),
+            )
         }
     }
 

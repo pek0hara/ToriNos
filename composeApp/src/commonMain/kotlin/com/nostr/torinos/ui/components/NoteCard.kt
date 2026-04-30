@@ -1,6 +1,7 @@
 package com.nostr.torinos.ui.components
 
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -33,6 +34,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.nostr.torinos.model.NostrEvent
 import com.nostr.torinos.model.NostrProfile
+import com.nostr.torinos.model.stripNostrEventUris
 import com.nostr.torinos.ui.profile.AvatarCircle
 import kotlinx.datetime.Instant
 import kotlinx.datetime.TimeZone
@@ -46,10 +48,12 @@ fun NoteCard(
     reactionCount: Int,
     repostCount: Int = 0,
     isLiked: Boolean = false,
+    isReposted: Boolean = false,
     onUserClick: (pubkey: String) -> Unit = {},
     onLike: (() -> Unit)? = null,
     onReply: (() -> Unit)? = null,
     onRepost: (() -> Unit)? = null,
+    quotedEvents: List<QuotedEvent> = emptyList(),
     ownPubkey: String? = null,
     onDelete: (() -> Unit)? = null,
 ) {
@@ -115,7 +119,12 @@ fun NoteCard(
             }
             Spacer(modifier = Modifier.height(4.dp))
             val imageUrls = extractImageUrls(event.content)
-            val textContent = if (imageUrls.isNotEmpty()) stripImageUrls(event.content) else event.content
+            val contentWithoutQuotes = stripNostrEventUris(event.content)
+            val textContent = if (imageUrls.isNotEmpty()) {
+                stripImageUrls(contentWithoutQuotes)
+            } else {
+                contentWithoutQuotes
+            }
             if (textContent.isNotBlank()) {
                 LinkedText(
                     text = textContent,
@@ -130,6 +139,14 @@ fun NoteCard(
                     modifier = Modifier
                         .fillMaxWidth()
                         .heightIn(max = 400.dp),
+                )
+            }
+            quotedEvents.forEach { quote ->
+                Spacer(modifier = Modifier.height(8.dp))
+                QuotePreview(
+                    event = quote.event,
+                    profile = quote.profile,
+                    onUserClick = onUserClick,
                 )
             }
             Row(
@@ -147,7 +164,7 @@ fun NoteCard(
                     icon = Icons.Default.Repeat,
                     contentDescription = "リポスト",
                     count = repostCount,
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    tint = if (isReposted) Color(0xFF2BAE66) else MaterialTheme.colorScheme.onSurfaceVariant,
                     onClick = onRepost,
                 )
                 EngagementCount(
@@ -161,6 +178,71 @@ fun NoteCard(
         }
     }
 }
+
+data class QuotedEvent(
+    val event: NostrEvent,
+    val profile: NostrProfile?,
+)
+
+@Composable
+private fun QuotePreview(
+    event: NostrEvent,
+    profile: NostrProfile?,
+    onUserClick: (pubkey: String) -> Unit,
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .border(
+                width = 1.dp,
+                color = MaterialTheme.colorScheme.outlineVariant,
+                shape = MaterialTheme.shapes.small,
+            )
+            .padding(10.dp),
+        verticalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                text = profile?.bestName ?: event.shortPubkey,
+                style = MaterialTheme.typography.labelSmall,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.clickable { onUserClick(event.pubkey) },
+            )
+            Text(
+                text = formatTimestamp(event.createdAt),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        val imageUrls = extractImageUrls(event.content)
+        val textContent = if (imageUrls.isNotEmpty()) {
+            stripImageUrls(stripNostrEventUris(event.content))
+        } else {
+            stripNostrEventUris(event.content)
+        }
+        if (textContent.isNotBlank()) {
+            LinkedText(
+                text = textContent,
+                style = MaterialTheme.typography.bodySmall,
+            )
+        }
+        imageUrls.firstOrNull()?.let { url ->
+            NetworkImage(
+                url = url,
+                contentDescription = null,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = 180.dp),
+            )
+        }
+    }
+}
+
 
 @Composable
 fun EngagementCount(

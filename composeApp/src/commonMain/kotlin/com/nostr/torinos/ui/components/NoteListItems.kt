@@ -12,6 +12,7 @@ import androidx.compose.material3.Text
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import com.nostr.torinos.model.quotedEventIds
 import com.nostr.torinos.ui.feed.FeedViewModel
 
 fun LazyListScope.noteListItems(
@@ -23,6 +24,7 @@ fun LazyListScope.noteListItems(
     onDelete: (eventId: String) -> Unit,
     onReply: ((eventId: String, authorPubkey: String) -> Unit)? = null,
     onRepost: ((eventId: String, authorPubkey: String) -> Unit)? = null,
+    onUnrepost: ((eventId: String) -> Unit)? = null,
     emptyText: String = "投稿がありません",
 ) {
     when {
@@ -53,6 +55,7 @@ fun LazyListScope.noteListItems(
                     repostCount = state.repostCounts[event.id] ?: 0,
                     reactionCount = state.reactionCounts[event.id] ?: 0,
                     isLiked = state.likedReactions.containsKey(event.id),
+                    isReposted = state.repostedEvents.containsKey(event.id),
                     onUserClick = onUserClick,
                     onLike = if (ownPubkey != null) {
                         {
@@ -66,8 +69,21 @@ fun LazyListScope.noteListItems(
                         { onReply(event.id, event.pubkey) }
                     } else null,
                     onRepost = if (ownPubkey != null && onRepost != null) {
-                        { onRepost(event.id, event.pubkey) }
+                        {
+                            if (state.repostedEvents.containsKey(event.id))
+                                onUnrepost?.invoke(event.id)
+                            else
+                                onRepost(event.id, event.pubkey)
+                        }
                     } else null,
+                    quotedEvents = quotedEventIds(event).mapNotNull { quotedEventId ->
+                        state.quotedEvents[quotedEventId]?.let { quotedEvent ->
+                            QuotedEvent(
+                                event = quotedEvent,
+                                profile = state.profiles[quotedEvent.pubkey],
+                            )
+                        }
+                    },
                     ownPubkey = ownPubkey,
                     onDelete = { onDelete(event.id) },
                 )
