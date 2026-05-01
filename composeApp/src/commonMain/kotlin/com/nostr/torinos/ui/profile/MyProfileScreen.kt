@@ -2,6 +2,7 @@ package com.nostr.torinos.ui.profile
 
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Edit
@@ -11,7 +12,9 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.PrimaryTabRow
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Tab
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
@@ -48,10 +51,16 @@ fun MyProfileScreen(
     feedViewModel: FeedViewModel = viewModel(key = "my-feed-$ownPubkey-reposts") {
         FeedViewModel(authorPubkey = ownPubkey, includeRepostsInFeed = true)
     },
+    reactionsViewModel: MyProfileReactionsViewModel = viewModel(
+        key = "my-reactions-$ownPubkey",
+        factory = viewModelFactory { initializer { MyProfileReactionsViewModel(ownPubkey) } },
+    ),
 ) {
     val state by viewModel.state.collectAsState()
     val feedState by feedViewModel.state.collectAsState()
+    val reactionsState by reactionsViewModel.state.collectAsState()
     var showEditSheet by remember { mutableStateOf(false) }
+    var selectedTab by remember { mutableStateOf(MyProfileTab.Posts) }
     val editProfileViewModel = viewModel<EditProfileViewModel>(
         key = "editProfile",
         factory = viewModelFactory { initializer { EditProfileViewModel() } },
@@ -109,46 +118,79 @@ fun MyProfileScreen(
             )
         }
 
-        NoteTimeline(
-            state = feedState,
-            ownPubkey = ownPubkey,
-            onUserClick = onUserClick,
-            onLoadMore = feedViewModel::loadMore,
-            onLike = feedViewModel::react,
-            onUnlike = feedViewModel::unreact,
-            onDelete = feedViewModel::deleteEvent,
-            modifier = Modifier
-                .padding(padding),
-            onReply = onReply,
-            onOpenReplies = onOpenReplies,
-            onOpenLikes = onOpenLikes,
-            onOpenReposts = onOpenReposts,
-            onRepost = feedViewModel::repost,
-            onUnrepost = feedViewModel::unrepost,
-            header = {
-                item {
-                    ProfileHeader(
-                        pubkey = ownPubkey,
-                        profile = state.profile,
-                        isOwnProfile = true,
-                        onUserClick = onUserClick,
-                    )
-                    HorizontalDivider()
-                }
+        val profileHeader: LazyListScope.() -> Unit = {
+            item {
+                ProfileHeader(
+                    pubkey = ownPubkey,
+                    profile = state.profile,
+                    isOwnProfile = true,
+                    onUserClick = onUserClick,
+                )
+                HorizontalDivider()
+            }
 
-                item {
-                    ProfileStatsRow(
-                        followingCount = state.followingCount,
-                        followersCount = state.followersCount,
-                        isFollowersLoading = state.isFollowersLoading,
-                        onFetchFollowers = viewModel::fetchFollowers,
-                        followersFetched = state.followersLoaded,
-                        onOpenFollowing = onOpenFollowing,
-                        onOpenFollowers = onOpenFollowers,
-                    )
-                    HorizontalDivider()
+            item {
+                ProfileStatsRow(
+                    followingCount = state.followingCount,
+                    followersCount = state.followersCount,
+                    isFollowersLoading = state.isFollowersLoading,
+                    onFetchFollowers = viewModel::fetchFollowers,
+                    followersFetched = state.followersLoaded,
+                    onOpenFollowing = onOpenFollowing,
+                    onOpenFollowers = onOpenFollowers,
+                )
+                HorizontalDivider()
+            }
+
+            item {
+                PrimaryTabRow(selectedTabIndex = selectedTab.ordinal) {
+                    MyProfileTab.entries.forEach { tab ->
+                        Tab(
+                            selected = selectedTab == tab,
+                            onClick = { selectedTab = tab },
+                            text = { Text(tab.label) },
+                        )
+                    }
                 }
-            },
-        )
+                HorizontalDivider()
+            }
+        }
+
+        when (selectedTab) {
+            MyProfileTab.Posts -> {
+                NoteTimeline(
+                    state = feedState,
+                    ownPubkey = ownPubkey,
+                    onUserClick = onUserClick,
+                    onLoadMore = feedViewModel::loadMore,
+                    onLike = feedViewModel::react,
+                    onUnlike = feedViewModel::unreact,
+                    onDelete = feedViewModel::deleteEvent,
+                    modifier = Modifier.padding(padding),
+                    onReply = onReply,
+                    onOpenReplies = onOpenReplies,
+                    onOpenLikes = onOpenLikes,
+                    onOpenReposts = onOpenReposts,
+                    onRepost = feedViewModel::repost,
+                    onUnrepost = feedViewModel::unrepost,
+                    header = profileHeader,
+                )
+            }
+
+            MyProfileTab.Reactions -> {
+                MyProfileReactionsList(
+                    state = reactionsState,
+                    onUserClick = onUserClick,
+                    onOpenThread = onOpenReplies,
+                    modifier = Modifier.padding(padding),
+                    header = profileHeader,
+                )
+            }
+        }
     }
+}
+
+private enum class MyProfileTab(val label: String) {
+    Posts("投稿"),
+    Reactions("反応"),
 }
