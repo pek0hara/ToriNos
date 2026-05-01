@@ -319,23 +319,23 @@ fun EngagementCount(
         Box(
             modifier = if (onClick != null) {
                 Modifier
-                    .size(32.dp)
+                    .size(36.dp)
                     .clickable { onClick() }
             } else {
-                Modifier.size(32.dp)
+                Modifier.size(36.dp)
             },
             contentAlignment = Alignment.Center,
         ) {
             Icon(
                 imageVector = icon,
                 contentDescription = contentDescription,
-                modifier = Modifier.size(16.dp),
+                modifier = Modifier.size(20.dp),
                 tint = tint,
             )
         }
         Text(
             text = count.toString(),
-            style = MaterialTheme.typography.labelSmall,
+            style = MaterialTheme.typography.labelMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier
                 .widthIn(min = 20.dp)
