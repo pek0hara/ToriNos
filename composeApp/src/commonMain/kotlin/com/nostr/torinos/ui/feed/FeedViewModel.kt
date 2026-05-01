@@ -423,6 +423,8 @@ class FeedViewModel(
             return
         }
 
+        NostrRepository.closeSuspending(historySubId)
+
         loadingMore = true
         lastHistoryBatchReceivedCount = 0
         lastHistoryBatchUniqueCount = 0
@@ -479,13 +481,14 @@ class FeedViewModel(
             if (!loadingMore) return@launch
 
             loadingMore = false
+            val hasMore = lastHistoryBatchReceivedCount >= FEED_PAGE_SIZE
             val current = _state.value
             _state.value = current.copy(
                 isInitialLoad = false,
-                canLoadMore = false,
+                canLoadMore = hasMore,
                 isLoadingMore = false,
             )
-            NostrRepository.close(historySubId)
+            if (!hasMore) NostrRepository.close(historySubId)
         }
     }
 

@@ -6,15 +6,16 @@ import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Modifier
 import com.nostr.torinos.model.NostrEvent
 import com.nostr.torinos.network.MuteStore
 import com.nostr.torinos.ui.feed.FeedViewModel
 import androidx.compose.runtime.collectAsState
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.filter
 
 @Composable
 fun NoteTimeline(
@@ -39,15 +40,18 @@ fun NoteTimeline(
 ) {
     val mutedPubkeys by MuteStore.mutedPubkeys.collectAsState()
     val timelineListState = listState ?: rememberSaveable(saver = LazyListState.Saver) { LazyListState() }
-    val reachedBottom by remember {
-        derivedStateOf {
-            val lastVisible = timelineListState.layoutInfo.visibleItemsInfo.lastOrNull()
-            lastVisible != null && lastVisible.index >= timelineListState.layoutInfo.totalItemsCount - 3
-        }
-    }
 
-    LaunchedEffect(reachedBottom, state.canLoadMore, state.isLoadingMore) {
-        if (reachedBottom && state.canLoadMore && !state.isLoadingMore) onLoadMore()
+    LaunchedEffect(timelineListState, state.canLoadMore, state.isLoadingMore) {
+        if (!state.canLoadMore || state.isLoadingMore) return@LaunchedEffect
+
+        snapshotFlow {
+            val layoutInfo = timelineListState.layoutInfo
+            val lastVisible = layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: -1
+            lastVisible >= layoutInfo.totalItemsCount - 3
+        }
+            .distinctUntilChanged()
+            .filter { it }
+            .collect { onLoadMore() }
     }
 
     LaunchedEffect(scrollToTopRequest) {

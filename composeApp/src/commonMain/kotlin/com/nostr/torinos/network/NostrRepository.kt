@@ -118,6 +118,14 @@ object NostrRepository {
         }
     }
 
+    /** サブスクリプション解除を呼び出し元のコルーチン内で送信する。 */
+    suspend fun closeSuspending(subscriptionId: String) {
+        appLog("[Repo] closeSuspending() subId='$subscriptionId' relayCount=${activeRelays.size}")
+        activeSubscriptions.remove(subscriptionId)
+        val msg = buildCloseMessage(subscriptionId)
+        activeRelays.values.forEach { it.send(msg) }
+    }
+
     /** 現在接続中のリレー数 */
     val relayCount: Int get() = activeRelays.size
 
