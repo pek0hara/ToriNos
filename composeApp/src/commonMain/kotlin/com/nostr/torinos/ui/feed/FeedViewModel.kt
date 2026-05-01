@@ -71,6 +71,7 @@ class FeedViewModel(
     private val seenRepostIds = linkedSetOf<String>()
     private val seenEventIds = linkedSetOf<String>()
     private val rawEvents = linkedMapOf<String, NostrEvent>()
+    private val canonicalEvents = linkedMapOf<String, NostrEvent>()
     private val pendingQuoteIds = linkedSetOf<String>()
     private val pendingRepostTargets = mutableMapOf<String, PendingRepostTarget>()
     private var subscriptionsStarted = false
@@ -109,6 +110,8 @@ class FeedViewModel(
             val cur = _state.value
             _state.value = cur.copy(events = cur.events.filter { it.id != eventId })
             seenEventIds.remove(eventId)
+            rawEvents.remove(eventId)
+            canonicalEvents.remove(eventId)
         }
     }
 
@@ -165,6 +168,7 @@ class FeedViewModel(
     fun repost(event: NostrEvent) {
         val cur = _state.value
         if (cur.repostedEvents.containsKey(event.id)) return
+        val eventToRepost = canonicalEvents[event.id] ?: event
         _state.value = cur.copy(
             repostedEvents = cur.repostedEvents + (event.id to ""),
             repostCounts = cur.repostCounts + (event.id to (cur.repostCounts[event.id] ?: 0) + 1),
@@ -174,9 +178,9 @@ class FeedViewModel(
             runCatching {
                 val repostEvent = signEvent(
                     privateKeyHex = privateKeyHex,
-                    content = Json.encodeToString(NostrEvent.serializer(), event),
+                    content = Json.encodeToString(NostrEvent.serializer(), eventToRepost),
                     kind = 6,
-                    tags = listOf(listOf("e", event.id), listOf("p", event.pubkey)),
+                    tags = listOf(listOf("e", eventToRepost.id), listOf("p", eventToRepost.pubkey)),
                 )
                 rememberSeenId(seenRepostIds, repostEvent.id)
                 NostrRepository.publish(repostEvent)
@@ -476,7 +480,11 @@ class FeedViewModel(
         if (event.kind != 1) return 0
         if (!rememberSeenId(seenEventIds, event.id)) return 0
         rawEvents[event.id] = event
+        if (event.id !in canonicalEvents) {
+            canonicalEvents[event.id] = event
+        }
         while (rawEvents.size > MAX_SEEN_IDS) rawEvents.remove(rawEvents.keys.first())
+        while (canonicalEvents.size > MAX_SEEN_IDS) canonicalEvents.remove(canonicalEvents.keys.first())
         if (oldestCreatedAt == null || event.createdAt < (oldestCreatedAt ?: Long.MAX_VALUE)) {
             oldestCreatedAt = event.createdAt
         }
@@ -510,6 +518,7 @@ class FeedViewModel(
         updateRepostState(repost, targetId ?: targetEvent?.id)
 
         if (targetEvent != null) {
+            canonicalEvents[targetEvent.id] = targetEvent
             val timelineEvent = targetEvent.copy(createdAt = repost.createdAt)
             val appended = appendEvent(timelineEvent)
             if (appended > 0) {

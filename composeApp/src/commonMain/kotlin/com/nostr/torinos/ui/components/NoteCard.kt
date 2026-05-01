@@ -3,6 +3,7 @@ package com.nostr.torinos.ui.components
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -11,6 +12,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.MailOutline
@@ -212,8 +214,8 @@ fun NoteCard(
                     contentDescription = "返信",
                     count = replyCount,
                     tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                    onClick = if (replyCount > 0) onOpenReplies ?: onReply else onReply,
-                    onCountClick = if (replyCount > 0) onOpenReplies else null,
+                    onClick = onReply,
+                    onCountClick = onOpenReplies,
                 )
                 EngagementCount(
                     icon = Icons.Default.Repeat,
@@ -312,12 +314,17 @@ fun EngagementCount(
 ) {
     Row(
         verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(2.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        IconButton(
-            onClick = onClick ?: {},
-            enabled = onClick != null,
-            modifier = Modifier.size(32.dp),
+        Box(
+            modifier = if (onClick != null) {
+                Modifier
+                    .size(32.dp)
+                    .clickable { onClick() }
+            } else {
+                Modifier.size(32.dp)
+            },
+            contentAlignment = Alignment.Center,
         ) {
             Icon(
                 imageVector = icon,
@@ -330,7 +337,9 @@ fun EngagementCount(
             text = count.toString(),
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.clickable(enabled = onCountClick != null) { onCountClick?.invoke() },
+            modifier = Modifier
+                .widthIn(min = 20.dp)
+                .clickable(enabled = onCountClick != null) { onCountClick?.invoke() },
         )
     }
 }

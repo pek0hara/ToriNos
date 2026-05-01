@@ -76,6 +76,7 @@ fun App() {
         var showPostSheet by remember { mutableStateOf(false) }
         var replyToId by remember { mutableStateOf<String?>(null) }
         var replyToPubkey by remember { mutableStateOf<String?>(null) }
+        var replyToPreview by remember { mutableStateOf<String?>(null) }
         var showKeySetup by remember { mutableStateOf(false) }
         var pendingKeyAction by remember { mutableStateOf<PendingKeyAction?>(null) }
         val scope = rememberCoroutineScope()
@@ -152,6 +153,7 @@ fun App() {
             pendingKeyAction = null
             replyToId = null
             replyToPubkey = null
+            replyToPreview = null
             nav.navigate("feed") {
                 popUpTo("feed") { inclusive = true }
                 launchSingleTop = true
@@ -167,6 +169,7 @@ fun App() {
                         runWithPrivateKey(PendingKeyAction.NewPost) {
                             replyToId = null
                             replyToPubkey = null
+                            replyToPreview = null
                             showPostSheet = true
                         }
                     }) {
@@ -225,9 +228,10 @@ fun App() {
                                     nav.navigate("myprofile") { launchSingleTop = true }
                                 }
                             },
-                            onReply = { eventId, authorPk ->
+                            onReply = { eventId, authorPk, preview ->
                                 replyToId = eventId
                                 replyToPubkey = authorPk
+                                replyToPreview = preview
                                 runWithPrivateKey(PendingKeyAction.Reply) {
                                     showPostSheet = true
                                 }
@@ -267,9 +271,10 @@ fun App() {
                             initialTab = route.initialTab,
                             onBack = { nav.popBackStack() },
                             onUserClick = { pubkey -> nav.navigate(ProfileRoute(pubkey)) },
-                            onReply = { eventId, authorPk ->
+                            onReply = { eventId, authorPk, preview ->
                                 replyToId = eventId
                                 replyToPubkey = authorPk
+                                replyToPreview = preview
                                 runWithPrivateKey(PendingKeyAction.Reply) {
                                     showPostSheet = true
                                 }
@@ -288,9 +293,10 @@ fun App() {
                             onOpenFollowing = { nav.navigate(FollowingRoute(pubkey)) },
                             onOpenFollowers = { nav.navigate(FollowersRoute(pubkey)) },
                             onOpenSettings = { nav.navigate("settings") },
-                            onReply = { eventId, authorPk ->
+                            onReply = { eventId, authorPk, preview ->
                                 replyToId = eventId
                                 replyToPubkey = authorPk
+                                replyToPreview = preview
                                 runWithPrivateKey(PendingKeyAction.Reply) {
                                     showPostSheet = true
                                 }
@@ -342,9 +348,10 @@ fun App() {
                             ownPubkey = ownPubkey,
                             onOpenFollowing = { nav.navigate(FollowingRoute(route.pubkey)) },
                             onOpenFollowers = { nav.navigate(FollowersRoute(route.pubkey)) },
-                            onReply = { eventId, authorPk ->
+                            onReply = { eventId, authorPk, preview ->
                                 replyToId = eventId
                                 replyToPubkey = authorPk
+                                replyToPreview = preview
                                 runWithPrivateKey(PendingKeyAction.Reply) {
                                     showPostSheet = true
                                 }
@@ -364,9 +371,11 @@ fun App() {
                     showPostSheet = false
                     replyToId = null
                     replyToPubkey = null
+                    replyToPreview = null
                 },
                 replyToId = replyToId,
                 replyToPubkey = replyToPubkey,
+                replyToPreview = replyToPreview,
             )
         }
 
@@ -382,6 +391,7 @@ fun App() {
                         PendingKeyAction.NewPost -> {
                             replyToId = null
                             replyToPubkey = null
+                            replyToPreview = null
                             showPostSheet = true
                         }
                         PendingKeyAction.Reply -> showPostSheet = true
@@ -393,6 +403,7 @@ fun App() {
                     pendingKeyAction = null
                     replyToId = null
                     replyToPubkey = null
+                    replyToPreview = null
                     showKeySetup = false
                 },
             )

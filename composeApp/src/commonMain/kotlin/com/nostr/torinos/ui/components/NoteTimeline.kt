@@ -14,7 +14,7 @@ import androidx.compose.ui.Modifier
 import com.nostr.torinos.model.NostrEvent
 import com.nostr.torinos.network.MuteStore
 import com.nostr.torinos.ui.feed.FeedViewModel
-import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.compose.runtime.collectAsState
 
 @Composable
 fun NoteTimeline(
@@ -26,7 +26,7 @@ fun NoteTimeline(
     onUnlike: (eventId: String) -> Unit,
     onDelete: (eventId: String) -> Unit,
     modifier: Modifier = Modifier,
-    onReply: ((eventId: String, authorPubkey: String) -> Unit)? = null,
+    onReply: ((eventId: String, authorPubkey: String, preview: String) -> Unit)? = null,
     onOpenReplies: (eventId: String) -> Unit = {},
     onOpenLikes: (eventId: String) -> Unit = {},
     onOpenReposts: (eventId: String) -> Unit = {},
@@ -36,7 +36,7 @@ fun NoteTimeline(
     scrollToTopRequest: Int = 0,
     header: LazyListScope.() -> Unit = {},
 ) {
-    val mutedPubkeys by MuteStore.mutedPubkeys.collectAsStateWithLifecycle()
+    val mutedPubkeys by MuteStore.mutedPubkeys.collectAsState()
     val listState = rememberSaveable(saver = LazyListState.Saver) { LazyListState() }
     val reachedBottom by remember {
         derivedStateOf {

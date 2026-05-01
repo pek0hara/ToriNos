@@ -1,5 +1,9 @@
 package com.nostr.torinos.ui.thread
 
+import com.nostr.torinos.crypto.KeyStorage
+import com.nostr.torinos.crypto.isWriteSupported
+import com.nostr.torinos.crypto.loadPublicKey
+import com.nostr.torinos.crypto.signEvent
 import com.nostr.torinos.model.NostrEvent
 import com.nostr.torinos.model.NostrFilter
 import com.nostr.torinos.model.NostrProfile
@@ -9,6 +13,7 @@ import com.nostr.torinos.ui.SafeViewModel
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.serialization.json.Json
 
 class ThreadViewModel(
     private val eventId: String,
@@ -19,8 +24,11 @@ class ThreadViewModel(
         val replies: List<NostrEvent> = emptyList(),
         val profiles: Map<String, NostrProfile> = emptyMap(),
         val replyCounts: Map<String, Int> = emptyMap(),
+        val reactionCounts: Map<String, Int> = emptyMap(),
         val reactionPubkeys: List<String> = emptyList(),
         val repostPubkeys: List<String> = emptyList(),
+        val likedReactions: Map<String, String> = emptyMap(),
+        val ownRepostEventId: String? = null,
         val isLoading: Boolean = true,
     )
 
@@ -41,13 +49,129 @@ class ThreadViewModel(
     private val seenReactionIds = linkedSetOf<String>()
     private val seenRepostIds = linkedSetOf<String>()
     private val watchedEventIds = linkedSetOf<String>()
+    private val watchedReactionEventIds = linkedSetOf<String>()
     private val pendingPubkeys = linkedSetOf<String>()
     private var profileBatchJob: Job? = null
     private var replyCountBatchJob: Job? = null
+    private var reactionBatchJob: Job? = null
     private var started = false
+    private var ownPubkey: String? = null
 
     init {
+        if (isWriteSupported) launch { ownPubkey = loadPublicKey() }
         startSubscriptions()
+    }
+
+    fun react(eventId: String, eventPubkey: String) {
+        val cur = _state.value
+        if (cur.likedReactions.containsKey(eventId)) return
+        _state.value = cur.copy(
+            likedReactions = cur.likedReactions + (eventId to ""),
+            reactionCounts = cur.reactionCounts + (eventId to (cur.reactionCounts[eventId] ?: 0) + 1),
+            reactionPubkeys = if (eventId == this.eventId && ownPubkey != null && ownPubkey !in cur.reactionPubkeys) {
+                cur.reactionPubkeys + ownPubkey!!
+            } else {
+                cur.reactionPubkeys
+            },
+        )
+        launch {
+            val privateKeyHex = KeyStorage.loadPrivateKey() ?: return@launch
+            runCatching {
+                val reaction = signEvent(
+                    privateKeyHex = privateKeyHex,
+                    content = "+",
+                    kind = 7,
+                    tags = listOf(listOf("e", eventId), listOf("p", eventPubkey)),
+                )
+                seenReactionIds.add(reaction.id)
+                NostrRepository.publish(reaction)
+                _state.value = _state.value.copy(
+                    likedReactions = _state.value.likedReactions + (eventId to reaction.id),
+                )
+            }
+        }
+    }
+
+    fun unreact(eventId: String) {
+        val cur = _state.value
+        val reactionEventId = cur.likedReactions[eventId] ?: return
+        _state.value = cur.copy(
+            likedReactions = cur.likedReactions - eventId,
+            reactionCounts = cur.reactionCounts + (eventId to maxOf(0, (cur.reactionCounts[eventId] ?: 0) - 1)),
+            reactionPubkeys = if (eventId == this.eventId && ownPubkey != null) {
+                cur.reactionPubkeys - ownPubkey!!
+            } else {
+                cur.reactionPubkeys
+            },
+        )
+        if (reactionEventId.isEmpty()) return
+        launch {
+            val privateKeyHex = KeyStorage.loadPrivateKey() ?: return@launch
+            runCatching {
+                val deletion = signEvent(
+                    privateKeyHex = privateKeyHex,
+                    content = "",
+                    kind = 5,
+                    tags = listOf(listOf("e", reactionEventId)),
+                )
+                NostrRepository.publish(deletion)
+            }
+        }
+    }
+
+    fun repost(event: NostrEvent) {
+        val cur = _state.value
+        if (cur.ownRepostEventId != null) return
+        val currentOwnPubkey = ownPubkey
+        _state.value = cur.copy(
+            repostPubkeys = if (currentOwnPubkey != null && currentOwnPubkey !in cur.repostPubkeys) {
+                cur.repostPubkeys + currentOwnPubkey
+            } else {
+                cur.repostPubkeys
+            },
+            ownRepostEventId = "",
+        )
+        launch {
+            val privateKeyHex = KeyStorage.loadPrivateKey() ?: return@launch
+            runCatching {
+                val repostEvent = signEvent(
+                    privateKeyHex = privateKeyHex,
+                    content = Json.encodeToString(NostrEvent.serializer(), event),
+                    kind = 6,
+                    tags = listOf(listOf("e", event.id), listOf("p", event.pubkey)),
+                )
+                seenRepostIds.add(repostEvent.id)
+                NostrRepository.publish(repostEvent)
+                _state.value = _state.value.copy(ownRepostEventId = repostEvent.id)
+            }
+        }
+    }
+
+    fun unrepost() {
+        val cur = _state.value
+        val repostEventId = cur.ownRepostEventId ?: return
+        val currentOwnPubkey = ownPubkey
+        _state.value = cur.copy(
+            repostPubkeys = if (currentOwnPubkey != null) {
+                cur.repostPubkeys - currentOwnPubkey
+            } else {
+                cur.repostPubkeys
+            },
+            ownRepostEventId = null,
+        )
+        if (repostEventId.isEmpty()) return
+        launch {
+            val privateKeyHex = KeyStorage.loadPrivateKey() ?: return@launch
+            runCatching {
+                val deletion = signEvent(
+                    privateKeyHex = privateKeyHex,
+                    content = "",
+                    kind = 5,
+                    tags = listOf(listOf("e", repostEventId)),
+                )
+                NostrRepository.publish(deletion)
+            }
+        }
     }
 
     fun startSubscriptions() {
@@ -55,11 +179,11 @@ class ThreadViewModel(
         started = true
 
         scheduleReplyCountFetch(eventId)
+        scheduleReactionFetch(eventId)
 
         subscriptionJobs += launch {
             NostrRepository.subscribe(rootSubId, NostrFilter(ids = listOf(eventId), kinds = listOf(1), limit = 1))
             NostrRepository.subscribe(repliesSubId, NostrFilter(kinds = listOf(1), eTags = listOf(eventId), limit = 100))
-            NostrRepository.subscribe(reactionSubId, NostrFilter(kinds = listOf(7), eTags = listOf(eventId), limit = 500))
             NostrRepository.subscribe(repostSubId, NostrFilter(kinds = listOf(6), eTags = listOf(eventId), limit = 500))
         }
 
@@ -85,6 +209,7 @@ class ThreadViewModel(
                 )
                 scheduleProfileFetch(event.pubkey)
                 scheduleReplyCountFetch(event.id)
+                scheduleReactionFetch(event.id)
             }
         }
 
@@ -113,10 +238,28 @@ class ThreadViewModel(
         subscriptionJobs += launch {
             NostrRepository.events(reactionSubId).collect { event ->
                 if (event.kind != 7 || !seenReactionIds.add(event.id)) return@collect
-                if (event.tags.lastOrNull { it.firstOrNull() == "e" }?.getOrNull(1) != eventId) return@collect
+                val targetId = event.tags.lastOrNull { it.firstOrNull() == "e" }?.getOrNull(1)
+                    ?: return@collect
+                if (targetId !in watchedReactionEventIds) return@collect
                 val cur = _state.value
-                if (event.pubkey in cur.reactionPubkeys) return@collect
-                _state.value = cur.copy(reactionPubkeys = cur.reactionPubkeys + event.pubkey)
+                val isOwn = ownPubkey != null && event.pubkey == ownPubkey
+                val rootReactionPubkeys = if (
+                    targetId == eventId &&
+                    event.pubkey !in cur.reactionPubkeys
+                ) {
+                    cur.reactionPubkeys + event.pubkey
+                } else {
+                    cur.reactionPubkeys
+                }
+                _state.value = cur.copy(
+                    reactionCounts = cur.reactionCounts + (targetId to (cur.reactionCounts[targetId] ?: 0) + 1),
+                    reactionPubkeys = rootReactionPubkeys,
+                    likedReactions = if (isOwn && !cur.likedReactions.containsKey(targetId)) {
+                        cur.likedReactions + (targetId to event.id)
+                    } else {
+                        cur.likedReactions
+                    },
+                )
                 scheduleProfileFetch(event.pubkey)
             }
         }
@@ -126,8 +269,21 @@ class ThreadViewModel(
                 if (event.kind != 6 || !seenRepostIds.add(event.id)) return@collect
                 if (event.tags.lastOrNull { it.firstOrNull() == "e" }?.getOrNull(1) != eventId) return@collect
                 val cur = _state.value
-                if (event.pubkey in cur.repostPubkeys) return@collect
-                _state.value = cur.copy(repostPubkeys = cur.repostPubkeys + event.pubkey)
+                val ownRepostEventId = if (ownPubkey != null && event.pubkey == ownPubkey) {
+                    event.id
+                } else {
+                    cur.ownRepostEventId
+                }
+                if (event.pubkey in cur.repostPubkeys) {
+                    if (ownRepostEventId != cur.ownRepostEventId) {
+                        _state.value = cur.copy(ownRepostEventId = ownRepostEventId)
+                    }
+                    return@collect
+                }
+                _state.value = cur.copy(
+                    repostPubkeys = cur.repostPubkeys + event.pubkey,
+                    ownRepostEventId = ownRepostEventId,
+                )
                 scheduleProfileFetch(event.pubkey)
             }
         }
@@ -147,6 +303,7 @@ class ThreadViewModel(
         subscriptionJobs.clear()
         profileBatchJob?.cancel()
         replyCountBatchJob?.cancel()
+        reactionBatchJob?.cancel()
         NostrRepository.close(rootSubId)
         NostrRepository.close(repliesSubId)
         NostrRepository.close(profileSubId)
@@ -179,6 +336,21 @@ class ThreadViewModel(
         replyCountBatchJob = launch {
             delay(300)
             NostrRepository.subscribe(replyCountSubId, NostrFilter(kinds = listOf(1), eTags = watchedEventIds.toList()))
+        }
+    }
+
+    private fun scheduleReactionFetch(eventId: String) {
+        if (!watchedReactionEventIds.add(eventId)) return
+        while (watchedReactionEventIds.size > MAX_WATCHED_EVENTS) {
+            watchedReactionEventIds.remove(watchedReactionEventIds.first())
+        }
+        reactionBatchJob?.cancel()
+        reactionBatchJob = launch {
+            delay(300)
+            NostrRepository.subscribe(
+                reactionSubId,
+                NostrFilter(kinds = listOf(7), eTags = watchedReactionEventIds.toList(), limit = 500),
+            )
         }
     }
 

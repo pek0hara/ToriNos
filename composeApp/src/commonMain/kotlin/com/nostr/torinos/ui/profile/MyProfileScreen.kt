@@ -22,7 +22,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
-import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.compose.runtime.collectAsState
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
@@ -38,7 +38,7 @@ fun MyProfileScreen(
     onOpenFollowers: () -> Unit = {},
     onOpenSettings: () -> Unit = {},
     onUserClick: (String) -> Unit = {},
-    onReply: ((eventId: String, authorPubkey: String) -> Unit)? = null,
+    onReply: ((eventId: String, authorPubkey: String, preview: String) -> Unit)? = null,
     onOpenReplies: (eventId: String) -> Unit = {},
     onOpenLikes: (eventId: String) -> Unit = {},
     onOpenReposts: (eventId: String) -> Unit = {},
@@ -49,8 +49,8 @@ fun MyProfileScreen(
         FeedViewModel(authorPubkey = ownPubkey, includeRepostsInFeed = true)
     },
 ) {
-    val state by viewModel.state.collectAsStateWithLifecycle()
-    val feedState by feedViewModel.state.collectAsStateWithLifecycle()
+    val state by viewModel.state.collectAsState()
+    val feedState by feedViewModel.state.collectAsState()
     var showEditSheet by remember { mutableStateOf(false) }
     val editProfileViewModel = viewModel<EditProfileViewModel>(
         key = "editProfile",

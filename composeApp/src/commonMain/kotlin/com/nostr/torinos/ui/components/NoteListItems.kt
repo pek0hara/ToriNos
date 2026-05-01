@@ -13,6 +13,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import com.nostr.torinos.model.quotedEventIds
+import com.nostr.torinos.model.stripNostrEventUris
 import com.nostr.torinos.network.MuteStore
 import com.nostr.torinos.ui.feed.FeedViewModel
 
@@ -23,7 +24,7 @@ fun LazyListScope.noteListItems(
     onLike: (eventId: String, authorPubkey: String) -> Unit,
     onUnlike: (eventId: String) -> Unit,
     onDelete: (eventId: String) -> Unit,
-    onReply: ((eventId: String, authorPubkey: String) -> Unit)? = null,
+    onReply: ((eventId: String, authorPubkey: String, preview: String) -> Unit)? = null,
     onOpenReplies: ((eventId: String) -> Unit)? = null,
     onOpenLikes: ((eventId: String) -> Unit)? = null,
     onOpenReposts: ((eventId: String) -> Unit)? = null,
@@ -74,7 +75,7 @@ fun LazyListScope.noteListItems(
                         }
                     } else null,
                     onReply = if (ownPubkey != null && onReply != null) {
-                        { onReply(event.id, event.pubkey) }
+                        { onReply(event.id, event.pubkey, event.content.replyPreviewText()) }
                     } else null,
                     onOpenReplies = if (onOpenReplies != null) {
                         { onOpenReplies(event.id) }
@@ -124,3 +125,11 @@ fun LazyListScope.noteListItems(
         }
     }
 }
+
+private fun String.replyPreviewText(): String =
+    stripImageUrls(stripNostrEventUris(this))
+        .lineSequence()
+        .map { it.trim() }
+        .filter { it.isNotEmpty() }
+        .joinToString(" ")
+        .take(160)

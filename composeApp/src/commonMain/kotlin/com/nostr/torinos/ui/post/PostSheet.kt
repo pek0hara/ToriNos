@@ -1,5 +1,6 @@
 package com.nostr.torinos.ui.post
 
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -27,9 +28,10 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
-import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.compose.runtime.collectAsState
 import com.nostr.torinos.ui.components.rememberImagePickerLauncher
 
 private const val MAX_CHARS = 800
@@ -39,10 +41,11 @@ fun PostSheet(
     onDismiss: () -> Unit,
     replyToId: String? = null,
     replyToPubkey: String? = null,
+    replyToPreview: String? = null,
     viewModel: PostViewModel? = null,
 ) {
     val postViewModel = viewModel ?: remember { PostViewModel() }
-    val state by postViewModel.state.collectAsStateWithLifecycle()
+    val state by postViewModel.state.collectAsState()
 
     val pickImage = rememberImagePickerLauncher { bytes, mime ->
         if (bytes != null && mime != null) postViewModel.uploadAndAppendImage(bytes, mime)
@@ -61,6 +64,7 @@ fun PostSheet(
                 PostSheetContent(
                     state = state,
                     title = if (replyToId != null) "返信" else "新しい投稿",
+                    replyToPreview = replyToPreview,
                     onDismiss = onDismiss,
                     onPickImage = pickImage,
                     onTextChange = postViewModel::onTextChange,
@@ -75,6 +79,7 @@ fun PostSheet(
 private fun PostSheetContent(
     state: PostState,
     title: String,
+    replyToPreview: String?,
     onDismiss: () -> Unit,
     onPickImage: () -> Unit,
     onTextChange: (String) -> Unit,
@@ -91,6 +96,34 @@ private fun PostSheetContent(
             style = MaterialTheme.typography.titleMedium,
         )
         Spacer(modifier = Modifier.height(12.dp))
+
+        replyToPreview?.takeIf { it.isNotBlank() }?.let { preview ->
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .border(
+                        width = 1.dp,
+                        color = MaterialTheme.colorScheme.outlineVariant,
+                        shape = MaterialTheme.shapes.small,
+                    )
+                    .padding(10.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                Text(
+                    text = "返信先",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Text(
+                    text = preview,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    maxLines = 3,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+            Spacer(modifier = Modifier.height(12.dp))
+        }
 
         OutlinedTextField(
             value = state.text,

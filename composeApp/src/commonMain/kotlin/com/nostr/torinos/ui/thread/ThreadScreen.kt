@@ -38,9 +38,11 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
-import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.compose.runtime.collectAsState
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.nostr.torinos.model.stripNostrEventUris
 import com.nostr.torinos.ui.components.NoteCard
+import com.nostr.torinos.ui.components.stripImageUrls
 import com.nostr.torinos.ui.profile.AvatarCircle
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -50,14 +52,14 @@ fun ThreadScreen(
     initialTab: String = "replies",
     onBack: () -> Unit = {},
     onUserClick: (pubkey: String) -> Unit = {},
-    onReply: ((eventId: String, authorPubkey: String) -> Unit)? = null,
+    onReply: ((eventId: String, authorPubkey: String, preview: String) -> Unit)? = null,
     onOpenThread: (eventId: String) -> Unit = {},
     onOpenLikes: (eventId: String) -> Unit = {},
     onOpenReposts: (eventId: String) -> Unit = {},
     ownPubkey: String? = null,
     viewModel: ThreadViewModel = viewModel(key = "thread-$eventId") { ThreadViewModel(eventId) },
 ) {
-    val state by viewModel.state.collectAsStateWithLifecycle()
+    val state by viewModel.state.collectAsState()
     var selectedTab by remember(initialTab) { mutableStateOf(ThreadTab.fromRouteValue(initialTab)) }
 
     DisposableEffect(viewModel) {
@@ -134,15 +136,36 @@ fun ThreadScreen(
                                 event = root,
                                 profile = state.profiles[root.pubkey],
                                 replyCount = state.replyCounts[root.id] ?: state.replies.size,
-                                reactionCount = state.reactionPubkeys.size,
+                                reactionCount = state.reactionCounts[root.id] ?: state.reactionPubkeys.size,
                                 repostCount = state.repostPubkeys.size,
+                                isLiked = state.likedReactions.containsKey(root.id),
+                                isReposted = state.ownRepostEventId != null,
                                 onUserClick = onUserClick,
+                                onLike = if (ownPubkey != null) {
+                                    {
+                                        if (state.likedReactions.containsKey(root.id)) {
+                                            viewModel.unreact(root.id)
+                                        } else {
+                                            viewModel.react(root.id, root.pubkey)
+                                        }
+                                    }
+                                } else null,
                                 onReply = if (ownPubkey != null && onReply != null) {
-                                    { onReply(root.id, root.pubkey) }
+                                    { onReply(root.id, root.pubkey, root.content.replyPreviewText()) }
                                 } else null,
                                 onOpenReplies = { selectedTab = ThreadTab.Replies },
                                 onOpenLikes = { selectedTab = ThreadTab.Likes },
                                 onOpenReposts = { selectedTab = ThreadTab.Reposts },
+                                onRepost = if (ownPubkey != null) {
+                                    {
+                                        if (state.ownRepostEventId != null) {
+                                            viewModel.unrepost()
+                                        } else {
+                                            viewModel.repost(root)
+                                        }
+                                    }
+                                } else null,
+                                ownPubkey = ownPubkey,
                             )
                             HorizontalDivider()
                         }
@@ -169,14 +192,22 @@ fun ThreadScreen(
                                             event = reply,
                                             profile = state.profiles[reply.pubkey],
                                             replyCount = replyCount,
-                                            reactionCount = 0,
+                                            reactionCount = state.reactionCounts[reply.id] ?: 0,
+                                            isLiked = state.likedReactions.containsKey(reply.id),
                                             onUserClick = onUserClick,
+                                            onLike = if (ownPubkey != null) {
+                                                {
+                                                    if (state.likedReactions.containsKey(reply.id)) {
+                                                        viewModel.unreact(reply.id)
+                                                    } else {
+                                                        viewModel.react(reply.id, reply.pubkey)
+                                                    }
+                                                }
+                                            } else null,
                                             onReply = if (ownPubkey != null && onReply != null) {
-                                                { onReply(reply.id, reply.pubkey) }
+                                                { onReply(reply.id, reply.pubkey, reply.content.replyPreviewText()) }
                                             } else null,
-                                            onOpenReplies = if (replyCount > 0) {
-                                                { onOpenThread(reply.id) }
-                                            } else null,
+                                            onOpenReplies = { onOpenThread(reply.id) },
                                             onOpenLikes = { onOpenLikes(reply.id) },
                                             onOpenReposts = { onOpenReposts(reply.id) },
                                         )
@@ -257,6 +288,14 @@ private fun ThreadTab.next(): ThreadTab? =
 
 private fun ThreadTab.previous(): ThreadTab? =
     ThreadTab.entries.getOrNull(ordinal - 1)
+
+private fun String.replyPreviewText(): String =
+    stripImageUrls(stripNostrEventUris(this))
+        .lineSequence()
+        .map { it.trim() }
+        .filter { it.isNotEmpty() }
+        .joinToString(" ")
+        .take(160)
 
 private const val SwipeThresholdPx = 80f
 

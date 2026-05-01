@@ -23,7 +23,8 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
-import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.runtime.collectAsState
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.nostr.torinos.network.RelayStore
 import com.nostr.torinos.ui.components.NoteTimeline
@@ -42,13 +43,13 @@ fun UserProfileScreen(
     onUserClick: (String) -> Unit = {},
     onOpenFollowing: (() -> Unit)? = null,
     onOpenFollowers: (() -> Unit)? = null,
-    onReply: ((eventId: String, authorPubkey: String) -> Unit)? = null,
+    onReply: ((eventId: String, authorPubkey: String, preview: String) -> Unit)? = null,
     onOpenReplies: (eventId: String) -> Unit = {},
     onOpenLikes: (eventId: String) -> Unit = {},
     onOpenReposts: (eventId: String) -> Unit = {},
 ) {
-    val relays by RelayStore.relays.collectAsStateWithLifecycle(
-        initialValue = RelayStore.defaults.filter { it.enabled }.map { it.url },
+    val relays by RelayStore.relays.collectAsState(
+        initial = RelayStore.defaults.filter { it.enabled }.map { it.url },
     )
     val contentRelayUrl = relays.firstOrNull()
     val viewModel: UserProfileViewModel = viewModel(key = "profile-$pubkey-${contentRelayUrl ?: "all"}") {
@@ -62,8 +63,8 @@ fun UserProfileScreen(
             includeRepostsInFeed = true,
         )
     }
-    val state by viewModel.state.collectAsStateWithLifecycle()
-    val feedState by feedViewModel.state.collectAsStateWithLifecycle()
+    val state by viewModel.state.collectAsState()
+    val feedState by feedViewModel.state.collectAsState()
     val displayName = state.profile?.bestName ?: (pubkey.take(8) + "…" + pubkey.takeLast(8))
     val snackbarHostState = remember { SnackbarHostState() }
     var deferredContentStarted by remember(pubkey) { mutableStateOf(false) }
@@ -99,7 +100,13 @@ fun UserProfileScreen(
         snackbarHost = { SnackbarHost(snackbarHostState) },
         topBar = {
             TopAppBar(
-                title = { Text(displayName) },
+                title = {
+                    Text(
+                        text = displayName,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                },
                 navigationIcon = {
                     if (onBack != null) {
                         IconButton(onClick = onBack) {

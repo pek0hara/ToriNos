@@ -35,7 +35,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.input.pointer.pointerInput
-import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.runtime.collectAsState
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.nostr.torinos.model.NostrProfile
 import com.nostr.torinos.network.FollowRepository
@@ -50,7 +51,7 @@ fun FeedScreen(
     onOpenSearch: () -> Unit = {},
     onUserClick: (pubkey: String) -> Unit = {},
     onOpenProfile: () -> Unit = {},
-    onReply: ((eventId: String, authorPubkey: String) -> Unit)? = null,
+    onReply: ((eventId: String, authorPubkey: String, preview: String) -> Unit)? = null,
     onOpenReplies: (eventId: String) -> Unit = {},
     onOpenLikes: (eventId: String) -> Unit = {},
     onOpenReposts: (eventId: String) -> Unit = {},
@@ -60,9 +61,9 @@ fun FeedScreen(
     /** null = グローバルフィード、非null = 特定ユーザーの投稿 */
     authorPubkey: String? = null,
 ) {
-    val relays by RelayStore.relays.collectAsStateWithLifecycle(initialValue = emptyList())
-    val selectedRelayUrl by RelayStore.selectedRelayUrl.collectAsStateWithLifecycle()
-    val followedPubkeys by FollowRepository.followedPubkeys.collectAsStateWithLifecycle()
+    val relays by RelayStore.relays.collectAsState(initial = emptyList())
+    val selectedRelayUrl by RelayStore.selectedRelayUrl.collectAsState()
+    val followedPubkeys by FollowRepository.followedPubkeys.collectAsState()
     var showRelayMenu by remember { mutableStateOf(false) }
     var feedTab by rememberSaveable { mutableStateOf(FeedTab.Following) }
 
@@ -92,7 +93,7 @@ fun FeedScreen(
             includeRepostsInFeed = includeRepostsInFeed,
         )
     }
-    val state by viewModel.state.collectAsStateWithLifecycle()
+    val state by viewModel.state.collectAsState()
 
     DisposableEffect(viewModel) {
         viewModel.startSubscriptions()
@@ -113,7 +114,10 @@ fun FeedScreen(
                         ) {
                             Text(
                                 text = selectedRelayUrl?.relayDisplayName() ?: "—",
+                                modifier = Modifier.weight(1f, fill = false),
                                 color = MaterialTheme.colorScheme.onPrimary,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
                             )
                             IconButton(onClick = { showRelayMenu = true }) {
                                 Icon(
