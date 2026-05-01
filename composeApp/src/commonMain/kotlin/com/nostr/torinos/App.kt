@@ -107,6 +107,7 @@ fun App() {
         // ownPubkey が確定したらプロフィールを購読（ログイン後の再実行にも対応）
         LaunchedEffect(ownPubkey) {
             val pk = ownPubkey ?: return@LaunchedEffect
+            ownProfile = null
             try {
                 NostrRepository.subscribe(
                     "app-self-profile",
@@ -151,6 +152,25 @@ fun App() {
 
         fun clearLocalAccountState() {
             ownPubkey = null
+            ownProfile = null
+            showPostSheet = false
+            showKeySetup = false
+            pendingKeyAction = null
+            replyToId = null
+            replyToPubkey = null
+            replyToPreview = null
+            nav.navigate("feed") {
+                popUpTo("feed") { inclusive = true }
+                launchSingleTop = true
+            }
+        }
+
+        fun handleAccountChanged(pubkey: String?) {
+            if (pubkey == null) {
+                clearLocalAccountState()
+                return
+            }
+            ownPubkey = pubkey
             ownProfile = null
             showPostSheet = false
             showKeySetup = false
@@ -317,7 +337,11 @@ fun App() {
                         SettingsScreen(
                             ownPubkey = ownPubkey,
                             onBack = { nav.popBackStack() },
-                            onAccountCleared = ::clearLocalAccountState,
+                            onAccountChanged = ::handleAccountChanged,
+                            onAddAccountClick = {
+                                pendingKeyAction = null
+                                showKeySetup = true
+                            },
                             onMuteListClick = { nav.navigate("mute-list") },
                             onNgWordClick = { nav.navigate("ng-words") },
                         )

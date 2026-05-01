@@ -6,6 +6,7 @@ import android.security.keystore.KeyProperties
 import android.util.Base64
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.emptyPreferences
+import androidx.datastore.preferences.core.stringSetPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import com.nostr.torinos.ToriNosApp
@@ -25,6 +26,8 @@ actual object KeyStorage {
 
     private val PREF_ENCRYPTED = stringPreferencesKey("encrypted_private_key")
     private val PREF_IV = stringPreferencesKey("encrypted_private_key_iv")
+    private val PREF_ACCOUNTS = stringSetPreferencesKey("encrypted_accounts")
+    private val PREF_ACTIVE_PUBKEY = stringPreferencesKey("active_pubkey")
 
     private val context get() = ToriNosApp.appContext
     private fun keyStore() = KeyStore.getInstance(KEYSTORE_PROVIDER).also { it.load(null) }
@@ -58,19 +61,8 @@ actual object KeyStorage {
         }
     }
 
-    private suspend fun clearStoredKey() {
-        context.dataStore.edit { prefs ->
-            prefs.remove(PREF_ENCRYPTED)
-            prefs.remove(PREF_IV)
-        }
-    }
-
-    actual suspend fun savePrivateKey(hexKey: String) {
-        val normalized = normalizePrivateKey(hexKey)
-        val privateKeyBytes = normalized.fromHex()
-        derivePublicKey(privateKeyBytes)
-
-        val encryptedPayload = runCatching {
+    private fun encryptPrivateKey(normalized: String): Pair<String, String> =
+        runCatching {
             val cipher = Cipher.getInstance(TRANSFORMATION).also {
                 it.init(Cipher.ENCRYPT_MODE, getOrCreateKeystoreKey())
             }
@@ -86,21 +78,8 @@ actual object KeyStorage {
                 Base64.encodeToString(cipher.iv, Base64.NO_WRAP)
         }.getOrThrow()
 
-        context.dataStore.edit { prefs ->
-            prefs[PREF_ENCRYPTED] = encryptedPayload.first
-            prefs[PREF_IV] = encryptedPayload.second
-        }
-    }
-
-    actual suspend fun loadPrivateKey(): String? {
-        val prefs = runCatching { context.dataStore.data.first() }.getOrElse { emptyPreferences() }
-        val encryptedB64 = prefs[PREF_ENCRYPTED] ?: return null
-        val ivB64 = prefs[PREF_IV] ?: run {
-            clearStoredKey()
-            return null
-        }
-
-        return try {
+    private fun decryptPrivateKey(encryptedB64: String, ivB64: String): String? =
+        try {
             val iv = Base64.decode(ivB64, Base64.NO_WRAP)
             val cipher = Cipher.getInstance(TRANSFORMATION).also {
                 it.init(Cipher.DECRYPT_MODE, getOrCreateKeystoreKey(), GCMParameterSpec(GCM_TAG_LENGTH, iv))
@@ -108,22 +87,114 @@ actual object KeyStorage {
             val decrypted = String(cipher.doFinal(Base64.decode(encryptedB64, Base64.NO_WRAP)), Charsets.UTF_8)
             val normalized = normalizePrivateKey(decrypted)
             derivePublicKey(normalized.fromHex())
-
-            if (normalized != decrypted) {
-                savePrivateKey(normalized)
-            }
             normalized
         } catch (_: Exception) {
-            clearStoredKey()
-            deleteKeystoreKey()
             null
         }
+
+    private fun accountRecord(pubkeyHex: String, encryptedB64: String, ivB64: String): String =
+        listOf(pubkeyHex, encryptedB64, ivB64).joinToString("|")
+
+    private fun parseAccountRecord(record: String): Triple<String, String, String>? {
+        val parts = record.split("|")
+        if (parts.size != 3) return null
+        return Triple(parts[0], parts[1], parts[2])
+    }
+
+    private suspend fun migrateLegacyKeyIfNeeded() {
+        val prefs = runCatching { context.dataStore.data.first() }.getOrElse { emptyPreferences() }
+        if (!prefs[PREF_ACCOUNTS].isNullOrEmpty()) return
+        val encryptedB64 = prefs[PREF_ENCRYPTED] ?: return
+        val ivB64 = prefs[PREF_IV] ?: return
+        val normalized = decryptPrivateKey(encryptedB64, ivB64) ?: return
+        val pubkeyHex = derivePublicKey(normalized.fromHex()).toHex()
+        val encryptedPayload = encryptPrivateKey(normalized)
+        context.dataStore.edit { editPrefs ->
+            editPrefs[PREF_ACCOUNTS] = setOf(accountRecord(pubkeyHex, encryptedPayload.first, encryptedPayload.second))
+            editPrefs[PREF_ACTIVE_PUBKEY] = pubkeyHex
+            editPrefs.remove(PREF_ENCRYPTED)
+            editPrefs.remove(PREF_IV)
+        }
+    }
+
+    actual suspend fun savePrivateKey(hexKey: String) {
+        val normalized = normalizePrivateKey(hexKey)
+        val privateKeyBytes = normalized.fromHex()
+        val pubkeyHex = derivePublicKey(privateKeyBytes).toHex()
+        val encryptedPayload = encryptPrivateKey(normalized)
+
+        context.dataStore.edit { prefs ->
+            val existing = prefs[PREF_ACCOUNTS].orEmpty()
+                .filterNot { parseAccountRecord(it)?.first == pubkeyHex }
+                .toSet()
+            prefs[PREF_ACCOUNTS] = existing + accountRecord(pubkeyHex, encryptedPayload.first, encryptedPayload.second)
+            prefs[PREF_ACTIVE_PUBKEY] = pubkeyHex
+            prefs.remove(PREF_ENCRYPTED)
+            prefs.remove(PREF_IV)
+        }
+    }
+
+    actual suspend fun loadPrivateKey(): String? {
+        migrateLegacyKeyIfNeeded()
+        val prefs = runCatching { context.dataStore.data.first() }.getOrElse { emptyPreferences() }
+        val records = prefs[PREF_ACCOUNTS].orEmpty()
+        val activePubkey = prefs[PREF_ACTIVE_PUBKEY] ?: records.firstOrNull()?.let { parseAccountRecord(it)?.first }
+        val activeRecord = records
+            .mapNotNull(::parseAccountRecord)
+            .firstOrNull { it.first == activePubkey }
+            ?: return null
+
+        val normalized = decryptPrivateKey(activeRecord.second, activeRecord.third)
+        if (normalized == null) {
+            deleteKey()
+            return null
+        }
+        return normalized
     }
 
     actual suspend fun hasKey(): Boolean = loadPrivateKey() != null
 
+    actual suspend fun listAccounts(): List<StoredAccount> {
+        migrateLegacyKeyIfNeeded()
+        val prefs = runCatching { context.dataStore.data.first() }.getOrElse { emptyPreferences() }
+        val activePubkey = prefs[PREF_ACTIVE_PUBKEY]
+        val accounts = prefs[PREF_ACCOUNTS].orEmpty()
+            .mapNotNull { record ->
+                val pubkeyHex = parseAccountRecord(record)?.first ?: return@mapNotNull null
+                StoredAccount(pubkeyHex = pubkeyHex, npub = hexToNpub(pubkeyHex))
+            }
+            .distinctBy { it.pubkeyHex }
+        return accounts.sortedBy { if (it.pubkeyHex == activePubkey) 0 else 1 }
+    }
+
+    actual suspend fun switchAccount(pubkeyHex: String) {
+        migrateLegacyKeyIfNeeded()
+        context.dataStore.edit { prefs ->
+            val exists = prefs[PREF_ACCOUNTS].orEmpty()
+                .mapNotNull(::parseAccountRecord)
+                .any { it.first == pubkeyHex }
+            check(exists) { "アカウントが保存されていません" }
+            prefs[PREF_ACTIVE_PUBKEY] = pubkeyHex
+        }
+    }
+
     actual suspend fun deleteKey() {
-        clearStoredKey()
-        deleteKeystoreKey()
+        migrateLegacyKeyIfNeeded()
+        context.dataStore.edit { prefs ->
+            val activePubkey = prefs[PREF_ACTIVE_PUBKEY]
+            val remaining = prefs[PREF_ACCOUNTS].orEmpty()
+                .filterNot { parseAccountRecord(it)?.first == activePubkey }
+                .toSet()
+            if (remaining.isEmpty()) {
+                prefs.remove(PREF_ACCOUNTS)
+                prefs.remove(PREF_ACTIVE_PUBKEY)
+                prefs.remove(PREF_ENCRYPTED)
+                prefs.remove(PREF_IV)
+                deleteKeystoreKey()
+            } else {
+                prefs[PREF_ACCOUNTS] = remaining
+                prefs[PREF_ACTIVE_PUBKEY] = parseAccountRecord(remaining.first())!!.first
+            }
+        }
     }
 }

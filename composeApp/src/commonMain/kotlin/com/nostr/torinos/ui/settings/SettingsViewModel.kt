@@ -1,6 +1,7 @@
 package com.nostr.torinos.ui.settings
 
 import com.nostr.torinos.crypto.KeyStorage
+import com.nostr.torinos.crypto.StoredAccount
 import com.nostr.torinos.crypto.hexToNsec
 import com.nostr.torinos.crypto.signEvent
 import com.nostr.torinos.network.NostrRepository
@@ -16,6 +17,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 
 data class SettingsState(
+    val accounts: List<StoredAccount> = emptyList(),
     val isSecretKeyVisible: Boolean = false,
     val keyError: String? = null,
     val isAccountActionProcessing: Boolean = false,
@@ -28,6 +30,59 @@ class SettingsViewModel : SafeViewModel() {
 
     private val _secretKeyEvent = MutableSharedFlow<String>(replay = 0, extraBufferCapacity = 1)
     val secretKeyEvent: SharedFlow<String> = _secretKeyEvent.asSharedFlow()
+
+    init {
+        refreshAccounts()
+    }
+
+    fun refreshAccounts() {
+        launch {
+            val accounts = runCatching { KeyStorage.listAccounts() }.getOrElse { e ->
+                logException("SettingsViewModel", e, "Failed to load accounts")
+                emptyList()
+            }
+            _state.update { it.copy(accounts = accounts) }
+        }
+    }
+
+    fun switchAccount(pubkeyHex: String, onSwitched: (String?) -> Unit) {
+        if (_state.value.isAccountActionProcessing) return
+
+        launch {
+            _state.update {
+                it.copy(
+                    isSecretKeyVisible = false,
+                    keyError = null,
+                    isAccountActionProcessing = true,
+                    accountActionError = null,
+                )
+            }
+            try {
+                KeyStorage.switchAccount(pubkeyHex)
+                val accounts = KeyStorage.listAccounts()
+                _state.update {
+                    it.copy(
+                        accounts = accounts,
+                        isAccountActionProcessing = false,
+                        accountActionError = null,
+                    )
+                }
+                onSwitched(pubkeyHex)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                logException("SettingsViewModel", e, "Failed to switch account")
+                _state.update {
+                    it.copy(
+                        isAccountActionProcessing = false,
+                        accountActionError = e.message
+                            ?.let { message -> "アカウントを切り替えられませんでした: $message" }
+                            ?: "アカウントを切り替えられませんでした",
+                    )
+                }
+            }
+        }
+    }
 
     fun showSecretKey() {
         launch {
@@ -55,7 +110,7 @@ class SettingsViewModel : SafeViewModel() {
         _state.update { it.copy(isSecretKeyVisible = false, keyError = null) }
     }
 
-    fun clearAccount(onCleared: () -> Unit) {
+    fun clearAccount(onCleared: (String?) -> Unit) {
         if (_state.value.isAccountActionProcessing) return
 
         launch {
@@ -67,15 +122,17 @@ class SettingsViewModel : SafeViewModel() {
             }
             try {
                 KeyStorage.deleteKey()
+                val accounts = KeyStorage.listAccounts()
                 _state.update {
                     it.copy(
+                        accounts = accounts,
                         isSecretKeyVisible = false,
                         keyError = null,
                         isAccountActionProcessing = false,
                         accountActionError = null,
                     )
                 }
-                onCleared()
+                onCleared(accounts.firstOrNull()?.pubkeyHex)
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Throwable) {
@@ -92,7 +149,7 @@ class SettingsViewModel : SafeViewModel() {
         }
     }
 
-    fun requestVanishAndClearAccount(relayUrls: Collection<String>, onCleared: () -> Unit) {
+    fun requestVanishAndClearAccount(relayUrls: Collection<String>, onCleared: (String?) -> Unit) {
         if (_state.value.isAccountActionProcessing) return
 
         launch {
@@ -119,15 +176,17 @@ class SettingsViewModel : SafeViewModel() {
                 )
                 NostrRepository.publishToRelays(vanishRequest, targets)
                 KeyStorage.deleteKey()
+                val accounts = KeyStorage.listAccounts()
                 _state.update {
                     it.copy(
+                        accounts = accounts,
                         isSecretKeyVisible = false,
                         keyError = null,
                         isAccountActionProcessing = false,
                         accountActionError = null,
                     )
                 }
-                onCleared()
+                onCleared(accounts.firstOrNull()?.pubkeyHex)
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Throwable) {

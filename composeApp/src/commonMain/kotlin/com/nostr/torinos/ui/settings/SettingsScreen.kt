@@ -17,6 +17,7 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.ExitToApp
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ButtonDefaults
@@ -47,6 +48,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.runtime.collectAsState
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.nostr.torinos.crypto.hexToNpub
+import com.nostr.torinos.crypto.StoredAccount
 import com.nostr.torinos.network.RelayEntry
 import com.nostr.torinos.ui.relay.RelaySettingsViewModel
 
@@ -55,7 +57,8 @@ import com.nostr.torinos.ui.relay.RelaySettingsViewModel
 fun SettingsScreen(
     ownPubkey: String?,
     onBack: () -> Unit = {},
-    onAccountCleared: () -> Unit = {},
+    onAccountChanged: (String?) -> Unit = {},
+    onAddAccountClick: () -> Unit = {},
     onMuteListClick: () -> Unit = {},
     onNgWordClick: () -> Unit = {},
     relayViewModel: RelaySettingsViewModel = viewModel(key = "settings-relays") { RelaySettingsViewModel() },
@@ -79,6 +82,10 @@ fun SettingsScreen(
 
     LaunchedEffect(accountViewModel) {
         accountViewModel?.secretKeyEvent?.collect { nsec = it }
+    }
+
+    LaunchedEffect(accountViewModel, ownPubkey) {
+        accountViewModel?.refreshAccounts()
     }
 
     LaunchedEffect(state.isSecretKeyVisible) {
@@ -137,6 +144,16 @@ fun SettingsScreen(
             val account = accountViewModel
             if (npub != null && account != null) {
                 item {
+                    AccountSwitcherSection(
+                        accounts = state.accounts,
+                        activePubkey = ownPubkey,
+                        isProcessing = state.isAccountActionProcessing,
+                        onSwitch = { pubkey -> account.switchAccount(pubkey, onAccountChanged) },
+                        onAddAccountClick = onAddAccountClick,
+                    )
+                    HorizontalDivider()
+                }
+                item {
                     KeySection(
                         npub = npub,
                         nsec = nsec,
@@ -173,14 +190,14 @@ fun SettingsScreen(
     if (showLogoutDialog) {
         ConfirmAccountDialog(
             title = "ログアウト",
-            text = "この端末に保存されている秘密鍵を削除してログアウトします。ポストするには再度秘密鍵のインポートが必要です。",
+            text = "現在のアカウントの秘密鍵をこの端末から削除します。ほかに保存済みアカウントがある場合は、そのアカウントへ切り替わります。",
             confirmText = "ログアウト",
             isProcessing = state.isAccountActionProcessing,
             onDismiss = { showLogoutDialog = false },
             onConfirm = {
                 accountViewModel?.clearAccount {
                     showLogoutDialog = false
-                    onAccountCleared()
+                    onAccountChanged(it)
                 }
             },
         )
@@ -203,10 +220,76 @@ fun SettingsScreen(
             onConfirm = {
                 accountViewModel?.requestVanishAndClearAccount(selectedVanishRelays) {
                     showDeleteAccountDialog = false
-                    onAccountCleared()
+                    onAccountChanged(it)
                 }
             },
         )
+    }
+}
+
+@Composable
+private fun AccountSwitcherSection(
+    accounts: List<StoredAccount>,
+    activePubkey: String?,
+    isProcessing: Boolean,
+    onSwitch: (String) -> Unit,
+    onAddAccountClick: () -> Unit,
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Text(
+            text = "ログイン中のアカウント",
+            style = MaterialTheme.typography.titleSmall,
+            fontWeight = FontWeight.Bold,
+        )
+        accounts.forEach { account ->
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable(enabled = !isProcessing && account.pubkeyHex != activePubkey) {
+                        onSwitch(account.pubkeyHex)
+                    }
+                    .padding(vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Check,
+                    contentDescription = null,
+                    tint = if (account.pubkeyHex == activePubkey) {
+                        MaterialTheme.colorScheme.primary
+                    } else {
+                        MaterialTheme.colorScheme.surface
+                    },
+                    modifier = Modifier.size(20.dp),
+                )
+                SelectionContainer(
+                    modifier = Modifier.weight(1f),
+                ) {
+                    Text(
+                        text = account.npub,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+        }
+        OutlinedButton(
+            onClick = onAddAccountClick,
+            enabled = !isProcessing,
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Icon(
+                Icons.Default.Add,
+                contentDescription = null,
+                modifier = Modifier.padding(end = 8.dp),
+            )
+            Text("アカウントを追加")
+        }
     }
 }
 
@@ -467,7 +550,7 @@ private fun AccountSection(
             fontWeight = FontWeight.Bold,
         )
         Text(
-            text = "この端末に保存されている秘密鍵を管理します。",
+            text = "現在のアカウントの秘密鍵を管理します。",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
