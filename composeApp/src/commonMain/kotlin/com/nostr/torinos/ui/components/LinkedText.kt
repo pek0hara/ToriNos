@@ -11,8 +11,6 @@ import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.style.TextDecoration
 
-private val urlRegex = Regex("""https?://\S+""")
-
 /** テキスト内のURLをクリッカブルリンクにして表示する */
 @Composable
 fun LinkedText(
@@ -24,13 +22,16 @@ fun LinkedText(
     val linkColor = MaterialTheme.colorScheme.primary
     val annotated = buildAnnotatedString {
         var cursor = 0
-        for (match in urlRegex.findAll(text)) {
-            if (match.range.first > cursor) {
-                append(text.substring(cursor, match.range.first))
+        var searchStart = 0
+        for (url in extractWebUrls(text)) {
+            val start = text.indexOf(url, searchStart)
+            if (start < 0) continue
+            if (start > cursor) {
+                append(text.substring(cursor, start))
             }
             pushLink(
                 LinkAnnotation.Url(
-                    url = match.value,
+                    url = url,
                     styles = TextLinkStyles(
                         style = SpanStyle(
                             color = linkColor,
@@ -39,9 +40,10 @@ fun LinkedText(
                     ),
                 ),
             )
-            append(match.value)
+            append(url)
             pop()
-            cursor = match.range.last + 1
+            cursor = start + url.length
+            searchStart = cursor
         }
         if (cursor < text.length) {
             append(text.substring(cursor))

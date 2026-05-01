@@ -16,6 +16,8 @@ data class PostState(
     val text: String = "",
     val isPosting: Boolean = false,
     val isUploadingImage: Boolean = false,
+    val imagePreviewBytes: ByteArray? = null,
+    val uploadedImageUrl: String? = null,
     val error: String? = null,
     val posted: Boolean = false,
 )
@@ -23,21 +25,29 @@ data class PostState(
 class PostViewModel : SafeViewModel() {
     private val _state = MutableStateFlow(PostState())
     val state: StateFlow<PostState> = _state.asStateFlow()
+    private var imageUploadSerial = 0
 
     fun onTextChange(text: String) {
         _state.value = _state.value.copy(text = text, error = null, posted = false)
     }
 
     fun uploadAndAppendImage(bytes: ByteArray, mimeType: String) {
-        _state.value = _state.value.copy(isUploadingImage = true, error = null)
+        val uploadSerial = ++imageUploadSerial
+        _state.value = _state.value.copy(
+            isUploadingImage = true,
+            imagePreviewBytes = bytes,
+            uploadedImageUrl = null,
+            error = null,
+        )
         launch {
             ImageUploader.upload(bytes, mimeType)
+                .also {
+                    if (uploadSerial != imageUploadSerial) return@launch
+                }
                 .onSuccess { url ->
-                    val current = _state.value.text
-                    val separator = if (current.isNotEmpty() && !current.endsWith("\n")) "\n" else ""
                     _state.value = _state.value.copy(
-                        text = current + separator + url,
                         isUploadingImage = false,
+                        uploadedImageUrl = url,
                     )
                 }
                 .onFailure { e ->
@@ -49,8 +59,27 @@ class PostViewModel : SafeViewModel() {
         }
     }
 
+    fun clearAttachedImage() {
+        imageUploadSerial++
+        val current = _state.value
+        val text = current.uploadedImageUrl?.let { url ->
+            current.text
+                .replace(url, "")
+                .replace(Regex("""\n{3,}"""), "\n\n")
+                .trim()
+        } ?: current.text
+        _state.value = current.copy(
+            text = text,
+            isUploadingImage = false,
+            imagePreviewBytes = null,
+            uploadedImageUrl = null,
+            error = null,
+        )
+    }
+
     fun post(replyToId: String? = null, replyToPubkey: String? = null) {
-        val text = _state.value.text.trim()
+        val current = _state.value
+        val text = buildPostContent(current.text, current.uploadedImageUrl)
         if (text.isBlank()) return
 
         _state.value = _state.value.copy(isPosting = true, error = null)
@@ -81,12 +110,18 @@ class PostViewModel : SafeViewModel() {
             }.onSuccess {
                 _state.value = PostState(posted = true)
             }.onFailure { e ->
-                _state.value = _state.value.copy(isPosting = false, error = e.message ?: "投稿に失敗しました")
+                _state.value = _state.value.copy(isPosting = false, error = e.message ?: "ポストに失敗しました")
             }
         }
     }
 
     fun clearPosted() {
         _state.value = _state.value.copy(posted = false)
+    }
+
+    private fun buildPostContent(text: String, imageUrl: String?): String {
+        val body = text.trim()
+        val url = imageUrl?.takeIf { it.isNotBlank() } ?: return body
+        return if (body.isBlank()) url else "$body\n$url"
     }
 }

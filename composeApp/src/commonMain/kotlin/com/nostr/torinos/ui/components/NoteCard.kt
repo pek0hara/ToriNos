@@ -176,6 +176,8 @@ fun NoteCard(
             Spacer(modifier = Modifier.height(4.dp))
             val imageUrls = extractImageUrls(event.content)
             val contentWithoutQuotes = stripNostrEventUris(event.content)
+            val linkPreviewUrl = extractWebUrls(contentWithoutQuotes)
+                .firstOrNull { !isImageUrl(it) }
             val textContent = if (imageUrls.isNotEmpty()) {
                 stripImageUrls(contentWithoutQuotes)
             } else {
@@ -197,6 +199,10 @@ fun NoteCard(
                         .heightIn(max = 400.dp),
                 )
             }
+            linkPreviewUrl?.let { url ->
+                Spacer(modifier = Modifier.height(8.dp))
+                LinkPreviewCard(url = url)
+            }
             quotedEvents.forEach { quote ->
                 Spacer(modifier = Modifier.height(8.dp))
                 QuotePreview(
@@ -207,7 +213,7 @@ fun NoteCard(
             }
             Row(
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
             ) {
                 EngagementCount(
                     icon = Icons.Default.MailOutline,

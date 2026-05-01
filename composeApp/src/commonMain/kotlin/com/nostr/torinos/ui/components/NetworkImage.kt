@@ -32,6 +32,25 @@ fun NetworkImage(
 }
 
 @Composable
+fun PreviewImage(
+    data: Any,
+    contentDescription: String?,
+    modifier: Modifier = Modifier,
+    contentScale: ContentScale = ContentScale.Fit,
+) {
+    val context = LocalPlatformContext.current
+    AsyncImage(
+        model = ImageRequest.Builder(context)
+            .data(data)
+            .crossfade(true)
+            .build(),
+        contentDescription = contentDescription,
+        contentScale = contentScale,
+        modifier = modifier,
+    )
+}
+
+@Composable
 fun AvatarImage(
     url: String,
     size: Dp,
@@ -58,6 +77,8 @@ private val imageUrlRegex = Regex(
 
 fun extractImageUrls(content: String): List<String> =
     imageUrlRegex.findAll(content).map { it.value }.toList()
+
+fun isImageUrl(url: String): Boolean = imageUrlRegex.matches(url)
 
 fun stripImageUrls(content: String): String =
     imageUrlRegex.replace(content, "").trim()
