@@ -46,8 +46,8 @@ fun NoteTimeline(
         }
     }
 
-    LaunchedEffect(reachedBottom, state.canLoadMore) {
-        if (reachedBottom && state.canLoadMore) onLoadMore()
+    LaunchedEffect(reachedBottom, state.canLoadMore, state.isLoadingMore) {
+        if (reachedBottom && state.canLoadMore && !state.isLoadingMore) onLoadMore()
     }
 
     LaunchedEffect(scrollToTopRequest) {

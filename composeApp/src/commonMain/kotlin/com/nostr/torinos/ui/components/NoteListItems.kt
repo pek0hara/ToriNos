@@ -114,7 +114,7 @@ fun LazyListScope.noteListItems(
                 )
                 HorizontalDivider()
             }
-            if (state.canLoadMore) {
+            if (state.isLoadingMore) {
                 item {
                     Box(
                         modifier = Modifier.fillMaxWidth().padding(16.dp),

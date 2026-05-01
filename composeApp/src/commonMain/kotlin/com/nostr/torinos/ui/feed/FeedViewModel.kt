@@ -44,6 +44,7 @@ class FeedViewModel(
         /** postId → 自分のリポストイベントID */
         val repostedEvents: Map<String, String> = emptyMap(),
         val canLoadMore: Boolean = false,
+        val isLoadingMore: Boolean = false,
         /** true = 初回 EOSE 待ち（ローディングスピナー表示） */
         val isInitialLoad: Boolean = true,
     )
@@ -64,6 +65,7 @@ class FeedViewModel(
     private val subscriptionJobs = mutableListOf<Job>()
     private val pendingPubkeys = mutableSetOf<String>()
     private var profileBatchJob: Job? = null
+    private var historyPageTimeoutJob: Job? = null
     private val watchedEventIds = linkedSetOf<String>()
     private var engagementBatchJob: Job? = null
     private val seenReactionIds = linkedSetOf<String>()
@@ -275,7 +277,11 @@ class FeedViewModel(
             val current = _state.value
             if (current.isInitialLoad && current.events.isEmpty()) {
                 loadingMore = false
-                _state.value = current.copy(isInitialLoad = false, canLoadMore = false)
+                _state.value = current.copy(
+                    isInitialLoad = false,
+                    canLoadMore = false,
+                    isLoadingMore = false,
+                )
                 NostrRepository.close(historySubId)
             }
         }
@@ -386,6 +392,8 @@ class FeedViewModel(
         subscriptionJobs.clear()
         profileBatchJob?.cancel()
         engagementBatchJob?.cancel()
+        historyPageTimeoutJob?.cancel()
+        historyPageTimeoutJob = null
         if (_state.value.isInitialLoad && _state.value.events.isEmpty()) {
             initialHistoryRequested = false
         }
@@ -407,7 +415,11 @@ class FeedViewModel(
     private suspend fun requestHistoryPage(until: Long?) {
         if (authorPubkeys?.isEmpty() == true) {
             loadingMore = false
-            _state.value = _state.value.copy(isInitialLoad = false, canLoadMore = false)
+            _state.value = _state.value.copy(
+                isInitialLoad = false,
+                canLoadMore = false,
+                isLoadingMore = false,
+            )
             return
         }
 
@@ -416,7 +428,8 @@ class FeedViewModel(
         lastHistoryBatchUniqueCount = 0
         receivedEoseCount = 0
         expectedEoseCount = if (relayUrl != null) 1 else NostrRepository.relayCount.coerceAtLeast(1)
-        _state.value = _state.value.copy(canLoadMore = false)
+        _state.value = _state.value.copy(canLoadMore = false, isLoadingMore = true)
+        scheduleHistoryPageTimeout()
 
         // 初回のみライブ購読も開始（since=現在時刻でライブイベントのみ）
         if (until == null) {
@@ -447,10 +460,33 @@ class FeedViewModel(
     private fun onHistoryPageCompleted() {
         if (!loadingMore) return
         loadingMore = false
+        historyPageTimeoutJob?.cancel()
+        historyPageTimeoutJob = null
         // リプライ等がフィルタされても受信件数が上限に達していれば次ページがある
         val hasMore = lastHistoryBatchReceivedCount >= FEED_PAGE_SIZE
-        _state.value = _state.value.copy(canLoadMore = hasMore, isInitialLoad = false)
+        _state.value = _state.value.copy(
+            canLoadMore = hasMore,
+            isInitialLoad = false,
+            isLoadingMore = false,
+        )
         if (!hasMore) NostrRepository.close(historySubId)
+    }
+
+    private fun scheduleHistoryPageTimeout() {
+        historyPageTimeoutJob?.cancel()
+        historyPageTimeoutJob = launch {
+            delay(10_000)
+            if (!loadingMore) return@launch
+
+            loadingMore = false
+            val current = _state.value
+            _state.value = current.copy(
+                isInitialLoad = false,
+                canLoadMore = false,
+                isLoadingMore = false,
+            )
+            NostrRepository.close(historySubId)
+        }
     }
 
     private fun feedKinds(): List<Int> = if (includeRepostsInFeed) listOf(1, 6) else listOf(1)
