@@ -3,6 +3,7 @@ package com.nostr.torinos.crypto
 import androidx.compose.runtime.Composable
 import com.nostr.torinos.crypto.interop.KeychainSaveInternetPassword
 import com.nostr.torinos.util.logException
+import kotlinx.cinterop.BetaInteropApi
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.addressOf
 import kotlinx.cinterop.usePinned
@@ -11,7 +12,7 @@ import platform.Foundation.create
 
 private const val PASSWORDS_APP_SERVER = "nostr.torinos.app"
 
-@OptIn(ExperimentalForeignApi::class)
+@OptIn(ExperimentalForeignApi::class, BetaInteropApi::class)
 @Composable
 actual fun rememberPasswordManagerSaver(): suspend (nsec: String, npub: String) -> Unit {
     return { nsec, npub ->

@@ -11,7 +11,7 @@ import platform.Security.kSecRandomDefault
 
 @OptIn(ExperimentalForeignApi::class)
 actual fun sha256(data: ByteArray): ByteArray {
-    val digest = UByteArray(CC_SHA256_DIGEST_LENGTH.toInt())
+    val digest = UByteArray(CC_SHA256_DIGEST_LENGTH)
     data.usePinned { pinned ->
         digest.usePinned { out ->
             CC_SHA256(pinned.addressOf(0), data.size.toUInt(), out.addressOf(0))

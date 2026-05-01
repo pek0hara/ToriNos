@@ -4,6 +4,7 @@ import com.nostr.torinos.crypto.interop.KeychainDeleteData
 import com.nostr.torinos.crypto.interop.KeychainLoadData
 import com.nostr.torinos.crypto.interop.KeychainSaveData
 import com.nostr.torinos.util.logException
+import kotlinx.cinterop.BetaInteropApi
 import kotlinx.cinterop.ByteVar
 import kotlinx.cinterop.CPointer
 import kotlinx.cinterop.ExperimentalForeignApi
@@ -41,7 +42,7 @@ private fun loadPrivateKeyFromKeychain(synchronizable: Boolean? = null): String?
     }
 }
 
-@OptIn(ExperimentalForeignApi::class)
+@OptIn(ExperimentalForeignApi::class, BetaInteropApi::class)
 actual object KeyStorage {
 
     actual suspend fun savePrivateKey(hexKey: String) {
