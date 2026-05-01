@@ -80,7 +80,7 @@ class NostrUriTest {
         val ref = decodeNostrEventReference(note1)
         assertEquals(zeroId, ref?.eventId)
         assertTrue(ref!!.relayUrls.isEmpty())
-        assertNull(ref?.authorPubkey)
+        assertNull(ref.authorPubkey)
     }
 
     @Test
@@ -118,6 +118,27 @@ class NostrUriTest {
     fun decode_unknownHrp_returnsNull() {
         val encoded = com.nostr.torinos.crypto.Bech32.encode("npub", zeroBytes)
         assertNull(decodeNostrEventReference(encoded))
+    }
+
+    @Test
+    fun decodeNpub_validNpub_returnsPubkey() {
+        val npub = com.nostr.torinos.crypto.Bech32.encode("npub", zeroBytes)
+        assertEquals(zeroId, decodeNpub(npub))
+    }
+
+    @Test
+    fun decodeNpub_invalidHrp_returnsNull() {
+        val note = com.nostr.torinos.crypto.Bech32.encode("note", zeroBytes)
+        assertNull(decodeNpub(note))
+    }
+
+    @Test
+    fun extractNpubReferences_validNpub_returnsProfileReference() {
+        val npub = com.nostr.torinos.crypto.Bech32.encode("npub", zeroBytes)
+        val refs = extractNpubReferences("hello $npub")
+        assertEquals(1, refs.size)
+        assertEquals(npub, refs[0].npub)
+        assertEquals(zeroId, refs[0].pubkey)
     }
 
     @Test
