@@ -44,6 +44,7 @@ internal fun ProfileHeader(
     canFollow: Boolean = false,
     onFollow: () -> Unit = {},
     onUnfollow: () -> Unit = {},
+    onUserClick: (String) -> Unit = {},
 ) {
     Column(
         modifier = Modifier
@@ -83,6 +84,7 @@ internal fun ProfileHeader(
                 text = about,
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
+                onProfileClick = onUserClick,
             )
         }
         profile?.nip05?.takeIf { it.isNotBlank() }?.let { nip05 ->

@@ -1,12 +1,15 @@
 package com.nostr.torinos.ui.components
 
-import androidx.compose.foundation.clickable
+import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
@@ -14,6 +17,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.MailOutline
 import androidx.compose.material.icons.filled.MoreVert
@@ -31,9 +35,14 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import com.nostr.torinos.model.NostrEvent
 import com.nostr.torinos.model.NostrProfile
 import com.nostr.torinos.model.stripNostrEventUris
@@ -68,8 +77,17 @@ fun NoteCard(
     onUnmute: (() -> Unit)? = null,
 ) {
     var showMenu by remember { mutableStateOf(false) }
+    var expandedImageUrl by remember { mutableStateOf<String?>(null) }
     val isOwnPost = ownPubkey != null && event.pubkey == ownPubkey
     val hasMenu = (isOwnPost && onDelete != null) || (!isOwnPost && (onMute != null || onUnmute != null))
+
+    expandedImageUrl?.let { url ->
+        ExpandedImageDialog(
+            url = url,
+            onDismiss = { expandedImageUrl = null },
+        )
+    }
+
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -187,16 +205,14 @@ fun NoteCard(
                 LinkedText(
                     text = textContent,
                     style = MaterialTheme.typography.bodyMedium,
+                    onProfileClick = onUserClick,
                 )
             }
-            imageUrls.forEach { url ->
+            if (imageUrls.isNotEmpty()) {
                 Spacer(modifier = Modifier.height(8.dp))
-                NetworkImage(
-                    url = url,
-                    contentDescription = null,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .heightIn(max = 400.dp),
+                ImagePreviewGrid(
+                    imageUrls = imageUrls,
+                    onImageClick = { expandedImageUrl = it },
                 )
             }
             linkPreviewUrl?.let { url ->
@@ -209,6 +225,7 @@ fun NoteCard(
                     event = quote.event,
                     profile = quote.profile,
                     onUserClick = onUserClick,
+                    onImageClick = { expandedImageUrl = it },
                 )
             }
             Row(
@@ -254,6 +271,7 @@ private fun QuotePreview(
     event: NostrEvent,
     profile: NostrProfile?,
     onUserClick: (pubkey: String) -> Unit,
+    onImageClick: (String) -> Unit,
 ) {
     Column(
         modifier = Modifier
@@ -294,17 +312,212 @@ private fun QuotePreview(
             LinkedText(
                 text = textContent,
                 style = MaterialTheme.typography.bodySmall,
+                onProfileClick = onUserClick,
             )
         }
-        imageUrls.firstOrNull()?.let { url ->
+        if (imageUrls.isNotEmpty()) {
+            ImagePreviewGrid(
+                imageUrls = imageUrls,
+                singleImageMaxHeight = 180.dp,
+                onImageClick = onImageClick,
+            )
+        }
+    }
+}
+
+@Composable
+private fun ImagePreviewGrid(
+    imageUrls: List<String>,
+    singleImageMaxHeight: Dp = 400.dp,
+    onImageClick: (String) -> Unit,
+) {
+    if (imageUrls.size == 1) {
+        val url = imageUrls.first()
+        NetworkImage(
+            url = url,
+            contentDescription = null,
+            modifier = Modifier
+                .fillMaxWidth()
+                .heightIn(max = singleImageMaxHeight)
+                .clip(MaterialTheme.shapes.small)
+                .clickable { onImageClick(url) },
+        )
+        return
+    }
+
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .aspectRatio(16f / 9f)
+            .clip(MaterialTheme.shapes.small),
+    ) {
+        when (imageUrls.size) {
+            2 -> TwoImageGrid(imageUrls, onImageClick)
+            3 -> ThreeImageGrid(imageUrls, onImageClick)
+            else -> FourImageGrid(imageUrls, onImageClick)
+        }
+    }
+}
+
+@Composable
+private fun TwoImageGrid(
+    imageUrls: List<String>,
+    onImageClick: (String) -> Unit,
+) {
+    Row(
+        modifier = Modifier.fillMaxSize(),
+        horizontalArrangement = Arrangement.spacedBy(2.dp),
+    ) {
+        imageUrls.take(2).forEach { url ->
+            GridImage(
+                url = url,
+                modifier = Modifier.weight(1f),
+                onClick = { onImageClick(url) },
+            )
+        }
+    }
+}
+
+@Composable
+private fun ThreeImageGrid(
+    imageUrls: List<String>,
+    onImageClick: (String) -> Unit,
+) {
+    Row(
+        modifier = Modifier.fillMaxSize(),
+        horizontalArrangement = Arrangement.spacedBy(2.dp),
+    ) {
+        GridImage(
+            url = imageUrls[0],
+            modifier = Modifier.weight(1f),
+            onClick = { onImageClick(imageUrls[0]) },
+        )
+        Column(
+            modifier = Modifier.weight(1f),
+            verticalArrangement = Arrangement.spacedBy(2.dp),
+        ) {
+            GridImage(
+                url = imageUrls[1],
+                modifier = Modifier.weight(1f),
+                onClick = { onImageClick(imageUrls[1]) },
+            )
+            GridImage(
+                url = imageUrls[2],
+                modifier = Modifier.weight(1f),
+                onClick = { onImageClick(imageUrls[2]) },
+            )
+        }
+    }
+}
+
+@Composable
+private fun FourImageGrid(
+    imageUrls: List<String>,
+    onImageClick: (String) -> Unit,
+) {
+    Column(
+        modifier = Modifier.fillMaxSize(),
+        verticalArrangement = Arrangement.spacedBy(2.dp),
+    ) {
+        imageUrls.take(4).chunked(2).forEachIndexed { rowIndex, rowUrls ->
+            Row(
+                modifier = Modifier.weight(1f),
+                horizontalArrangement = Arrangement.spacedBy(2.dp),
+            ) {
+                rowUrls.forEachIndexed { index, url ->
+                    val imageIndex = rowIndex * 2 + index
+                    Box(modifier = Modifier.weight(1f)) {
+                        GridImage(
+                            url = url,
+                            onClick = { onImageClick(url) },
+                        )
+                        if (imageIndex == 3 && imageUrls.size > 4) {
+                            MoreImagesOverlay(extraCount = imageUrls.size - 4)
+                        }
+                    }
+                    if (rowUrls.size == 1 && index == 0) {
+                        Spacer(modifier = Modifier.weight(1f))
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun GridImage(
+    url: String,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit,
+) {
+    NetworkImage(
+        url = url,
+        contentDescription = null,
+        contentScale = ContentScale.Crop,
+        modifier = modifier
+            .fillMaxSize()
+            .clickable { onClick() },
+    )
+}
+
+@Composable
+private fun ExpandedImageDialog(
+    url: String,
+    onDismiss: () -> Unit,
+) {
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false),
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(Color.Black)
+                .clickable { onDismiss() },
+            contentAlignment = Alignment.Center,
+        ) {
             NetworkImage(
                 url = url,
                 contentDescription = null,
+                contentScale = ContentScale.Fit,
                 modifier = Modifier
-                    .fillMaxWidth()
-                    .heightIn(max = 180.dp),
+                    .fillMaxSize()
+                    .padding(16.dp)
+                    .clickable { },
             )
+            IconButton(
+                onClick = onDismiss,
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .padding(12.dp),
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Close,
+                    contentDescription = "閉じる",
+                    tint = Color.White,
+                )
+            }
         }
+    }
+}
+
+@Composable
+private fun MoreImagesOverlay(extraCount: Int) {
+    Box(
+        modifier = Modifier.fillMaxSize(),
+        contentAlignment = Alignment.Center,
+    ) {
+        Box(
+            modifier = Modifier
+                .matchParentSize()
+                .background(Color.Black.copy(alpha = 0.45f)),
+        )
+        Text(
+            text = "+$extraCount",
+            style = MaterialTheme.typography.titleLarge,
+            fontWeight = FontWeight.Bold,
+            color = Color.White,
+        )
     }
 }
 

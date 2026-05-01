@@ -131,6 +131,7 @@ fun MyProfileScreen(
                         pubkey = ownPubkey,
                         profile = state.profile,
                         isOwnProfile = true,
+                        onUserClick = onUserClick,
                     )
                     HorizontalDivider()
                 }

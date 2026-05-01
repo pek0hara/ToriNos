@@ -9,10 +9,29 @@ data class NostrEventReference(
     val authorPubkey: String? = null,
 )
 
+data class NostrProfileReference(
+    val npub: String,
+    val pubkey: String,
+)
+
 private val nostrUriRegex = Regex(
     pattern = """\bnostr:([a-z0-9]+1[qpzry9x8gf2tvdw0s3jn54khce6mua7l]+)""",
     option = RegexOption.IGNORE_CASE,
 )
+
+private val npubRegex = Regex(
+    pattern = """\bnpub1[qpzry9x8gf2tvdw0s3jn54khce6mua7l]+""",
+    option = RegexOption.IGNORE_CASE,
+)
+
+fun extractNpubReferences(text: String): List<NostrProfileReference> =
+    npubRegex.findAll(text)
+        .mapNotNull { match ->
+            decodeNpub(match.value)?.let { pubkey ->
+                NostrProfileReference(npub = match.value, pubkey = pubkey)
+            }
+        }
+        .toList()
 
 fun extractNostrEventReferences(text: String): List<NostrEventReference> =
     nostrUriRegex.findAll(text)
@@ -43,6 +62,13 @@ fun decodeNostrEventReference(bech32: String): NostrEventReference? = runCatchin
         "nevent" -> decodeNevent(bytes)
         else -> null
     }
+}.getOrNull()
+
+fun decodeNpub(bech32: String): String? = runCatching {
+    val (hrp, bytes) = Bech32.decode(bech32)
+    require(hrp == "npub") { "npub payload expected" }
+    require(bytes.size == 32) { "npub payload must be 32 bytes" }
+    bytes.toHex()
 }.getOrNull()
 
 private fun decodeNevent(bytes: ByteArray): NostrEventReference? {

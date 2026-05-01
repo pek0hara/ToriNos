@@ -153,6 +153,7 @@ fun UserProfileScreen(
                         canFollow = state.canFollow,
                         onFollow = viewModel::follow,
                         onUnfollow = viewModel::unfollow,
+                        onUserClick = onUserClick,
                     )
                     HorizontalDivider()
                 }

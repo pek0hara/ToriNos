@@ -299,6 +299,7 @@ fun App() {
                             onOpenFollowing = { nav.navigate(FollowingRoute(pubkey)) },
                             onOpenFollowers = { nav.navigate(FollowersRoute(pubkey)) },
                             onOpenSettings = { nav.navigate("settings") },
+                            onUserClick = { pk -> nav.navigate(ProfileRoute(pk)) },
                             onReply = { eventId, authorPk, preview ->
                                 replyToId = eventId
                                 replyToPubkey = authorPk
@@ -354,6 +355,7 @@ fun App() {
                             ownPubkey = ownPubkey,
                             onOpenFollowing = { nav.navigate(FollowingRoute(route.pubkey)) },
                             onOpenFollowers = { nav.navigate(FollowersRoute(route.pubkey)) },
+                            onUserClick = { pk -> nav.navigate(ProfileRoute(pk)) },
                             onReply = { eventId, authorPk, preview ->
                                 replyToId = eventId
                                 replyToPubkey = authorPk
