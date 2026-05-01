@@ -29,7 +29,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.compose.runtime.collectAsState
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.nostr.torinos.model.NostrProfile
 
@@ -44,7 +44,7 @@ fun FollowListScreen(
         key = "${mode.name}-$ownPubkey",
     ) { FollowListViewModel(mode, ownPubkey) },
 ) {
-    val state by viewModel.state.collectAsStateWithLifecycle()
+    val state by viewModel.state.collectAsState()
     val title = if (mode == FollowListMode.FOLLOWING) "フォロー" else "フォロワー"
 
     Scaffold(

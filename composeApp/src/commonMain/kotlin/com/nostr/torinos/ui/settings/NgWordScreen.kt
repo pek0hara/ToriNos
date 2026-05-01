@@ -32,13 +32,13 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
-import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.compose.runtime.collectAsState
 import com.nostr.torinos.network.NgWordStore
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun NgWordScreen(onBack: () -> Unit = {}) {
-    val ngWords by NgWordStore.ngWords.collectAsStateWithLifecycle()
+    val ngWords by NgWordStore.ngWords.collectAsState()
     var input by remember { mutableStateOf("") }
 
     Scaffold(

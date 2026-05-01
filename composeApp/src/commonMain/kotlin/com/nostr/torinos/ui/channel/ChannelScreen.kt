@@ -36,8 +36,9 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.compose.runtime.collectAsState
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.nostr.torinos.network.MuteStore
 import com.nostr.torinos.ui.components.NoteCard
@@ -51,8 +52,8 @@ fun ChannelScreen(
     ownPubkey: String? = null,
     viewModel: ChannelViewModel = viewModel(key = channelId) { ChannelViewModel(channelId) },
 ) {
-    val state by viewModel.state.collectAsStateWithLifecycle()
-    val mutedPubkeys by MuteStore.mutedPubkeys.collectAsStateWithLifecycle()
+    val state by viewModel.state.collectAsState()
+    val mutedPubkeys by MuteStore.mutedPubkeys.collectAsState()
     val listState = remember(channelId) { LazyListState() }
     var didScrollToInitialTop by remember(channelId) { mutableStateOf(false) }
 
@@ -63,7 +64,11 @@ fun ChannelScreen(
                 title = {
                     val title = (state as? ChannelViewModel.UiState.Ready)
                         ?.channelMeta?.name?.ifBlank { "チャンネル" } ?: "チャンネル"
-                    Text(title)
+                    Text(
+                        text = title,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
                 },
                 navigationIcon = {
                     IconButton(onClick = onBack) {

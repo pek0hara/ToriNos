@@ -44,7 +44,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.compose.runtime.collectAsState
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.nostr.torinos.crypto.hexToNpub
 import com.nostr.torinos.network.RelayEntry
@@ -65,9 +65,9 @@ fun SettingsScreen(
     } else {
         null
     }
-    val state by accountViewModel?.state?.collectAsStateWithLifecycle()
+    val state by accountViewModel?.state?.collectAsState()
         ?: remember { mutableStateOf(SettingsState()) }
-    val relayEntries by relayViewModel.entries.collectAsStateWithLifecycle()
+    val relayEntries by relayViewModel.entries.collectAsState()
     var nsec by remember { mutableStateOf<String?>(null) }
     var relayInput by remember { mutableStateOf("") }
     var showLogoutDialog by remember { mutableStateOf(false) }

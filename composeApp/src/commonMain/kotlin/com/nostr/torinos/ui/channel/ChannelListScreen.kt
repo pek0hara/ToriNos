@@ -36,7 +36,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.compose.runtime.collectAsState
 import androidx.lifecycle.viewmodel.compose.viewModel
 import kotlin.time.Clock
 
@@ -46,7 +46,7 @@ fun ChannelListScreen(
     onChannelClick: (channelId: String) -> Unit = {},
 ) {
     val viewModel: ChannelListViewModel = viewModel(key = "channel-list") { ChannelListViewModel() }
-    val state by viewModel.state.collectAsStateWithLifecycle()
+    val state by viewModel.state.collectAsState()
 
     Scaffold(
         contentWindowInsets = WindowInsets(0),

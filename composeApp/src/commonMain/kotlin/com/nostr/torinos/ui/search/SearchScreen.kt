@@ -38,7 +38,7 @@ import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
-import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.compose.runtime.collectAsState
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.nostr.torinos.ui.components.NoteCard
 
@@ -50,7 +50,7 @@ fun SearchScreen(
     viewModel: SearchViewModel = viewModel(key = "search") { SearchViewModel() },
 ) {
     var inputText by remember { mutableStateOf("") }
-    val state by viewModel.state.collectAsStateWithLifecycle()
+    val state by viewModel.state.collectAsState()
     val keyboardController = LocalSoftwareKeyboardController.current
 
     fun doSearch() {

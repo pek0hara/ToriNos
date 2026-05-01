@@ -29,7 +29,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
-import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.compose.runtime.collectAsState
 import androidx.compose.material3.Card
 import androidx.compose.ui.window.Dialog
 import com.nostr.torinos.ui.components.rememberImagePickerLauncher
@@ -40,7 +40,7 @@ fun EditProfileSheet(
     viewModel: EditProfileViewModel,
     onSaved: (NostrProfile) -> Unit = {},
 ) {
-    val state by viewModel.state.collectAsStateWithLifecycle()
+    val state by viewModel.state.collectAsState()
 
     val pickImage = rememberImagePickerLauncher { bytes, mime ->
         if (bytes != null && mime != null) viewModel.uploadProfileImage(bytes, mime)

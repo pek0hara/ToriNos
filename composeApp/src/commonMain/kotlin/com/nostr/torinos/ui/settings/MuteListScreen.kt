@@ -29,7 +29,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
-import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.compose.runtime.collectAsState
 import androidx.lifecycle.viewmodel.CreationExtras
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.nostr.torinos.model.NostrFilter
@@ -90,8 +90,8 @@ fun MuteListScreen(
     onBack: () -> Unit = {},
     viewModel: MuteListViewModel = viewModel(factory = MuteListViewModel.Factory),
 ) {
-    val mutedPubkeys by MuteStore.mutedPubkeys.collectAsStateWithLifecycle()
-    val profiles by viewModel.profiles.collectAsStateWithLifecycle()
+    val mutedPubkeys by MuteStore.mutedPubkeys.collectAsState()
+    val profiles by viewModel.profiles.collectAsState()
 
     Scaffold(
         contentWindowInsets = WindowInsets(0),
