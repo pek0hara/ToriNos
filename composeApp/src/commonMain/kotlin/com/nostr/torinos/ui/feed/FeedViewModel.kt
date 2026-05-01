@@ -529,6 +529,7 @@ class FeedViewModel(
         }
         if (isFiltered(event)) return 0
         val cur = _state.value
+        if (cur.events.any { it.id == event.id }) return 0
         val updated = (cur.events + event).sortedByDescending { it.createdAt }
         _state.value = cur.copy(events = updated)
         scheduleQuoteFetch(quotedEventIds(event))

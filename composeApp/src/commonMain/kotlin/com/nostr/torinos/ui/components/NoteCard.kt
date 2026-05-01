@@ -16,6 +16,9 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.rememberPagerState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Favorite
@@ -77,14 +80,15 @@ fun NoteCard(
     onUnmute: (() -> Unit)? = null,
 ) {
     var showMenu by remember { mutableStateOf(false) }
-    var expandedImageUrl by remember { mutableStateOf<String?>(null) }
+    var expandedImageState by remember { mutableStateOf<ExpandedImageState?>(null) }
     val isOwnPost = ownPubkey != null && event.pubkey == ownPubkey
     val hasMenu = (isOwnPost && onDelete != null) || (!isOwnPost && (onMute != null || onUnmute != null))
 
-    expandedImageUrl?.let { url ->
+    expandedImageState?.let { state ->
         ExpandedImageDialog(
-            url = url,
-            onDismiss = { expandedImageUrl = null },
+            imageUrls = state.urls,
+            initialIndex = state.initialIndex,
+            onDismiss = { expandedImageState = null },
         )
     }
 
@@ -212,7 +216,7 @@ fun NoteCard(
                 Spacer(modifier = Modifier.height(8.dp))
                 ImagePreviewGrid(
                     imageUrls = imageUrls,
-                    onImageClick = { expandedImageUrl = it },
+                    onImageClick = { urls, index -> expandedImageState = ExpandedImageState(urls, index) },
                 )
             }
             linkPreviewUrl?.let { url ->
@@ -225,7 +229,7 @@ fun NoteCard(
                     event = quote.event,
                     profile = quote.profile,
                     onUserClick = onUserClick,
-                    onImageClick = { expandedImageUrl = it },
+                    onImageClick = { urls, index -> expandedImageState = ExpandedImageState(urls, index) },
                 )
             }
             Row(
@@ -266,12 +270,17 @@ data class QuotedEvent(
     val profile: NostrProfile?,
 )
 
+private data class ExpandedImageState(
+    val urls: List<String>,
+    val initialIndex: Int,
+)
+
 @Composable
 private fun QuotePreview(
     event: NostrEvent,
     profile: NostrProfile?,
     onUserClick: (pubkey: String) -> Unit,
-    onImageClick: (String) -> Unit,
+    onImageClick: (List<String>, Int) -> Unit,
 ) {
     Column(
         modifier = Modifier
@@ -329,18 +338,17 @@ private fun QuotePreview(
 private fun ImagePreviewGrid(
     imageUrls: List<String>,
     singleImageMaxHeight: Dp = 400.dp,
-    onImageClick: (String) -> Unit,
+    onImageClick: (List<String>, Int) -> Unit,
 ) {
     if (imageUrls.size == 1) {
-        val url = imageUrls.first()
         NetworkImage(
-            url = url,
+            url = imageUrls.first(),
             contentDescription = null,
             modifier = Modifier
                 .fillMaxWidth()
                 .heightIn(max = singleImageMaxHeight)
                 .clip(MaterialTheme.shapes.small)
-                .clickable { onImageClick(url) },
+                .clickable { onImageClick(imageUrls, 0) },
         )
         return
     }
@@ -362,17 +370,17 @@ private fun ImagePreviewGrid(
 @Composable
 private fun TwoImageGrid(
     imageUrls: List<String>,
-    onImageClick: (String) -> Unit,
+    onImageClick: (List<String>, Int) -> Unit,
 ) {
     Row(
         modifier = Modifier.fillMaxSize(),
         horizontalArrangement = Arrangement.spacedBy(2.dp),
     ) {
-        imageUrls.take(2).forEach { url ->
+        imageUrls.take(2).forEachIndexed { index, url ->
             GridImage(
                 url = url,
                 modifier = Modifier.weight(1f),
-                onClick = { onImageClick(url) },
+                onClick = { onImageClick(imageUrls, index) },
             )
         }
     }
@@ -381,7 +389,7 @@ private fun TwoImageGrid(
 @Composable
 private fun ThreeImageGrid(
     imageUrls: List<String>,
-    onImageClick: (String) -> Unit,
+    onImageClick: (List<String>, Int) -> Unit,
 ) {
     Row(
         modifier = Modifier.fillMaxSize(),
@@ -390,7 +398,7 @@ private fun ThreeImageGrid(
         GridImage(
             url = imageUrls[0],
             modifier = Modifier.weight(1f),
-            onClick = { onImageClick(imageUrls[0]) },
+            onClick = { onImageClick(imageUrls, 0) },
         )
         Column(
             modifier = Modifier.weight(1f),
@@ -399,12 +407,12 @@ private fun ThreeImageGrid(
             GridImage(
                 url = imageUrls[1],
                 modifier = Modifier.weight(1f),
-                onClick = { onImageClick(imageUrls[1]) },
+                onClick = { onImageClick(imageUrls, 1) },
             )
             GridImage(
                 url = imageUrls[2],
                 modifier = Modifier.weight(1f),
-                onClick = { onImageClick(imageUrls[2]) },
+                onClick = { onImageClick(imageUrls, 2) },
             )
         }
     }
@@ -413,7 +421,7 @@ private fun ThreeImageGrid(
 @Composable
 private fun FourImageGrid(
     imageUrls: List<String>,
-    onImageClick: (String) -> Unit,
+    onImageClick: (List<String>, Int) -> Unit,
 ) {
     Column(
         modifier = Modifier.fillMaxSize(),
@@ -429,7 +437,7 @@ private fun FourImageGrid(
                     Box(modifier = Modifier.weight(1f)) {
                         GridImage(
                             url = url,
-                            onClick = { onImageClick(url) },
+                            onClick = { onImageClick(imageUrls, imageIndex) },
                         )
                         if (imageIndex == 3 && imageUrls.size > 4) {
                             MoreImagesOverlay(extraCount = imageUrls.size - 4)
@@ -462,9 +470,14 @@ private fun GridImage(
 
 @Composable
 private fun ExpandedImageDialog(
-    url: String,
+    imageUrls: List<String>,
+    initialIndex: Int,
     onDismiss: () -> Unit,
 ) {
+    val pagerState = rememberPagerState(
+        initialPage = initialIndex,
+        pageCount = { imageUrls.size },
+    )
     Dialog(
         onDismissRequest = onDismiss,
         properties = DialogProperties(usePlatformDefaultWidth = false),
@@ -472,19 +485,28 @@ private fun ExpandedImageDialog(
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .background(Color.Black)
-                .clickable { onDismiss() },
-            contentAlignment = Alignment.Center,
+                .background(Color.Black),
         ) {
-            NetworkImage(
-                url = url,
-                contentDescription = null,
-                contentScale = ContentScale.Fit,
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(16.dp)
-                    .clickable { },
-            )
+            HorizontalPager(
+                state = pagerState,
+                modifier = Modifier.fillMaxSize(),
+            ) { page ->
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .clickable { onDismiss() },
+                    contentAlignment = Alignment.Center,
+                ) {
+                    NetworkImage(
+                        url = imageUrls[page],
+                        contentDescription = null,
+                        contentScale = ContentScale.Fit,
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(16.dp),
+                    )
+                }
+            }
             IconButton(
                 onClick = onDismiss,
                 modifier = Modifier
@@ -496,6 +518,27 @@ private fun ExpandedImageDialog(
                     contentDescription = "閉じる",
                     tint = Color.White,
                 )
+            }
+            if (imageUrls.size > 1) {
+                Row(
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .padding(bottom = 24.dp),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    imageUrls.indices.forEach { index ->
+                        val isSelected = pagerState.currentPage == index
+                        Box(
+                            modifier = Modifier
+                                .size(if (isSelected) 8.dp else 6.dp)
+                                .clip(CircleShape)
+                                .background(
+                                    if (isSelected) Color.White else Color.White.copy(alpha = 0.5f),
+                                ),
+                        )
+                    }
+                }
             }
         }
     }

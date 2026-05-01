@@ -216,6 +216,7 @@ class ChannelViewModel(private val channelId: String) : SafeViewModel() {
     private fun appendMessage(event: NostrEvent): Int {
         if (!seenIds.add(event.id)) return 0
         while (seenIds.size > MAX_SEEN_IDS) seenIds.remove(seenIds.first())
+        if (currentMessages.any { it.id == event.id }) return 0
         currentMessages = (currentMessages + event).sortedByDescending { it.createdAt }
         oldestCreatedAt = currentMessages.lastOrNull()?.createdAt
         syncReadyState()

@@ -7,7 +7,9 @@ import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Modifier
 import com.nostr.torinos.model.NostrEvent
@@ -40,6 +42,9 @@ fun NoteTimeline(
 ) {
     val mutedPubkeys by MuteStore.mutedPubkeys.collectAsState()
     val timelineListState = listState ?: rememberSaveable(saver = LazyListState.Saver) { LazyListState() }
+    var handledScrollToTopRequest by rememberSaveable {
+        mutableStateOf(scrollToTopRequest)
+    }
 
     LaunchedEffect(timelineListState, state.canLoadMore, state.isLoadingMore) {
         if (!state.canLoadMore || state.isLoadingMore) return@LaunchedEffect
@@ -55,7 +60,8 @@ fun NoteTimeline(
     }
 
     LaunchedEffect(scrollToTopRequest) {
-        if (scrollToTopRequest > 0) {
+        if (scrollToTopRequest > handledScrollToTopRequest) {
+            handledScrollToTopRequest = scrollToTopRequest
             timelineListState.animateScrollToItem(0)
         }
     }
