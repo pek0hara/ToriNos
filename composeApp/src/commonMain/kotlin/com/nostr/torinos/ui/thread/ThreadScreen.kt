@@ -71,7 +71,7 @@ fun ThreadScreen(
         contentWindowInsets = WindowInsets(0),
         topBar = {
             TopAppBar(
-                title = { Text("投稿詳細") },
+                title = { Text("ポスト詳細") },
                 navigationIcon = {
                     IconButton(onClick = onBack) {
                         Icon(
@@ -111,7 +111,7 @@ fun ThreadScreen(
 
                 state.root == null -> {
                     Text(
-                        text = "投稿を読み込めませんでした",
+                        text = "ポストを読み込めませんでした",
                         modifier = Modifier
                             .align(Alignment.Center)
                             .padding(horizontal = 32.dp),

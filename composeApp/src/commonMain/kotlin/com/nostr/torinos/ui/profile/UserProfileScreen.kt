@@ -141,7 +141,7 @@ fun UserProfileScreen(
             onOpenReposts = onOpenReposts,
             onRepost = feedViewModel::repost,
             onUnrepost = feedViewModel::unrepost,
-            emptyText = "このユーザーの投稿はありません",
+            emptyText = "このユーザーのポストはありません",
             header = {
                 item {
                     ProfileHeader(

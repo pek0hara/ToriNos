@@ -365,7 +365,7 @@ class FeedViewModel(
             NgWordStore.ngWords.collect { rebuildFilteredEvents() }
         }
 
-        // content が空のリポストから元投稿を追加取得
+        // content が空のリポストから元ポストを追加取得
         subscriptionJobs += launch {
             NostrRepository.events(repostTargetSubId).collect { event ->
                 if (event.kind != 1) return@collect
@@ -455,7 +455,7 @@ class FeedViewModel(
 
     private fun feedKinds(): List<Int> = if (includeRepostsInFeed) listOf(1, 6) else listOf(1)
 
-    /** 投稿/リポストをフィード用に処理し、追加できた件数（0 or 1）を返す */
+    /** ポスト/リポストをフィード用に処理し、追加できた件数（0 or 1）を返す */
     private fun appendFeedEvent(event: NostrEvent): Int = when (event.kind) {
         1 -> {
             val parentId = event.tags.firstOrNull { it.firstOrNull() == "e" }?.getOrNull(1)

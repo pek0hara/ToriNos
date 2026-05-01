@@ -31,7 +31,7 @@ fun LazyListScope.noteListItems(
     onRepost: ((eventId: String, authorPubkey: String) -> Unit)? = null,
     onUnrepost: ((eventId: String) -> Unit)? = null,
     mutedPubkeys: Set<String> = emptySet(),
-    emptyText: String = "投稿がありません",
+    emptyText: String = "ポストがありません",
 ) {
     when {
         state.isInitialLoad && state.events.isEmpty() -> item {

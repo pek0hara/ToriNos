@@ -173,7 +173,7 @@ fun SettingsScreen(
     if (showLogoutDialog) {
         ConfirmAccountDialog(
             title = "ログアウト",
-            text = "この端末に保存されている秘密鍵を削除してログアウトします。投稿するには再度秘密鍵のインポートが必要です。",
+            text = "この端末に保存されている秘密鍵を削除してログアウトします。ポストするには再度秘密鍵のインポートが必要です。",
             confirmText = "ログアウト",
             isProcessing = state.isAccountActionProcessing,
             onDismiss = { showLogoutDialog = false },

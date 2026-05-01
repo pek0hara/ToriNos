@@ -121,7 +121,7 @@ class ChannelListViewModel : SafeViewModel() {
             }
         }
 
-        // kind:0 投稿者プロフィールを収集
+        // kind:0 ポスト作成者プロフィールを収集
         jobs += launch {
             NostrRepository.events(authorsSubId).collect { event ->
                 if (event.kind != 0) return@collect
