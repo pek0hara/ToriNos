@@ -31,6 +31,7 @@ kotlin {
         iosTarget.binaries.framework {
             baseName = "ComposeApp"
             isStatic = true
+            binaryOption("bundleId", "com.nostr.torinos")
         }
         iosTarget.compilations["main"].cinterops {
             val keychainHelper by creating {
@@ -86,6 +87,9 @@ kotlin {
         iosMain.dependencies {
             implementation(libs.ktor.client.darwin)
             implementation(libs.secp256k1.kmp)
+        }
+        commonTest.dependencies {
+            implementation(kotlin("test"))
         }
     }
 }
