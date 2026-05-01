@@ -7,6 +7,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.Check
@@ -58,7 +59,9 @@ fun FeedScreen(
     ownPubkey: String? = null,
     ownProfile: NostrProfile? = null,
     scrollToTopRequest: Int = 0,
-    /** null = グローバルフィード、非null = 特定ユーザーの投稿 */
+    followingListState: LazyListState? = null,
+    allPostsListState: LazyListState? = null,
+    /** null = グローバルフィード、非null = 特定ユーザーのポスト */
     authorPubkey: String? = null,
 ) {
     val relays by RelayStore.relays.collectAsState(initial = emptyList())
@@ -94,6 +97,11 @@ fun FeedScreen(
         )
     }
     val state by viewModel.state.collectAsState()
+    val activeListState = when {
+        authorPubkey != null -> null
+        feedTab == FeedTab.Following -> followingListState
+        else -> allPostsListState
+    }
 
     DisposableEffect(viewModel) {
         viewModel.startSubscriptions()
@@ -221,13 +229,14 @@ fun FeedScreen(
             onRepost = viewModel::repost,
             onUnrepost = viewModel::unrepost,
             scrollToTopRequest = scrollToTopRequest,
+            listState = activeListState,
         )
     }
 }
 
 private enum class FeedTab(val label: String) {
     Following("フォロー"),
-    AllRelays("全リレー"),
+    AllPosts("全ポスト"),
 }
 
 private fun Modifier.feedTabSwipe(
@@ -248,8 +257,8 @@ private fun Modifier.feedTabSwipe(
             onDragEnd = {
                 when {
                     dragAmount < -SwipeThresholdPx && currentTab == FeedTab.Following ->
-                        onTabChange(FeedTab.AllRelays)
-                    dragAmount > SwipeThresholdPx && currentTab == FeedTab.AllRelays ->
+                        onTabChange(FeedTab.AllPosts)
+                    dragAmount > SwipeThresholdPx && currentTab == FeedTab.AllPosts ->
                         onTabChange(FeedTab.Following)
                 }
             },

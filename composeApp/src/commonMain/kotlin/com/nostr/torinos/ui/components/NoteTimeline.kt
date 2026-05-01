@@ -32,16 +32,17 @@ fun NoteTimeline(
     onOpenReposts: (eventId: String) -> Unit = {},
     onRepost: (NostrEvent) -> Unit,
     onUnrepost: (eventId: String) -> Unit,
-    emptyText: String = "投稿がありません",
+    emptyText: String = "ポストがありません",
     scrollToTopRequest: Int = 0,
+    listState: LazyListState? = null,
     header: LazyListScope.() -> Unit = {},
 ) {
     val mutedPubkeys by MuteStore.mutedPubkeys.collectAsState()
-    val listState = rememberSaveable(saver = LazyListState.Saver) { LazyListState() }
+    val timelineListState = listState ?: rememberSaveable(saver = LazyListState.Saver) { LazyListState() }
     val reachedBottom by remember {
         derivedStateOf {
-            val lastVisible = listState.layoutInfo.visibleItemsInfo.lastOrNull()
-            lastVisible != null && lastVisible.index >= listState.layoutInfo.totalItemsCount - 3
+            val lastVisible = timelineListState.layoutInfo.visibleItemsInfo.lastOrNull()
+            lastVisible != null && lastVisible.index >= timelineListState.layoutInfo.totalItemsCount - 3
         }
     }
 
@@ -51,12 +52,12 @@ fun NoteTimeline(
 
     LaunchedEffect(scrollToTopRequest) {
         if (scrollToTopRequest > 0) {
-            listState.animateScrollToItem(0)
+            timelineListState.animateScrollToItem(0)
         }
     }
 
     LazyColumn(
-        state = listState,
+        state = timelineListState,
         modifier = modifier.fillMaxSize(),
     ) {
         header()

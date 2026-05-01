@@ -2,6 +2,7 @@ package com.nostr.torinos
 
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.List
 import androidx.compose.material.icons.filled.Create
@@ -19,6 +20,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import kotlinx.coroutines.launch
 import androidx.compose.foundation.layout.padding
@@ -87,6 +89,8 @@ fun App() {
         var ownPubkey by remember { mutableStateOf<String?>(null) }
         var ownProfile by remember { mutableStateOf<NostrProfile?>(null) }
         var feedScrollToTopRequest by remember { mutableStateOf(0) }
+        val followingFeedListState = rememberSaveable(saver = LazyListState.Saver) { LazyListState() }
+        val allPostsFeedListState = rememberSaveable(saver = LazyListState.Saver) { LazyListState() }
 
         // 起動時に保存済み秘密鍵から公開鍵を読み込む
         LaunchedEffect(Unit) {
@@ -173,7 +177,7 @@ fun App() {
                             showPostSheet = true
                         }
                     }) {
-                        Icon(Icons.Default.Create, contentDescription = "投稿")
+                        Icon(Icons.Default.Create, contentDescription = "ポスト")
                     }
                 }
             },
@@ -242,6 +246,8 @@ fun App() {
                             ownPubkey = ownPubkey,
                             ownProfile = ownProfile,
                             scrollToTopRequest = feedScrollToTopRequest,
+                            followingListState = followingFeedListState,
+                            allPostsListState = allPostsFeedListState,
                         )
                     }
                     composable("channels") {
