@@ -9,6 +9,7 @@ import com.nostr.torinos.crypto.signEvent
 import com.nostr.torinos.model.NostrEvent
 import com.nostr.torinos.model.NostrFilter
 import com.nostr.torinos.model.NostrProfile
+import com.nostr.torinos.model.extractNpubReferences
 import com.nostr.torinos.model.quotedEventIds
 import com.nostr.torinos.model.toProfile
 import com.nostr.torinos.network.MuteStore
@@ -29,6 +30,7 @@ class FeedViewModel(
     private val relayUrl: String? = null,
     private val autoStart: Boolean = true,
     private val includeRepostsInFeed: Boolean = false,
+    private val hashtag: String? = null,
 ) : SafeViewModel() {
 
     data class UiState(
@@ -239,6 +241,7 @@ class FeedViewModel(
                     NostrFilter(
                         kinds = feedKinds(),
                         authors = authorPubkeys,
+                        tTags = hashtag?.let { listOf(it) },
                         since = nowSec,
                     ),
                     relayUrl = relayUrl,
@@ -442,6 +445,7 @@ class FeedViewModel(
                 NostrFilter(
                     kinds = feedKinds(),
                     authors = authorPubkeys,
+                    tTags = hashtag?.let { listOf(it) },
                     since = nowSec,
                 ),
                 relayUrl = relayUrl,
@@ -452,6 +456,7 @@ class FeedViewModel(
             NostrFilter(
                 kinds = feedKinds(),
                 authors = authorPubkeys,
+                tTags = hashtag?.let { listOf(it) },
                 until = until,
                 limit = FEED_PAGE_SIZE,
             ),
@@ -492,7 +497,7 @@ class FeedViewModel(
         }
     }
 
-    private fun feedKinds(): List<Int> = if (includeRepostsInFeed) listOf(1, 6) else listOf(1)
+    private fun feedKinds(): List<Int> = if (includeRepostsInFeed && hashtag == null) listOf(1, 6) else listOf(1)
 
     /** ポスト/リポストをフィード用に処理し、追加できた件数（0 or 1）を返す */
     private fun appendFeedEvent(event: NostrEvent): Int = when (event.kind) {
@@ -505,6 +510,7 @@ class FeedViewModel(
                 val appended = appendEvent(event)
                 if (appended > 0) {
                     scheduleProfileFetch(event.pubkey)
+                    scheduleMentionedProfileFetch(event.content)
                     scheduleEngagementFetch(event.id)
                 }
                 appended
@@ -563,10 +569,11 @@ class FeedViewModel(
             val appended = appendEvent(timelineEvent)
             if (appended > 0) {
                 markRepostedBy(targetEvent.id, repost.pubkey)
-                scheduleProfileFetch(targetEvent.pubkey)
-                scheduleProfileFetch(repost.pubkey)
-                scheduleEngagementFetch(targetEvent.id)
-            }
+                    scheduleProfileFetch(targetEvent.pubkey)
+                    scheduleProfileFetch(repost.pubkey)
+                    scheduleMentionedProfileFetch(targetEvent.content)
+                    scheduleEngagementFetch(targetEvent.id)
+                }
             return appended
         }
 
@@ -627,6 +634,12 @@ class FeedViewModel(
                 profileSubId,
                 NostrFilter(kinds = listOf(0), authors = authors),
             )
+        }
+    }
+
+    private fun scheduleMentionedProfileFetch(text: String) {
+        extractNpubReferences(text).forEach { reference ->
+            scheduleProfileFetch(reference.pubkey)
         }
     }
 

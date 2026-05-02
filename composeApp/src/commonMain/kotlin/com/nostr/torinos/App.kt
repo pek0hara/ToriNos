@@ -1,6 +1,7 @@
 package com.nostr.torinos
 
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.material.icons.Icons
@@ -20,11 +21,11 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
-import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import kotlinx.coroutines.launch
 import androidx.compose.foundation.layout.padding
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
@@ -38,6 +39,7 @@ import com.nostr.torinos.model.toProfile
 import com.nostr.torinos.network.NostrRepository
 import com.nostr.torinos.ui.channel.ChannelListScreen
 import com.nostr.torinos.ui.channel.ChannelScreen
+import com.nostr.torinos.ui.feed.FeedTab
 import com.nostr.torinos.ui.feed.FeedScreen
 import com.nostr.torinos.ui.settings.MuteListScreen
 import com.nostr.torinos.ui.settings.NgWordScreen
@@ -46,7 +48,6 @@ import com.nostr.torinos.ui.profile.FollowListMode
 import com.nostr.torinos.ui.profile.FollowListScreen
 import com.nostr.torinos.ui.profile.MyProfileScreen
 import com.nostr.torinos.ui.profile.UserProfileScreen
-import com.nostr.torinos.ui.search.SearchScreen
 import com.nostr.torinos.ui.settings.SettingsScreen
 import com.nostr.torinos.ui.setup.KeySetupScreen
 import com.nostr.torinos.ui.theme.NostrTheme
@@ -89,8 +90,10 @@ fun App() {
         var ownPubkey by remember { mutableStateOf<String?>(null) }
         var ownProfile by remember { mutableStateOf<NostrProfile?>(null) }
         var feedScrollToTopRequest by remember { mutableStateOf(0) }
-        val followingFeedListState = rememberSaveable(saver = LazyListState.Saver) { LazyListState() }
-        val allPostsFeedListState = rememberSaveable(saver = LazyListState.Saver) { LazyListState() }
+        var currentFeedTab by remember { mutableStateOf(FeedTab.Following) }
+        var feedScrollToTopTargetTab by remember { mutableStateOf(FeedTab.Following) }
+        val followingFeedListState = remember { LazyListState() }
+        val allPostsFeedListState = remember { LazyListState() }
 
         // 起動時に保存済み秘密鍵から公開鍵を読み込む
         LaunchedEffect(Unit) {
@@ -185,8 +188,12 @@ fun App() {
         }
 
         val bottomBarRoutes = setOf("feed", "channels")
+        val isProfileRoute = currentRoute == "myprofile" ||
+            currentRoute?.substringBefore("/")?.endsWith("ProfileRoute") == true
+        val hasBottomBar = currentRoute in bottomBarRoutes || isProfileRoute
 
         Scaffold(
+            contentWindowInsets = WindowInsets(0),
             floatingActionButton = {
                 if (isWriteSupported && currentRoute == "feed") {
                     FloatingActionButton(onClick = {
@@ -202,7 +209,7 @@ fun App() {
                 }
             },
             bottomBar = {
-                if (currentRoute in bottomBarRoutes) {
+                if (hasBottomBar) {
                     NavigationBar {
                         NavigationBarItem(
                             icon = { Icon(Icons.Default.Home, contentDescription = null) },
@@ -210,6 +217,7 @@ fun App() {
                             selected = currentRoute == "feed",
                             onClick = {
                                 if (currentRoute == "feed") {
+                                    feedScrollToTopTargetTab = currentFeedTab
                                     feedScrollToTopRequest++
                                 } else {
                                     nav.navigate("feed") {
@@ -236,7 +244,11 @@ fun App() {
                 }
             },
         ) { padding ->
-            Column(modifier = Modifier.fillMaxSize().padding(bottom = padding.calculateBottomPadding())) {
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(bottom = if (hasBottomBar) padding.calculateBottomPadding() else 0.dp),
+            ) {
                 NavHost(
                     navController = nav,
                     startDestination = "feed",
@@ -245,7 +257,6 @@ fun App() {
                     composable("feed") {
                         FeedScreen(
                             onOpenSettings = { nav.navigate("settings") },
-                            onOpenSearch = { nav.navigate("search") },
                             onUserClick = { pubkey -> nav.navigate(ProfileRoute(pubkey)) },
                             onOpenProfile = {
                                 runWithPrivateKey(PendingKeyAction.Profile) {
@@ -266,6 +277,8 @@ fun App() {
                             ownPubkey = ownPubkey,
                             ownProfile = ownProfile,
                             scrollToTopRequest = feedScrollToTopRequest,
+                            scrollToTopTargetTab = feedScrollToTopTargetTab,
+                            onCurrentFeedTabChanged = { currentFeedTab = it },
                             followingListState = followingFeedListState,
                             allPostsListState = allPostsFeedListState,
                         )
@@ -282,12 +295,6 @@ fun App() {
                             onBack = { nav.popBackStack() },
                             onUserClick = { pubkey -> nav.navigate(ProfileRoute(pubkey)) },
                             ownPubkey = ownPubkey,
-                        )
-                    }
-                    composable("search") {
-                        SearchScreen(
-                            onBack = { nav.popBackStack() },
-                            onUserClick = { pubkey -> nav.navigate(ProfileRoute(pubkey)) },
                         )
                     }
                     composable<ThreadRoute> { backStack ->
