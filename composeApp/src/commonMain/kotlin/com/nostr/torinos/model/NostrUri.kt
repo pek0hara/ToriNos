@@ -12,6 +12,8 @@ data class NostrEventReference(
 data class NostrProfileReference(
     val npub: String,
     val pubkey: String,
+    val start: Int = 0,
+    val endExclusive: Int = npub.length,
 )
 
 private val nostrUriRegex = Regex(
@@ -19,16 +21,22 @@ private val nostrUriRegex = Regex(
     option = RegexOption.IGNORE_CASE,
 )
 
-private val npubRegex = Regex(
-    pattern = """\bnpub1[qpzry9x8gf2tvdw0s3jn54khce6mua7l]+""",
+private val npubReferenceRegex = Regex(
+    pattern = """\b(?:nostr:)?(npub1[qpzry9x8gf2tvdw0s3jn54khce6mua7l]+)""",
     option = RegexOption.IGNORE_CASE,
 )
 
 fun extractNpubReferences(text: String): List<NostrProfileReference> =
-    npubRegex.findAll(text)
+    npubReferenceRegex.findAll(text)
         .mapNotNull { match ->
-            decodeNpub(match.value)?.let { pubkey ->
-                NostrProfileReference(npub = match.value, pubkey = pubkey)
+            val npub = match.groupValues[1]
+            decodeNpub(npub)?.let { pubkey ->
+                NostrProfileReference(
+                    npub = npub,
+                    pubkey = pubkey,
+                    start = match.range.first,
+                    endExclusive = match.range.last + 1,
+                )
             }
         }
         .toList()

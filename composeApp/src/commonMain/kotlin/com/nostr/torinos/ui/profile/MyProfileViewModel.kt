@@ -3,6 +3,7 @@ package com.nostr.torinos.ui.profile
 import com.nostr.torinos.ui.SafeViewModel
 import com.nostr.torinos.model.NostrFilter
 import com.nostr.torinos.model.NostrProfile
+import com.nostr.torinos.model.extractNpubReferences
 import com.nostr.torinos.model.toProfile
 import com.nostr.torinos.network.FollowRepository
 import com.nostr.torinos.network.NostrRepository
@@ -17,6 +18,7 @@ import kotlinx.coroutines.withTimeoutOrNull
 
 data class MyProfileState(
     val profile: NostrProfile? = null,
+    val linkedProfiles: Map<String, NostrProfile> = emptyMap(),
     val followingCount: Int = 0,
     val followersCount: Int = 0,
     val isFollowersLoading: Boolean = false,
@@ -28,11 +30,13 @@ class MyProfileViewModel(private val ownPubkey: String) : SafeViewModel() {
     val state: StateFlow<MyProfileState> = _state.asStateFlow()
 
     private val profileSubId = "mp-profile"
+    private val linkedProfileSubId = "mp-linked-profile"
     private val followerSubId = "mp-followers"
 
     private val collectorJobs = mutableListOf<Job>()
     private var followerCollectorJob: Job? = null
     private var followerEoseJob: Job? = null
+    private val pendingLinkedProfilePubkeys = linkedSetOf<String>()
 
     init {
         start()
@@ -50,6 +54,19 @@ class MyProfileViewModel(private val ownPubkey: String) : SafeViewModel() {
                 if (event.kind != 0) return@collect
                 event.toProfile()?.let { profile ->
                     _state.update { it.copy(profile = profile) }
+                    scheduleLinkedProfileFetch(profile.about.orEmpty())
+                }
+            }
+        }
+
+        collectorJobs += launch {
+            NostrRepository.events(linkedProfileSubId).collect { event ->
+                if (event.kind != 0) return@collect
+                event.toProfile()?.let { profile ->
+                    pendingLinkedProfilePubkeys.remove(event.pubkey)
+                    _state.update {
+                        it.copy(linkedProfiles = it.linkedProfiles + (event.pubkey to profile))
+                    }
                 }
             }
         }
@@ -110,6 +127,20 @@ class MyProfileViewModel(private val ownPubkey: String) : SafeViewModel() {
         followerCollectorJob?.cancel()
         followerEoseJob?.cancel()
         NostrRepository.close(profileSubId)
+        NostrRepository.close(linkedProfileSubId)
         NostrRepository.close(followerSubId)
+    }
+
+    private fun scheduleLinkedProfileFetch(text: String) {
+        val authors = extractNpubReferences(text)
+            .map { it.pubkey }
+            .filter { it !in _state.value.linkedProfiles && pendingLinkedProfilePubkeys.add(it) }
+        if (authors.isEmpty()) return
+        launch {
+            NostrRepository.subscribe(
+                linkedProfileSubId,
+                NostrFilter(kinds = listOf(0), authors = pendingLinkedProfilePubkeys.toList()),
+            )
+        }
     }
 }

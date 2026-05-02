@@ -92,7 +92,11 @@ fun ChannelScreen(
                 .padding(padding)
                 .imePadding(),
         ) {
-            Box(modifier = Modifier.weight(1f)) {
+            Box(
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxWidth(),
+            ) {
                 when (val s = state) {
                     is ChannelViewModel.UiState.Loading -> {
                         Column(
@@ -118,12 +122,12 @@ fun ChannelScreen(
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
                         } else {
-                            LaunchedEffect(channelId, s.messages.firstOrNull()?.id, s.keepScrolledToTop) {
-                                if (s.keepScrolledToTop || !didScrollToInitialTop) {
+                            LaunchedEffect(channelId, s.messages.firstOrNull()?.id) {
+                                val isAtTop = listState.firstVisibleItemIndex == 0 &&
+                                    listState.firstVisibleItemScrollOffset == 0
+                                if (!didScrollToInitialTop || (s.keepScrolledToTop && isAtTop)) {
                                     listState.scrollToItem(0)
-                                    if (!s.keepScrolledToTop) {
-                                        didScrollToInitialTop = true
-                                    }
+                                    didScrollToInitialTop = true
                                 }
                             }
 
@@ -135,6 +139,7 @@ fun ChannelScreen(
                                     NoteCard(
                                         event = message,
                                         profile = s.profiles[message.pubkey],
+                                        profiles = s.profiles,
                                         replyCount = 0,
                                         reactionCount = 0,
                                         onUserClick = onUserClick,

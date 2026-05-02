@@ -1,6 +1,8 @@
 package com.nostr.torinos.ui.profile
 
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.material.icons.Icons
@@ -25,6 +27,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.runtime.collectAsState
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.lifecycle.viewmodel.initializer
@@ -72,6 +75,7 @@ fun MyProfileScreen(
     }
 
     Scaffold(
+        modifier = Modifier.fillMaxSize(),
         contentWindowInsets = WindowInsets(0),
         topBar = {
             TopAppBar(
@@ -123,6 +127,7 @@ fun MyProfileScreen(
                 ProfileHeader(
                     pubkey = ownPubkey,
                     profile = state.profile,
+                    linkedProfiles = state.linkedProfiles,
                     isOwnProfile = true,
                     onUserClick = onUserClick,
                 )
@@ -157,35 +162,42 @@ fun MyProfileScreen(
         }
 
         when (selectedTab) {
-            MyProfileTab.Posts -> {
-                NoteTimeline(
-                    state = feedState,
-                    ownPubkey = ownPubkey,
-                    onUserClick = onUserClick,
-                    onLoadMore = feedViewModel::loadMore,
-                    onLike = feedViewModel::react,
-                    onUnlike = feedViewModel::unreact,
-                    onDelete = feedViewModel::deleteEvent,
-                    modifier = Modifier.padding(padding),
-                    onReply = onReply,
-                    onOpenReplies = onOpenReplies,
-                    onOpenLikes = onOpenLikes,
-                    onOpenReposts = onOpenReposts,
-                    onRepost = feedViewModel::repost,
-                    onUnrepost = feedViewModel::unrepost,
-                    header = profileHeader,
-                )
-            }
-
-            MyProfileTab.Reactions -> {
-                MyProfileReactionsList(
-                    state = reactionsState,
-                    onUserClick = onUserClick,
-                    onOpenThread = onOpenReplies,
-                    modifier = Modifier.padding(padding),
-                    header = profileHeader,
-                )
-            }
+            MyProfileTab.Posts -> NoteTimeline(
+                state = feedState,
+                ownPubkey = ownPubkey,
+                onUserClick = onUserClick,
+                onLoadMore = feedViewModel::loadMore,
+                onLike = feedViewModel::react,
+                onUnlike = feedViewModel::unreact,
+                onDelete = feedViewModel::deleteEvent,
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(padding)
+                    .profileTabSwipe(
+                        currentTab = selectedTab,
+                        onTabChange = { selectedTab = it },
+                    ),
+                onReply = onReply,
+                onOpenReplies = onOpenReplies,
+                onOpenLikes = onOpenLikes,
+                onOpenReposts = onOpenReposts,
+                onRepost = feedViewModel::repost,
+                onUnrepost = feedViewModel::unrepost,
+                header = profileHeader,
+            )
+            MyProfileTab.Reactions -> MyProfileReactionsList(
+                state = reactionsState,
+                onUserClick = onUserClick,
+                onOpenThread = onOpenReplies,
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(padding)
+                    .profileTabSwipe(
+                        currentTab = selectedTab,
+                        onTabChange = { selectedTab = it },
+                    ),
+                header = profileHeader,
+            )
         }
     }
 }
@@ -194,3 +206,28 @@ private enum class MyProfileTab(val label: String) {
     Posts("投稿"),
     Reactions("反応"),
 }
+
+private fun Modifier.profileTabSwipe(
+    currentTab: MyProfileTab,
+    onTabChange: (MyProfileTab) -> Unit,
+): Modifier = pointerInput(currentTab) {
+    var dragAmount = 0f
+    detectHorizontalDragGestures(
+        onDragStart = { dragAmount = 0f },
+        onHorizontalDrag = { change, amount ->
+            dragAmount += amount
+            change.consume()
+        },
+        onDragEnd = {
+            when {
+                dragAmount < -SwipeThresholdPx && currentTab == MyProfileTab.Posts ->
+                    onTabChange(MyProfileTab.Reactions)
+                dragAmount > SwipeThresholdPx && currentTab == MyProfileTab.Reactions ->
+                    onTabChange(MyProfileTab.Posts)
+            }
+        },
+        onDragCancel = { dragAmount = 0f },
+    )
+}
+
+private const val SwipeThresholdPx = 80f

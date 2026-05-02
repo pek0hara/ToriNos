@@ -96,6 +96,7 @@ fun UserProfileScreen(
     }
 
     Scaffold(
+        modifier = Modifier.fillMaxSize(),
         contentWindowInsets = WindowInsets(0),
         snackbarHost = { SnackbarHost(snackbarHostState) },
         topBar = {
@@ -134,6 +135,7 @@ fun UserProfileScreen(
             onUnlike = feedViewModel::unreact,
             onDelete = feedViewModel::deleteEvent,
             modifier = Modifier
+                .fillMaxSize()
                 .padding(padding),
             onReply = onReply,
             onOpenReplies = onOpenReplies,
@@ -147,6 +149,7 @@ fun UserProfileScreen(
                     ProfileHeader(
                         pubkey = pubkey,
                         profile = state.profile,
+                        linkedProfiles = state.linkedProfiles,
                         isOwnProfile = isOwnProfile,
                         isFollowing = state.isFollowing,
                         isFollowLoading = state.isFollowLoading,

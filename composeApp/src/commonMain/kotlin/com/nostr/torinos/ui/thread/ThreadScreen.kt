@@ -135,6 +135,7 @@ fun ThreadScreen(
                             NoteCard(
                                 event = root,
                                 profile = state.profiles[root.pubkey],
+                                profiles = state.profiles,
                                 replyCount = state.replyCounts[root.id] ?: state.replies.size,
                                 reactionCount = state.reactionCounts[root.id] ?: state.reactionPubkeys.size,
                                 repostCount = state.repostPubkeys.size,
@@ -191,6 +192,7 @@ fun ThreadScreen(
                                         NoteCard(
                                             event = reply,
                                             profile = state.profiles[reply.pubkey],
+                                            profiles = state.profiles,
                                             replyCount = replyCount,
                                             reactionCount = state.reactionCounts[reply.id] ?: 0,
                                             isLiked = state.likedReactions.containsKey(reply.id),

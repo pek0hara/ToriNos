@@ -5,6 +5,7 @@ import com.nostr.torinos.ui.SafeViewModel
 import com.nostr.torinos.crypto.isWriteSupported
 import com.nostr.torinos.model.NostrFilter
 import com.nostr.torinos.model.NostrProfile
+import com.nostr.torinos.model.extractNpubReferences
 import com.nostr.torinos.model.toProfile
 import com.nostr.torinos.network.FollowRepository
 import com.nostr.torinos.network.NostrRepository
@@ -18,6 +19,7 @@ import kotlinx.coroutines.launch
 
 data class UserProfileState(
     val profile: NostrProfile? = null,
+    val linkedProfiles: Map<String, NostrProfile> = emptyMap(),
     /** null = フォローリスト未ロード */
     val isFollowing: Boolean? = null,
     val isFollowLoading: Boolean = false,
@@ -39,11 +41,13 @@ class UserProfileViewModel(
 
     private val shortKey = pubkey.take(16)
     private val profileSubId = "up-$shortKey"
+    private val linkedProfileSubId = "upl-$shortKey"
     private val followingSubId = "uf-$shortKey"
     private val followersSubId = "ur-$shortKey"
 
     private val collectorJobs = mutableListOf<Job>()
     private var followingCountStarted = false
+    private val pendingLinkedProfilePubkeys = linkedSetOf<String>()
 
     init {
         start()
@@ -127,6 +131,18 @@ class UserProfileViewModel(
                 if (event.kind != 0) return@collect
                 val profile = event.toProfile() ?: return@collect
                 _state.update { it.copy(profile = profile) }
+                scheduleLinkedProfileFetch(profile.about.orEmpty())
+            }
+        }
+
+        collectorJobs += launch {
+            NostrRepository.events(linkedProfileSubId).collect { event ->
+                if (event.kind != 0) return@collect
+                val profile = event.toProfile() ?: return@collect
+                pendingLinkedProfilePubkeys.remove(event.pubkey)
+                _state.update {
+                    it.copy(linkedProfiles = it.linkedProfiles + (event.pubkey to profile))
+                }
             }
         }
 
@@ -176,8 +192,23 @@ class UserProfileViewModel(
         super.onCleared()
         collectorJobs.forEach { it.cancel() }
         NostrRepository.close(profileSubId)
+        NostrRepository.close(linkedProfileSubId)
         NostrRepository.close(followingSubId)
         NostrRepository.close(followersSubId)
+    }
+
+    private fun scheduleLinkedProfileFetch(text: String) {
+        val authors = extractNpubReferences(text)
+            .map { it.pubkey }
+            .filter { it !in _state.value.linkedProfiles && pendingLinkedProfilePubkeys.add(it) }
+        if (authors.isEmpty()) return
+        launch {
+            NostrRepository.subscribe(
+                linkedProfileSubId,
+                NostrFilter(kinds = listOf(0), authors = pendingLinkedProfilePubkeys.toList()),
+                relayUrl = deferredRelayUrl,
+            )
+        }
     }
 
     companion object {

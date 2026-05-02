@@ -10,13 +10,11 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.produceState
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalUriHandler
@@ -37,32 +35,12 @@ fun LinkPreviewCard(
     }
 
     when (val state = previewState) {
-        LinkPreviewState.Loading -> LoadingPreviewCard(modifier)
+        LinkPreviewState.Loading -> Unit
         LinkPreviewState.Unavailable -> Unit
-        is LinkPreviewState.Loaded -> PreviewCard(state.preview, modifier)
-    }
-}
-
-@Composable
-private fun LoadingPreviewCard(modifier: Modifier) {
-    Row(
-        modifier = modifier
-            .fillMaxWidth()
-            .border(
-                width = 1.dp,
-                color = MaterialTheme.colorScheme.outlineVariant,
-                shape = MaterialTheme.shapes.small,
-            )
-            .padding(12.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(10.dp),
-    ) {
-        CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
-        Text(
-            text = "リンクプレビューを取得中",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
+        is LinkPreviewState.Loaded -> {
+            Spacer(modifier = Modifier.height(8.dp))
+            PreviewCard(state.preview, modifier)
+        }
     }
 }
 

@@ -7,6 +7,7 @@ import com.nostr.torinos.crypto.signEvent
 import com.nostr.torinos.model.NostrEvent
 import com.nostr.torinos.model.NostrFilter
 import com.nostr.torinos.model.NostrProfile
+import com.nostr.torinos.model.extractNpubReferences
 import com.nostr.torinos.model.toProfile
 import com.nostr.torinos.network.NostrRepository
 import com.nostr.torinos.ui.SafeViewModel
@@ -192,6 +193,7 @@ class ThreadViewModel(
                 if (event.kind != 1 || event.id != eventId) return@collect
                 _state.value = _state.value.copy(root = event, isLoading = false)
                 scheduleProfileFetch(event.pubkey)
+                scheduleMentionedProfileFetch(event.content)
             }
         }
 
@@ -208,6 +210,7 @@ class ThreadViewModel(
                     isLoading = false,
                 )
                 scheduleProfileFetch(event.pubkey)
+                scheduleMentionedProfileFetch(event.content)
                 scheduleReplyCountFetch(event.id)
                 scheduleReactionFetch(event.id)
             }
@@ -326,6 +329,12 @@ class ThreadViewModel(
             val authors = pendingPubkeys.toList()
             pendingPubkeys.removeAll(authors)
             NostrRepository.subscribe(profileSubId, NostrFilter(kinds = listOf(0), authors = authors))
+        }
+    }
+
+    private fun scheduleMentionedProfileFetch(text: String) {
+        extractNpubReferences(text).forEach { reference ->
+            scheduleProfileFetch(reference.pubkey)
         }
     }
 

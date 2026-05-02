@@ -30,6 +30,7 @@ fun LazyListScope.noteListItems(
     onOpenReposts: ((eventId: String) -> Unit)? = null,
     onRepost: ((eventId: String, authorPubkey: String) -> Unit)? = null,
     onUnrepost: ((eventId: String) -> Unit)? = null,
+    onHashtagClick: ((tag: String) -> Unit)? = null,
     mutedPubkeys: Set<String> = emptySet(),
     emptyText: String = "ポストがありません",
 ) {
@@ -60,6 +61,7 @@ fun LazyListScope.noteListItems(
                     profile = state.profiles[event.pubkey],
                     repostedByPubkey = repostedByPubkey,
                     repostedByProfile = repostedByPubkey?.let { state.profiles[it] },
+                    profiles = state.profiles,
                     replyCount = state.replyCounts[event.id] ?: 0,
                     repostCount = state.repostCounts[event.id] ?: 0,
                     reactionCount = state.reactionCounts[event.id] ?: 0,
@@ -94,6 +96,7 @@ fun LazyListScope.noteListItems(
                                 onRepost(event.id, event.pubkey)
                         }
                     } else null,
+                    onHashtagClick = onHashtagClick,
                     quotedEvents = quotedEventIds(event).mapNotNull { quotedEventId ->
                         state.quotedEvents[quotedEventId]?.let { quotedEvent ->
                             QuotedEvent(

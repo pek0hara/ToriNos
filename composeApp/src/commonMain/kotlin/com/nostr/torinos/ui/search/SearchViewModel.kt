@@ -8,6 +8,7 @@ import kotlin.reflect.KClass
 import com.nostr.torinos.model.NostrEvent
 import com.nostr.torinos.model.NostrFilter
 import com.nostr.torinos.model.NostrProfile
+import com.nostr.torinos.model.extractNpubReferences
 import com.nostr.torinos.model.toProfile
 import com.nostr.torinos.network.NostrRepository
 import com.nostr.torinos.util.appLog
@@ -92,6 +93,7 @@ class SearchViewModel : SafeViewModel() {
                 lastBatchCount += added
                 appLog("[Search] event received id=${event.id.take(8)} pubkey=${event.pubkey.take(8)} added=$added totalSeen=${seenEventIds.size}")
                 scheduleProfileFetch(event.pubkey)
+                scheduleMentionedProfileFetch(event.content)
             }
         }
 
@@ -218,6 +220,12 @@ class SearchViewModel : SafeViewModel() {
                 profileSubId,
                 NostrFilter(kinds = listOf(0), authors = authors),
             )
+        }
+    }
+
+    private fun scheduleMentionedProfileFetch(text: String) {
+        extractNpubReferences(text).forEach { reference ->
+            scheduleProfileFetch(reference.pubkey)
         }
     }
 

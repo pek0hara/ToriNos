@@ -157,6 +157,7 @@ fun SearchScreen(
                                     NoteCard(
                                         event = event,
                                         profile = s.profiles[event.pubkey],
+                                        profiles = s.profiles,
                                         replyCount = 0,
                                         reactionCount = 0,
                                         onUserClick = onUserClick,

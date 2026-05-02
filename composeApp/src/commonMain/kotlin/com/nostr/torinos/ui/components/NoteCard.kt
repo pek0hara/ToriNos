@@ -42,6 +42,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
@@ -60,6 +61,7 @@ fun NoteCard(
     profile: NostrProfile?,
     repostedByPubkey: String? = null,
     repostedByProfile: NostrProfile? = null,
+    profiles: Map<String, NostrProfile> = emptyMap(),
     replyCount: Int,
     reactionCount: Int,
     repostCount: Int = 0,
@@ -72,6 +74,7 @@ fun NoteCard(
     onOpenLikes: (() -> Unit)? = null,
     onOpenReposts: (() -> Unit)? = null,
     onRepost: (() -> Unit)? = null,
+    onHashtagClick: ((tag: String) -> Unit)? = null,
     quotedEvents: List<QuotedEvent> = emptyList(),
     ownPubkey: String? = null,
     onDelete: (() -> Unit)? = null,
@@ -83,6 +86,9 @@ fun NoteCard(
     var expandedImageState by remember { mutableStateOf<ExpandedImageState?>(null) }
     val isOwnPost = ownPubkey != null && event.pubkey == ownPubkey
     val hasMenu = (isOwnPost && onDelete != null) || (!isOwnPost && (onMute != null || onUnmute != null))
+    val parsedContent = remember(event.content) {
+        parseNoteContent(event.content)
+    }
 
     expandedImageState?.let { state ->
         ExpandedImageDialog(
@@ -124,6 +130,9 @@ fun NoteCard(
                         text = "${repostedByProfile?.bestName ?: shortPubkey(repostedByPubkey)} がリポスト",
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f),
                     )
                 }
                 Spacer(modifier = Modifier.height(4.dp))
@@ -139,9 +148,16 @@ fun NoteCard(
                     style = MaterialTheme.typography.labelMedium,
                     fontWeight = FontWeight.Bold,
                     color = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier.clickable { onUserClick(event.pubkey) },
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier
+                        .weight(1f)
+                        .clickable { onUserClick(event.pubkey) },
                 )
-                Row(verticalAlignment = Alignment.CenterVertically) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.padding(start = 8.dp),
+                ) {
                     Text(
                         text = formatTimestamp(event.createdAt),
                         style = MaterialTheme.typography.labelSmall,
@@ -196,31 +212,23 @@ fun NoteCard(
                 }
             }
             Spacer(modifier = Modifier.height(4.dp))
-            val imageUrls = extractImageUrls(event.content)
-            val contentWithoutQuotes = stripNostrEventUris(event.content)
-            val linkPreviewUrl = extractWebUrls(contentWithoutQuotes)
-                .firstOrNull { !isImageUrl(it) }
-            val textContent = if (imageUrls.isNotEmpty()) {
-                stripImageUrls(contentWithoutQuotes)
-            } else {
-                contentWithoutQuotes
-            }
-            if (textContent.isNotBlank()) {
+            if (parsedContent.textContent.isNotBlank()) {
                 LinkedText(
-                    text = textContent,
+                    text = parsedContent.textContent,
                     style = MaterialTheme.typography.bodyMedium,
                     onProfileClick = onUserClick,
+                    profiles = profiles,
+                    onHashtagClick = onHashtagClick,
                 )
             }
-            if (imageUrls.isNotEmpty()) {
+            if (parsedContent.imageUrls.isNotEmpty()) {
                 Spacer(modifier = Modifier.height(8.dp))
                 ImagePreviewGrid(
-                    imageUrls = imageUrls,
+                    imageUrls = parsedContent.imageUrls,
                     onImageClick = { urls, index -> expandedImageState = ExpandedImageState(urls, index) },
                 )
             }
-            linkPreviewUrl?.let { url ->
-                Spacer(modifier = Modifier.height(8.dp))
+            parsedContent.linkPreviewUrl?.let { url ->
                 LinkPreviewCard(url = url)
             }
             quotedEvents.forEach { quote ->
@@ -228,6 +236,7 @@ fun NoteCard(
                 QuotePreview(
                     event = quote.event,
                     profile = quote.profile,
+                    profiles = profiles,
                     onUserClick = onUserClick,
                     onImageClick = { urls, index -> expandedImageState = ExpandedImageState(urls, index) },
                 )
@@ -275,13 +284,41 @@ private data class ExpandedImageState(
     val initialIndex: Int,
 )
 
+private data class ParsedNoteContent(
+    val textContent: String,
+    val imageUrls: List<String>,
+    val linkPreviewUrl: String?,
+)
+
+private fun parseNoteContent(content: String): ParsedNoteContent {
+    val imageUrls = extractImageUrls(content)
+    val contentWithoutQuotes = stripNostrEventUris(content)
+    val linkPreviewUrl = extractWebUrls(contentWithoutQuotes)
+        .firstOrNull { !isImageUrl(it) }
+    val textContent = if (imageUrls.isNotEmpty()) {
+        stripImageUrls(contentWithoutQuotes)
+    } else {
+        contentWithoutQuotes
+    }
+    return ParsedNoteContent(
+        textContent = textContent,
+        imageUrls = imageUrls,
+        linkPreviewUrl = linkPreviewUrl,
+    )
+}
+
 @Composable
 private fun QuotePreview(
     event: NostrEvent,
     profile: NostrProfile?,
+    profiles: Map<String, NostrProfile>,
     onUserClick: (pubkey: String) -> Unit,
     onImageClick: (List<String>, Int) -> Unit,
 ) {
+    val parsedContent = remember(event.content) {
+        parseNoteContent(event.content)
+    }
+
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -303,30 +340,31 @@ private fun QuotePreview(
                 style = MaterialTheme.typography.labelSmall,
                 fontWeight = FontWeight.Bold,
                 color = MaterialTheme.colorScheme.primary,
-                modifier = Modifier.clickable { onUserClick(event.pubkey) },
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier
+                    .weight(1f)
+                    .clickable { onUserClick(event.pubkey) },
             )
             Text(
                 text = formatTimestamp(event.createdAt),
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(start = 8.dp),
             )
         }
-        val imageUrls = extractImageUrls(event.content)
-        val textContent = if (imageUrls.isNotEmpty()) {
-            stripImageUrls(stripNostrEventUris(event.content))
-        } else {
-            stripNostrEventUris(event.content)
-        }
-        if (textContent.isNotBlank()) {
+        if (parsedContent.textContent.isNotBlank()) {
             LinkedText(
-                text = textContent,
+                text = parsedContent.textContent,
                 style = MaterialTheme.typography.bodySmall,
                 onProfileClick = onUserClick,
+                profiles = profiles,
+                onHashtagClick = null,
             )
         }
-        if (imageUrls.isNotEmpty()) {
+        if (parsedContent.imageUrls.isNotEmpty()) {
             ImagePreviewGrid(
-                imageUrls = imageUrls,
+                imageUrls = parsedContent.imageUrls,
                 singleImageMaxHeight = 180.dp,
                 onImageClick = onImageClick,
             )

@@ -38,6 +38,7 @@ import com.nostr.torinos.ui.components.LinkedText
 internal fun ProfileHeader(
     pubkey: String,
     profile: NostrProfile?,
+    linkedProfiles: Map<String, NostrProfile> = emptyMap(),
     isOwnProfile: Boolean,
     isFollowing: Boolean? = null,
     isFollowLoading: Boolean = false,
@@ -85,6 +86,7 @@ internal fun ProfileHeader(
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 onProfileClick = onUserClick,
+                profiles = linkedProfiles,
             )
         }
         profile?.nip05?.takeIf { it.isNotBlank() }?.let { nip05 ->

@@ -8,6 +8,7 @@ import com.nostr.torinos.model.ChannelMeta
 import com.nostr.torinos.model.NostrEvent
 import com.nostr.torinos.model.NostrFilter
 import com.nostr.torinos.model.NostrProfile
+import com.nostr.torinos.model.extractNpubReferences
 import com.nostr.torinos.model.toChannelMeta
 import com.nostr.torinos.model.toProfile
 import com.nostr.torinos.network.MuteStore
@@ -125,6 +126,7 @@ class ChannelViewModel(private val channelId: String) : SafeViewModel() {
                 if (event.kind != 42) return@collect
                 appendMessage(event)
                 scheduleProfileFetch(event.pubkey)
+                scheduleMentionedProfileFetch(event.content)
             }
         }
 
@@ -135,6 +137,7 @@ class ChannelViewModel(private val channelId: String) : SafeViewModel() {
                 val added = appendMessage(event)
                 lastBatchCount += added
                 scheduleProfileFetch(event.pubkey)
+                scheduleMentionedProfileFetch(event.content)
             }
         }
 
@@ -266,6 +269,12 @@ class ChannelViewModel(private val channelId: String) : SafeViewModel() {
                 profSubId,
                 NostrFilter(kinds = listOf(0), authors = authors),
             )
+        }
+    }
+
+    private fun scheduleMentionedProfileFetch(text: String) {
+        extractNpubReferences(text).forEach { reference ->
+            scheduleProfileFetch(reference.pubkey)
         }
     }
 
