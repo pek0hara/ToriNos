@@ -18,6 +18,7 @@ import androidx.compose.material.icons.automirrored.filled.ExitToApp
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ButtonDefaults
@@ -43,6 +44,8 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.runtime.collectAsState
@@ -51,6 +54,7 @@ import com.nostr.torinos.crypto.hexToNpub
 import com.nostr.torinos.crypto.StoredAccount
 import com.nostr.torinos.network.RelayEntry
 import com.nostr.torinos.ui.relay.RelaySettingsViewModel
+import kotlinx.coroutines.delay
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -465,6 +469,23 @@ private fun KeySection(
     onShowSecret: () -> Unit,
     onHideSecret: () -> Unit,
 ) {
+    val clipboardManager = LocalClipboardManager.current
+    var npubCopied by remember { mutableStateOf(false) }
+    var nsecCopied by remember { mutableStateOf(false) }
+
+    LaunchedEffect(npubCopied) {
+        if (npubCopied) {
+            delay(2000)
+            npubCopied = false
+        }
+    }
+    LaunchedEffect(nsecCopied) {
+        if (nsecCopied) {
+            delay(2000)
+            nsecCopied = false
+        }
+    }
+
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -481,17 +502,38 @@ private fun KeySection(
             style = MaterialTheme.typography.labelMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
-        SelectionContainer {
-            Text(
-                text = npub,
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            SelectionContainer(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = npub,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            IconButton(
+                onClick = {
+                    clipboardManager.setText(AnnotatedString(npub))
+                    npubCopied = true
+                },
+                modifier = Modifier.size(32.dp),
+            ) {
+                Icon(
+                    imageVector = if (npubCopied) Icons.Default.Check else Icons.Default.ContentCopy,
+                    contentDescription = "コピー",
+                    modifier = Modifier.size(18.dp),
+                    tint = if (npubCopied) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
         }
 
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
         ) {
             Text(
                 text = "秘密鍵",
@@ -506,12 +548,32 @@ private fun KeySection(
         }
 
         if (isSecretVisible && nsec != null) {
-            SelectionContainer {
-                Text(
-                    text = nsec,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.error,
-                )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                SelectionContainer(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = nsec,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                }
+                IconButton(
+                    onClick = {
+                        clipboardManager.setText(AnnotatedString(nsec))
+                        nsecCopied = true
+                    },
+                    modifier = Modifier.size(32.dp),
+                ) {
+                    Icon(
+                        imageVector = if (nsecCopied) Icons.Default.Check else Icons.Default.ContentCopy,
+                        contentDescription = "コピー",
+                        modifier = Modifier.size(18.dp),
+                        tint = if (nsecCopied) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error,
+                    )
+                }
             }
         } else {
             Text(

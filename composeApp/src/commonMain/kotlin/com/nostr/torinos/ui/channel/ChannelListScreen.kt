@@ -191,6 +191,8 @@ private fun ChannelRow(item: ChannelItem, onClick: () -> Unit) {
             Text(
                 text = item.meta.name.ifBlank { "（名前なし）" },
                 style = MaterialTheme.typography.titleSmall,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
             )
             if (item.meta.about.isNotBlank()) {
                 Text(
