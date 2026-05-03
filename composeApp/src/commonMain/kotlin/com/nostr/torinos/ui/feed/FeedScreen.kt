@@ -71,7 +71,7 @@ fun FeedScreen(
     scrollToTopTargetTab: FeedTab = FeedTab.Following,
     onCurrentFeedTabChanged: (FeedTab) -> Unit = {},
     followingListState: LazyListState? = null,
-    allPostsListState: LazyListState? = null,
+    globalListState: LazyListState? = null,
     /** null = グローバルフィード、非null = 特定ユーザーのポスト */
     authorPubkey: String? = null,
 ) {
@@ -131,7 +131,7 @@ fun FeedScreen(
         when {
             authorPubkey != null -> Unit
             scrollToTopTargetTab == FeedTab.Following -> followingListState?.animateScrollToItem(0)
-            scrollToTopTargetTab == FeedTab.AllPosts -> allPostsListState?.animateScrollToItem(0)
+            scrollToTopTargetTab == FeedTab.Global -> globalListState?.animateScrollToItem(0)
         }
     }
 
@@ -345,9 +345,9 @@ fun FeedScreen(
             }
 
             else -> {
-                key(FeedTab.AllPosts) {
+                key(FeedTab.Global) {
                     FeedTimelinePane(
-                        viewModelKey = "global-${FeedTab.AllPosts.name}-${activeRelayUrl ?: "all"}-all-false-" +
+                        viewModelKey = "global-${FeedTab.Global.name}-${activeRelayUrl ?: "all"}-all-false-" +
                             "${activeHashtagFilter ?: "none"}",
                         authorPubkey = null,
                         authorPubkeys = null,
@@ -362,7 +362,7 @@ fun FeedScreen(
                         onOpenLikes = onOpenLikes,
                         onOpenReposts = onOpenReposts,
                         onHashtagClick = ::selectHashtagFilter,
-                        listState = allPostsListState,
+                        listState = globalListState,
                     )
                 }
             }
@@ -430,7 +430,7 @@ private fun FeedTimelinePane(
 
 enum class FeedTab(val label: String) {
     Following("フォロー"),
-    AllPosts("全ポスト"),
+    Global("グローバル"),
 }
 
 private fun Modifier.feedTabSwipe(
@@ -451,8 +451,8 @@ private fun Modifier.feedTabSwipe(
             onDragEnd = {
                 when {
                     dragAmount < -SwipeThresholdPx && currentTab == FeedTab.Following ->
-                        onTabChange(FeedTab.AllPosts)
-                    dragAmount > SwipeThresholdPx && currentTab == FeedTab.AllPosts ->
+                        onTabChange(FeedTab.Global)
+                    dragAmount > SwipeThresholdPx && currentTab == FeedTab.Global ->
                         onTabChange(FeedTab.Following)
                 }
             },

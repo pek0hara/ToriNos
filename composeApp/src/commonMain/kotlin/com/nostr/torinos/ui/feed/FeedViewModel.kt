@@ -88,6 +88,8 @@ class FeedViewModel(
     private var receivedEoseCount = 0
     private var expectedEoseCount = 1
     private var initialHistoryRequested = false
+    private val shouldRefreshLiveSubscription: Boolean
+        get() = authorPubkey == null && authorPubkeys != null
 
     init {
         if (isWriteSupported) launch { ownPubkey = loadPublicKey() }
@@ -235,17 +237,7 @@ class FeedViewModel(
                 requestHistoryPage(until = null)
             } else {
                 // タブ再表示時はライブ購読だけ再開（履歴は再取得しない）
-                val nowSec = Clock.System.now().epochSeconds
-                NostrRepository.subscribe(
-                    feedSubId,
-                    NostrFilter(
-                        kinds = feedKinds(),
-                        authors = authorPubkeys,
-                        tTags = hashtag?.let { listOf(it) },
-                        since = nowSec,
-                    ),
-                    relayUrl = relayUrl,
-                )
+                subscribeLiveFeed(since = Clock.System.now().epochSeconds)
             }
         }
 
@@ -286,6 +278,26 @@ class FeedViewModel(
                     isLoadingMore = false,
                 )
                 NostrRepository.close(historySubId)
+            }
+        }
+
+        // リレーが feedSubId を CLOSED したら再購読（接続維持中でも切られることがある）
+        subscriptionJobs += launch {
+            NostrRepository.closed(feedSubId).collect {
+                if (!subscriptionsStarted) return@collect
+                subscribeLiveFeed(since = liveSince())
+            }
+        }
+
+        // リレーが CLOSED を返さずに購読だけ止めるケースに備え、フォロータブは定期的に REQ を再送する。
+        if (shouldRefreshLiveSubscription) {
+            subscriptionJobs += launch {
+                while (subscriptionsStarted) {
+                    delay(LIVE_SUBSCRIPTION_REFRESH_INTERVAL_MS)
+                    if (subscriptionsStarted) {
+                        subscribeLiveFeed(since = liveSince())
+                    }
+                }
             }
         }
 
@@ -439,17 +451,7 @@ class FeedViewModel(
         // 初回のみライブ購読も開始（since=現在時刻でライブイベントのみ）
         if (until == null) {
             initialHistoryRequested = true
-            val nowSec = Clock.System.now().epochSeconds
-            NostrRepository.subscribe(
-                feedSubId,
-                NostrFilter(
-                    kinds = feedKinds(),
-                    authors = authorPubkeys,
-                    tTags = hashtag?.let { listOf(it) },
-                    since = nowSec,
-                ),
-                relayUrl = relayUrl,
-            )
+            subscribeLiveFeed(since = Clock.System.now().epochSeconds)
         }
         NostrRepository.subscribe(
             historySubId,
@@ -495,6 +497,25 @@ class FeedViewModel(
             )
             if (!hasMore) NostrRepository.close(historySubId)
         }
+    }
+
+    private suspend fun subscribeLiveFeed(since: Long) {
+        NostrRepository.subscribe(
+            feedSubId,
+            NostrFilter(
+                kinds = feedKinds(),
+                authors = authorPubkeys,
+                tTags = hashtag?.let { listOf(it) },
+                since = since,
+            ),
+            relayUrl = relayUrl,
+        )
+    }
+
+    private fun liveSince(): Long {
+        val latestEventAt = rawEvents.values.maxOfOrNull { it.createdAt }
+        val recentWindowStart = Clock.System.now().epochSeconds - LIVE_SUBSCRIPTION_SINCE_OVERLAP_SECONDS
+        return maxOf(latestEventAt ?: recentWindowStart, recentWindowStart)
     }
 
     private fun feedKinds(): List<Int> = if (includeRepostsInFeed && hashtag == null) listOf(1, 6) else listOf(1)
@@ -675,6 +696,8 @@ class FeedViewModel(
         private const val FEED_PAGE_SIZE = 30
         private const val MAX_TRACKED_ENGAGEMENT_EVENTS = 20
         private const val MAX_SEEN_IDS = 2000
+        private const val LIVE_SUBSCRIPTION_REFRESH_INTERVAL_MS = 60_000L
+        private const val LIVE_SUBSCRIPTION_SINCE_OVERLAP_SECONDS = 300L
     }
 }
 

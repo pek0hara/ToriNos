@@ -185,4 +185,11 @@ object NostrRepository {
                 (msg is RelayMessage.Closed && msg.subscriptionId == subscriptionId)
             }
             .map { }
+
+    /** リレーが CLOSED を送ってきたときだけ通知する Flow */
+    fun closed(subscriptionId: String): Flow<Unit> =
+        bus
+            .filterIsInstance<RelayMessage.Closed>()
+            .filter { it.subscriptionId == subscriptionId }
+            .map { }
 }
