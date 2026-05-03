@@ -14,7 +14,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import com.nostr.torinos.model.quotedEventIds
 import com.nostr.torinos.model.stripNostrEventUris
-import com.nostr.torinos.network.MuteStore
 import com.nostr.torinos.ui.feed.FeedViewModel
 
 fun LazyListScope.noteListItems(
@@ -112,12 +111,6 @@ fun LazyListScope.noteListItems(
                     ownPubkey = ownPubkey,
                     onDelete = { onDelete(event.id) },
                     isMuted = mutedPubkeys.contains(event.pubkey),
-                    onMute = if (event.pubkey != ownPubkey) {
-                        { MuteStore.mute(event.pubkey) }
-                    } else null,
-                    onUnmute = if (event.pubkey != ownPubkey) {
-                        { MuteStore.unmute(event.pubkey) }
-                    } else null,
                 )
                 HorizontalDivider()
             }

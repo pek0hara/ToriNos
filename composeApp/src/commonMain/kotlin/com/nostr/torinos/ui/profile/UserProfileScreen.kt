@@ -5,6 +5,9 @@ import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -26,6 +29,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.runtime.collectAsState
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.nostr.torinos.network.MuteStore
 import com.nostr.torinos.network.RelayStore
 import com.nostr.torinos.ui.components.NoteTimeline
 import com.nostr.torinos.ui.feed.FeedViewModel
@@ -61,13 +65,18 @@ fun UserProfileScreen(
             relayUrl = contentRelayUrl,
             autoStart = false,
             includeRepostsInFeed = true,
+            includeRepliesInFeed = true,
         )
     }
     val state by viewModel.state.collectAsState()
     val feedState by feedViewModel.state.collectAsState()
+    val mutedPubkeys by MuteStore.mutedPubkeys.collectAsState()
+    val isMuted = mutedPubkeys.contains(pubkey)
     val displayName = state.profile?.bestName ?: (pubkey.take(8) + "…" + pubkey.takeLast(8))
     val snackbarHostState = remember { SnackbarHostState() }
     var deferredContentStarted by remember(pubkey) { mutableStateOf(false) }
+    var showProfileMenu by remember(pubkey) { mutableStateOf(false) }
+    var showRelayList by remember(pubkey) { mutableStateOf(false) }
 
     LaunchedEffect(state.profile) {
         val profile = state.profile ?: return@LaunchedEffect
@@ -119,6 +128,33 @@ fun UserProfileScreen(
                         }
                     }
                 },
+                actions = {
+                    if (!isOwnProfile) {
+                        IconButton(onClick = { showProfileMenu = true }) {
+                            Icon(
+                                Icons.Default.MoreVert,
+                                contentDescription = "その他",
+                                tint = MaterialTheme.colorScheme.onPrimary,
+                            )
+                        }
+                        DropdownMenu(
+                            expanded = showProfileMenu,
+                            onDismissRequest = { showProfileMenu = false },
+                        ) {
+                            DropdownMenuItem(
+                                text = { Text(if (isMuted) "ミュートを解除" else "ミュート") },
+                                onClick = {
+                                    showProfileMenu = false
+                                    if (isMuted) {
+                                        MuteStore.unmute(pubkey)
+                                    } else {
+                                        MuteStore.mute(pubkey)
+                                    }
+                                },
+                            )
+                        }
+                    }
+                },
                 colors = TopAppBarDefaults.topAppBarColors(
                     containerColor = MaterialTheme.colorScheme.primary,
                     titleContentColor = MaterialTheme.colorScheme.onPrimary,
@@ -126,6 +162,12 @@ fun UserProfileScreen(
             )
         },
     ) { padding ->
+        if (showRelayList) {
+            ProfileRelayListDialog(
+                relayUrls = state.relayUrls,
+                onDismiss = { showRelayList = false },
+            )
+        }
         NoteTimeline(
             state = feedState,
             ownPubkey = ownPubkey,
@@ -154,6 +196,7 @@ fun UserProfileScreen(
                         isFollowing = state.isFollowing,
                         isFollowLoading = state.isFollowLoading,
                         canFollow = state.canFollow,
+                        relayUrls = state.relayUrls,
                         onFollow = viewModel::follow,
                         onUnfollow = viewModel::unfollow,
                         onUserClick = onUserClick,
@@ -169,8 +212,10 @@ fun UserProfileScreen(
                         isFollowersLoading = state.isFollowersLoading,
                         onFetchFollowers = viewModel::loadFollowersCount,
                         followersFetched = state.followersLoaded,
+                        relayCount = state.relayUrls.size,
                         onOpenFollowing = onOpenFollowing,
                         onOpenFollowers = onOpenFollowers,
+                        onOpenRelays = { showRelayList = true },
                     )
                     HorizontalDivider()
                 }

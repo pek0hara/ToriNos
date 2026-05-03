@@ -171,12 +171,6 @@ fun ChannelScreen(
                                         onOpenReposts = { onOpenReposts(message.id) },
                                         ownPubkey = ownPubkey,
                                         isMuted = mutedPubkeys.contains(message.pubkey),
-                                        onMute = if (message.pubkey != ownPubkey) {
-                                            { MuteStore.mute(message.pubkey) }
-                                        } else null,
-                                        onUnmute = if (message.pubkey != ownPubkey) {
-                                            { MuteStore.unmute(message.pubkey) }
-                                        } else null,
                                     )
                                     HorizontalDivider()
                                 }

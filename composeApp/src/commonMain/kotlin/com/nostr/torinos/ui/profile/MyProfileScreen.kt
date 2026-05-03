@@ -52,7 +52,11 @@ fun MyProfileScreen(
         factory = viewModelFactory { initializer { MyProfileViewModel(ownPubkey) } },
     ),
     feedViewModel: FeedViewModel = viewModel(key = "my-feed-$ownPubkey-reposts") {
-        FeedViewModel(authorPubkey = ownPubkey, includeRepostsInFeed = true)
+        FeedViewModel(
+            authorPubkey = ownPubkey,
+            includeRepostsInFeed = true,
+            includeRepliesInFeed = true,
+        )
     },
     reactionsViewModel: MyProfileReactionsViewModel = viewModel(
         key = "my-reactions-$ownPubkey",
@@ -63,6 +67,7 @@ fun MyProfileScreen(
     val feedState by feedViewModel.state.collectAsState()
     val reactionsState by reactionsViewModel.state.collectAsState()
     var showEditSheet by remember { mutableStateOf(false) }
+    var showRelayList by remember { mutableStateOf(false) }
     var selectedTab by remember { mutableStateOf(MyProfileTab.Posts) }
     val editProfileViewModel = viewModel<EditProfileViewModel>(
         key = "editProfile",
@@ -121,6 +126,12 @@ fun MyProfileScreen(
                 onSaved = { viewModel.applyProfile(it) },
             )
         }
+        if (showRelayList) {
+            ProfileRelayListDialog(
+                relayUrls = state.relayUrls,
+                onDismiss = { showRelayList = false },
+            )
+        }
 
         val profileHeader: LazyListScope.() -> Unit = {
             item {
@@ -129,6 +140,7 @@ fun MyProfileScreen(
                     profile = state.profile,
                     linkedProfiles = state.linkedProfiles,
                     isOwnProfile = true,
+                    relayUrls = state.relayUrls,
                     onUserClick = onUserClick,
                 )
                 HorizontalDivider()
@@ -141,8 +153,10 @@ fun MyProfileScreen(
                     isFollowersLoading = state.isFollowersLoading,
                     onFetchFollowers = viewModel::fetchFollowers,
                     followersFetched = state.followersLoaded,
+                    relayCount = state.relayUrls.size,
                     onOpenFollowing = onOpenFollowing,
                     onOpenFollowers = onOpenFollowers,
+                    onOpenRelays = { showRelayList = true },
                 )
                 HorizontalDivider()
             }

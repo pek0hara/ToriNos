@@ -30,6 +30,7 @@ class FeedViewModel(
     private val relayUrl: String? = null,
     private val autoStart: Boolean = true,
     private val includeRepostsInFeed: Boolean = false,
+    private val includeRepliesInFeed: Boolean = false,
     private val hashtag: String? = null,
 ) : SafeViewModel() {
 
@@ -236,8 +237,14 @@ class FeedViewModel(
                 // 初回のみ履歴ページを取得
                 requestHistoryPage(until = null)
             } else {
-                // タブ再表示時はライブ購読だけ再開（履歴は再取得しない）
-                subscribeLiveFeed(since = Clock.System.now().epochSeconds)
+                // タブ再表示時はライブ購読を再開し、離れていた間のギャップを補完する
+                val nowSec = Clock.System.now().epochSeconds
+                subscribeLiveFeed(since = nowSec)
+                val gapSince = rawEvents.values.maxOfOrNull { it.createdAt }
+                if (gapSince != null && gapSince < nowSec - 5) {
+                    requestGapFill(since = gapSince, until = nowSec)
+                }
+                resubscribeEngagement()
             }
         }
 
@@ -286,6 +293,16 @@ class FeedViewModel(
             NostrRepository.closed(feedSubId).collect {
                 if (!subscriptionsStarted) return@collect
                 subscribeLiveFeed(since = liveSince())
+            }
+        }
+
+        // エンゲージメント購読が CLOSED されたら再購読
+        for (subId in listOf(reactionSubId, replySubId, repostSubId)) {
+            subscriptionJobs += launch {
+                NostrRepository.closed(subId).collect {
+                    if (!subscriptionsStarted) return@collect
+                    resubscribeEngagement()
+                }
             }
         }
 
@@ -466,6 +483,29 @@ class FeedViewModel(
         )
     }
 
+    private suspend fun requestGapFill(since: Long, until: Long) {
+        if (authorPubkeys?.isEmpty() == true) return
+        NostrRepository.closeSuspending(historySubId)
+        loadingMore = true
+        lastHistoryBatchReceivedCount = 0
+        lastHistoryBatchUniqueCount = 0
+        receivedEoseCount = 0
+        expectedEoseCount = if (relayUrl != null) 1 else NostrRepository.relayCount.coerceAtLeast(1)
+        scheduleHistoryPageTimeout()
+        NostrRepository.subscribe(
+            historySubId,
+            NostrFilter(
+                kinds = feedKinds(),
+                authors = authorPubkeys,
+                tTags = hashtag?.let { listOf(it) },
+                since = since,
+                until = until,
+                limit = FEED_PAGE_SIZE,
+            ),
+            relayUrl = relayUrl,
+        )
+    }
+
     private fun onHistoryPageCompleted() {
         if (!loadingMore) return
         loadingMore = false
@@ -524,7 +564,7 @@ class FeedViewModel(
     private fun appendFeedEvent(event: NostrEvent): Int = when (event.kind) {
         1 -> {
             val parentId = event.tags.firstOrNull { it.firstOrNull() == "e" }?.getOrNull(1)
-            if (parentId != null) {
+            if (!includeRepliesInFeed && parentId != null) {
                 scheduleEngagementFetch(parentId)
                 0
             } else {
@@ -664,6 +704,14 @@ class FeedViewModel(
         }
     }
 
+    private suspend fun resubscribeEngagement() {
+        if (watchedEventIds.isEmpty()) return
+        val ids = watchedEventIds.toList()
+        NostrRepository.subscribe(reactionSubId, NostrFilter(kinds = listOf(7), eTags = ids))
+        NostrRepository.subscribe(replySubId,    NostrFilter(kinds = listOf(1), eTags = ids))
+        NostrRepository.subscribe(repostSubId,   NostrFilter(kinds = listOf(6), eTags = ids))
+    }
+
     private fun scheduleEngagementFetch(eventId: String) {
         if (!watchedEventIds.add(eventId)) return
         while (watchedEventIds.size > MAX_TRACKED_ENGAGEMENT_EVENTS) {
@@ -694,7 +742,7 @@ class FeedViewModel(
 
     companion object {
         private const val FEED_PAGE_SIZE = 30
-        private const val MAX_TRACKED_ENGAGEMENT_EVENTS = 20
+        private const val MAX_TRACKED_ENGAGEMENT_EVENTS = 100
         private const val MAX_SEEN_IDS = 2000
         private const val LIVE_SUBSCRIPTION_REFRESH_INTERVAL_MS = 60_000L
         private const val LIVE_SUBSCRIPTION_SINCE_OVERLAP_SECONDS = 300L

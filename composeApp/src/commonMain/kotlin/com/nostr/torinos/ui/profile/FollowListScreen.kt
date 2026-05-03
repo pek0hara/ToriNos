@@ -19,18 +19,23 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.runtime.collectAsState
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.nostr.torinos.crypto.hexToNpub
 import com.nostr.torinos.model.NostrProfile
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -46,6 +51,10 @@ fun FollowListScreen(
 ) {
     val state by viewModel.state.collectAsState()
     val title = if (mode == FollowListMode.FOLLOWING) "フォロー" else "フォロワー"
+    var query by remember(mode, ownPubkey) { mutableStateOf("") }
+    val filteredEntries = remember(state.entries, query) {
+        state.entries.filterByQuery(query)
+    }
 
     Scaffold(
         contentWindowInsets = WindowInsets(0),
@@ -89,7 +98,35 @@ fun FollowListScreen(
             LazyColumn(
                 modifier = Modifier.fillMaxSize().padding(padding),
             ) {
-                items(state.entries, key = { it.first }) { (pubkey, profile) ->
+                item(contentType = "search") {
+                    OutlinedTextField(
+                        value = query,
+                        onValueChange = { query = it },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp, vertical = 10.dp),
+                        singleLine = true,
+                        placeholder = { Text("ユーザー検索") },
+                    )
+                    HorizontalDivider()
+                }
+
+                if (filteredEntries.isEmpty()) {
+                    item(contentType = "empty-search") {
+                        Box(
+                            modifier = Modifier.fillMaxWidth().padding(32.dp),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Text(
+                                text = "一致するユーザーはいません",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
+                }
+
+                items(filteredEntries, key = { it.first }) { (pubkey, profile) ->
                     UserRow(
                         pubkey = pubkey,
                         profile = profile,
@@ -99,6 +136,22 @@ fun FollowListScreen(
                 }
             }
         }
+    }
+}
+
+private fun List<Pair<String, NostrProfile?>>.filterByQuery(query: String): List<Pair<String, NostrProfile?>> {
+    val normalized = query.trim().lowercase()
+    if (normalized.isEmpty()) return this
+    return filter { (pubkey, profile) ->
+        val fields = listOfNotNull(
+            pubkey,
+            runCatching { hexToNpub(pubkey) }.getOrNull(),
+            profile?.name,
+            profile?.displayName,
+            profile?.nip05,
+            profile?.about,
+        )
+        fields.any { it.lowercase().contains(normalized) }
     }
 }
 

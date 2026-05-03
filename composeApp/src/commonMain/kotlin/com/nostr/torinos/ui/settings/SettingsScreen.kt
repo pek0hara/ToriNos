@@ -41,11 +41,11 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalClipboardManager
-import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.platform.LocalClipboard
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.runtime.collectAsState
@@ -55,6 +55,7 @@ import com.nostr.torinos.crypto.StoredAccount
 import com.nostr.torinos.network.RelayEntry
 import com.nostr.torinos.ui.relay.RelaySettingsViewModel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -469,7 +470,8 @@ private fun KeySection(
     onShowSecret: () -> Unit,
     onHideSecret: () -> Unit,
 ) {
-    val clipboardManager = LocalClipboardManager.current
+    val clipboard = LocalClipboard.current
+    val coroutineScope = rememberCoroutineScope()
     var npubCopied by remember { mutableStateOf(false) }
     var nsecCopied by remember { mutableStateOf(false) }
 
@@ -516,8 +518,10 @@ private fun KeySection(
             }
             IconButton(
                 onClick = {
-                    clipboardManager.setText(AnnotatedString(npub))
-                    npubCopied = true
+                    coroutineScope.launch {
+                        clipboard.setPlainText(npub)
+                        npubCopied = true
+                    }
                 },
                 modifier = Modifier.size(32.dp),
             ) {
@@ -562,8 +566,10 @@ private fun KeySection(
                 }
                 IconButton(
                     onClick = {
-                        clipboardManager.setText(AnnotatedString(nsec))
-                        nsecCopied = true
+                        coroutineScope.launch {
+                            clipboard.setPlainText(nsec)
+                            nsecCopied = true
+                        }
                     },
                     modifier = Modifier.size(32.dp),
                 ) {

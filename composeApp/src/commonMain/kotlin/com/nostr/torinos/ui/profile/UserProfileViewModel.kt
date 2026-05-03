@@ -20,6 +20,7 @@ import kotlinx.coroutines.launch
 data class UserProfileState(
     val profile: NostrProfile? = null,
     val linkedProfiles: Map<String, NostrProfile> = emptyMap(),
+    val relayUrls: List<String> = emptyList(),
     /** null = フォローリスト未ロード */
     val isFollowing: Boolean? = null,
     val isFollowLoading: Boolean = false,
@@ -44,9 +45,11 @@ class UserProfileViewModel(
     private val linkedProfileSubId = "upl-$shortKey"
     private val followingSubId = "uf-$shortKey"
     private val followersSubId = "ur-$shortKey"
+    private val relayListSubId = "url-$shortKey"
 
     private val collectorJobs = mutableListOf<Job>()
     private var followingCountStarted = false
+    private var latestRelayListCreatedAt = -1L
     private val pendingLinkedProfilePubkeys = linkedSetOf<String>()
 
     init {
@@ -98,6 +101,11 @@ class UserProfileViewModel(
                 profileSubId,
                 NostrFilter(kinds = listOf(0), authors = listOf(pubkey), limit = 1),
             )
+            NostrRepository.subscribe(
+                relayListSubId,
+                NostrFilter(kinds = listOf(10002), authors = listOf(pubkey), limit = 1),
+                relayUrl = deferredRelayUrl,
+            )
         }
     }
 
@@ -143,6 +151,14 @@ class UserProfileViewModel(
                 _state.update {
                     it.copy(linkedProfiles = it.linkedProfiles + (event.pubkey to profile))
                 }
+            }
+        }
+
+        collectorJobs += launch {
+            NostrRepository.events(relayListSubId).collect { event ->
+                if (event.kind != 10002 || event.createdAt <= latestRelayListCreatedAt) return@collect
+                latestRelayListCreatedAt = event.createdAt
+                _state.update { it.copy(relayUrls = event.relayUrls()) }
             }
         }
 
@@ -195,6 +211,7 @@ class UserProfileViewModel(
         NostrRepository.close(linkedProfileSubId)
         NostrRepository.close(followingSubId)
         NostrRepository.close(followersSubId)
+        NostrRepository.close(relayListSubId)
     }
 
     private fun scheduleLinkedProfileFetch(text: String) {
@@ -215,3 +232,11 @@ class UserProfileViewModel(
         private const val FOLLOWERS_FETCH_LIMIT = 500
     }
 }
+
+private fun com.nostr.torinos.model.NostrEvent.relayUrls(): List<String> =
+    tags.mapNotNull { tag ->
+        tag.takeIf { it.size >= 2 && it[0] == "r" }
+            ?.get(1)
+            ?.trim()
+            ?.takeIf { it.isNotBlank() }
+    }.distinct()
