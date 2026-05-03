@@ -8,6 +8,8 @@ plugins {
     alias(libs.plugins.composeMultiplatform)
     alias(libs.plugins.composeCompiler)
     alias(libs.plugins.kotlinxSerialization)
+    alias(libs.plugins.ksp)
+    alias(libs.plugins.androidxRoom)
 }
 
 kotlin {
@@ -48,17 +50,41 @@ kotlin {
     }
 
     sourceSets {
-        androidMain.dependencies {
-            implementation(compose.preview)
-            implementation(libs.ktor.client.okhttp)
-            implementation(libs.kotlinx.coroutines.android)
-            implementation(libs.secp256k1.kmp)
-            implementation(libs.secp256k1.kmp.jni.android)
-            implementation(libs.datastore.preferences)
-            implementation(libs.activity.compose)
-            implementation(libs.credentials)
-            implementation(libs.credentials.play.services.auth)
+        val commonMain by getting
+        val mobileMain by creating {
+            dependsOn(commonMain)
+            dependencies {
+                implementation(libs.androidx.room.runtime)
+                implementation(libs.androidx.sqlite.bundled)
+            }
         }
+        val androidMain by getting {
+            dependsOn(mobileMain)
+            dependencies {
+                implementation(compose.preview)
+                implementation(libs.ktor.client.okhttp)
+                implementation(libs.kotlinx.coroutines.android)
+                implementation(libs.secp256k1.kmp)
+                implementation(libs.secp256k1.kmp.jni.android)
+                implementation(libs.datastore.preferences)
+                implementation(libs.activity.compose)
+                implementation(libs.credentials)
+                implementation(libs.credentials.play.services.auth)
+            }
+        }
+        val iosMain by creating {
+            dependsOn(mobileMain)
+            dependencies {
+                implementation(libs.ktor.client.darwin)
+                implementation(libs.secp256k1.kmp)
+            }
+        }
+        val iosX64Main by getting
+        val iosArm64Main by getting
+        val iosSimulatorArm64Main by getting
+        iosX64Main.dependsOn(iosMain)
+        iosArm64Main.dependsOn(iosMain)
+        iosSimulatorArm64Main.dependsOn(iosMain)
         val wasmJsMain by getting {
             dependencies {
                 implementation(libs.ktor.client.js)
@@ -84,14 +110,21 @@ kotlin {
             implementation(libs.coil.compose)
             implementation(libs.coil.network.ktor3)
         }
-        iosMain.dependencies {
-            implementation(libs.ktor.client.darwin)
-            implementation(libs.secp256k1.kmp)
-        }
         commonTest.dependencies {
             implementation(kotlin("test"))
         }
     }
+}
+
+dependencies {
+    add("kspAndroid", libs.androidx.room.compiler)
+    add("kspIosX64", libs.androidx.room.compiler)
+    add("kspIosArm64", libs.androidx.room.compiler)
+    add("kspIosSimulatorArm64", libs.androidx.room.compiler)
+}
+
+room {
+    schemaDirectory("$projectDir/schemas")
 }
 
 android {
