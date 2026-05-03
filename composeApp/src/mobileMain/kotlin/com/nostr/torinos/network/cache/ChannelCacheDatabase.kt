@@ -123,18 +123,22 @@ interface ChannelCacheDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertReadState(state: ChannelReadStateEntity)
 
+    @Query("SELECT DISTINCT relayUrl FROM channel_messages")
+    suspend fun getDistinctRelayUrls(): List<String>
+
     @Query(
         """
         DELETE FROM channel_messages
-        WHERE eventId NOT IN (
+        WHERE relayUrl = :relayUrl AND eventId NOT IN (
             SELECT eventId
             FROM channel_messages
+            WHERE relayUrl = :relayUrl
             ORDER BY createdAt DESC
             LIMIT :maxMessages
         )
         """
     )
-    suspend fun pruneMessages(maxMessages: Int)
+    suspend fun pruneMessagesByRelay(relayUrl: String, maxMessages: Int)
 }
 
 @Database(

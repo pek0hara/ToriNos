@@ -76,6 +76,8 @@ actual object ChannelCacheStore {
     }
 
     actual suspend fun prune(maxMessages: Int) {
-        dao.pruneMessages(maxMessages)
+        dao.getDistinctRelayUrls().forEach { relayUrl ->
+            dao.pruneMessagesByRelay(relayUrl, maxMessages)
+        }
     }
 }
