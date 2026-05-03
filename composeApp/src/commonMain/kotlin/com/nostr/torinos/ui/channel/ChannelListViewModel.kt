@@ -42,6 +42,7 @@ class ChannelListViewModel(private val relayUrl: String? = null) : SafeViewModel
         private const val AUTHOR_SUBSCRIPTION_DELAY_MS = 500L
         private const val EMIT_THROTTLE_MS = 250L
         private const val PAGE_SIZE = 50
+        private const val MAX_SEEN_MSG_IDS = 5_000
 
         val Factory: ViewModelProvider.Factory = object : ViewModelProvider.Factory {
             @Suppress("UNCHECKED_CAST")
@@ -81,7 +82,7 @@ class ChannelListViewModel(private val relayUrl: String? = null) : SafeViewModel
     // kind:42 から集計した統計
     private val messageCounts = mutableMapOf<String, Int>()
     private val lastActivities = mutableMapOf<String, Long>()
-    private val seenMessageIds = mutableSetOf<String>()
+    private val seenMessageIds = linkedSetOf<String>()
     // kind:0 プロフィール
     private val authorProfiles = mutableMapOf<String, NostrProfile>()
     private val cachedChannels = linkedMapOf<String, CachedChannelSummary>()
@@ -119,6 +120,7 @@ class ChannelListViewModel(private val relayUrl: String? = null) : SafeViewModel
             NostrRepository.events(activitySubId).collect { event ->
                 if (event.kind != 42) return@collect
                 if (!seenMessageIds.add(event.id)) return@collect
+                if (seenMessageIds.size > MAX_SEEN_MSG_IDS) seenMessageIds.remove(seenMessageIds.first())
                 lastPageUniqueMessageCount++
                 oldestActivityCreatedAt = minOf(oldestActivityCreatedAt ?: event.createdAt, event.createdAt)
                 val channelId = event.channelIdFromMessage() ?: return@collect

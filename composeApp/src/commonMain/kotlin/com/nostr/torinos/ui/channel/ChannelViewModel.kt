@@ -15,6 +15,7 @@ import com.nostr.torinos.network.ChannelCacheStore
 import com.nostr.torinos.network.MuteStore
 import com.nostr.torinos.network.NgWordStore
 import com.nostr.torinos.network.NostrRepository
+import kotlin.time.Clock
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -116,6 +117,10 @@ class ChannelViewModel(
         }
     }
 
+    fun onScrolledToLatest() {
+        markLatestRead()
+    }
+
     private fun start() {
         // kind:40 でチャンネルメタ取得
         jobs += launch {
@@ -134,7 +139,6 @@ class ChannelViewModel(
                 if (event.kind != 42) return@collect
                 appendMessage(event)
                 relayUrl?.let { ChannelCacheStore.upsertMessage(it, event, channelId) }
-                markLatestRead()
                 scheduleProfileFetch(event.pubkey)
                 scheduleMentionedProfileFetch(event.content)
             }
@@ -149,6 +153,19 @@ class ChannelViewModel(
                 relayUrl?.let { ChannelCacheStore.upsertMessage(it, event, channelId) }
                 scheduleProfileFetch(event.pubkey)
                 scheduleMentionedProfileFetch(event.content)
+            }
+        }
+
+        // リレーが msgSubId を CLOSED したら再購読
+        jobs += launch {
+            NostrRepository.closed(msgSubId).collect {
+                val sinceTs = currentMessages.maxOfOrNull { it.createdAt }
+                    ?: Clock.System.now().epochSeconds
+                NostrRepository.subscribe(
+                    msgSubId,
+                    NostrFilter(kinds = listOf(42), eTags = listOf(channelId), since = sinceTs),
+                    relayUrl = relayUrl,
+                )
             }
         }
 

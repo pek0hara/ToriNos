@@ -75,16 +75,16 @@ fun ChannelListScreen(
         ChannelListViewModel(relayUrl = activeRelayUrl)
     }
     val state by viewModel.state.collectAsState()
-    val listState = rememberSaveable(saver = LazyListState.Saver) { LazyListState() }
+    val listState = rememberSaveable(activeRelayUrl, saver = LazyListState.Saver) { LazyListState() }
 
-    LaunchedEffect(listState, state) {
-        val ready = state as? ChannelListViewModel.UiState.Ready ?: return@LaunchedEffect
-        if (!ready.canLoadMore || ready.isLoadingMore) return@LaunchedEffect
-
+    LaunchedEffect(listState) {
         snapshotFlow {
             val layoutInfo = listState.layoutInfo
             val lastVisible = layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: -1
+            val ready = state as? ChannelListViewModel.UiState.Ready
             lastVisible >= layoutInfo.totalItemsCount - 3
+                && ready?.canLoadMore == true
+                && ready.isLoadingMore == false
         }
             .distinctUntilChanged()
             .filter { it }

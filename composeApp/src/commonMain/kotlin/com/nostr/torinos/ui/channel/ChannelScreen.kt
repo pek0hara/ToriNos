@@ -39,10 +39,13 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.snapshotFlow
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.nostr.torinos.network.MuteStore
 import com.nostr.torinos.network.RelayStore
 import com.nostr.torinos.ui.components.NoteCard
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.filter
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -129,6 +132,13 @@ fun ChannelScreen(
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
                         } else {
+                            LaunchedEffect(listState) {
+                                snapshotFlow { !listState.canScrollForward && listState.layoutInfo.totalItemsCount > 0 }
+                                    .distinctUntilChanged()
+                                    .filter { it }
+                                    .collect { viewModel.onScrolledToLatest() }
+                            }
+
                             LaunchedEffect(channelId, selectedRelayUrl, s.initialUnreadMessageId, s.messages.size) {
                                 val isAtTop = listState.firstVisibleItemIndex == 0 &&
                                     listState.firstVisibleItemScrollOffset == 0

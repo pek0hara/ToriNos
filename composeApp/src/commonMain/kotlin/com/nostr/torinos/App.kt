@@ -99,7 +99,7 @@ fun App() {
         var currentFeedTab by remember { mutableStateOf(FeedTab.Following) }
         var feedScrollToTopTargetTab by remember { mutableStateOf(FeedTab.Following) }
         val followingFeedListState = remember { LazyListState() }
-        val allPostsFeedListState = remember { LazyListState() }
+        val globalFeedListState = remember { LazyListState() }
 
         // 起動時に保存済み秘密鍵から公開鍵を読み込む
         LaunchedEffect(Unit) {
@@ -294,7 +294,7 @@ fun App() {
                             scrollToTopTargetTab = feedScrollToTopTargetTab,
                             onCurrentFeedTabChanged = { currentFeedTab = it },
                             followingListState = followingFeedListState,
-                            allPostsListState = allPostsFeedListState,
+                            globalListState = globalFeedListState,
                         )
                     }
                     composable("channels") {
