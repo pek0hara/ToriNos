@@ -62,7 +62,13 @@ import kotlinx.serialization.Serializable
 @Serializable data class ProfileRoute(val pubkey: String)
 @Serializable data class FollowingRoute(val pubkey: String)
 @Serializable data class FollowersRoute(val pubkey: String)
-@Serializable data class ThreadRoute(val eventId: String, val initialTab: String = "replies")
+@Serializable data class ThreadRoute(
+    val eventId: String,
+    val initialTab: String = "replies",
+    val source: String = "",
+)
+
+private const val ThreadSourceChannel = "channel"
 
 private enum class PendingKeyAction {
     NewPost,
@@ -188,9 +194,17 @@ fun App() {
         }
 
         val bottomBarRoutes = setOf("feed", "channels")
+        val routeName = currentRoute?.substringBefore("/")
+        val isChannelRoute = routeName?.endsWith("ChannelRoute") == true
+        val threadRoute = if (routeName?.endsWith("ThreadRoute") == true) {
+            runCatching { backStackEntry?.toRoute<ThreadRoute>() }.getOrNull()
+        } else {
+            null
+        }
+        val isChannelThreadRoute = threadRoute?.source == ThreadSourceChannel
         val isProfileRoute = currentRoute == "myprofile" ||
-            currentRoute?.substringBefore("/")?.endsWith("ProfileRoute") == true
-        val hasBottomBar = currentRoute in bottomBarRoutes || isProfileRoute
+            routeName?.endsWith("ProfileRoute") == true
+        val hasBottomBar = currentRoute in bottomBarRoutes || isChannelRoute || isChannelThreadRoute || isProfileRoute
 
         Scaffold(
             contentWindowInsets = WindowInsets(0),
@@ -231,7 +245,7 @@ fun App() {
                         NavigationBarItem(
                             icon = { Icon(Icons.AutoMirrored.Filled.List, contentDescription = null) },
                             label = { Text("チャンネル") },
-                            selected = currentRoute == "channels",
+                            selected = currentRoute == "channels" || isChannelRoute || isChannelThreadRoute,
                             onClick = {
                                 nav.navigate("channels") {
                                     popUpTo("feed") { saveState = true; inclusive = false }
@@ -294,6 +308,13 @@ fun App() {
                             channelId = route.channelId,
                             onBack = { nav.popBackStack() },
                             onUserClick = { pubkey -> nav.navigate(ProfileRoute(pubkey)) },
+                            onOpenThread = { eventId -> nav.navigate(ThreadRoute(eventId, source = ThreadSourceChannel)) },
+                            onOpenLikes = { eventId ->
+                                nav.navigate(ThreadRoute(eventId, "likes", ThreadSourceChannel))
+                            },
+                            onOpenReposts = { eventId ->
+                                nav.navigate(ThreadRoute(eventId, "reposts", ThreadSourceChannel))
+                            },
                             ownPubkey = ownPubkey,
                         )
                     }

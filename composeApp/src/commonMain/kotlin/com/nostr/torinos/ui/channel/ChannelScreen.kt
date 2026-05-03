@@ -41,6 +41,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.runtime.collectAsState
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.nostr.torinos.network.MuteStore
+import com.nostr.torinos.network.RelayStore
 import com.nostr.torinos.ui.components.NoteCard
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -49,13 +50,19 @@ fun ChannelScreen(
     channelId: String,
     onBack: () -> Unit = {},
     onUserClick: (pubkey: String) -> Unit = {},
+    onOpenThread: (eventId: String) -> Unit = {},
+    onOpenLikes: (eventId: String) -> Unit = {},
+    onOpenReposts: (eventId: String) -> Unit = {},
     ownPubkey: String? = null,
-    viewModel: ChannelViewModel = viewModel(key = channelId) { ChannelViewModel(channelId) },
 ) {
+    val selectedRelayUrl by RelayStore.selectedRelayUrl.collectAsState()
+    val viewModel: ChannelViewModel = viewModel(key = "$channelId-${selectedRelayUrl ?: "all"}") {
+        ChannelViewModel(channelId = channelId, relayUrl = selectedRelayUrl)
+    }
     val state by viewModel.state.collectAsState()
     val mutedPubkeys by MuteStore.mutedPubkeys.collectAsState()
-    val listState = remember(channelId) { LazyListState() }
-    var didScrollToInitialTop by remember(channelId) { mutableStateOf(false) }
+    val listState = remember(channelId, selectedRelayUrl) { LazyListState() }
+    var didApplyInitialScroll by remember(channelId, selectedRelayUrl) { mutableStateOf(false) }
 
     Scaffold(
         contentWindowInsets = WindowInsets(0),
@@ -122,12 +129,18 @@ fun ChannelScreen(
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
                         } else {
-                            LaunchedEffect(channelId, s.messages.firstOrNull()?.id) {
+                            LaunchedEffect(channelId, selectedRelayUrl, s.initialUnreadMessageId, s.messages.size) {
                                 val isAtTop = listState.firstVisibleItemIndex == 0 &&
                                     listState.firstVisibleItemScrollOffset == 0
-                                if (!didScrollToInitialTop || (s.keepScrolledToTop && isAtTop)) {
+                                if (!didApplyInitialScroll) {
+                                    val targetIndex = s.initialUnreadMessageId
+                                        ?.let { id -> s.messages.indexOfFirst { it.id == id } }
+                                        ?.takeIf { it >= 0 }
+                                        ?: 0
+                                    listState.scrollToItem(targetIndex)
+                                    didApplyInitialScroll = true
+                                } else if (s.keepScrolledToTop && isAtTop) {
                                     listState.scrollToItem(0)
-                                    didScrollToInitialTop = true
                                 }
                             }
 
@@ -143,6 +156,9 @@ fun ChannelScreen(
                                         replyCount = 0,
                                         reactionCount = 0,
                                         onUserClick = onUserClick,
+                                        onOpenReplies = { onOpenThread(message.id) },
+                                        onOpenLikes = { onOpenLikes(message.id) },
+                                        onOpenReposts = { onOpenReposts(message.id) },
                                         ownPubkey = ownPubkey,
                                         isMuted = mutedPubkeys.contains(message.pubkey),
                                         onMute = if (message.pubkey != ownPubkey) {

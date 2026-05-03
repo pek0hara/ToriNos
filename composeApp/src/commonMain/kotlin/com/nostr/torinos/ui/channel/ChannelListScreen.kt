@@ -13,16 +13,22 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
@@ -31,28 +37,107 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.snapshotFlow
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.nostr.torinos.network.RelayStore
 import kotlin.time.Clock
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.filter
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ChannelListScreen(
     onChannelClick: (channelId: String) -> Unit = {},
 ) {
-    val viewModel: ChannelListViewModel = viewModel(key = "channel-list") { ChannelListViewModel() }
+    val relays by RelayStore.relays.collectAsState(initial = emptyList())
+    val selectedRelayUrl by RelayStore.selectedRelayUrl.collectAsState()
+    var showRelayMenu by remember { mutableStateOf(false) }
+
+    LaunchedEffect(relays, selectedRelayUrl) {
+        if (selectedRelayUrl == null || selectedRelayUrl !in relays) {
+            RelayStore.setSelectedRelayUrl(relays.firstOrNull())
+        }
+    }
+
+    val activeRelayUrl = selectedRelayUrl
+    val viewModel: ChannelListViewModel = viewModel(key = "channel-list-${activeRelayUrl ?: "all"}") {
+        ChannelListViewModel(relayUrl = activeRelayUrl)
+    }
     val state by viewModel.state.collectAsState()
+    val listState = rememberSaveable(saver = LazyListState.Saver) { LazyListState() }
+
+    LaunchedEffect(listState, state) {
+        val ready = state as? ChannelListViewModel.UiState.Ready ?: return@LaunchedEffect
+        if (!ready.canLoadMore || ready.isLoadingMore) return@LaunchedEffect
+
+        snapshotFlow {
+            val layoutInfo = listState.layoutInfo
+            val lastVisible = layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: -1
+            lastVisible >= layoutInfo.totalItemsCount - 3
+        }
+            .distinctUntilChanged()
+            .filter { it }
+            .collect { viewModel.loadMore() }
+    }
 
     Scaffold(
         contentWindowInsets = WindowInsets(0),
         topBar = {
             TopAppBar(
-                title = { Text("チャンネル") },
+                title = {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.Start,
+                    ) {
+                        Text(
+                            text = selectedRelayUrl?.relayDisplayName() ?: "—",
+                            modifier = Modifier.weight(1f, fill = false),
+                            color = MaterialTheme.colorScheme.onPrimary,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                        IconButton(onClick = { showRelayMenu = true }) {
+                            Icon(
+                                Icons.Default.ArrowDropDown,
+                                contentDescription = "リレー切り替え",
+                                tint = MaterialTheme.colorScheme.onPrimary,
+                            )
+                        }
+                        DropdownMenu(
+                            expanded = showRelayMenu,
+                            onDismissRequest = { showRelayMenu = false },
+                        ) {
+                            relays.forEach { url ->
+                                DropdownMenuItem(
+                                    text = { Text(url.relayDisplayName()) },
+                                    onClick = {
+                                        RelayStore.setSelectedRelayUrl(url)
+                                        showRelayMenu = false
+                                    },
+                                    trailingIcon = if (url == selectedRelayUrl) {
+                                        {
+                                            Icon(
+                                                Icons.Default.Check,
+                                                contentDescription = null,
+                                            )
+                                        }
+                                    } else null,
+                                )
+                            }
+                        }
+                    }
+                },
                 colors = TopAppBarDefaults.topAppBarColors(
                     containerColor = MaterialTheme.colorScheme.primary,
                     titleContentColor = MaterialTheme.colorScheme.onPrimary,
@@ -89,7 +174,20 @@ fun ChannelListScreen(
                 }
 
                 is ChannelListViewModel.UiState.Ready -> {
-                    if (s.channels.isEmpty()) {
+                    if (s.channels.isEmpty() && s.isLoadingMore) {
+                        Column(
+                            modifier = Modifier.align(Alignment.Center),
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(16.dp),
+                        ) {
+                            CircularProgressIndicator()
+                            Text(
+                                text = "チャンネルを読み込み中…",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    } else if (s.channels.isEmpty()) {
                         Text(
                             text = "チャンネルがありません",
                             modifier = Modifier.align(Alignment.Center),
@@ -97,13 +195,28 @@ fun ChannelListScreen(
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     } else {
-                        LazyColumn(modifier = Modifier.fillMaxSize()) {
+                        LazyColumn(
+                            state = listState,
+                            modifier = Modifier.fillMaxSize(),
+                        ) {
                             items(s.channels, key = { it.event.id }) { item ->
                                 ChannelRow(
                                     item = item,
                                     onClick = { onChannelClick(item.event.id) },
                                 )
                                 HorizontalDivider()
+                            }
+                            if (s.isLoadingMore) {
+                                item {
+                                    Box(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(vertical = 16.dp),
+                                        contentAlignment = Alignment.Center,
+                                    ) {
+                                        CircularProgressIndicator(modifier = Modifier.size(24.dp), strokeWidth = 2.dp)
+                                    }
+                                }
                             }
                         }
                     }
@@ -203,10 +316,21 @@ private fun ChannelRow(item: ChannelItem, onClick: () -> Unit) {
                     overflow = TextOverflow.Ellipsis,
                 )
             }
+            if (!item.latestMessagePreview.isNullOrBlank()) {
+                Text(
+                    text = item.latestMessagePreview,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
             Text(
                 text = "$authorName · $timeText",
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
             )
         }
 
@@ -215,9 +339,9 @@ private fun ChannelRow(item: ChannelItem, onClick: () -> Unit) {
             verticalArrangement = Arrangement.spacedBy(4.dp),
             modifier = Modifier.padding(start = 12.dp),
         ) {
-            if (item.messageCount > 0) {
+            if (item.unreadCount > 0) {
                 Text(
-                    text = "${item.messageCount}件",
+                    text = "${item.unreadCount}未読",
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.primary,
                 )
@@ -237,3 +361,6 @@ private fun relativeTime(epochSeconds: Long): String {
         else -> "${diff / (86400L * 30L)}ヶ月前"
     }
 }
+
+private fun String.relayDisplayName(): String =
+    removePrefix("wss://").removePrefix("ws://").trimEnd('/')

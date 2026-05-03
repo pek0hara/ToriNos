@@ -11,6 +11,7 @@ import com.nostr.torinos.model.NostrProfile
 import com.nostr.torinos.model.extractNpubReferences
 import com.nostr.torinos.model.toChannelMeta
 import com.nostr.torinos.model.toProfile
+import com.nostr.torinos.network.ChannelCacheStore
 import com.nostr.torinos.network.MuteStore
 import com.nostr.torinos.network.NgWordStore
 import com.nostr.torinos.network.NostrRepository
@@ -21,7 +22,10 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 
-class ChannelViewModel(private val channelId: String) : SafeViewModel() {
+class ChannelViewModel(
+    private val channelId: String,
+    private val relayUrl: String? = null,
+) : SafeViewModel() {
 
     sealed interface UiState {
         data object Loading : UiState
@@ -31,6 +35,7 @@ class ChannelViewModel(private val channelId: String) : SafeViewModel() {
             val profiles: Map<String, NostrProfile> = emptyMap(),
             val canLoadMore: Boolean = false,
             val keepScrolledToTop: Boolean = true,
+            val initialUnreadMessageId: String? = null,
             val draftText: String = "",
             val isPosting: Boolean = false,
             val postError: String? = null,
@@ -41,10 +46,11 @@ class ChannelViewModel(private val channelId: String) : SafeViewModel() {
     val state: StateFlow<UiState> = _state.asStateFlow()
 
     private val shortId = channelId.take(16)
-    private val metaSubId = "ch-meta-$shortId"
-    private val msgSubId = "ch-msg-$shortId"
-    private val histSubId = "ch-hist-$shortId"
-    private val profSubId = "ch-prof-$shortId"
+    private val relayKey = relayUrl?.hashCode()?.toString() ?: "all"
+    private val metaSubId = "ch-meta-$shortId-$relayKey"
+    private val msgSubId = "ch-msg-$shortId-$relayKey"
+    private val histSubId = "ch-hist-$shortId-$relayKey"
+    private val profSubId = "ch-prof-$shortId-$relayKey"
 
     private val seenIds = linkedSetOf<String>()
     private val pendingPubkeys = mutableSetOf<String>()
@@ -59,6 +65,7 @@ class ChannelViewModel(private val channelId: String) : SafeViewModel() {
     private var currentChannelMeta = ChannelMeta()
     private var currentMessages = emptyList<NostrEvent>()
     private var currentProfiles = emptyMap<String, NostrProfile>()
+    private var initialLastReadAt: Long? = null
 
     init {
         start()
@@ -116,6 +123,7 @@ class ChannelViewModel(private val channelId: String) : SafeViewModel() {
                 if (event.kind != 40) return@collect
                 val meta = event.toChannelMeta() ?: return@collect
                 currentChannelMeta = meta
+                relayUrl?.let { ChannelCacheStore.upsertChannel(it, event, meta) }
                 syncReadyState()
             }
         }
@@ -125,6 +133,8 @@ class ChannelViewModel(private val channelId: String) : SafeViewModel() {
             NostrRepository.events(msgSubId).collect { event ->
                 if (event.kind != 42) return@collect
                 appendMessage(event)
+                relayUrl?.let { ChannelCacheStore.upsertMessage(it, event, channelId) }
+                markLatestRead()
                 scheduleProfileFetch(event.pubkey)
                 scheduleMentionedProfileFetch(event.content)
             }
@@ -136,6 +146,7 @@ class ChannelViewModel(private val channelId: String) : SafeViewModel() {
                 if (event.kind != 42) return@collect
                 val added = appendMessage(event)
                 lastBatchCount += added
+                relayUrl?.let { ChannelCacheStore.upsertMessage(it, event, channelId) }
                 scheduleProfileFetch(event.pubkey)
                 scheduleMentionedProfileFetch(event.content)
             }
@@ -179,8 +190,12 @@ class ChannelViewModel(private val channelId: String) : SafeViewModel() {
         }
 
         launch {
+            val cacheRelayUrl = relayUrl
+            if (cacheRelayUrl != null) {
+                initialLastReadAt = ChannelCacheStore.getLastReadAt(cacheRelayUrl, channelId)
+            }
             // チャンネルメタ取得
-            NostrRepository.subscribe(metaSubId, NostrFilter(ids = listOf(channelId)))
+            NostrRepository.subscribe(metaSubId, NostrFilter(ids = listOf(channelId)), relayUrl = relayUrl)
             // 初回ページ
             requestPage(until = null)
         }
@@ -190,7 +205,7 @@ class ChannelViewModel(private val channelId: String) : SafeViewModel() {
         loadingMore = true
         lastBatchCount = 0
         receivedEoseCount = 0
-        expectedEoseCount = NostrRepository.relayCount.coerceAtLeast(1)
+        expectedEoseCount = if (relayUrl != null) 1 else NostrRepository.relayCount.coerceAtLeast(1)
         val current = _state.value as? UiState.Ready
         if (current != null) {
             _state.value = current.copy(canLoadMore = false)
@@ -201,11 +216,13 @@ class ChannelViewModel(private val channelId: String) : SafeViewModel() {
             NostrRepository.subscribe(
                 msgSubId,
                 NostrFilter(kinds = listOf(42), eTags = listOf(channelId)),
+                relayUrl = relayUrl,
             )
         }
         NostrRepository.subscribe(
             histSubId,
             NostrFilter(kinds = listOf(42), eTags = listOf(channelId), until = until, limit = PAGE_SIZE),
+            relayUrl = relayUrl,
         )
     }
 
@@ -213,6 +230,7 @@ class ChannelViewModel(private val channelId: String) : SafeViewModel() {
         loadingMore = false
         val hasMore = lastBatchCount >= PAGE_SIZE
         _state.value = readyState(canLoadMore = hasMore, keepScrolledToTop = false)
+        markLatestRead()
         if (!hasMore) NostrRepository.close(histSubId)
     }
 
@@ -220,8 +238,8 @@ class ChannelViewModel(private val channelId: String) : SafeViewModel() {
         if (!seenIds.add(event.id)) return 0
         while (seenIds.size > MAX_SEEN_IDS) seenIds.remove(seenIds.first())
         if (currentMessages.any { it.id == event.id }) return 0
-        currentMessages = (currentMessages + event).sortedByDescending { it.createdAt }
-        oldestCreatedAt = currentMessages.lastOrNull()?.createdAt
+        currentMessages = (currentMessages + event).sortedBy { it.createdAt }
+        oldestCreatedAt = currentMessages.firstOrNull()?.createdAt
         syncReadyState()
         return 1
     }
@@ -236,6 +254,7 @@ class ChannelViewModel(private val channelId: String) : SafeViewModel() {
             profiles = currentProfiles,
             canLoadMore = canLoadMore,
             keepScrolledToTop = keepScrolledToTop,
+            initialUnreadMessageId = initialUnreadMessageId(),
         )
 
     private fun syncReadyState() {
@@ -244,7 +263,21 @@ class ChannelViewModel(private val channelId: String) : SafeViewModel() {
             channelMeta = currentChannelMeta,
             messages = filteredMessages(),
             profiles = currentProfiles,
+            initialUnreadMessageId = initialUnreadMessageId(),
         )
+    }
+
+    private fun initialUnreadMessageId(): String? {
+        val lastReadAt = initialLastReadAt ?: return null
+        return filteredMessages().firstOrNull { it.createdAt > lastReadAt }?.id
+    }
+
+    private fun markLatestRead() {
+        val cacheRelayUrl = relayUrl ?: return
+        val latestReadAt = currentMessages.maxOfOrNull { it.createdAt } ?: return
+        launch {
+            ChannelCacheStore.markRead(cacheRelayUrl, channelId, latestReadAt)
+        }
     }
 
     private fun filteredMessages(): List<NostrEvent> {
@@ -268,6 +301,7 @@ class ChannelViewModel(private val channelId: String) : SafeViewModel() {
             NostrRepository.subscribe(
                 profSubId,
                 NostrFilter(kinds = listOf(0), authors = authors),
+                relayUrl = relayUrl,
             )
         }
     }
