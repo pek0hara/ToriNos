@@ -3,6 +3,7 @@ package com.nostr.torinos.ui.components
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.layout.ContentScale
@@ -20,11 +21,14 @@ fun NetworkImage(
     contentScale: ContentScale = ContentScale.Fit,
 ) {
     val context = LocalPlatformContext.current
-    AsyncImage(
-        model = ImageRequest.Builder(context)
+    val model = remember(context, url) {
+        ImageRequest.Builder(context)
             .data(url)
-            .crossfade(true)
-            .build(),
+            .crossfade(false)
+            .build()
+    }
+    AsyncImage(
+        model = model,
         contentDescription = contentDescription,
         contentScale = contentScale,
         modifier = modifier,
@@ -39,11 +43,14 @@ fun PreviewImage(
     contentScale: ContentScale = ContentScale.Fit,
 ) {
     val context = LocalPlatformContext.current
-    AsyncImage(
-        model = ImageRequest.Builder(context)
+    val model = remember(context, data) {
+        ImageRequest.Builder(context)
             .data(data)
-            .crossfade(true)
-            .build(),
+            .crossfade(false)
+            .build()
+    }
+    AsyncImage(
+        model = model,
         contentDescription = contentDescription,
         contentScale = contentScale,
         modifier = modifier,
@@ -56,11 +63,15 @@ fun AvatarImage(
     size: Dp,
     modifier: Modifier = Modifier,
 ) {
-    AsyncImage(
-        model = ImageRequest.Builder(LocalPlatformContext.current)
+    val context = LocalPlatformContext.current
+    val model = remember(context, url) {
+        ImageRequest.Builder(context)
             .data(url)
-            .crossfade(true)
-            .build(),
+            .crossfade(false)
+            .build()
+    }
+    AsyncImage(
+        model = model,
         contentDescription = null,
         contentScale = ContentScale.Crop,
         modifier = modifier

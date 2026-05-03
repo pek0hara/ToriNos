@@ -35,13 +35,13 @@ fun LazyListScope.noteListItems(
     emptyText: String = "ポストがありません",
 ) {
     when {
-        state.isInitialLoad && state.events.isEmpty() -> item {
+        state.isInitialLoad && state.events.isEmpty() -> item(contentType = "loading") {
             Box(
                 modifier = Modifier.fillMaxWidth().padding(48.dp),
                 contentAlignment = Alignment.Center,
             ) { CircularProgressIndicator() }
         }
-        state.events.isEmpty() -> item {
+        state.events.isEmpty() -> item(contentType = "empty") {
             Box(
                 modifier = Modifier.fillMaxWidth().padding(48.dp),
                 contentAlignment = Alignment.Center,
@@ -54,7 +54,11 @@ fun LazyListScope.noteListItems(
             }
         }
         else -> {
-            items(state.events, key = { it.id }) { event ->
+            items(
+                items = state.events,
+                key = { it.id },
+                contentType = { "note" },
+            ) { event ->
                 val repostedByPubkey = state.repostedByPubkeys[event.id]
                 NoteCard(
                     event = event,
@@ -118,7 +122,7 @@ fun LazyListScope.noteListItems(
                 HorizontalDivider()
             }
             if (state.isLoadingMore) {
-                item {
+                item(contentType = "loadingMore") {
                     Box(
                         modifier = Modifier.fillMaxWidth().padding(16.dp),
                         contentAlignment = Alignment.Center,

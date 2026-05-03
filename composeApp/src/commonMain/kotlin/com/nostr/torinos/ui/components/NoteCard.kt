@@ -5,6 +5,7 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -379,15 +380,19 @@ private fun ImagePreviewGrid(
     onImageClick: (List<String>, Int) -> Unit,
 ) {
     if (imageUrls.size == 1) {
-        NetworkImage(
-            url = imageUrls.first(),
-            contentDescription = null,
-            modifier = Modifier
-                .fillMaxWidth()
-                .heightIn(max = singleImageMaxHeight)
-                .clip(MaterialTheme.shapes.small)
-                .clickable { onImageClick(imageUrls, 0) },
-        )
+        BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
+            val imageHeight = minOf(maxWidth * 9f / 16f, singleImageMaxHeight)
+            NetworkImage(
+                url = imageUrls.first(),
+                contentDescription = null,
+                contentScale = ContentScale.Crop,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(imageHeight)
+                    .clip(MaterialTheme.shapes.small)
+                    .clickable { onImageClick(imageUrls, 0) },
+            )
+        }
         return
     }
 
