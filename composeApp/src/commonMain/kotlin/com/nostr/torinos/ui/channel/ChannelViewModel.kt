@@ -37,6 +37,7 @@ class ChannelViewModel(
             val canLoadMore: Boolean = false,
             val keepScrolledToTop: Boolean = true,
             val initialUnreadMessageId: String? = null,
+            val initialScrollMessageId: String? = null,
             val draftText: String = "",
             val isPosting: Boolean = false,
             val postError: String? = null,
@@ -67,6 +68,7 @@ class ChannelViewModel(
     private var currentMessages = emptyList<NostrEvent>()
     private var currentProfiles = emptyMap<String, NostrProfile>()
     private var initialLastReadAt: Long? = null
+    private var initialScrollMessageId: String? = null
 
     init {
         start()
@@ -119,6 +121,22 @@ class ChannelViewModel(
 
     fun onScrolledToLatest() {
         markLatestRead()
+        saveLatestAsScrollPosition()
+    }
+
+    fun saveScrollPosition(messageId: String) {
+        val cacheRelayUrl = relayUrl ?: return
+        launch {
+            ChannelCacheStore.saveScrollPosition(cacheRelayUrl, channelId, messageId)
+        }
+    }
+
+    private fun saveLatestAsScrollPosition() {
+        val cacheRelayUrl = relayUrl ?: return
+        val latestId = currentMessages.maxByOrNull { it.createdAt }?.id ?: return
+        launch {
+            ChannelCacheStore.saveScrollPosition(cacheRelayUrl, channelId, latestId)
+        }
     }
 
     private fun start() {
@@ -210,6 +228,7 @@ class ChannelViewModel(
             val cacheRelayUrl = relayUrl
             if (cacheRelayUrl != null) {
                 initialLastReadAt = ChannelCacheStore.getLastReadAt(cacheRelayUrl, channelId)
+                initialScrollMessageId = ChannelCacheStore.getScrollPosition(cacheRelayUrl, channelId)
                 // DB からキャッシュ済みメッセージを先に読み込んで即時表示
                 val cached = ChannelCacheStore.getMessages(cacheRelayUrl, channelId)
                 if (cached.isNotEmpty()) {
@@ -278,6 +297,7 @@ class ChannelViewModel(
             canLoadMore = canLoadMore,
             keepScrolledToTop = keepScrolledToTop,
             initialUnreadMessageId = initialUnreadMessageId(),
+            initialScrollMessageId = initialScrollMessageId,
         )
 
     private fun syncReadyState() {
@@ -287,6 +307,7 @@ class ChannelViewModel(
             messages = filteredMessages(),
             profiles = currentProfiles,
             initialUnreadMessageId = initialUnreadMessageId(),
+            initialScrollMessageId = initialScrollMessageId,
         )
     }
 

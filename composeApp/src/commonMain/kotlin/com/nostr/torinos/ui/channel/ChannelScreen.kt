@@ -4,8 +4,10 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
@@ -44,9 +46,12 @@ import androidx.compose.runtime.snapshotFlow
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.nostr.torinos.network.MuteStore
 import com.nostr.torinos.network.RelayStore
+import com.nostr.torinos.ui.components.LazyListScrollbar
 import com.nostr.torinos.ui.components.NoteCard
+import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.filter
+import kotlinx.coroutines.flow.map
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -140,11 +145,12 @@ fun ChannelScreen(
                                     .collect { viewModel.onScrolledToLatest() }
                             }
 
-                            LaunchedEffect(channelId, selectedRelayUrl, s.initialUnreadMessageId, s.messages.size) {
+                            LaunchedEffect(channelId, selectedRelayUrl, s.initialScrollMessageId, s.initialUnreadMessageId, s.messages.size) {
                                 val isAtTop = listState.firstVisibleItemIndex == 0 &&
                                     listState.firstVisibleItemScrollOffset == 0
                                 if (!didApplyInitialScroll) {
-                                    val targetIndex = s.initialUnreadMessageId
+                                    val targetId = s.initialScrollMessageId ?: s.initialUnreadMessageId
+                                    val targetIndex = targetId
                                         ?.let { id -> s.messages.indexOfFirst { it.id == id } }
                                         ?.takeIf { it >= 0 }
                                         ?: 0
@@ -155,40 +161,63 @@ fun ChannelScreen(
                                 }
                             }
 
-                            LazyColumn(
-                                state = listState,
-                                modifier = Modifier.fillMaxSize(),
-                            ) {
-                                items(s.messages, key = { it.id }) { message ->
-                                    NoteCard(
-                                        event = message,
-                                        profile = s.profiles[message.pubkey],
-                                        profiles = s.profiles,
-                                        replyCount = 0,
-                                        reactionCount = 0,
-                                        onUserClick = onUserClick,
-                                        onOpenReplies = { onOpenThread(message.id) },
-                                        onOpenLikes = { onOpenLikes(message.id) },
-                                        onOpenReposts = { onOpenReposts(message.id) },
-                                        ownPubkey = ownPubkey,
-                                        isMuted = mutedPubkeys.contains(message.pubkey),
-                                    )
-                                    HorizontalDivider()
-                                }
-                                if (s.canLoadMore) {
-                                    item {
-                                        Box(
-                                            modifier = Modifier
-                                                .fillMaxWidth()
-                                                .padding(16.dp),
-                                            contentAlignment = Alignment.Center,
-                                        ) {
-                                            FilledTonalButton(onClick = viewModel::loadMore) {
-                                                Text("さらに読み込む")
+                            LaunchedEffect(listState) {
+                                snapshotFlow { listState.firstVisibleItemIndex to didApplyInitialScroll }
+                                    .filter { (_, applied) -> applied }
+                                    .map { (index, _) -> index }
+                                    .distinctUntilChanged()
+                                    .debounce(500)
+                                    .collect { index ->
+                                        val messages = (viewModel.state.value as? ChannelViewModel.UiState.Ready)?.messages ?: return@collect
+                                        val messageId = messages.getOrNull(index)?.id ?: return@collect
+                                        viewModel.saveScrollPosition(messageId)
+                                    }
+                            }
+
+                            Box(modifier = Modifier.fillMaxSize()) {
+                                LazyColumn(
+                                    state = listState,
+                                    modifier = Modifier.fillMaxSize(),
+                                ) {
+                                    items(s.messages, key = { it.id }) { message ->
+                                        NoteCard(
+                                            event = message,
+                                            profile = s.profiles[message.pubkey],
+                                            profiles = s.profiles,
+                                            replyCount = 0,
+                                            reactionCount = 0,
+                                            onUserClick = onUserClick,
+                                            onOpenReplies = { onOpenThread(message.id) },
+                                            onOpenLikes = { onOpenLikes(message.id) },
+                                            onOpenReposts = { onOpenReposts(message.id) },
+                                            ownPubkey = ownPubkey,
+                                            isMuted = mutedPubkeys.contains(message.pubkey),
+                                        )
+                                        HorizontalDivider()
+                                    }
+                                    if (s.canLoadMore) {
+                                        item {
+                                            Box(
+                                                modifier = Modifier
+                                                    .fillMaxWidth()
+                                                    .padding(16.dp),
+                                                contentAlignment = Alignment.Center,
+                                            ) {
+                                                FilledTonalButton(onClick = viewModel::loadMore) {
+                                                    Text("さらに読み込む")
+                                                }
                                             }
                                         }
                                     }
                                 }
+                                LazyListScrollbar(
+                                    state = listState,
+                                    modifier = Modifier
+                                        .align(Alignment.CenterEnd)
+                                        .fillMaxHeight()
+                                        .padding(vertical = 8.dp, horizontal = 2.dp)
+                                        .width(16.dp),
+                                )
                             }
                         }
                     }
