@@ -62,6 +62,7 @@ data class CachedChannelSummaryRow(
     val latestMessageCreatedAt: Long?,
     val latestMessagePreview: String?,
     val unreadCount: Int,
+    val hasBeenOpened: Boolean,
 )
 
 @Dao
@@ -85,7 +86,8 @@ interface ChannelCacheDao {
                 WHERE unread.relayUrl = c.relayUrl
                   AND unread.channelId = c.channelId
                   AND unread.createdAt > COALESCE(r.lastReadAt, 0)
-            ) AS unreadCount
+            ) AS unreadCount,
+            CASE WHEN r.lastReadAt IS NOT NULL THEN 1 ELSE 0 END AS hasBeenOpened
         FROM channels c
         LEFT JOIN channel_read_states r
             ON r.relayUrl = c.relayUrl AND r.channelId = c.channelId
@@ -122,6 +124,25 @@ interface ChannelCacheDao {
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertReadState(state: ChannelReadStateEntity)
+
+    @Query(
+        """
+        SELECT rawJson FROM channel_messages
+        WHERE relayUrl = :relayUrl AND channelId = :channelId
+        ORDER BY createdAt ASC
+        LIMIT :limit
+        """
+    )
+    suspend fun getMessages(relayUrl: String, channelId: String, limit: Int): List<String>
+
+    @Query("DELETE FROM channels WHERE relayUrl = :relayUrl AND channelId = :channelId")
+    suspend fun deleteChannel(relayUrl: String, channelId: String)
+
+    @Query("DELETE FROM channel_messages WHERE relayUrl = :relayUrl AND channelId = :channelId")
+    suspend fun deleteMessages(relayUrl: String, channelId: String)
+
+    @Query("DELETE FROM channel_read_states WHERE relayUrl = :relayUrl AND channelId = :channelId")
+    suspend fun deleteReadState(relayUrl: String, channelId: String)
 
     @Query("SELECT DISTINCT relayUrl FROM channel_messages")
     suspend fun getDistinctRelayUrls(): List<String>

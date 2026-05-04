@@ -29,12 +29,19 @@ actual object ChannelCacheStore {
                     latestMessageCreatedAt = row.latestMessageCreatedAt,
                     latestMessagePreview = row.latestMessagePreview,
                     unreadCount = row.unreadCount,
+                    hasBeenOpened = row.hasBeenOpened,
                 )
             }
         }
 
     actual suspend fun getLastReadAt(relayUrl: String, channelId: String): Long? =
         dao.getLastReadAt(relayUrl, channelId)
+
+    actual suspend fun getMessages(relayUrl: String, channelId: String, limit: Int): List<NostrEvent> =
+        dao.getMessages(relayUrl, channelId, limit)
+            .mapNotNull { raw ->
+                runCatching { json.decodeFromString(NostrEvent.serializer(), raw) }.getOrNull()
+            }
 
     actual suspend fun upsertChannel(relayUrl: String, event: NostrEvent, meta: ChannelMeta) {
         dao.upsertChannel(
@@ -63,6 +70,11 @@ actual object ChannelCacheStore {
                 rawJson = json.encodeToString(NostrEvent.serializer(), event),
             )
         )
+    }
+
+    actual suspend fun deleteChannel(relayUrl: String, channelId: String) {
+        dao.deleteMessages(relayUrl, channelId)
+        dao.deleteReadState(relayUrl, channelId)
     }
 
     actual suspend fun markRead(relayUrl: String, channelId: String, readAt: Long) {
