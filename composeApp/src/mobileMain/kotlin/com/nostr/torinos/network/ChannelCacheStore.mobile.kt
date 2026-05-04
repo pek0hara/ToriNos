@@ -87,6 +87,13 @@ actual object ChannelCacheStore {
         )
     }
 
+    actual suspend fun saveScrollPosition(relayUrl: String, channelId: String, messageId: String) {
+        dao.upsertScrollPosition(relayUrl, channelId, messageId)
+    }
+
+    actual suspend fun getScrollPosition(relayUrl: String, channelId: String): String? =
+        dao.getScrollPosition(relayUrl, channelId)
+
     actual suspend fun prune(maxMessages: Int) {
         dao.getDistinctRelayUrls().forEach { relayUrl ->
             dao.pruneMessagesByRelay(relayUrl, maxMessages)

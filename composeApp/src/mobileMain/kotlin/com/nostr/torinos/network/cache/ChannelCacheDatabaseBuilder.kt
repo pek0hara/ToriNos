@@ -9,6 +9,7 @@ internal expect fun createChannelCacheDatabaseBuilder(): RoomDatabase.Builder<Ch
 
 internal fun createChannelCacheDatabase(): ChannelCacheDatabase =
     createChannelCacheDatabaseBuilder()
+        .addMigrations(MIGRATION_1_2)
         .setDriver(BundledSQLiteDriver())
         .setQueryCoroutineContext(Dispatchers.IO)
         .build()

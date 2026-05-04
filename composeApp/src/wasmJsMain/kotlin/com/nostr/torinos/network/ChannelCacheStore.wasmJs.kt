@@ -13,5 +13,7 @@ actual object ChannelCacheStore {
     actual suspend fun upsertMessage(relayUrl: String, event: NostrEvent, channelId: String) = Unit
     actual suspend fun deleteChannel(relayUrl: String, channelId: String) = Unit
     actual suspend fun markRead(relayUrl: String, channelId: String, readAt: Long) = Unit
+    actual suspend fun saveScrollPosition(relayUrl: String, channelId: String, messageId: String) = Unit
+    actual suspend fun getScrollPosition(relayUrl: String, channelId: String): String? = null
     actual suspend fun prune(maxMessages: Int) = Unit
 }

@@ -28,6 +28,8 @@ expect object ChannelCacheStore {
     suspend fun upsertChannel(relayUrl: String, event: NostrEvent, meta: ChannelMeta)
     suspend fun upsertMessage(relayUrl: String, event: NostrEvent, channelId: String)
     suspend fun markRead(relayUrl: String, channelId: String, readAt: Long)
+    suspend fun saveScrollPosition(relayUrl: String, channelId: String, messageId: String)
+    suspend fun getScrollPosition(relayUrl: String, channelId: String): String?
     suspend fun deleteChannel(relayUrl: String, channelId: String)
     suspend fun prune(maxMessages: Int = 50_000)
 }

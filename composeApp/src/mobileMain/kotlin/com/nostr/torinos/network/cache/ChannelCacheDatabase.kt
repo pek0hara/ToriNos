@@ -9,7 +9,16 @@ import androidx.room.OnConflictStrategy
 import androidx.room.Query
 import androidx.room.RoomDatabase
 import androidx.room.RoomDatabaseConstructor
+import androidx.room.migration.Migration
+import androidx.sqlite.SQLiteConnection
+import androidx.sqlite.execSQL
 import kotlinx.coroutines.flow.Flow
+
+val MIGRATION_1_2 = object : Migration(1, 2) {
+    override fun migrate(connection: SQLiteConnection) {
+        connection.execSQL("ALTER TABLE channel_read_states ADD COLUMN lastScrolledMessageId TEXT")
+    }
+}
 
 @Entity(
     tableName = "channels",
@@ -48,6 +57,7 @@ data class ChannelReadStateEntity(
     val relayUrl: String,
     val channelId: String,
     val lastReadAt: Long,
+    val lastScrolledMessageId: String? = null,
 )
 
 data class CachedChannelSummaryRow(
@@ -116,6 +126,25 @@ interface ChannelCacheDao {
     )
     suspend fun getLastReadAt(relayUrl: String, channelId: String): Long?
 
+    @Query(
+        """
+        SELECT lastScrolledMessageId
+        FROM channel_read_states
+        WHERE relayUrl = :relayUrl AND channelId = :channelId
+        LIMIT 1
+        """
+    )
+    suspend fun getScrollPosition(relayUrl: String, channelId: String): String?
+
+    @Query(
+        """
+        INSERT INTO channel_read_states (relayUrl, channelId, lastReadAt, lastScrolledMessageId)
+        VALUES (:relayUrl, :channelId, 0, :messageId)
+        ON CONFLICT(relayUrl, channelId) DO UPDATE SET lastScrolledMessageId = :messageId
+        """
+    )
+    suspend fun upsertScrollPosition(relayUrl: String, channelId: String, messageId: String)
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertChannel(channel: CachedChannelEntity)
 
@@ -168,7 +197,7 @@ interface ChannelCacheDao {
         CachedChannelMessageEntity::class,
         ChannelReadStateEntity::class,
     ],
-    version = 1,
+    version = 2,
 )
 @ConstructedBy(ChannelCacheDatabaseConstructor::class)
 abstract class ChannelCacheDatabase : RoomDatabase() {
