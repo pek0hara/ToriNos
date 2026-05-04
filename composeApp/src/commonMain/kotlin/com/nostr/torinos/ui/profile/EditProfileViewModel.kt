@@ -26,6 +26,7 @@ data class EditProfileState(
     val displayName: String = "",
     val about: String = "",
     val picture: String = "",
+    val banner: String = "",
     val nip05: String = "",
     val isSaving: Boolean = false,
     val isUploadingImage: Boolean = false,
@@ -65,23 +66,48 @@ class EditProfileViewModel : SafeViewModel() {
                 displayName = profile.displayName ?: "",
                 about = profile.about ?: "",
                 picture = profile.picture ?: "",
+                banner = profile.banner ?: "",
                 nip05 = profile.nip05 ?: "",
             )
         }
+    }
+
+    fun initFrom(profile: NostrProfile) {
+        _state.value = _state.value.copy(
+            name = profile.name ?: "",
+            displayName = profile.displayName ?: "",
+            about = profile.about ?: "",
+            picture = profile.picture ?: "",
+            banner = profile.banner ?: "",
+            nip05 = profile.nip05 ?: "",
+            error = null,
+        )
     }
 
     fun onNameChange(v: String) { _state.value = _state.value.copy(name = v, error = null) }
     fun onDisplayNameChange(v: String) { _state.value = _state.value.copy(displayName = v, error = null) }
     fun onAboutChange(v: String) { _state.value = _state.value.copy(about = v, error = null) }
     fun onPictureChange(v: String) { _state.value = _state.value.copy(picture = v, error = null) }
+    fun onBannerChange(v: String) { _state.value = _state.value.copy(banner = v, error = null) }
     fun onNip05Change(v: String) { _state.value = _state.value.copy(nip05 = v, error = null) }
 
     fun uploadProfileImage(bytes: ByteArray, mimeType: String) {
+        uploadImage(bytes, mimeType, ImageUploadTarget.Picture)
+    }
+
+    fun uploadBannerImage(bytes: ByteArray, mimeType: String) {
+        uploadImage(bytes, mimeType, ImageUploadTarget.Banner)
+    }
+
+    private fun uploadImage(bytes: ByteArray, mimeType: String, target: ImageUploadTarget) {
         _state.value = _state.value.copy(isUploadingImage = true, error = null)
         launch {
             ImageUploader.upload(bytes, mimeType)
                 .onSuccess { url ->
-                    _state.value = _state.value.copy(picture = url, isUploadingImage = false)
+                    _state.value = when (target) {
+                        ImageUploadTarget.Picture -> _state.value.copy(picture = url, isUploadingImage = false)
+                        ImageUploadTarget.Banner -> _state.value.copy(banner = url, isUploadingImage = false)
+                    }
                 }
                 .onFailure { e ->
                     _state.value = _state.value.copy(
@@ -106,6 +132,7 @@ class EditProfileViewModel : SafeViewModel() {
                 if (s.displayName.isNotBlank()) put("display_name", s.displayName.trim())
                 if (s.about.isNotBlank()) put("about", s.about.trim())
                 if (s.picture.isNotBlank()) put("picture", s.picture.trim())
+                if (s.banner.isNotBlank()) put("banner", s.banner.trim())
                 if (s.nip05.isNotBlank()) put("nip05", s.nip05.trim())
             }
 
@@ -118,6 +145,7 @@ class EditProfileViewModel : SafeViewModel() {
                     displayName = s.displayName.trim().ifBlank { null },
                     about = s.about.trim().ifBlank { null },
                     picture = s.picture.trim().ifBlank { null },
+                    banner = s.banner.trim().ifBlank { null },
                     nip05 = s.nip05.trim().ifBlank { null },
                 )
                 _state.value = _state.value.copy(isSaving = false, saved = true, savedProfile = savedProfile)
@@ -130,4 +158,9 @@ class EditProfileViewModel : SafeViewModel() {
     fun clearSaved() {
         _state.value = _state.value.copy(saved = false)
     }
+}
+
+private enum class ImageUploadTarget {
+    Picture,
+    Banner,
 }

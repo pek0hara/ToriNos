@@ -7,16 +7,23 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.VolumeOff
+import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.FileDownload
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -53,6 +60,7 @@ import com.nostr.torinos.crypto.hexToNpub
 import com.nostr.torinos.model.NostrProfile
 import com.nostr.torinos.network.RelayStore
 import com.nostr.torinos.ui.components.LinkedText
+import com.nostr.torinos.ui.components.NetworkImage
 import com.nostr.torinos.ui.settings.setPlainText
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -66,15 +74,23 @@ internal fun ProfileHeader(
     isFollowing: Boolean? = null,
     isFollowLoading: Boolean = false,
     canFollow: Boolean = false,
+    isMuted: Boolean = false,
     relayUrls: List<String> = emptyList(),
     onFollow: () -> Unit = {},
     onUnfollow: () -> Unit = {},
+    onMuteToggle: () -> Unit = {},
     onUserClick: (String) -> Unit = {},
+    onBack: (() -> Unit)? = null,
+    onEditBanner: (() -> Unit)? = null,
+    onEditAvatar: (() -> Unit)? = null,
+    onEditName: (() -> Unit)? = null,
+    onEditAbout: (() -> Unit)? = null,
 ) {
     val clipboard = LocalClipboard.current
     val coroutineScope = rememberCoroutineScope()
     val npub = remember(pubkey) { hexToNpub(pubkey) }
     var pubkeyCopied by remember(pubkey) { mutableStateOf(false) }
+    val hasBannerArea = !profile?.banner.isNullOrBlank() || (isOwnProfile && onEditBanner != null) || onBack != null
 
     LaunchedEffect(pubkeyCopied) {
         if (pubkeyCopied) {
@@ -84,89 +100,316 @@ internal fun ProfileHeader(
     }
 
     Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(16.dp),
-        verticalArrangement = Arrangement.spacedBy(8.dp),
+        modifier = Modifier.fillMaxWidth(),
     ) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            AvatarCircle(pubkey = pubkey, name = profile?.bestName, pictureUrl = profile?.picture, size = 64)
-
-            if (!isOwnProfile && canFollow) {
-                if (isFollowLoading) {
-                    CircularProgressIndicator(modifier = Modifier.size(24.dp), strokeWidth = 2.dp)
-                } else if (isFollowing == true) {
-                    OutlinedButton(onClick = onUnfollow) {
-                        Text("フォロー中")
-                    }
-                } else if (isFollowing == false) {
-                    Button(onClick = onFollow) {
-                        Text("フォロー")
+        if (hasBannerArea) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(178.dp),
+            ) {
+                ProfileBanner(
+                    bannerUrl = profile?.banner,
+                    isOwnProfile = isOwnProfile,
+                    onEditBanner = onEditBanner,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(132.dp),
+                )
+                ProfileAvatar(
+                    pubkey = pubkey,
+                    profile = profile,
+                    size = 96,
+                    onEditAvatar = if (isOwnProfile) onEditAvatar else null,
+                    modifier = Modifier
+                        .align(Alignment.BottomStart)
+                        .padding(start = 16.dp),
+                )
+                FollowActionRow(
+                    isOwnProfile = isOwnProfile,
+                    canFollow = canFollow,
+                    isFollowLoading = isFollowLoading,
+                    isFollowing = isFollowing,
+                    isMuted = isMuted,
+                    onFollow = onFollow,
+                    onUnfollow = onUnfollow,
+                    onMuteToggle = onMuteToggle,
+                    modifier = Modifier
+                        .align(Alignment.BottomEnd)
+                        .padding(end = 16.dp),
+                )
+                if (onBack != null) {
+                    IconButton(
+                        onClick = onBack,
+                        modifier = Modifier
+                            .align(Alignment.TopStart)
+                            .statusBarsPadding()
+                            .padding(start = 8.dp, top = 8.dp)
+                            .background(Color.Black.copy(alpha = 0.35f), CircleShape),
+                    ) {
+                        Icon(
+                            Icons.AutoMirrored.Filled.ArrowBack,
+                            contentDescription = "戻る",
+                            tint = Color.White,
+                        )
                     }
                 }
             }
         }
 
-        Text(
-            text = profile?.bestName ?: (pubkey.take(8) + "…" + pubkey.takeLast(8)),
-            style = MaterialTheme.typography.titleMedium,
-            fontWeight = FontWeight.Bold,
-        )
-        Row(
+        Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .border(
-                    width = 1.dp,
-                    color = MaterialTheme.colorScheme.outlineVariant,
-                    shape = RoundedCornerShape(6.dp),
-                )
-                .padding(start = 10.dp, end = 4.dp, top = 4.dp, bottom = 4.dp),
-            horizontalArrangement = Arrangement.spacedBy(6.dp),
-            verticalAlignment = Alignment.CenterVertically,
+                .padding(start = 16.dp, end = 16.dp, bottom = 16.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            Text(
-                text = npub.shortKey(),
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.weight(1f),
-            )
-            IconButton(
-                onClick = {
-                    coroutineScope.launch {
-                        clipboard.setPlainText(npub)
-                        pubkeyCopied = true
+            if (!hasBannerArea) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    ProfileAvatar(
+                        pubkey = pubkey,
+                        profile = profile,
+                        size = 64,
+                        onEditAvatar = if (isOwnProfile) onEditAvatar else null,
+                    )
+                    FollowActionRow(
+                        isOwnProfile = isOwnProfile,
+                        canFollow = canFollow,
+                        isFollowLoading = isFollowLoading,
+                        isFollowing = isFollowing,
+                        isMuted = isMuted,
+                        onFollow = onFollow,
+                        onUnfollow = onUnfollow,
+                        onMuteToggle = onMuteToggle,
+                    )
+                }
+            }
+
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    text = profile?.bestName ?: (pubkey.take(8) + "…" + pubkey.takeLast(8)),
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold,
+                )
+                if (isOwnProfile && onEditName != null) {
+                    IconButton(onClick = onEditName, modifier = Modifier.size(28.dp)) {
+                        Icon(
+                            Icons.Default.Edit,
+                            contentDescription = "名前を編集",
+                            modifier = Modifier.size(14.dp),
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
                     }
-                },
-                modifier = Modifier.size(28.dp),
+                }
+            }
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .border(
+                        width = 1.dp,
+                        color = MaterialTheme.colorScheme.outlineVariant,
+                        shape = RoundedCornerShape(6.dp),
+                    )
+                    .padding(start = 10.dp, end = 4.dp, top = 4.dp, bottom = 4.dp),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                verticalAlignment = Alignment.CenterVertically,
             ) {
-                Icon(
-                    imageVector = if (pubkeyCopied) Icons.Default.Check else Icons.Default.ContentCopy,
-                    contentDescription = "公開鍵をコピー",
-                    modifier = Modifier.size(16.dp),
-                    tint = if (pubkeyCopied) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                Text(
+                    text = npub.shortKey(),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f),
+                )
+                IconButton(
+                    onClick = {
+                        coroutineScope.launch {
+                            clipboard.setPlainText(npub)
+                            pubkeyCopied = true
+                        }
+                    },
+                    modifier = Modifier.size(28.dp),
+                ) {
+                    Icon(
+                        imageVector = if (pubkeyCopied) Icons.Default.Check else Icons.Default.ContentCopy,
+                        contentDescription = "公開鍵をコピー",
+                        modifier = Modifier.size(16.dp),
+                        tint = if (pubkeyCopied) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+            if (isOwnProfile && profile?.about.isNullOrBlank() && onEditAbout != null) {
+                TextButton(onClick = onEditAbout, contentPadding = androidx.compose.foundation.layout.PaddingValues(0.dp)) {
+                    Icon(Icons.Default.Edit, contentDescription = null, modifier = Modifier.size(14.dp))
+                    androidx.compose.foundation.layout.Spacer(modifier = Modifier.size(4.dp))
+                    Text("自己紹介を追加", style = MaterialTheme.typography.bodySmall)
+                }
+            } else {
+                profile?.about?.takeIf { it.isNotBlank() }?.let { about ->
+                    Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.Top) {
+                        LinkedText(
+                            text = about,
+                            modifier = Modifier.weight(1f),
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            onProfileClick = onUserClick,
+                            profiles = linkedProfiles,
+                        )
+                        if (isOwnProfile && onEditAbout != null) {
+                            IconButton(onClick = onEditAbout, modifier = Modifier.size(28.dp)) {
+                                Icon(
+                                    Icons.Default.Edit,
+                                    contentDescription = "自己紹介を編集",
+                                    modifier = Modifier.size(14.dp),
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+            profile?.nip05?.takeIf { it.isNotBlank() }?.let { nip05 ->
+                Text(
+                    text = nip05,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.primary,
                 )
             }
         }
-        profile?.about?.takeIf { it.isNotBlank() }?.let { about ->
-            LinkedText(
-                text = about,
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                onProfileClick = onUserClick,
-                profiles = linkedProfiles,
+    }
+}
+
+@Composable
+private fun ProfileBanner(
+    bannerUrl: String?,
+    isOwnProfile: Boolean,
+    onEditBanner: (() -> Unit)?,
+    modifier: Modifier = Modifier,
+) {
+    if (bannerUrl.isNullOrBlank() && (!isOwnProfile || onEditBanner == null)) return
+
+    Box(
+        modifier = modifier
+            .background(MaterialTheme.colorScheme.surfaceVariant),
+    ) {
+        if (!bannerUrl.isNullOrBlank()) {
+            NetworkImage(
+                url = bannerUrl,
+                contentDescription = null,
+                contentScale = ContentScale.Crop,
+                modifier = Modifier.fillMaxSize(),
             )
         }
-        profile?.nip05?.takeIf { it.isNotBlank() }?.let { nip05 ->
-            Text(
-                text = nip05,
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.primary,
+        if (isOwnProfile && onEditBanner != null) {
+            Box(
+                modifier = Modifier
+                    .align(Alignment.BottomEnd)
+                    .padding(8.dp)
+                    .size(30.dp)
+                    .background(MaterialTheme.colorScheme.primary, CircleShape)
+                    .clickable(onClick = onEditBanner),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    Icons.Default.Edit,
+                    contentDescription = "バナーを変更",
+                    modifier = Modifier.size(16.dp),
+                    tint = MaterialTheme.colorScheme.onPrimary,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun ProfileAvatar(
+    pubkey: String,
+    profile: NostrProfile?,
+    size: Int,
+    onEditAvatar: (() -> Unit)?,
+    modifier: Modifier = Modifier,
+) {
+    if (onEditAvatar != null) {
+        Box(modifier = modifier.size(size.dp)) {
+            val avatarFrameModifier = if (size >= 80) {
+                Modifier.border(4.dp, MaterialTheme.colorScheme.surface, CircleShape)
+            } else {
+                Modifier
+            }
+            AvatarCircle(
+                pubkey = pubkey,
+                name = profile?.bestName,
+                pictureUrl = profile?.picture,
+                size = size,
+                modifier = avatarFrameModifier,
+            )
+            Box(
+                modifier = Modifier
+                    .align(Alignment.BottomEnd)
+                    .padding(end = if (size >= 80) 4.dp else 2.dp, bottom = if (size >= 80) 4.dp else 2.dp)
+                    .size(if (size >= 80) 28.dp else 22.dp)
+                    .background(MaterialTheme.colorScheme.primary, CircleShape)
+                    .clickable(onClick = onEditAvatar),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    Icons.Default.Edit,
+                    contentDescription = "アイコンを変更",
+                    modifier = Modifier.size(if (size >= 80) 16.dp else 13.dp),
+                    tint = MaterialTheme.colorScheme.onPrimary,
+                )
+            }
+        }
+    } else {
+        AvatarCircle(
+            pubkey = pubkey,
+            name = profile?.bestName,
+            pictureUrl = profile?.picture,
+            size = size,
+            modifier = modifier,
+        )
+    }
+}
+
+@Composable
+private fun FollowActionRow(
+    isOwnProfile: Boolean,
+    canFollow: Boolean,
+    isFollowLoading: Boolean,
+    isFollowing: Boolean?,
+    isMuted: Boolean,
+    onFollow: () -> Unit,
+    onUnfollow: () -> Unit,
+    onMuteToggle: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    if (isOwnProfile || !canFollow) return
+
+    Row(
+        modifier = modifier,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        if (isFollowLoading) {
+            CircularProgressIndicator(modifier = Modifier.size(24.dp), strokeWidth = 2.dp)
+        } else if (isFollowing == true) {
+            OutlinedButton(onClick = onUnfollow) {
+                Text("フォロー中")
+            }
+        } else if (isFollowing == false) {
+            Button(onClick = onFollow) {
+                Text("フォロー")
+            }
+        }
+        IconButton(onClick = onMuteToggle) {
+            Icon(
+                imageVector = if (isMuted) Icons.AutoMirrored.Filled.VolumeOff else Icons.AutoMirrored.Filled.VolumeUp,
+                contentDescription = if (isMuted) "ミュートを解除" else "ミュート",
+                tint = if (isMuted) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
     }
@@ -327,7 +570,7 @@ internal fun AvatarCircle(pubkey: String, name: String?, pictureUrl: String? = n
         ?: '?'
     val fallback: @Composable () -> Unit = {
         Box(
-            modifier = Modifier
+            modifier = modifier
                 .size(size.dp)
                 .background(avatarColor(pubkey), CircleShape),
             contentAlignment = Alignment.Center,

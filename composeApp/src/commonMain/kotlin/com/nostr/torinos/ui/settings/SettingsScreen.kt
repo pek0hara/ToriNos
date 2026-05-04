@@ -20,6 +20,8 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Delete
+import com.nostr.torinos.model.NostrProfile
+import com.nostr.torinos.ui.profile.AvatarCircle
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Checkbox
@@ -84,9 +86,25 @@ fun SettingsScreen(
     val npub = remember(ownPubkey) {
         ownPubkey?.let { pubkey -> runCatching { hexToNpub(pubkey) }.getOrDefault(pubkey) }
     }
+    val clipboard = LocalClipboard.current
+    var nsecClipboardCopied by remember { mutableStateOf(false) }
 
     LaunchedEffect(accountViewModel) {
         accountViewModel?.secretKeyEvent?.collect { nsec = it }
+    }
+
+    LaunchedEffect(accountViewModel) {
+        accountViewModel?.secretKeyClipboardEvent?.collect { key ->
+            clipboard.setPlainText(key)
+            nsecClipboardCopied = true
+        }
+    }
+
+    LaunchedEffect(nsecClipboardCopied) {
+        if (nsecClipboardCopied) {
+            delay(2000)
+            nsecClipboardCopied = false
+        }
     }
 
     LaunchedEffect(accountViewModel, ownPubkey) {
@@ -151,6 +169,7 @@ fun SettingsScreen(
                 item {
                     AccountSwitcherSection(
                         accounts = state.accounts,
+                        profiles = state.profiles,
                         activePubkey = ownPubkey,
                         isProcessing = state.isAccountActionProcessing,
                         onSwitch = { pubkey -> account.switchAccount(pubkey, onAccountChanged) },
@@ -163,9 +182,11 @@ fun SettingsScreen(
                         npub = npub,
                         nsec = nsec,
                         isSecretVisible = state.isSecretKeyVisible,
+                        nsecClipboardCopied = nsecClipboardCopied,
                         error = state.keyError,
                         onShowSecret = account::showSecretKey,
                         onHideSecret = account::hideSecretKey,
+                        onCopySecret = account::copySecretKey,
                     )
                     HorizontalDivider()
                 }
@@ -235,6 +256,7 @@ fun SettingsScreen(
 @Composable
 private fun AccountSwitcherSection(
     accounts: List<StoredAccount>,
+    profiles: Map<String, NostrProfile>,
     activePubkey: String?,
     isProcessing: Boolean,
     onSwitch: (String) -> Unit,
@@ -252,6 +274,10 @@ private fun AccountSwitcherSection(
             fontWeight = FontWeight.Bold,
         )
         accounts.forEach { account ->
+            val profile = profiles[account.pubkeyHex]
+            val shortNpub = account.npub.let {
+                if (it.length > 16) it.take(10) + "..." + it.takeLast(6) else it
+            }
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -262,6 +288,27 @@ private fun AccountSwitcherSection(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(10.dp),
             ) {
+                AvatarCircle(
+                    pubkey = account.pubkeyHex,
+                    name = profile?.bestName,
+                    pictureUrl = profile?.picture,
+                    size = 36,
+                )
+                Column(modifier = Modifier.weight(1f)) {
+                    if (profile?.bestName != null) {
+                        Text(
+                            text = profile.bestName!!,
+                            style = MaterialTheme.typography.bodyMedium,
+                            maxLines = 1,
+                            overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                        )
+                    }
+                    Text(
+                        text = shortNpub,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
                 Icon(
                     imageVector = Icons.Default.Check,
                     contentDescription = null,
@@ -272,15 +319,6 @@ private fun AccountSwitcherSection(
                     },
                     modifier = Modifier.size(20.dp),
                 )
-                SelectionContainer(
-                    modifier = Modifier.weight(1f),
-                ) {
-                    Text(
-                        text = account.npub,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
             }
         }
         OutlinedButton(
@@ -466,14 +504,17 @@ private fun KeySection(
     npub: String,
     nsec: String?,
     isSecretVisible: Boolean,
+    nsecClipboardCopied: Boolean,
     error: String?,
     onShowSecret: () -> Unit,
     onHideSecret: () -> Unit,
+    onCopySecret: () -> Unit,
 ) {
     val clipboard = LocalClipboard.current
     val coroutineScope = rememberCoroutineScope()
     var npubCopied by remember { mutableStateOf(false) }
-    var nsecCopied by remember { mutableStateOf(false) }
+    var nsecDirectCopied by remember { mutableStateOf(false) }
+    val nsecCopied = nsecClipboardCopied || nsecDirectCopied
 
     LaunchedEffect(npubCopied) {
         if (npubCopied) {
@@ -481,10 +522,10 @@ private fun KeySection(
             npubCopied = false
         }
     }
-    LaunchedEffect(nsecCopied) {
-        if (nsecCopied) {
+    LaunchedEffect(nsecDirectCopied) {
+        if (nsecDirectCopied) {
             delay(2000)
-            nsecCopied = false
+            nsecDirectCopied = false
         }
     }
 
@@ -551,12 +592,12 @@ private fun KeySection(
             }
         }
 
-        if (isSecretVisible && nsec != null) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            if (isSecretVisible && nsec != null) {
                 SelectionContainer(modifier = Modifier.weight(1f)) {
                     Text(
                         text = nsec,
@@ -564,29 +605,34 @@ private fun KeySection(
                         color = MaterialTheme.colorScheme.error,
                     )
                 }
-                IconButton(
-                    onClick = {
+            } else {
+                Text(
+                    text = "●".repeat(24),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error,
+                    modifier = Modifier.weight(1f),
+                )
+            }
+            IconButton(
+                onClick = {
+                    if (isSecretVisible && nsec != null) {
                         coroutineScope.launch {
                             clipboard.setPlainText(nsec)
-                            nsecCopied = true
+                            nsecDirectCopied = true
                         }
-                    },
-                    modifier = Modifier.size(32.dp),
-                ) {
-                    Icon(
-                        imageVector = if (nsecCopied) Icons.Default.Check else Icons.Default.ContentCopy,
-                        contentDescription = "コピー",
-                        modifier = Modifier.size(18.dp),
-                        tint = if (nsecCopied) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error,
-                    )
-                }
+                    } else {
+                        onCopySecret()
+                    }
+                },
+                modifier = Modifier.size(32.dp),
+            ) {
+                Icon(
+                    imageVector = if (nsecCopied) Icons.Default.Check else Icons.Default.ContentCopy,
+                    contentDescription = "コピー",
+                    modifier = Modifier.size(18.dp),
+                    tint = if (nsecCopied) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error,
+                )
             }
-        } else {
-            Text(
-                text = "秘密鍵は表示操作をしたときだけ読み込みます",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
         }
 
         if (error != null) {

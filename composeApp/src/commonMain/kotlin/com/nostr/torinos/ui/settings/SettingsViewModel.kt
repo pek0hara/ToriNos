@@ -4,6 +4,9 @@ import com.nostr.torinos.crypto.KeyStorage
 import com.nostr.torinos.crypto.StoredAccount
 import com.nostr.torinos.crypto.hexToNsec
 import com.nostr.torinos.crypto.signEvent
+import com.nostr.torinos.model.NostrFilter
+import com.nostr.torinos.model.NostrProfile
+import com.nostr.torinos.model.toProfile
 import com.nostr.torinos.network.NostrRepository
 import com.nostr.torinos.ui.SafeViewModel
 import com.nostr.torinos.util.logException
@@ -18,6 +21,7 @@ import kotlinx.coroutines.flow.update
 
 data class SettingsState(
     val accounts: List<StoredAccount> = emptyList(),
+    val profiles: Map<String, NostrProfile> = emptyMap(),
     val isSecretKeyVisible: Boolean = false,
     val keyError: String? = null,
     val isAccountActionProcessing: Boolean = false,
@@ -31,7 +35,20 @@ class SettingsViewModel : SafeViewModel() {
     private val _secretKeyEvent = MutableSharedFlow<String>(replay = 0, extraBufferCapacity = 1)
     val secretKeyEvent: SharedFlow<String> = _secretKeyEvent.asSharedFlow()
 
+    private val _secretKeyClipboardEvent = MutableSharedFlow<String>(replay = 0, extraBufferCapacity = 1)
+    val secretKeyClipboardEvent: SharedFlow<String> = _secretKeyClipboardEvent.asSharedFlow()
+
+    private val profileSubId = "settings-account-profiles"
+
     init {
+        launch {
+            NostrRepository.events(profileSubId).collect { event ->
+                if (event.kind != 0) return@collect
+                event.toProfile()?.let { profile ->
+                    _state.update { it.copy(profiles = it.profiles + (event.pubkey to profile)) }
+                }
+            }
+        }
         refreshAccounts()
     }
 
@@ -42,7 +59,18 @@ class SettingsViewModel : SafeViewModel() {
                 emptyList()
             }
             _state.update { it.copy(accounts = accounts) }
+            if (accounts.isNotEmpty()) {
+                NostrRepository.subscribe(
+                    profileSubId,
+                    NostrFilter(kinds = listOf(0), authors = accounts.map { it.pubkeyHex }),
+                )
+            }
         }
+    }
+
+    override fun onCleared() {
+        super.onCleared()
+        NostrRepository.close(profileSubId)
     }
 
     fun switchAccount(pubkeyHex: String, onSwitched: (String?) -> Unit) {
@@ -108,6 +136,22 @@ class SettingsViewModel : SafeViewModel() {
 
     fun hideSecretKey() {
         _state.update { it.copy(isSecretKeyVisible = false, keyError = null) }
+    }
+
+    fun copySecretKey() {
+        launch {
+            val nsec = runCatching {
+                val privateKey = KeyStorage.loadPrivateKey()
+                    ?: error("秘密鍵が保存されていません")
+                hexToNsec(privateKey)
+            }.getOrElse { e ->
+                logException("SettingsViewModel", e, "Failed to load private key for clipboard")
+                _state.update { it.copy(keyError = e.message ?: "秘密鍵を読み込めませんでした") }
+                return@launch
+            }
+            _state.update { it.copy(keyError = null) }
+            _secretKeyClipboardEvent.emit(nsec)
+        }
     }
 
     fun clearAccount(onCleared: (String?) -> Unit) {
