@@ -40,8 +40,10 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.runtime.collectAsState
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.nostr.torinos.model.replyTargetId
 import com.nostr.torinos.model.stripNostrEventUris
 import com.nostr.torinos.ui.components.NoteCard
+import com.nostr.torinos.ui.components.QuotedEvent
 import com.nostr.torinos.ui.components.stripImageUrls
 import com.nostr.torinos.ui.profile.AvatarCircle
 
@@ -132,10 +134,19 @@ fun ThreadScreen(
                     ) {
                         item {
                             val root = state.root ?: return@item
+                            val replyParentId = root.replyTargetId()
                             NoteCard(
                                 event = root,
                                 profile = state.profiles[root.pubkey],
                                 profiles = state.profiles,
+                                replyParent = replyParentId?.let { parentId ->
+                                    state.quotedEvents[parentId]?.let { parentEvent ->
+                                        QuotedEvent(
+                                            event = parentEvent,
+                                            profile = state.profiles[parentEvent.pubkey],
+                                        )
+                                    }
+                                },
                                 replyCount = state.replyCounts[root.id] ?: state.replies.size,
                                 reactionCount = state.reactionCounts[root.id] ?: state.reactionPubkeys.size,
                                 repostCount = state.repostPubkeys.size,
@@ -167,6 +178,7 @@ fun ThreadScreen(
                                     }
                                 } else null,
                                 ownPubkey = ownPubkey,
+                                onNoteClick = onOpenThread,
                             )
                             HorizontalDivider()
                         }
@@ -212,6 +224,7 @@ fun ThreadScreen(
                                             onOpenReplies = { onOpenThread(reply.id) },
                                             onOpenLikes = { onOpenLikes(reply.id) },
                                             onOpenReposts = { onOpenReposts(reply.id) },
+                                            onNoteClick = onOpenThread,
                                         )
                                         HorizontalDivider()
                                     }

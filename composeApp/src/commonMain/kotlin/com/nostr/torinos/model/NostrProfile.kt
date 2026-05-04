@@ -9,6 +9,7 @@ data class NostrProfile(
     val name: String? = null,
     @SerialName("display_name") val displayName: String? = null,
     val picture: String? = null,
+    val banner: String? = null,
     val about: String? = null,
     val nip05: String? = null,
 ) {

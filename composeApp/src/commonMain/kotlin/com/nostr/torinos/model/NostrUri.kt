@@ -52,6 +52,13 @@ fun stripNostrEventUris(text: String): String =
         if (decodeNostrEventReference(match.groupValues[1]) != null) "" else match.value
     }.trim()
 
+fun NostrEvent.replyTargetId(): String? {
+    val eTags = tags.filter { it.firstOrNull() == "e" }
+    if (eTags.isEmpty()) return null
+    return eTags.firstOrNull { it.getOrNull(3) == "reply" }?.getOrNull(1)
+        ?: eTags.lastOrNull()?.getOrNull(1)
+}
+
 fun quotedEventIds(event: NostrEvent): List<String> {
     val qTagIds = event.tags
         .filter { it.firstOrNull() == "q" }

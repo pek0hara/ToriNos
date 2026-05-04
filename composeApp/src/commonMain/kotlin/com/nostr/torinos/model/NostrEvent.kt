@@ -14,4 +14,5 @@ data class NostrEvent(
     val sig: String,
 ) {
     val shortPubkey: String get() = pubkey.take(8) + "…" + pubkey.takeLast(8)
+    val clientName: String? get() = tags.firstOrNull { it.firstOrNull() == "client" }?.getOrNull(1)
 }

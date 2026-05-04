@@ -13,6 +13,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import com.nostr.torinos.model.quotedEventIds
+import com.nostr.torinos.model.replyTargetId
 import com.nostr.torinos.model.stripNostrEventUris
 import com.nostr.torinos.ui.feed.FeedViewModel
 
@@ -100,13 +101,24 @@ fun LazyListScope.noteListItems(
                         }
                     } else null,
                     onHashtagClick = onHashtagClick,
-                    quotedEvents = quotedEventIds(event).mapNotNull { quotedEventId ->
-                        state.quotedEvents[quotedEventId]?.let { quotedEvent ->
-                            QuotedEvent(
-                                event = quotedEvent,
-                                profile = state.profiles[quotedEvent.pubkey],
-                            )
-                        }
+                    onNoteClick = if (onOpenReplies != null) onOpenReplies else null,
+                    replyParent = run {
+                        val parentId = event.replyTargetId() ?: return@run null
+                        val parentEvent = state.quotedEvents[parentId] ?: return@run null
+                        QuotedEvent(event = parentEvent, profile = state.profiles[parentEvent.pubkey])
+                    },
+                    quotedEvents = run {
+                        val replyParentId = event.replyTargetId()
+                        quotedEventIds(event)
+                            .filter { it != replyParentId }
+                            .mapNotNull { quotedEventId ->
+                                state.quotedEvents[quotedEventId]?.let { quotedEvent ->
+                                    QuotedEvent(
+                                        event = quotedEvent,
+                                        profile = state.profiles[quotedEvent.pubkey],
+                                    )
+                                }
+                            }
                     },
                     ownPubkey = ownPubkey,
                     onDelete = { onDelete(event.id) },

@@ -21,6 +21,7 @@ import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.Reply
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.MailOutline
@@ -77,11 +78,13 @@ fun NoteCard(
     onRepost: (() -> Unit)? = null,
     onHashtagClick: ((tag: String) -> Unit)? = null,
     quotedEvents: List<QuotedEvent> = emptyList(),
+    replyParent: QuotedEvent? = null,
     ownPubkey: String? = null,
     onDelete: (() -> Unit)? = null,
     isMuted: Boolean = false,
     onMute: (() -> Unit)? = null,
     onUnmute: (() -> Unit)? = null,
+    onNoteClick: ((eventId: String) -> Unit)? = null,
 ) {
     var showMenu by remember { mutableStateOf(false) }
     var expandedImageState by remember { mutableStateOf<ExpandedImageState?>(null) }
@@ -160,7 +163,9 @@ fun NoteCard(
                     modifier = Modifier.padding(start = 8.dp),
                 ) {
                     Text(
-                        text = formatTimestamp(event.createdAt),
+                        text = event.clientName
+                            ?.let { "${formatTimestamp(event.createdAt)} · $it" }
+                            ?: formatTimestamp(event.createdAt),
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -213,6 +218,39 @@ fun NoteCard(
                 }
             }
             Spacer(modifier = Modifier.height(4.dp))
+            if (replyParent != null) {
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Icon(
+                        imageVector = Icons.AutoMirrored.Filled.Reply,
+                        contentDescription = null,
+                        modifier = Modifier.size(14.dp),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Text(
+                        text = "返信先: ${replyParent.profile?.bestName ?: replyParent.event.shortPubkey}",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier
+                            .weight(1f)
+                            .clickable { onUserClick(replyParent.event.pubkey) },
+                    )
+                }
+                Spacer(modifier = Modifier.height(4.dp))
+                QuotePreview(
+                    event = replyParent.event,
+                    profile = replyParent.profile,
+                    profiles = profiles,
+                    onUserClick = onUserClick,
+                    onImageClick = { urls, index -> expandedImageState = ExpandedImageState(urls, index) },
+                    onNoteClick = onNoteClick,
+                )
+                Spacer(modifier = Modifier.height(4.dp))
+            }
             if (parsedContent.textContent.isNotBlank()) {
                 LinkedText(
                     text = parsedContent.textContent,
@@ -240,6 +278,7 @@ fun NoteCard(
                     profiles = profiles,
                     onUserClick = onUserClick,
                     onImageClick = { urls, index -> expandedImageState = ExpandedImageState(urls, index) },
+                    onNoteClick = onNoteClick,
                 )
             }
             Row(
@@ -315,6 +354,7 @@ private fun QuotePreview(
     profiles: Map<String, NostrProfile>,
     onUserClick: (pubkey: String) -> Unit,
     onImageClick: (List<String>, Int) -> Unit,
+    onNoteClick: ((eventId: String) -> Unit)? = null,
 ) {
     val parsedContent = remember(event.content) {
         parseNoteContent(event.content)
@@ -327,6 +367,11 @@ private fun QuotePreview(
                 width = 1.dp,
                 color = MaterialTheme.colorScheme.outlineVariant,
                 shape = MaterialTheme.shapes.small,
+            )
+            .clip(MaterialTheme.shapes.small)
+            .then(
+                if (onNoteClick != null) Modifier.clickable { onNoteClick(event.id) }
+                else Modifier
             )
             .padding(10.dp),
         verticalArrangement = Arrangement.spacedBy(6.dp),

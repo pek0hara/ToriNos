@@ -8,6 +8,7 @@ import com.nostr.torinos.model.NostrEvent
 import com.nostr.torinos.model.NostrFilter
 import com.nostr.torinos.model.NostrProfile
 import com.nostr.torinos.model.extractNpubReferences
+import com.nostr.torinos.model.replyTargetId
 import com.nostr.torinos.model.toProfile
 import com.nostr.torinos.network.NostrRepository
 import com.nostr.torinos.ui.SafeViewModel
@@ -31,6 +32,7 @@ class ThreadViewModel(
         val likedReactions: Map<String, String> = emptyMap(),
         val ownRepostEventId: String? = null,
         val isLoading: Boolean = true,
+        val quotedEvents: Map<String, NostrEvent> = emptyMap(),
     )
 
     private val _state = kotlinx.coroutines.flow.MutableStateFlow(UiState())
@@ -43,6 +45,7 @@ class ThreadViewModel(
     private val replyCountSubId = "thread-count-$shortId"
     private val reactionSubId = "thread-react-$shortId"
     private val repostSubId = "thread-repost-$shortId"
+    private val replyParentSubId = "thread-parent-$shortId"
 
     private val subscriptionJobs = mutableListOf<Job>()
     private val seenReplyIds = linkedSetOf<String>()
@@ -194,6 +197,22 @@ class ThreadViewModel(
                 _state.value = _state.value.copy(root = event, isLoading = false)
                 scheduleProfileFetch(event.pubkey)
                 scheduleMentionedProfileFetch(event.content)
+                event.replyTargetId()?.let { parentId ->
+                    NostrRepository.subscribe(
+                        replyParentSubId,
+                        NostrFilter(ids = listOf(parentId), kinds = listOf(1), limit = 1),
+                    )
+                }
+            }
+        }
+
+        subscriptionJobs += launch {
+            NostrRepository.events(replyParentSubId).collect { event ->
+                if (event.kind != 1) return@collect
+                val cur = _state.value
+                if (cur.quotedEvents.containsKey(event.id)) return@collect
+                _state.value = cur.copy(quotedEvents = cur.quotedEvents + (event.id to event))
+                scheduleProfileFetch(event.pubkey)
             }
         }
 
@@ -313,6 +332,7 @@ class ThreadViewModel(
         NostrRepository.close(replyCountSubId)
         NostrRepository.close(reactionSubId)
         NostrRepository.close(repostSubId)
+        NostrRepository.close(replyParentSubId)
     }
 
     override fun onCleared() {
@@ -362,9 +382,6 @@ class ThreadViewModel(
             )
         }
     }
-
-    private fun NostrEvent.replyTargetId(): String? =
-        tags.lastOrNull { it.firstOrNull() == "e" }?.getOrNull(1)
 
     companion object {
         private const val MAX_WATCHED_EVENTS = 100
