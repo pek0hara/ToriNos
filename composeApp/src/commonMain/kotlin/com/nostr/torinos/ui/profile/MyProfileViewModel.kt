@@ -7,6 +7,7 @@ import com.nostr.torinos.model.extractNpubReferences
 import com.nostr.torinos.model.toProfile
 import com.nostr.torinos.network.FollowRepository
 import com.nostr.torinos.network.NostrRepository
+import com.nostr.torinos.network.RelayStore
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -39,6 +40,7 @@ class MyProfileViewModel(private val ownPubkey: String) : SafeViewModel() {
     private var followerCollectorJob: Job? = null
     private var followerEoseJob: Job? = null
     private var latestRelayListCreatedAt = -1L
+    private var hasPublishedRelayList = false
     private val pendingLinkedProfilePubkeys = linkedSetOf<String>()
 
     init {
@@ -49,6 +51,14 @@ class MyProfileViewModel(private val ownPubkey: String) : SafeViewModel() {
         collectorJobs += launch {
             FollowRepository.followedPubkeys.collect { follows ->
                 _state.update { it.copy(followingCount = follows.size) }
+            }
+        }
+
+        collectorJobs += launch {
+            RelayStore.relays.collect { relayUrls ->
+                if (!hasPublishedRelayList) {
+                    _state.update { it.copy(relayUrls = relayUrls) }
+                }
             }
         }
 
@@ -78,7 +88,11 @@ class MyProfileViewModel(private val ownPubkey: String) : SafeViewModel() {
             NostrRepository.events(relayListSubId).collect { event ->
                 if (event.kind != 10002 || event.createdAt <= latestRelayListCreatedAt) return@collect
                 latestRelayListCreatedAt = event.createdAt
-                _state.update { it.copy(relayUrls = event.relayUrls()) }
+                val relayUrls = event.relayUrls()
+                if (relayUrls.isNotEmpty()) {
+                    hasPublishedRelayList = true
+                    _state.update { it.copy(relayUrls = relayUrls) }
+                }
             }
         }
 

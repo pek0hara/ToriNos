@@ -1,6 +1,5 @@
 package com.nostr.torinos.ui.post
 
-import androidx.lifecycle.ViewModel
 import com.nostr.torinos.ui.SafeViewModel
 import com.nostr.torinos.crypto.KeyStorage
 import com.nostr.torinos.crypto.signEvent
@@ -10,76 +9,74 @@ import com.nostr.torinos.network.NostrRepository
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.launch
+import kotlinx.coroutines.flow.update
+
+data class ImageAttachment(
+    val id: Int,
+    val previewBytes: ByteArray?,
+    val uploadedUrl: String?,
+    val isUploading: Boolean,
+)
 
 data class PostState(
     val text: String = "",
     val isPosting: Boolean = false,
-    val isUploadingImage: Boolean = false,
-    val imagePreviewBytes: ByteArray? = null,
-    val uploadedImageUrl: String? = null,
+    val images: List<ImageAttachment> = emptyList(),
     val error: String? = null,
     val posted: Boolean = false,
-)
+) {
+    val isUploadingAny: Boolean get() = images.any { it.isUploading }
+    val canPost: Boolean get() =
+        (text.isNotBlank() || images.any { it.uploadedUrl != null }) &&
+            !isPosting && !isUploadingAny
+}
+
+private const val MAX_IMAGES = 4
 
 class PostViewModel : SafeViewModel() {
     private val _state = MutableStateFlow(PostState())
     val state: StateFlow<PostState> = _state.asStateFlow()
-    private var imageUploadSerial = 0
+    private var nextImageId = 0
 
     fun onTextChange(text: String) {
         _state.value = _state.value.copy(text = text, error = null, posted = false)
     }
 
     fun uploadAndAppendImage(bytes: ByteArray, mimeType: String) {
-        val uploadSerial = ++imageUploadSerial
-        _state.value = _state.value.copy(
-            isUploadingImage = true,
-            imagePreviewBytes = bytes,
-            uploadedImageUrl = null,
-            error = null,
-        )
+        if (_state.value.images.size >= MAX_IMAGES) return
+        val id = nextImageId++
+        _state.update { s ->
+            s.copy(
+                images = s.images + ImageAttachment(id = id, previewBytes = bytes, uploadedUrl = null, isUploading = true),
+                error = null,
+            )
+        }
         launch {
             ImageUploader.upload(bytes, mimeType)
-                .also {
-                    if (uploadSerial != imageUploadSerial) return@launch
-                }
                 .onSuccess { url ->
-                    _state.value = _state.value.copy(
-                        isUploadingImage = false,
-                        uploadedImageUrl = url,
-                    )
+                    _state.update { s ->
+                        s.copy(images = s.images.map { if (it.id == id) it.copy(uploadedUrl = url, isUploading = false) else it })
+                    }
                 }
                 .onFailure { e ->
-                    _state.value = _state.value.copy(
-                        isUploadingImage = false,
-                        error = "画像のアップロードに失敗しました: ${e.message}",
-                    )
+                    _state.update { s ->
+                        s.copy(
+                            images = s.images.map { if (it.id == id) it.copy(isUploading = false) else it },
+                            error = "画像のアップロードに失敗しました: ${e.message}",
+                        )
+                    }
                 }
         }
     }
 
-    fun clearAttachedImage() {
-        imageUploadSerial++
-        val current = _state.value
-        val text = current.uploadedImageUrl?.let { url ->
-            current.text
-                .replace(url, "")
-                .replace(Regex("""\n{3,}"""), "\n\n")
-                .trim()
-        } ?: current.text
-        _state.value = current.copy(
-            text = text,
-            isUploadingImage = false,
-            imagePreviewBytes = null,
-            uploadedImageUrl = null,
-            error = null,
-        )
+    fun removeImage(id: Int) {
+        _state.update { s -> s.copy(images = s.images.filter { it.id != id }) }
     }
 
     fun post(replyToId: String? = null, replyToPubkey: String? = null) {
         val current = _state.value
-        val text = buildPostContent(current.text, current.uploadedImageUrl)
+        val uploadedUrls = current.images.mapNotNull { it.uploadedUrl }
+        val text = buildPostContent(current.text, uploadedUrls)
         if (text.isBlank()) return
 
         _state.value = _state.value.copy(isPosting = true, error = null)
@@ -102,6 +99,7 @@ class PostViewModel : SafeViewModel() {
                     )
                     reference.authorPubkey?.let { add(listOf("p", it)) }
                 }
+                add(listOf("client", "ToriNos"))
             }
 
             runCatching {
@@ -119,9 +117,11 @@ class PostViewModel : SafeViewModel() {
         _state.value = _state.value.copy(posted = false)
     }
 
-    private fun buildPostContent(text: String, imageUrl: String?): String {
+    private fun buildPostContent(text: String, imageUrls: List<String>): String {
         val body = text.trim()
-        val url = imageUrl?.takeIf { it.isNotBlank() } ?: return body
-        return if (body.isBlank()) url else "$body\n$url"
+        val urls = imageUrls.filter { it.isNotBlank() }
+        if (urls.isEmpty()) return body
+        val urlBlock = urls.joinToString("\n")
+        return if (body.isBlank()) urlBlock else "$body\n$urlBlock"
     }
 }

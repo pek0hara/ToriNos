@@ -7,11 +7,14 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AddPhotoAlternate
@@ -31,12 +34,13 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.runtime.collectAsState
-import androidx.compose.ui.draw.clip
-import androidx.compose.ui.layout.ContentScale
 import com.nostr.torinos.ui.components.rememberImagePickerLauncher
 import com.nostr.torinos.ui.components.PreviewImage
 
@@ -74,7 +78,7 @@ fun PostSheet(
                     onDismiss = onDismiss,
                     onPickImage = pickImage,
                     onTextChange = postViewModel::onTextChange,
-                    onClearAttachedImage = postViewModel::clearAttachedImage,
+                    onRemoveImage = postViewModel::removeImage,
                     onPost = { postViewModel.post(replyToId, replyToPubkey) },
                 )
             }
@@ -90,7 +94,7 @@ private fun PostSheetContent(
     onDismiss: () -> Unit,
     onPickImage: () -> Unit,
     onTextChange: (String) -> Unit,
-    onClearAttachedImage: () -> Unit,
+    onRemoveImage: (Int) -> Unit,
     onPost: () -> Unit,
 ) {
     Column(
@@ -143,48 +147,14 @@ private fun PostSheetContent(
             maxLines = 6,
         )
 
-        val previewData = state.uploadedImageUrl ?: state.imagePreviewBytes
-        if (previewData != null) {
+        if (state.images.isNotEmpty()) {
             Spacer(modifier = Modifier.height(10.dp))
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(180.dp)
-                    .clip(MaterialTheme.shapes.small)
-                    .border(
-                        width = 1.dp,
-                        color = MaterialTheme.colorScheme.outlineVariant,
-                        shape = MaterialTheme.shapes.small,
-                    ),
-            ) {
-                PreviewImage(
-                    data = previewData,
-                    contentDescription = "添付画像のプレビュー",
-                    contentScale = ContentScale.Crop,
-                    modifier = Modifier.fillMaxWidth().height(180.dp),
-                )
-                if (state.isUploadingImage) {
-                    CircularProgressIndicator(
-                        modifier = Modifier
-                            .align(Alignment.Center)
-                            .size(28.dp),
-                        strokeWidth = 2.dp,
+            LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                items(state.images, key = { it.id }) { attachment ->
+                    ImageThumbnail(
+                        attachment = attachment,
+                        onRemove = { onRemoveImage(attachment.id) },
                     )
-                } else {
-                    IconButton(
-                        onClick = onClearAttachedImage,
-                        modifier = Modifier
-                            .align(Alignment.TopEnd)
-                            .padding(6.dp)
-                            .size(32.dp)
-                            .background(MaterialTheme.colorScheme.surface, CircleShape),
-                    ) {
-                        Icon(
-                            Icons.Default.Close,
-                            contentDescription = "添付画像を削除",
-                            tint = MaterialTheme.colorScheme.onSurface,
-                        )
-                    }
                 }
             }
         }
@@ -200,19 +170,20 @@ private fun PostSheetContent(
                 horizontalArrangement = Arrangement.spacedBy(4.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                if (state.isUploadingImage) {
-                    CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
-                } else {
-                    IconButton(
-                        onClick = onPickImage,
-                        modifier = Modifier.size(36.dp),
-                    ) {
-                        Icon(
-                            Icons.Default.AddPhotoAlternate,
-                            contentDescription = "画像を添付",
-                            tint = MaterialTheme.colorScheme.primary,
-                        )
-                    }
+                IconButton(
+                    onClick = onPickImage,
+                    modifier = Modifier.size(36.dp),
+                    enabled = state.images.size < 4,
+                ) {
+                    Icon(
+                        Icons.Default.AddPhotoAlternate,
+                        contentDescription = "画像を添付",
+                        tint = if (state.images.size < 4) {
+                            MaterialTheme.colorScheme.primary
+                        } else {
+                            MaterialTheme.colorScheme.onSurfaceVariant
+                        },
+                    )
                 }
                 Text(
                     text = "${state.text.length} / $MAX_CHARS",
@@ -228,9 +199,7 @@ private fun PostSheetContent(
                 TextButton(onClick = onDismiss) { Text("キャンセル") }
                 Button(
                     onClick = onPost,
-                    enabled = (state.text.isNotBlank() || state.uploadedImageUrl != null) &&
-                        !state.isPosting &&
-                        !state.isUploadingImage,
+                    enabled = state.canPost,
                 ) {
                     if (state.isPosting) {
                         CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
@@ -251,5 +220,58 @@ private fun PostSheetContent(
         }
 
         Spacer(modifier = Modifier.height(8.dp))
+    }
+}
+
+@Composable
+private fun ImageThumbnail(
+    attachment: ImageAttachment,
+    onRemove: () -> Unit,
+) {
+    Box(
+        modifier = Modifier
+            .size(90.dp)
+            .clip(MaterialTheme.shapes.small)
+            .border(1.dp, MaterialTheme.colorScheme.outlineVariant, MaterialTheme.shapes.small),
+    ) {
+        val previewData: Any? = attachment.uploadedUrl ?: attachment.previewBytes
+        if (previewData != null) {
+            PreviewImage(
+                data = previewData,
+                contentDescription = null,
+                contentScale = ContentScale.Crop,
+                modifier = Modifier.fillMaxSize(),
+            )
+        }
+        if (attachment.isUploading) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color.Black.copy(alpha = 0.35f)),
+                contentAlignment = Alignment.Center,
+            ) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(24.dp),
+                    strokeWidth = 2.dp,
+                    color = Color.White,
+                )
+            }
+        } else {
+            IconButton(
+                onClick = onRemove,
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .padding(4.dp)
+                    .size(24.dp)
+                    .background(MaterialTheme.colorScheme.surface, CircleShape),
+            ) {
+                Icon(
+                    Icons.Default.Close,
+                    contentDescription = "削除",
+                    modifier = Modifier.size(14.dp),
+                    tint = MaterialTheme.colorScheme.onSurface,
+                )
+            }
+        }
     }
 }

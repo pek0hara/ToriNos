@@ -5,21 +5,11 @@ import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyListScope
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.filled.Edit
-import androidx.compose.material.icons.filled.Settings
-import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
-import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
-import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.PrimaryTabRow
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Tab
 import androidx.compose.material3.Text
-import androidx.compose.material3.TopAppBar
-import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -35,7 +25,6 @@ import androidx.lifecycle.viewmodel.viewModelFactory
 import com.nostr.torinos.ui.components.NoteTimeline
 import com.nostr.torinos.ui.feed.FeedViewModel
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun MyProfileScreen(
     ownPubkey: String,
@@ -66,8 +55,11 @@ fun MyProfileScreen(
     val state by viewModel.state.collectAsState()
     val feedState by feedViewModel.state.collectAsState()
     val reactionsState by reactionsViewModel.state.collectAsState()
-    var showEditSheet by remember { mutableStateOf(false) }
     var showRelayList by remember { mutableStateOf(false) }
+    var showBannerEdit by remember { mutableStateOf(false) }
+    var showAvatarEdit by remember { mutableStateOf(false) }
+    var showNameEdit by remember { mutableStateOf(false) }
+    var showAboutEdit by remember { mutableStateOf(false) }
     var selectedTab by remember { mutableStateOf(MyProfileTab.Posts) }
     val editProfileViewModel = viewModel<EditProfileViewModel>(
         key = "editProfile",
@@ -82,47 +74,37 @@ fun MyProfileScreen(
     Scaffold(
         modifier = Modifier.fillMaxSize(),
         contentWindowInsets = WindowInsets(0),
-        topBar = {
-            TopAppBar(
-                title = { Text("プロフィール") },
-                navigationIcon = {
-                    if (onBack != null) {
-                        IconButton(onClick = onBack) {
-                            Icon(
-                                Icons.AutoMirrored.Filled.ArrowBack,
-                                contentDescription = "戻る",
-                                tint = MaterialTheme.colorScheme.onPrimary,
-                            )
-                        }
-                    }
-                },
-                actions = {
-                    IconButton(onClick = onOpenSettings) {
-                        Icon(
-                            Icons.Default.Settings,
-                            contentDescription = "設定",
-                            tint = MaterialTheme.colorScheme.onPrimary,
-                        )
-                    }
-                    IconButton(onClick = { showEditSheet = true }) {
-                        Icon(
-                            Icons.Default.Edit,
-                            contentDescription = "プロフィール編集",
-                            tint = MaterialTheme.colorScheme.onPrimary,
-                        )
-                    }
-                },
-                colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = MaterialTheme.colorScheme.primary,
-                    titleContentColor = MaterialTheme.colorScheme.onPrimary,
-                ),
-            )
-        },
     ) { padding ->
-        if (showEditSheet) {
-            EditProfileSheet(
-                onDismiss = { showEditSheet = false },
+        if (showAvatarEdit) {
+            AvatarEditDialog(
+                currentProfile = state.profile,
+                pubkey = ownPubkey,
                 viewModel = editProfileViewModel,
+                onDismiss = { showAvatarEdit = false },
+                onSaved = { viewModel.applyProfile(it) },
+            )
+        }
+        if (showBannerEdit) {
+            BannerEditDialog(
+                currentProfile = state.profile,
+                viewModel = editProfileViewModel,
+                onDismiss = { showBannerEdit = false },
+                onSaved = { viewModel.applyProfile(it) },
+            )
+        }
+        if (showNameEdit) {
+            NameEditDialog(
+                currentProfile = state.profile,
+                viewModel = editProfileViewModel,
+                onDismiss = { showNameEdit = false },
+                onSaved = { viewModel.applyProfile(it) },
+            )
+        }
+        if (showAboutEdit) {
+            AboutEditDialog(
+                currentProfile = state.profile,
+                viewModel = editProfileViewModel,
+                onDismiss = { showAboutEdit = false },
                 onSaved = { viewModel.applyProfile(it) },
             )
         }
@@ -142,6 +124,11 @@ fun MyProfileScreen(
                     isOwnProfile = true,
                     relayUrls = state.relayUrls,
                     onUserClick = onUserClick,
+                    onBack = onBack,
+                    onEditBanner = { showBannerEdit = true },
+                    onEditAvatar = { showAvatarEdit = true },
+                    onEditName = { showNameEdit = true },
+                    onEditAbout = { showAboutEdit = true },
                 )
                 HorizontalDivider()
             }
