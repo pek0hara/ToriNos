@@ -21,12 +21,13 @@ class NostrProfileTest {
     @Test
     fun toProfile_fullJson_parsesAllFields() {
         val event = makeEvent(
-            """{"name":"alice","display_name":"Alice A","picture":"https://example.com/pic.jpg","about":"bio","nip05":"alice@example.com"}"""
+            """{"name":"alice","display_name":"Alice A","picture":"https://example.com/pic.jpg","banner":"https://example.com/banner.jpg","about":"bio","nip05":"alice@example.com"}"""
         )
         val profile = event.toProfile()
         assertEquals("alice", profile?.name)
         assertEquals("Alice A", profile?.displayName)
         assertEquals("https://example.com/pic.jpg", profile?.picture)
+        assertEquals("https://example.com/banner.jpg", profile?.banner)
         assertEquals("bio", profile?.about)
         assertEquals("alice@example.com", profile?.nip05)
     }
@@ -38,6 +39,7 @@ class NostrProfileTest {
         assertEquals("bob", profile?.name)
         assertNull(profile?.displayName)
         assertNull(profile?.picture)
+        assertNull(profile?.banner)
         assertNull(profile?.about)
         assertNull(profile?.nip05)
     }
