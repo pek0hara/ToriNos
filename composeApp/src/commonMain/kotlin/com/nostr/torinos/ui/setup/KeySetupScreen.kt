@@ -9,10 +9,15 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.text.selection.SelectionContainer
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -58,6 +63,7 @@ fun KeySetupScreen(onSetupComplete: (pubkeyHex: String) -> Unit, onDismiss: (() 
         Column(
             modifier = Modifier
                 .fillMaxSize()
+                .verticalScroll(rememberScrollState())
                 .padding(24.dp),
             verticalArrangement = Arrangement.Center,
             horizontalAlignment = Alignment.CenterHorizontally,
@@ -68,15 +74,25 @@ fun KeySetupScreen(onSetupComplete: (pubkeyHex: String) -> Unit, onDismiss: (() 
                     modifier = Modifier.align(Alignment.End),
                 ) { Text("キャンセル") }
             }
-            Text("ToriNos へようこそ", style = MaterialTheme.typography.headlineSmall)
-            Spacer(modifier = Modifier.height(8.dp))
             Text(
-                text = "ポストするには Nostr の秘密鍵が必要です",
+                text = "Nostr の鍵を用意する",
+                style = MaterialTheme.typography.headlineSmall,
+                color = MaterialTheme.colorScheme.onBackground,
+                textAlign = TextAlign.Center,
+            )
+            Spacer(modifier = Modifier.height(8.dp))
+            KeyInfoCard(
+                title = "Nostr とは",
+                body = "ひとつの会社が管理するSNSではなく、公開鍵をIDとして使う分散型のネットワークです。同じ鍵を使えば、対応している別のアプリでも同じアカウントとして利用できます。",
+            )
+            Spacer(modifier = Modifier.height(24.dp))
+            Text(
+                text = "ToriNos でポストするには、あなたのアカウントになる鍵が必要です。",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 textAlign = TextAlign.Center,
             )
-            Spacer(modifier = Modifier.height(32.dp))
+            Spacer(modifier = Modifier.height(24.dp))
 
             // ---- 新規生成 ----
             if (generatedInfo == null) {
@@ -93,19 +109,7 @@ fun KeySetupScreen(onSetupComplete: (pubkeyHex: String) -> Unit, onDismiss: (() 
                 val (priv, pub) = generatedInfo!!
                 val nsec = remember(priv) { runCatching { hexToNsec(priv) }.getOrDefault(priv) }
                 val npub = remember(pub) { runCatching { hexToNpub(pub) }.getOrDefault(pub) }
-                Text("公開鍵（npub）", style = MaterialTheme.typography.labelMedium)
-                Text(
-                    text = npub,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                Spacer(modifier = Modifier.height(8.dp))
-                Text("秘密鍵（必ずメモしてください）", style = MaterialTheme.typography.labelMedium)
-                Text(
-                    text = nsec,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.error,
-                )
+                GeneratedKeyValues(npub = npub, nsec = nsec)
                 Spacer(modifier = Modifier.height(16.dp))
                 Button(
                     onClick = {
@@ -132,31 +136,157 @@ fun KeySetupScreen(onSetupComplete: (pubkeyHex: String) -> Unit, onDismiss: (() 
             Spacer(modifier = Modifier.height(24.dp))
 
             // ---- 既存鍵インポート ----
-            Text("既存の秘密鍵をインポート", style = MaterialTheme.typography.titleSmall)
-            Spacer(modifier = Modifier.height(8.dp))
-            OutlinedTextField(
-                value = importKey,
-                onValueChange = { importKey = it.trim(); error = null },
+            Surface(
                 modifier = Modifier.fillMaxWidth(),
-                label = { Text("秘密鍵（nsec1... または hex）") },
-                visualTransformation = PasswordVisualTransformation(),
-                singleLine = true,
-                isError = error != null,
-                supportingText = error?.let { { Text(it) } },
-            )
-            Spacer(modifier = Modifier.height(8.dp))
-            Button(
-                onClick = {
-                    scope.launch(uiExceptionHandler) {
-                        val (err, pubkey) = validateAndSave(importKey, saveToPasswordManager)
-                        if (err == null && pubkey != null) onSetupComplete(pubkey) else error = err
-                    }
-                },
-                modifier = Modifier.fillMaxWidth(),
-                enabled = importKey.isNotBlank(),
+                color = MaterialTheme.colorScheme.surface,
+                contentColor = MaterialTheme.colorScheme.onSurface,
+                shape = MaterialTheme.shapes.medium,
             ) {
-                Text("インポートして始める")
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Text(
+                        text = "既存の秘密鍵をインポート",
+                        style = MaterialTheme.typography.titleSmall,
+                        color = MaterialTheme.colorScheme.onSurface,
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+                    OutlinedTextField(
+                        value = importKey,
+                        onValueChange = { importKey = it.trim(); error = null },
+                        modifier = Modifier.fillMaxWidth(),
+                        label = { Text("秘密鍵（nsec1... または hex）") },
+                        visualTransformation = PasswordVisualTransformation(),
+                        singleLine = true,
+                        isError = error != null,
+                        supportingText = error?.let { { Text(it) } },
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedTextColor = MaterialTheme.colorScheme.onSurface,
+                            unfocusedTextColor = MaterialTheme.colorScheme.onSurface,
+                            focusedContainerColor = MaterialTheme.colorScheme.surface,
+                            unfocusedContainerColor = MaterialTheme.colorScheme.surface,
+                            errorContainerColor = MaterialTheme.colorScheme.surface,
+                            focusedLabelColor = MaterialTheme.colorScheme.primary,
+                            unfocusedLabelColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                            focusedBorderColor = MaterialTheme.colorScheme.primary,
+                            unfocusedBorderColor = MaterialTheme.colorScheme.outline,
+                            errorBorderColor = MaterialTheme.colorScheme.error,
+                            cursorColor = MaterialTheme.colorScheme.primary,
+                            errorCursorColor = MaterialTheme.colorScheme.error,
+                            errorSupportingTextColor = MaterialTheme.colorScheme.error,
+                        ),
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Button(
+                        onClick = {
+                            scope.launch(uiExceptionHandler) {
+                                val (err, pubkey) = validateAndSave(importKey, saveToPasswordManager)
+                                if (err == null && pubkey != null) onSetupComplete(pubkey) else error = err
+                            }
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                        enabled = importKey.isNotBlank(),
+                    ) {
+                        Text("インポートして始める")
+                    }
+                }
             }
+        }
+    }
+}
+
+@Composable
+private fun GeneratedKeyValues(npub: String, nsec: String) {
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        color = MaterialTheme.colorScheme.surface,
+        contentColor = MaterialTheme.colorScheme.onSurface,
+        shape = MaterialTheme.shapes.medium,
+    ) {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Text(
+                text = "公開鍵（npub）",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurface,
+            )
+            KeyInfoCard(
+                title = "公開鍵とは",
+                body = "あなたを識別するためのIDです。他のユーザーに公開されます。",
+            )
+            SelectionContainer {
+                Text(
+                    text = npub,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Spacer(modifier = Modifier.height(4.dp))
+            Text(
+                text = "秘密鍵（必ずメモしてください）",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurface,
+            )
+            KeyInfoCard(
+                title = "秘密鍵とは",
+                body = "あなた本人であることを証明するための鍵です。秘密鍵を知っている人は、あなたとして投稿や操作ができてしまいます。秘密鍵がないと同じアカウントを使えなくなります。",
+                isWarning = true,
+            )
+            Surface(
+                color = MaterialTheme.colorScheme.errorContainer,
+                contentColor = MaterialTheme.colorScheme.onErrorContainer,
+                shape = MaterialTheme.shapes.small,
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                SelectionContainer {
+                    Text(
+                        text = nsec,
+                        style = MaterialTheme.typography.bodySmall,
+                        modifier = Modifier.padding(12.dp),
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun KeyInfoCard(
+    title: String,
+    body: String,
+    isWarning: Boolean = false,
+) {
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        color = if (isWarning) {
+            MaterialTheme.colorScheme.errorContainer
+        } else {
+            MaterialTheme.colorScheme.surfaceVariant
+        },
+        contentColor = if (isWarning) {
+            MaterialTheme.colorScheme.onErrorContainer
+        } else {
+            MaterialTheme.colorScheme.onSurfaceVariant
+        },
+        shape = MaterialTheme.shapes.medium,
+    ) {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            Text(
+                text = title,
+                style = MaterialTheme.typography.titleSmall,
+                color = if (isWarning) {
+                    MaterialTheme.colorScheme.onErrorContainer
+                } else {
+                    MaterialTheme.colorScheme.onSurface
+                },
+            )
+            Text(
+                text = body,
+                style = MaterialTheme.typography.bodySmall,
+            )
         }
     }
 }

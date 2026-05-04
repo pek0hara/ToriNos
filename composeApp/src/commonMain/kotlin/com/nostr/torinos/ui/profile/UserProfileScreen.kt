@@ -3,22 +3,10 @@ package com.nostr.torinos.ui.profile
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.padding
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.filled.MoreVert
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
-import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
-import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
-import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
-import androidx.compose.material3.Text
-import androidx.compose.material3.TopAppBar
-import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -26,7 +14,6 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.runtime.collectAsState
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.nostr.torinos.network.MuteStore
@@ -37,7 +24,6 @@ import kotlinx.coroutines.delay
 
 private const val DEFERRED_PROFILE_CONTENT_DELAY_MS = 800L
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun UserProfileScreen(
     pubkey: String,
@@ -72,10 +58,8 @@ fun UserProfileScreen(
     val feedState by feedViewModel.state.collectAsState()
     val mutedPubkeys by MuteStore.mutedPubkeys.collectAsState()
     val isMuted = mutedPubkeys.contains(pubkey)
-    val displayName = state.profile?.bestName ?: (pubkey.take(8) + "…" + pubkey.takeLast(8))
     val snackbarHostState = remember { SnackbarHostState() }
     var deferredContentStarted by remember(pubkey) { mutableStateOf(false) }
-    var showProfileMenu by remember(pubkey) { mutableStateOf(false) }
     var showRelayList by remember(pubkey) { mutableStateOf(false) }
 
     LaunchedEffect(state.profile) {
@@ -108,59 +92,6 @@ fun UserProfileScreen(
         modifier = Modifier.fillMaxSize(),
         contentWindowInsets = WindowInsets(0),
         snackbarHost = { SnackbarHost(snackbarHostState) },
-        topBar = {
-            TopAppBar(
-                title = {
-                    Text(
-                        text = displayName,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                },
-                navigationIcon = {
-                    if (onBack != null) {
-                        IconButton(onClick = onBack) {
-                            Icon(
-                                Icons.AutoMirrored.Filled.ArrowBack,
-                                contentDescription = "戻る",
-                                tint = MaterialTheme.colorScheme.onPrimary,
-                            )
-                        }
-                    }
-                },
-                actions = {
-                    if (!isOwnProfile) {
-                        IconButton(onClick = { showProfileMenu = true }) {
-                            Icon(
-                                Icons.Default.MoreVert,
-                                contentDescription = "その他",
-                                tint = MaterialTheme.colorScheme.onPrimary,
-                            )
-                        }
-                        DropdownMenu(
-                            expanded = showProfileMenu,
-                            onDismissRequest = { showProfileMenu = false },
-                        ) {
-                            DropdownMenuItem(
-                                text = { Text(if (isMuted) "ミュートを解除" else "ミュート") },
-                                onClick = {
-                                    showProfileMenu = false
-                                    if (isMuted) {
-                                        MuteStore.unmute(pubkey)
-                                    } else {
-                                        MuteStore.mute(pubkey)
-                                    }
-                                },
-                            )
-                        }
-                    }
-                },
-                colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = MaterialTheme.colorScheme.primary,
-                    titleContentColor = MaterialTheme.colorScheme.onPrimary,
-                ),
-            )
-        },
     ) { padding ->
         if (showRelayList) {
             ProfileRelayListDialog(
@@ -196,10 +127,15 @@ fun UserProfileScreen(
                         isFollowing = state.isFollowing,
                         isFollowLoading = state.isFollowLoading,
                         canFollow = state.canFollow,
+                        isMuted = isMuted,
                         relayUrls = state.relayUrls,
                         onFollow = viewModel::follow,
                         onUnfollow = viewModel::unfollow,
+                        onMuteToggle = {
+                            if (isMuted) MuteStore.unmute(pubkey) else MuteStore.mute(pubkey)
+                        },
                         onUserClick = onUserClick,
+                        onBack = onBack,
                     )
                     HorizontalDivider()
                 }

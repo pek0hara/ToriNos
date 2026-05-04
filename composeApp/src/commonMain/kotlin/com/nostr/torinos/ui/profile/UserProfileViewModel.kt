@@ -104,7 +104,6 @@ class UserProfileViewModel(
             NostrRepository.subscribe(
                 relayListSubId,
                 NostrFilter(kinds = listOf(10002), authors = listOf(pubkey), limit = 1),
-                relayUrl = deferredRelayUrl,
             )
         }
     }
