@@ -9,7 +9,9 @@ import com.nostr.torinos.util.loggingExceptionHandler
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -34,15 +36,33 @@ object FollowRepository {
 
     private var ownPubkey: String? = null
     private val subId = "follow-list"
+    private var loadJob: Job? = null
 
     init {
-        scope.launch {
+        loadJob = scope.launch {
             try {
                 load()
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Throwable) {
                 logException("FollowRepository", e, "load() failed")
+            }
+        }
+    }
+
+    /** アカウント切り替え時に呼ぶ。フォローリストをリセットして新アカウントのリストを再取得する。 */
+    fun reload() {
+        _followedPubkeys.value = emptySet()
+        _loaded.value = false
+        loadJob?.cancel()
+        NostrRepository.close(subId)
+        loadJob = scope.launch {
+            try {
+                load()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                logException("FollowRepository", e, "reload() failed")
             }
         }
     }
@@ -60,35 +80,39 @@ object FollowRepository {
         var latestCreatedAt = 0L
         var latestFollows = emptySet<String>()
 
-        val eventJob = scope.launch {
-            try {
-                NostrRepository.events(subId).collect { event ->
-                    if (event.kind == 3 && event.createdAt > latestCreatedAt) {
-                        latestCreatedAt = event.createdAt
-                        latestFollows = event.tags
-                            .filter { it.size >= 2 && it[0] == "p" }
-                            .map { it[1] }
-                            .toSet()
+        // coroutineScope を使い eventJob を子コルーチンとして管理する。
+        // reload() で loadJob がキャンセルされると eventJob も連動してキャンセルされる。
+        coroutineScope {
+            val eventJob = launch {
+                try {
+                    NostrRepository.events(subId).collect { event ->
+                        if (event.kind == 3 && event.createdAt > latestCreatedAt) {
+                            latestCreatedAt = event.createdAt
+                            latestFollows = event.tags
+                                .filter { it.size >= 2 && it[0] == "p" }
+                                .map { it[1] }
+                                .toSet()
+                        }
                     }
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Throwable) {
+                    logException("FollowRepository", e, "events collector failed")
+                }
+            }
+
+            try {
+                NostrRepository.eose(subId).collect {
+                    _followedPubkeys.value = latestFollows
+                    _loaded.value = true
+                    eventJob.cancel()
+                    NostrRepository.close(subId)
                 }
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Throwable) {
-                logException("FollowRepository", e, "events collector failed")
+                logException("FollowRepository", e, "eose collector failed")
             }
-        }
-
-        try {
-            NostrRepository.eose(subId).collect {
-                _followedPubkeys.value = latestFollows
-                _loaded.value = true
-                eventJob.cancel()
-                NostrRepository.close(subId)
-            }
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Throwable) {
-            logException("FollowRepository", e, "eose collector failed")
         }
     }
 

@@ -36,6 +36,8 @@ import com.nostr.torinos.crypto.loadPublicKey
 import com.nostr.torinos.model.NostrFilter
 import com.nostr.torinos.model.NostrProfile
 import com.nostr.torinos.model.toProfile
+import com.nostr.torinos.network.ChannelCacheStore
+import com.nostr.torinos.network.FollowRepository
 import com.nostr.torinos.network.NostrRepository
 import com.nostr.torinos.ui.channel.ChannelListScreen
 import com.nostr.torinos.ui.channel.ChannelScreen
@@ -48,6 +50,7 @@ import com.nostr.torinos.ui.profile.FollowListMode
 import com.nostr.torinos.ui.profile.FollowListScreen
 import com.nostr.torinos.ui.profile.MyProfileScreen
 import com.nostr.torinos.ui.profile.UserProfileScreen
+import com.nostr.torinos.ui.settings.QuickSettingsDialogs
 import com.nostr.torinos.ui.settings.SettingsScreen
 import com.nostr.torinos.ui.setup.KeySetupScreen
 import com.nostr.torinos.ui.theme.NostrTheme
@@ -98,10 +101,11 @@ fun App() {
         var feedScrollToTopRequest by remember { mutableStateOf(0) }
         var currentFeedTab by remember { mutableStateOf(FeedTab.Following) }
         var feedScrollToTopTargetTab by remember { mutableStateOf(FeedTab.Following) }
+        var showQuickSettings by remember { mutableStateOf(false) }
         val followingFeedListState = remember { LazyListState() }
         val globalFeedListState = remember { LazyListState() }
 
-        // 起動時に保存済み秘密鍵から公開鍵を読み込む
+        // 起動時に保存済み秘密鍵から公開鍵を読み込む & DBを整理
         LaunchedEffect(Unit) {
             appLog("[App] startup: loading saved public key")
             try {
@@ -110,6 +114,13 @@ fun App() {
                 throw e
             } catch (e: Throwable) {
                 logException("App", e, "Failed to load public key on startup")
+            }
+            try {
+                ChannelCacheStore.prune()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                logException("App", e, "Failed to prune channel cache")
             }
         }
 
@@ -168,6 +179,7 @@ fun App() {
             replyToId = null
             replyToPubkey = null
             replyToPreview = null
+            FollowRepository.reload()
             nav.navigate("feed") {
                 popUpTo("feed") { inclusive = true }
                 launchSingleTop = true
@@ -187,6 +199,7 @@ fun App() {
             replyToId = null
             replyToPubkey = null
             replyToPreview = null
+            FollowRepository.reload()
             nav.navigate("feed") {
                 popUpTo("feed") { inclusive = true }
                 launchSingleTop = true
@@ -270,7 +283,7 @@ fun App() {
                 ) {
                     composable("feed") {
                         FeedScreen(
-                            onOpenSettings = { nav.navigate("settings") },
+                            onOpenSettings = { showQuickSettings = true },
                             onUserClick = { pubkey -> nav.navigate(ProfileRoute(pubkey)) },
                             onOpenProfile = {
                                 runWithPrivateKey(PendingKeyAction.Profile) {
@@ -300,6 +313,13 @@ fun App() {
                     composable("channels") {
                         ChannelListScreen(
                             onChannelClick = { id -> nav.navigate(ChannelRoute(id)) },
+                            ownPubkey = ownPubkey,
+                            ownProfile = ownProfile,
+                            onOpenProfile = {
+                                runWithPrivateKey(PendingKeyAction.Profile) {
+                                    nav.navigate("myprofile") { launchSingleTop = true }
+                                }
+                            },
                         )
                     }
                     composable<ChannelRoute> { backStack ->
@@ -346,7 +366,7 @@ fun App() {
                             onBack = { nav.popBackStack() },
                             onOpenFollowing = { nav.navigate(FollowingRoute(pubkey)) },
                             onOpenFollowers = { nav.navigate(FollowersRoute(pubkey)) },
-                            onOpenSettings = { nav.navigate("settings") },
+                            onOpenSettings = { showQuickSettings = true },
                             onUserClick = { pk -> nav.navigate(ProfileRoute(pk)) },
                             onReply = { eventId, authorPk, preview ->
                                 replyToId = eventId
@@ -424,6 +444,18 @@ fun App() {
                 }
             }
         }
+
+        QuickSettingsDialogs(
+            open = showQuickSettings,
+            ownPubkey = ownPubkey,
+            onOpenChange = { showQuickSettings = it },
+            onAccountChanged = ::handleAccountChanged,
+            onAddAccountClick = {
+                pendingKeyAction = null
+                showKeySetup = true
+            },
+            onOpenAllSettings = { nav.navigate("settings") },
+        )
 
         if (showPostSheet) {
             PostSheet(

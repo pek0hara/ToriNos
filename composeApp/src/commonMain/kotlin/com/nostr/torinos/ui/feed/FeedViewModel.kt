@@ -11,6 +11,7 @@ import com.nostr.torinos.model.NostrFilter
 import com.nostr.torinos.model.NostrProfile
 import com.nostr.torinos.model.extractNpubReferences
 import com.nostr.torinos.model.quotedEventIds
+import com.nostr.torinos.model.replyTargetId
 import com.nostr.torinos.model.toProfile
 import com.nostr.torinos.network.MuteStore
 import com.nostr.torinos.network.NgWordStore
@@ -599,7 +600,9 @@ class FeedViewModel(
         if (cur.events.any { it.id == event.id }) return 0
         val updated = (cur.events + event).sortedByDescending { it.createdAt }
         _state.value = cur.copy(events = updated)
-        scheduleQuoteFetch(quotedEventIds(event))
+        val quoteIds = quotedEventIds(event)
+        scheduleQuoteFetch(quoteIds)
+        event.replyTargetId()?.takeIf { it !in quoteIds }?.let { scheduleQuoteFetch(listOf(it)) }
         return 1
     }
 

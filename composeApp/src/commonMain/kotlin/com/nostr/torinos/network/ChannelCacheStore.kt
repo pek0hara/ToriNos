@@ -16,6 +16,7 @@ data class CachedChannelSummary(
     val latestMessageCreatedAt: Long?,
     val latestMessagePreview: String?,
     val unreadCount: Int,
+    val hasBeenOpened: Boolean,
 ) {
     val hasUnread: Boolean get() = unreadCount > 0
 }
@@ -23,8 +24,10 @@ data class CachedChannelSummary(
 expect object ChannelCacheStore {
     fun observeChannels(relayUrl: String): Flow<List<CachedChannelSummary>>
     suspend fun getLastReadAt(relayUrl: String, channelId: String): Long?
+    suspend fun getMessages(relayUrl: String, channelId: String, limit: Int = 200): List<NostrEvent>
     suspend fun upsertChannel(relayUrl: String, event: NostrEvent, meta: ChannelMeta)
     suspend fun upsertMessage(relayUrl: String, event: NostrEvent, channelId: String)
     suspend fun markRead(relayUrl: String, channelId: String, readAt: Long)
+    suspend fun deleteChannel(relayUrl: String, channelId: String)
     suspend fun prune(maxMessages: Int = 50_000)
 }
