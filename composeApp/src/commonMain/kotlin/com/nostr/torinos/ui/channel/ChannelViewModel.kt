@@ -95,7 +95,7 @@ class ChannelViewModel(
                     privateKeyHex = privateKeyHex,
                     content = text,
                     kind = 42,
-                    tags = listOf(listOf("e", channelId, "", "root")),
+                    tags = listOf(listOf("e", channelId, "", "root"), listOf("client", "ToriNos")),
                 )
                 NostrRepository.publish(event)
             }.onSuccess {
@@ -210,10 +210,16 @@ class ChannelViewModel(
             val cacheRelayUrl = relayUrl
             if (cacheRelayUrl != null) {
                 initialLastReadAt = ChannelCacheStore.getLastReadAt(cacheRelayUrl, channelId)
+                // DB からキャッシュ済みメッセージを先に読み込んで即時表示
+                val cached = ChannelCacheStore.getMessages(cacheRelayUrl, channelId)
+                if (cached.isNotEmpty()) {
+                    cached.forEach { appendMessage(it) }
+                    _state.value = readyState(canLoadMore = false, keepScrolledToTop = false)
+                }
             }
             // チャンネルメタ取得
             NostrRepository.subscribe(metaSubId, NostrFilter(ids = listOf(channelId)), relayUrl = relayUrl)
-            // 初回ページ
+            // リレーから最新ページを取得（DB との差分が自動的にマージされる）
             requestPage(until = null)
         }
     }
@@ -248,7 +254,7 @@ class ChannelViewModel(
         val hasMore = lastBatchCount >= PAGE_SIZE
         _state.value = readyState(canLoadMore = hasMore, keepScrolledToTop = false)
         markLatestRead()
-        if (!hasMore) NostrRepository.close(histSubId)
+        NostrRepository.close(histSubId)
     }
 
     private fun appendMessage(event: NostrEvent): Int {

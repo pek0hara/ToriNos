@@ -16,11 +16,14 @@ import com.nostr.torinos.network.ChannelCacheStore
 import com.nostr.torinos.network.NostrRepository
 import com.nostr.torinos.ui.SafeViewModel
 import kotlin.reflect.KClass
+import kotlin.time.Clock
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.filter
+import kotlinx.coroutines.flow.first
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 
@@ -32,13 +35,14 @@ data class ChannelItem(
     val lastActivityAt: Long? = null,
     val latestMessagePreview: String? = null,
     val unreadCount: Int = 0,
+    val hasBeenOpened: Boolean = false,
 )
 
 class ChannelListViewModel(private val relayUrl: String? = null) : SafeViewModel() {
 
     companion object {
         private const val PAGE_TIMEOUT_MS = 10_000L
-        private const val META_SUBSCRIPTION_DELAY_MS = 300L
+        private const val NEW_META_DELAY_MS = 300L
         private const val AUTHOR_SUBSCRIPTION_DELAY_MS = 500L
         private const val EMIT_THROTTLE_MS = 250L
         private const val PAGE_SIZE = 50
@@ -51,7 +55,6 @@ class ChannelListViewModel(private val relayUrl: String? = null) : SafeViewModel
         }
     }
 
-
     data class CreateDialogState(
         val name: String = "",
         val about: String = "",
@@ -59,11 +62,18 @@ class ChannelListViewModel(private val relayUrl: String? = null) : SafeViewModel
         val error: String? = null,
     )
 
+    data class DeleteDialogState(
+        val channelId: String,
+        val channelName: String,
+        val isDeleting: Boolean = false,
+    )
+
     sealed interface UiState {
         data object Loading : UiState
         data class Ready(
             val channels: List<ChannelItem> = emptyList(),
             val createDialog: CreateDialogState? = null,
+            val deleteDialog: DeleteDialogState? = null,
             val canLoadMore: Boolean = false,
             val isLoadingMore: Boolean = false,
         ) : UiState
@@ -73,31 +83,37 @@ class ChannelListViewModel(private val relayUrl: String? = null) : SafeViewModel
     val state: StateFlow<UiState> = _state.asStateFlow()
 
     private val relayKey = relayUrl?.hashCode()?.toString() ?: "all"
+    // Phase 1: kind:40 ページング
+    private val kind40SubId = "ch-list-kind40-$relayKey"
+    // Phase 2: 発見チャンネルの kind:42 最終アクティビティ取得
     private val activitySubId = "ch-list-activity-$relayKey"
-    private val metaSubId = "ch-list-meta-$relayKey"
+    // ライブ: 全 kind:42 受信（新着・新チャンネル検知）
+    private val liveSubId = "ch-list-live-$relayKey"
+    // ライブで発見した未知チャンネルの kind:40 取得
+    private val newMetaSubId = "ch-list-newmeta-$relayKey"
     private val authorsSubId = "ch-list-authors-$relayKey"
 
-    // kind:40 ごとの基本情報
     private val channelMap = linkedMapOf<String, ChannelItem>()
-    // kind:42 から集計した統計
-    private val messageCounts = mutableMapOf<String, Int>()
     private val lastActivities = mutableMapOf<String, Long>()
     private val seenMessageIds = linkedSetOf<String>()
-    // kind:0 プロフィール
     private val authorProfiles = mutableMapOf<String, NostrProfile>()
     private val cachedChannels = linkedMapOf<String, CachedChannelSummary>()
 
     private val jobs = mutableListOf<Job>()
+    private val activityJobs = mutableListOf<Job>()
+    private val activitySubIds = mutableSetOf<String>()
     private var emitJob: Job? = null
-    private var metaSubscriptionJob: Job? = null
+    private var newMetaJob: Job? = null
     private var authorSubscriptionJob: Job? = null
     private var pageTimeoutJob: Job? = null
-    private val pendingMetaChannelIds = linkedSetOf<String>()
-    private val requestedMetaChannelIds = mutableSetOf<String>()
+    private val pendingNewMetaIds = linkedSetOf<String>()
+    private val requestedNewMetaIds = mutableSetOf<String>()
     private var subscribedAuthorPubkeys: Set<String> = emptySet()
-    private var oldestActivityCreatedAt: Long? = null
+
+    private var oldestKind40CreatedAt: Long? = null
     private var loadingMore = false
-    private var lastPageUniqueMessageCount = 0
+    private var lastPageKind40Count = 0
+    private var currentPageChannelIds = mutableListOf<String>()
     private var receivedEoseCount = 0
     private var expectedEoseCount = 1
 
@@ -106,7 +122,7 @@ class ChannelListViewModel(private val relayUrl: String? = null) : SafeViewModel
     }
 
     private fun start() {
-        // kind:42 の直近メッセージから、更新があったチャンネルを収集
+        // DB キャッシュ（Phase 0: 即時表示）
         jobs += launch {
             val cacheRelayUrl = relayUrl ?: return@launch
             ChannelCacheStore.observeChannels(cacheRelayUrl).collect { channels ->
@@ -116,31 +132,40 @@ class ChannelListViewModel(private val relayUrl: String? = null) : SafeViewModel
             }
         }
 
+        // ライブ kind:42: 最終アクティビティ更新 & 未知チャンネル検知
         jobs += launch {
-            NostrRepository.events(activitySubId).collect { event ->
+            NostrRepository.events(liveSubId).collect { event ->
                 if (event.kind != 42) return@collect
                 if (!seenMessageIds.add(event.id)) return@collect
                 if (seenMessageIds.size > MAX_SEEN_MSG_IDS) seenMessageIds.remove(seenMessageIds.first())
-                lastPageUniqueMessageCount++
-                oldestActivityCreatedAt = minOf(oldestActivityCreatedAt ?: event.createdAt, event.createdAt)
                 val channelId = event.channelIdFromMessage() ?: return@collect
-                messageCounts[channelId] = (messageCounts[channelId] ?: 0) + 1
-                val prev = lastActivities[channelId]
-                if (prev == null || event.createdAt > prev) {
-                    lastActivities[channelId] = event.createdAt
-                }
-                relayUrl?.let { ChannelCacheStore.upsertMessage(it, event, channelId) }
-                if (!channelMap.containsKey(channelId) && requestedMetaChannelIds.add(channelId)) {
-                    pendingMetaChannelIds.add(channelId)
-                    scheduleMetaSubscription()
+                updateActivity(event, channelId)
+                if (!channelMap.containsKey(channelId) && requestedNewMetaIds.add(channelId)) {
+                    pendingNewMetaIds.add(channelId)
+                    scheduleNewMetaSubscription()
                 }
                 emitReady(immediate = _state.value is UiState.Loading)
             }
         }
 
-        // kind:40 チャンネルメタを収集
+        // Phase 1: kind:40 チャンネルメタ受信
         jobs += launch {
-            NostrRepository.events(metaSubId).collect { event ->
+            NostrRepository.events(kind40SubId).collect { event ->
+                if (event.kind != 40) return@collect
+                val meta = event.toChannelMeta() ?: return@collect
+                lastPageKind40Count++
+                oldestKind40CreatedAt = minOf(oldestKind40CreatedAt ?: event.createdAt, event.createdAt)
+                currentPageChannelIds.add(event.id)
+                channelMap[event.id] = ChannelItem(event, meta)
+                relayUrl?.let { ChannelCacheStore.upsertChannel(it, event, meta) }
+                scheduleAuthorSubscription()
+                emitReady()
+            }
+        }
+
+        // ライブで発見した未知チャンネルの kind:40
+        jobs += launch {
+            NostrRepository.events(newMetaSubId).collect { event ->
                 if (event.kind != 40) return@collect
                 val meta = event.toChannelMeta() ?: return@collect
                 channelMap[event.id] = ChannelItem(event, meta)
@@ -150,7 +175,7 @@ class ChannelListViewModel(private val relayUrl: String? = null) : SafeViewModel
             }
         }
 
-        // kind:0 ポスト作成者プロフィールを収集
+        // kind:0 プロフィール
         jobs += launch {
             NostrRepository.events(authorsSubId).collect { event ->
                 if (event.kind != 0) return@collect
@@ -160,15 +185,24 @@ class ChannelListViewModel(private val relayUrl: String? = null) : SafeViewModel
             }
         }
 
-        // kind:42 ページの EOSE で追加読み込み可否を決める。
+        // Phase 1 EOSE → Phase 2 発火 + ページ完了
         jobs += launch {
-            NostrRepository.eose(activitySubId).collect {
+            NostrRepository.eose(kind40SubId).collect {
                 receivedEoseCount++
-                if (receivedEoseCount >= expectedEoseCount) onPageCompleted()
+                if (receivedEoseCount >= expectedEoseCount) {
+                    triggerActivityFetch()
+                    onPageCompleted()
+                }
             }
         }
 
         launch {
+            // ライブ購読を常時開始（起動時点以降の新着のみ）
+            NostrRepository.subscribe(
+                liveSubId,
+                NostrFilter(kinds = listOf(42), since = Clock.System.now().epochSeconds),
+                relayUrl = relayUrl,
+            )
             requestPage(until = null)
         }
     }
@@ -176,7 +210,32 @@ class ChannelListViewModel(private val relayUrl: String? = null) : SafeViewModel
     fun loadMore() {
         if (loadingMore || (_state.value as? UiState.Ready)?.canLoadMore != true) return
         launch {
-            requestPage(until = oldestActivityCreatedAt?.minus(1))
+            requestPage(until = oldestKind40CreatedAt?.minus(1))
+        }
+    }
+
+    fun showDeleteDialog(channelId: String, channelName: String) {
+        val current = _state.value as? UiState.Ready ?: return
+        _state.value = current.copy(deleteDialog = DeleteDialogState(channelId, channelName))
+    }
+
+    fun dismissDeleteDialog() {
+        val current = _state.value as? UiState.Ready ?: return
+        _state.value = current.copy(deleteDialog = null)
+    }
+
+    fun confirmDelete() {
+        val current = _state.value as? UiState.Ready ?: return
+        val dialog = current.deleteDialog ?: return
+        if (dialog.isDeleting) return
+        val cacheRelayUrl = relayUrl ?: return
+        _state.value = current.copy(deleteDialog = dialog.copy(isDeleting = true))
+        launch {
+            runCatching {
+                ChannelCacheStore.deleteChannel(cacheRelayUrl, dialog.channelId)
+            }
+            val s = _state.value as? UiState.Ready ?: return@launch
+            _state.value = s.copy(deleteDialog = null)
         }
     }
 
@@ -217,7 +276,7 @@ class ChannelListViewModel(private val relayUrl: String? = null) : SafeViewModel
                     put("about", dialog.about.trim())
                     put("picture", "")
                 }.toString()
-                val event = signEvent(privateKeyHex, content, kind = 40)
+                val event = signEvent(privateKeyHex, content, kind = 40, tags = listOf(listOf("client", "ToriNos")))
                 NostrRepository.publish(event)
             }.onSuccess {
                 val s = _state.value as? UiState.Ready ?: return@launch
@@ -226,6 +285,16 @@ class ChannelListViewModel(private val relayUrl: String? = null) : SafeViewModel
                 val s = _state.value as? UiState.Ready ?: return@launch
                 _state.value = s.copy(createDialog = s.createDialog?.copy(isCreating = false, error = e.message ?: "作成に失敗しました"))
             }
+        }
+    }
+
+    private fun updateActivity(event: NostrEvent, channelId: String) {
+        val prev = lastActivities[channelId]
+        if (prev == null || event.createdAt > prev) {
+            lastActivities[channelId] = event.createdAt
+        }
+        relayUrl?.let {
+            launch { ChannelCacheStore.upsertMessage(it, event, channelId) }
         }
     }
 
@@ -247,6 +316,7 @@ class ChannelListViewModel(private val relayUrl: String? = null) : SafeViewModel
         _state.value = UiState.Ready(
             channels = buildChannelList(),
             createDialog = current?.createDialog,
+            deleteDialog = current?.deleteDialog,
             canLoadMore = current?.canLoadMore ?: false,
             isLoadingMore = current?.isLoadingMore ?: false,
         )
@@ -254,7 +324,8 @@ class ChannelListViewModel(private val relayUrl: String? = null) : SafeViewModel
 
     private suspend fun requestPage(until: Long?) {
         loadingMore = true
-        lastPageUniqueMessageCount = 0
+        lastPageKind40Count = 0
+        currentPageChannelIds = mutableListOf()
         receivedEoseCount = 0
         expectedEoseCount = if (relayUrl != null) 1 else NostrRepository.relayCount.coerceAtLeast(1)
 
@@ -265,10 +336,45 @@ class ChannelListViewModel(private val relayUrl: String? = null) : SafeViewModel
         schedulePageTimeout()
 
         NostrRepository.subscribe(
-            activitySubId,
-            NostrFilter(kinds = listOf(42), until = until, limit = PAGE_SIZE),
+            kind40SubId,
+            NostrFilter(kinds = listOf(40), until = until, limit = PAGE_SIZE),
             relayUrl = relayUrl,
         )
+    }
+
+    private fun triggerActivityFetch() {
+        currentPageChannelIds.forEach { channelId ->
+            val since = cachedChannels[channelId]?.latestMessageCreatedAt
+            val filter = if (since != null) {
+                // キャッシュあり: 前回最新以降の差分を取得（最大200件）
+                NostrFilter(kinds = listOf(42), eTags = listOf(channelId), since = since, limit = 200)
+            } else {
+                // キャッシュなし: 最新100件を取得
+                NostrFilter(kinds = listOf(42), eTags = listOf(channelId), limit = 100)
+            }
+            val subId = "$activitySubId-${channelId.take(16)}"
+            activitySubIds.add(subId)
+            val job = launch {
+                NostrRepository.subscribe(subId, filter, relayUrl = relayUrl)
+                val collectJob = launch {
+                    NostrRepository.events(subId)
+                        .filter { it.kind == 42 }
+                        .collect { event ->
+                            val chId = event.channelIdFromMessage() ?: return@collect
+                            if (seenMessageIds.add(event.id)) {
+                                if (seenMessageIds.size > MAX_SEEN_MSG_IDS) seenMessageIds.remove(seenMessageIds.first())
+                                updateActivity(event, chId)
+                                emitReady()
+                            }
+                        }
+                }
+                NostrRepository.eose(subId).first()
+                collectJob.cancel()
+                NostrRepository.close(subId)
+                activitySubIds.remove(subId)
+            }
+            activityJobs.add(job)
+        }
     }
 
     private fun onPageCompleted() {
@@ -276,15 +382,16 @@ class ChannelListViewModel(private val relayUrl: String? = null) : SafeViewModel
         loadingMore = false
         pageTimeoutJob?.cancel()
         pageTimeoutJob = null
-        val hasMore = lastPageUniqueMessageCount >= PAGE_SIZE
+        val hasMore = lastPageKind40Count >= PAGE_SIZE
         val current = _state.value as? UiState.Ready
         _state.value = UiState.Ready(
             channels = buildChannelList(),
             createDialog = current?.createDialog,
+            deleteDialog = current?.deleteDialog,
             canLoadMore = hasMore,
             isLoadingMore = false,
         )
-        if (!hasMore) NostrRepository.close(activitySubId)
+        if (!hasMore) NostrRepository.close(kind40SubId)
     }
 
     private fun schedulePageTimeout() {
@@ -296,15 +403,15 @@ class ChannelListViewModel(private val relayUrl: String? = null) : SafeViewModel
         }
     }
 
-    private fun scheduleMetaSubscription() {
-        metaSubscriptionJob?.cancel()
-        metaSubscriptionJob = launch {
-            delay(META_SUBSCRIPTION_DELAY_MS)
-            val ids = pendingMetaChannelIds.toList()
-            pendingMetaChannelIds.clear()
+    private fun scheduleNewMetaSubscription() {
+        newMetaJob?.cancel()
+        newMetaJob = launch {
+            delay(NEW_META_DELAY_MS)
+            val ids = pendingNewMetaIds.toList()
+            pendingNewMetaIds.clear()
             if (ids.isEmpty()) return@launch
             NostrRepository.subscribe(
-                metaSubId,
+                newMetaSubId,
                 NostrFilter(ids = ids),
                 relayUrl = relayUrl,
             )
@@ -321,7 +428,6 @@ class ChannelListViewModel(private val relayUrl: String? = null) : SafeViewModel
 
     private suspend fun refreshAuthorSubscription() {
         val authorPubkeys = channelMap.values.map { it.event.pubkey }.toSet()
-
         if (authorPubkeys.isNotEmpty() && authorPubkeys != subscribedAuthorPubkeys) {
             subscribedAuthorPubkeys = authorPubkeys
             NostrRepository.subscribe(
@@ -334,19 +440,21 @@ class ChannelListViewModel(private val relayUrl: String? = null) : SafeViewModel
 
     private fun buildChannelList(): List<ChannelItem> =
         (cachedChannels.keys + channelMap.keys)
+            .distinct()
             .mapNotNull { channelId ->
                 val item = channelMap[channelId] ?: cachedChannels[channelId]?.toChannelItem()
                 item?.let {
                     val cached = cachedChannels[channelId]
-                    val networkLastActivity = lastActivities[channelId]
-                    val cachedLastActivity = cached?.latestMessageCreatedAt
-                    val lastActivityAt = listOfNotNull(networkLastActivity, cachedLastActivity).maxOrNull()
+                    val lastActivityAt = listOfNotNull(
+                        lastActivities[channelId],
+                        cached?.latestMessageCreatedAt,
+                    ).maxOrNull()
                     it.copy(
                         authorProfile = authorProfiles[it.event.pubkey],
-                        messageCount = messageCounts[channelId] ?: 0,
                         lastActivityAt = lastActivityAt,
                         latestMessagePreview = cached?.latestMessagePreview,
                         unreadCount = cached?.unreadCount ?: 0,
+                        hasBeenOpened = cached?.hasBeenOpened ?: false,
                     )
                 }
             }
@@ -368,7 +476,6 @@ class ChannelListViewModel(private val relayUrl: String? = null) : SafeViewModel
                 about = about,
                 picture = picture,
             ),
-            messageCount = 0,
             lastActivityAt = latestMessageCreatedAt,
             latestMessagePreview = latestMessagePreview,
             unreadCount = unreadCount,
@@ -383,11 +490,14 @@ class ChannelListViewModel(private val relayUrl: String? = null) : SafeViewModel
     override fun onCleared() {
         super.onCleared()
         jobs.forEach { it.cancel() }
-        metaSubscriptionJob?.cancel()
+        activityJobs.forEach { it.cancel() }
+        activitySubIds.forEach { NostrRepository.close(it) }
+        newMetaJob?.cancel()
         authorSubscriptionJob?.cancel()
         pageTimeoutJob?.cancel()
-        NostrRepository.close(activitySubId)
-        NostrRepository.close(metaSubId)
+        NostrRepository.close(kind40SubId)
+        NostrRepository.close(liveSubId)
+        NostrRepository.close(newMetaSubId)
         NostrRepository.close(authorsSubId)
     }
 }

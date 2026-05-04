@@ -1,17 +1,25 @@
 package com.nostr.torinos.ui.channel
 
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
@@ -44,13 +52,16 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.snapshotFlow
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.nostr.torinos.model.NostrProfile
 import com.nostr.torinos.network.RelayStore
+import com.nostr.torinos.ui.profile.AvatarCircle
 import kotlin.time.Clock
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.filter
@@ -59,6 +70,9 @@ import kotlinx.coroutines.flow.filter
 @Composable
 fun ChannelListScreen(
     onChannelClick: (channelId: String) -> Unit = {},
+    ownPubkey: String? = null,
+    ownProfile: NostrProfile? = null,
+    onOpenProfile: () -> Unit = {},
 ) {
     val relays by RelayStore.relays.collectAsState(initial = emptyList())
     val selectedRelayUrl by RelayStore.selectedRelayUrl.collectAsState()
@@ -95,6 +109,18 @@ fun ChannelListScreen(
         contentWindowInsets = WindowInsets(0),
         topBar = {
             TopAppBar(
+                navigationIcon = {
+                    if (ownPubkey != null) {
+                        IconButton(onClick = onOpenProfile) {
+                            AvatarCircle(
+                                pubkey = ownPubkey,
+                                name = ownProfile?.bestName,
+                                pictureUrl = ownProfile?.picture,
+                                size = 32,
+                            )
+                        }
+                    }
+                },
                 title = {
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
@@ -203,6 +229,12 @@ fun ChannelListScreen(
                                 ChannelRow(
                                     item = item,
                                     onClick = { onChannelClick(item.event.id) },
+                                    onLongClick = {
+                                        viewModel.showDeleteDialog(
+                                            channelId = item.event.id,
+                                            channelName = item.meta.name.ifBlank { "（名前なし）" },
+                                        )
+                                    },
                                 )
                                 HorizontalDivider()
                             }
@@ -223,6 +255,38 @@ fun ChannelListScreen(
                 }
             }
         }
+    }
+
+    // キャッシュ削除ダイアログ
+    val deleteDialog = (state as? ChannelListViewModel.UiState.Ready)?.deleteDialog
+    if (deleteDialog != null) {
+        AlertDialog(
+            onDismissRequest = { if (!deleteDialog.isDeleting) viewModel.dismissDeleteDialog() },
+            title = { Text("キャッシュを削除") },
+            text = {
+                Text("「${deleteDialog.channelName}」のキャッシュデータを削除します。既読情報が消えます。")
+            },
+            confirmButton = {
+                Button(
+                    onClick = viewModel::confirmDelete,
+                    enabled = !deleteDialog.isDeleting,
+                ) {
+                    if (deleteDialog.isDeleting) {
+                        CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+                    } else {
+                        Text("削除")
+                    }
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = viewModel::dismissDeleteDialog,
+                    enabled = !deleteDialog.isDeleting,
+                ) {
+                    Text("キャンセル")
+                }
+            },
+        )
     }
 
     // 新規チャンネル作成ダイアログ
@@ -282,21 +346,35 @@ fun ChannelListScreen(
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun ChannelRow(item: ChannelItem, onClick: () -> Unit) {
+private fun ChannelRow(item: ChannelItem, onClick: () -> Unit, onLongClick: () -> Unit = {}) {
     val authorName = item.authorProfile?.bestName
         ?: item.event.pubkey.take(8) + "…"
     val activityTime = item.lastActivityAt ?: item.event.createdAt
     val timeText = relativeTime(activityTime)
+    val barColor = if (item.hasBeenOpened) Color(0xFF4DD0E1) else Color(0xFFBDBDBD)
 
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable(onClick = onClick)
-            .padding(horizontal = 16.dp, vertical = 12.dp),
-        horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment = Alignment.Top,
+            .combinedClickable(onClick = onClick, onLongClick = onLongClick)
+            .height(IntrinsicSize.Min),
+        verticalAlignment = Alignment.CenterVertically,
     ) {
+        Box(
+            modifier = Modifier
+                .width(6.dp)
+                .fillMaxHeight()
+                .background(barColor),
+        )
+        Row(
+            modifier = Modifier
+                .weight(1f)
+                .padding(horizontal = 16.dp, vertical = 12.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.Top,
+        ) {
         Column(
             modifier = Modifier.weight(1f),
             verticalArrangement = Arrangement.spacedBy(4.dp),
@@ -340,14 +418,26 @@ private fun ChannelRow(item: ChannelItem, onClick: () -> Unit) {
             modifier = Modifier.padding(start = 12.dp),
         ) {
             if (item.unreadCount > 0) {
-                Text(
-                    text = "${item.unreadCount}未読",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.primary,
-                )
+                Box(
+                    contentAlignment = Alignment.Center,
+                    modifier = Modifier
+                        .defaultMinSize(minWidth = 20.dp, minHeight = 20.dp)
+                        .background(
+                            color = MaterialTheme.colorScheme.primary,
+                            shape = CircleShape,
+                        )
+                        .padding(horizontal = 6.dp, vertical = 2.dp),
+                ) {
+                    Text(
+                        text = if (item.unreadCount > 99) "99+" else "${item.unreadCount}",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onPrimary,
+                    )
+                }
             }
         }
-    }
+        } // inner Row
+    } // outer Row
 }
 
 private fun relativeTime(epochSeconds: Long): String {

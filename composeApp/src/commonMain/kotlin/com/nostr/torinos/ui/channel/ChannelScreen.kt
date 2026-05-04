@@ -33,6 +33,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -64,7 +65,7 @@ fun ChannelScreen(
     }
     val state by viewModel.state.collectAsState()
     val mutedPubkeys by MuteStore.mutedPubkeys.collectAsState()
-    val listState = remember(channelId, selectedRelayUrl) { LazyListState() }
+    val listState = rememberSaveable(channelId, selectedRelayUrl, saver = LazyListState.Saver) { LazyListState() }
     var didApplyInitialScroll by remember(channelId, selectedRelayUrl) { mutableStateOf(false) }
 
     Scaffold(
