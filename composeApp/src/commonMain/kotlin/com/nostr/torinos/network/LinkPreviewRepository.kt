@@ -84,14 +84,14 @@ object LinkPreviewRepository {
     }
 
     private fun htmlTitle(html: String): String? =
-        Regex("""<title[^>]*>(.*?)</title>""", setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL))
+        Regex("""<title[^>]*>([\s\S]*?)</title>""", RegexOption.IGNORE_CASE)
             .find(html)
             ?.groupValues
             ?.getOrNull(1)
             ?.takeIf { it.isNotBlank() }
 
     private fun String.attributeValue(name: String): String? =
-        Regex("""\b$name\s*=\s*(["'])(.*?)\1""", setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL))
+        Regex("""\b$name\s*=\s*(["'])(.*?)\1""", RegexOption.IGNORE_CASE)
             .find(this)
             ?.groupValues
             ?.getOrNull(2)
