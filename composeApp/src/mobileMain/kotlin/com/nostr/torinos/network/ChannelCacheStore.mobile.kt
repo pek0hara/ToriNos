@@ -30,6 +30,7 @@ actual object ChannelCacheStore {
                     latestMessagePreview = row.latestMessagePreview,
                     unreadCount = row.unreadCount,
                     hasBeenOpened = row.hasBeenOpened,
+                    isFavorite = row.isFavorite,
                 )
             }
         }
@@ -93,6 +94,16 @@ actual object ChannelCacheStore {
 
     actual suspend fun getScrollPosition(relayUrl: String, channelId: String): String? =
         dao.getScrollPosition(relayUrl, channelId)
+
+    actual suspend fun setFavorite(relayUrl: String, channelId: String, isFavorite: Boolean) {
+        dao.setFavorite(relayUrl, channelId, isFavorite)
+    }
+
+    actual suspend fun deleteNonFavorites(relayUrl: String) {
+        dao.deleteNonFavoriteMessages(relayUrl)
+        dao.deleteNonFavoriteReadStates(relayUrl)
+        dao.deleteNonFavoriteChannels(relayUrl)
+    }
 
     actual suspend fun prune(maxMessages: Int) {
         dao.getDistinctRelayUrls().forEach { relayUrl ->

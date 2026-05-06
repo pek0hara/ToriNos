@@ -20,6 +20,12 @@ val MIGRATION_1_2 = object : Migration(1, 2) {
     }
 }
 
+val MIGRATION_2_3 = object : Migration(2, 3) {
+    override fun migrate(connection: SQLiteConnection) {
+        connection.execSQL("ALTER TABLE channels ADD COLUMN isFavorite INTEGER NOT NULL DEFAULT 0")
+    }
+}
+
 @Entity(
     tableName = "channels",
     primaryKeys = ["relayUrl", "channelId"],
@@ -33,6 +39,7 @@ data class CachedChannelEntity(
     val ownerPubkey: String,
     val createdAt: Long,
     val updatedAt: Long,
+    val isFavorite: Boolean = false,
 )
 
 @Entity(
@@ -73,6 +80,7 @@ data class CachedChannelSummaryRow(
     val latestMessagePreview: String?,
     val unreadCount: Int,
     val hasBeenOpened: Boolean,
+    val isFavorite: Boolean,
 )
 
 @Dao
@@ -97,7 +105,8 @@ interface ChannelCacheDao {
                   AND unread.channelId = c.channelId
                   AND unread.createdAt > COALESCE(r.lastReadAt, 0)
             ) AS unreadCount,
-            CASE WHEN r.lastReadAt IS NOT NULL THEN 1 ELSE 0 END AS hasBeenOpened
+            CASE WHEN r.lastReadAt IS NOT NULL THEN 1 ELSE 0 END AS hasBeenOpened,
+            c.isFavorite AS isFavorite
         FROM channels c
         LEFT JOIN channel_read_states r
             ON r.relayUrl = c.relayUrl AND r.channelId = c.channelId
@@ -111,7 +120,7 @@ interface ChannelCacheDao {
                 LIMIT 1
            )
         WHERE c.relayUrl = :relayUrl
-        ORDER BY COALESCE(latest.createdAt, c.createdAt) DESC
+        ORDER BY c.isFavorite DESC, COALESCE(latest.createdAt, c.createdAt) DESC
         """
     )
     fun observeChannels(relayUrl: String): Flow<List<CachedChannelSummaryRow>>
@@ -189,6 +198,35 @@ interface ChannelCacheDao {
         """
     )
     suspend fun pruneMessagesByRelay(relayUrl: String, maxMessages: Int)
+
+    @Query("UPDATE channels SET isFavorite = :isFavorite WHERE relayUrl = :relayUrl AND channelId = :channelId")
+    suspend fun setFavorite(relayUrl: String, channelId: String, isFavorite: Boolean)
+
+    @Query("SELECT channelId FROM channels WHERE relayUrl = :relayUrl AND isFavorite = 1")
+    suspend fun getFavoriteChannelIds(relayUrl: String): List<String>
+
+    @Query(
+        """
+        DELETE FROM channel_messages
+        WHERE relayUrl = :relayUrl AND channelId NOT IN (
+            SELECT channelId FROM channels WHERE relayUrl = :relayUrl AND isFavorite = 1
+        )
+        """
+    )
+    suspend fun deleteNonFavoriteMessages(relayUrl: String)
+
+    @Query(
+        """
+        DELETE FROM channel_read_states
+        WHERE relayUrl = :relayUrl AND channelId NOT IN (
+            SELECT channelId FROM channels WHERE relayUrl = :relayUrl AND isFavorite = 1
+        )
+        """
+    )
+    suspend fun deleteNonFavoriteReadStates(relayUrl: String)
+
+    @Query("DELETE FROM channels WHERE relayUrl = :relayUrl AND isFavorite = 0")
+    suspend fun deleteNonFavoriteChannels(relayUrl: String)
 }
 
 @Database(
@@ -197,7 +235,7 @@ interface ChannelCacheDao {
         CachedChannelMessageEntity::class,
         ChannelReadStateEntity::class,
     ],
-    version = 2,
+    version = 3,
 )
 @ConstructedBy(ChannelCacheDatabaseConstructor::class)
 abstract class ChannelCacheDatabase : RoomDatabase() {

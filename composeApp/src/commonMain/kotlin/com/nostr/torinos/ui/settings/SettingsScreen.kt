@@ -32,7 +32,6 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -68,6 +67,7 @@ fun SettingsScreen(
     onAddAccountClick: () -> Unit = {},
     onMuteListClick: () -> Unit = {},
     onNgWordClick: () -> Unit = {},
+    onCustomEmojiClick: () -> Unit = {},
     relayViewModel: RelaySettingsViewModel = viewModel(key = "settings-relays") { RelaySettingsViewModel() },
 ) {
     val accountViewModel = if (ownPubkey != null) {
@@ -79,7 +79,6 @@ fun SettingsScreen(
         ?: remember { mutableStateOf(SettingsState()) }
     val relayEntries by relayViewModel.entries.collectAsState()
     var nsec by remember { mutableStateOf<String?>(null) }
-    var relayInput by remember { mutableStateOf("") }
     var showLogoutDialog by remember { mutableStateOf(false) }
     var showDeleteAccountDialog by remember { mutableStateOf(false) }
     var selectedVanishRelays by remember { mutableStateOf<Set<String>>(emptySet()) }
@@ -142,25 +141,10 @@ fun SettingsScreen(
                 .padding(padding),
         ) {
             item {
-                RelaySection(
-                    entries = relayEntries,
-                    input = relayInput,
-                    onInputChange = { relayInput = it },
-                    onAdd = {
-                        if (relayInput.isNotBlank()) {
-                            relayViewModel.add(relayInput)
-                            relayInput = ""
-                        }
-                    },
-                    onToggle = relayViewModel::setEnabled,
-                    onDelete = relayViewModel::remove,
-                )
-                HorizontalDivider()
-            }
-            item {
                 FilterSection(
                     onMuteListClick = onMuteListClick,
                     onNgWordClick = onNgWordClick,
+                    onCustomEmojiClick = onCustomEmojiClick,
                 )
                 HorizontalDivider()
             }
@@ -415,88 +399,6 @@ private fun ConfirmDeleteAccountDialog(
             }
         },
     )
-}
-
-@Composable
-private fun RelaySection(
-    entries: List<RelayEntry>,
-    input: String,
-    onInputChange: (String) -> Unit,
-    onAdd: () -> Unit,
-    onToggle: (String, Boolean) -> Unit,
-    onDelete: (String) -> Unit,
-) {
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(16.dp),
-        verticalArrangement = Arrangement.spacedBy(10.dp),
-    ) {
-        Text(
-            text = "リレー",
-            style = MaterialTheme.typography.titleSmall,
-            fontWeight = FontWeight.Bold,
-        )
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-            modifier = Modifier.fillMaxWidth(),
-        ) {
-            OutlinedTextField(
-                value = input,
-                onValueChange = onInputChange,
-                modifier = Modifier.weight(1f),
-                label = { Text("wss://relay.example.com") },
-                singleLine = true,
-            )
-            IconButton(onClick = onAdd) {
-                Icon(Icons.Default.Add, contentDescription = "追加")
-            }
-        }
-
-        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            entries.forEach { entry ->
-                RelayRow(
-                    entry = entry,
-                    onToggle = { enabled -> onToggle(entry.url, enabled) },
-                    onDelete = { onDelete(entry.url) },
-                )
-                HorizontalDivider()
-            }
-        }
-    }
-}
-
-@Composable
-private fun RelayRow(
-    entry: RelayEntry,
-    onToggle: (Boolean) -> Unit,
-    onDelete: () -> Unit,
-) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(vertical = 4.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.SpaceBetween,
-    ) {
-        Checkbox(
-            checked = entry.enabled,
-            onCheckedChange = onToggle,
-        )
-        Text(
-            text = entry.url,
-            style = MaterialTheme.typography.bodySmall,
-            modifier = Modifier.weight(1f),
-        )
-        IconButton(onClick = onDelete) {
-            Icon(
-                Icons.Default.Delete,
-                contentDescription = "削除",
-                tint = MaterialTheme.colorScheme.error,
-            )
-        }
-    }
 }
 
 @Composable
@@ -774,6 +676,7 @@ private fun ConfirmAccountDialog(
 private fun FilterSection(
     onMuteListClick: () -> Unit,
     onNgWordClick: () -> Unit,
+    onCustomEmojiClick: () -> Unit,
 ) {
     Column(
         modifier = Modifier
@@ -789,6 +692,7 @@ private fun FilterSection(
         )
         FilterNavRow(label = "ミュートリスト", onClick = onMuteListClick)
         FilterNavRow(label = "NGワード", onClick = onNgWordClick)
+        FilterNavRow(label = "カスタム絵文字", onClick = onCustomEmojiClick)
     }
 }
 

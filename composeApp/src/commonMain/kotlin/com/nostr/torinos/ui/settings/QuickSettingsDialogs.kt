@@ -14,16 +14,12 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Check
-import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.Checkbox
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -40,14 +36,11 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.nostr.torinos.model.NostrProfile
 import com.nostr.torinos.network.MuteStore
-import com.nostr.torinos.network.RelayEntry
 import com.nostr.torinos.ui.profile.AvatarCircle
-import com.nostr.torinos.ui.relay.RelaySettingsViewModel
 
 private enum class QuickSettingsPane {
     Menu,
     AccountSwitcher,
-    RelayList,
     MuteList,
 }
 
@@ -58,7 +51,10 @@ fun QuickSettingsDialogs(
     onOpenChange: (Boolean) -> Unit,
     onAccountChanged: (String?) -> Unit,
     onAddAccountClick: () -> Unit,
+    onRelaySettingsClick: () -> Unit,
+    onCustomEmojiSettingsClick: () -> Unit,
     onOpenAllSettings: () -> Unit,
+    onUserClick: (String) -> Unit = {},
 ) {
     var pane by remember { mutableStateOf(QuickSettingsPane.Menu) }
 
@@ -72,8 +68,15 @@ fun QuickSettingsDialogs(
         QuickSettingsPane.Menu -> QuickSettingsMenuDialog(
             onDismiss = { onOpenChange(false) },
             onAccountSwitcherClick = { pane = QuickSettingsPane.AccountSwitcher },
-            onRelayListClick = { pane = QuickSettingsPane.RelayList },
+            onRelaySettingsClick = {
+                onOpenChange(false)
+                onRelaySettingsClick()
+            },
             onMuteListClick = { pane = QuickSettingsPane.MuteList },
+            onCustomEmojiSettingsClick = {
+                onOpenChange(false)
+                onCustomEmojiSettingsClick()
+            },
             onOpenAllSettings = {
                 onOpenChange(false)
                 onOpenAllSettings()
@@ -94,14 +97,13 @@ fun QuickSettingsDialogs(
             },
         )
 
-        QuickSettingsPane.RelayList -> RelayListDialog(
-            onDismiss = { onOpenChange(false) },
-            onBackToMenu = { pane = QuickSettingsPane.Menu },
-        )
-
         QuickSettingsPane.MuteList -> MuteListDialog(
             onDismiss = { onOpenChange(false) },
             onBackToMenu = { pane = QuickSettingsPane.Menu },
+            onUserClick = {
+                onOpenChange(false)
+                onUserClick(it)
+            },
         )
     }
 }
@@ -110,8 +112,9 @@ fun QuickSettingsDialogs(
 private fun QuickSettingsMenuDialog(
     onDismiss: () -> Unit,
     onAccountSwitcherClick: () -> Unit,
-    onRelayListClick: () -> Unit,
+    onRelaySettingsClick: () -> Unit,
     onMuteListClick: () -> Unit,
+    onCustomEmojiSettingsClick: () -> Unit,
     onOpenAllSettings: () -> Unit,
 ) {
     AlertDialog(
@@ -120,8 +123,9 @@ private fun QuickSettingsMenuDialog(
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
                 QuickSettingsMenuRow("アカウント切り替え", onAccountSwitcherClick)
-                QuickSettingsMenuRow("リレー一覧", onRelayListClick)
+                QuickSettingsMenuRow("投稿先リレー", onRelaySettingsClick)
                 QuickSettingsMenuRow("ミュートリスト", onMuteListClick)
+                QuickSettingsMenuRow("カスタム絵文字設定", onCustomEmojiSettingsClick)
                 QuickSettingsMenuRow("すべての設定", onOpenAllSettings)
             }
         },
@@ -288,112 +292,10 @@ private fun AccountSwitchRow(
 }
 
 @Composable
-private fun RelayListDialog(
-    onDismiss: () -> Unit,
-    onBackToMenu: () -> Unit,
-    viewModel: RelaySettingsViewModel = viewModel(key = "quick-settings-relays") { RelaySettingsViewModel() },
-) {
-    val relayEntries by viewModel.entries.collectAsState()
-    var relayInput by remember { mutableStateOf("") }
-
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("リレー一覧") },
-        text = {
-            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    modifier = Modifier.fillMaxWidth(),
-                ) {
-                    OutlinedTextField(
-                        value = relayInput,
-                        onValueChange = { relayInput = it },
-                        modifier = Modifier.weight(1f),
-                        label = { Text("wss://relay.example.com") },
-                        singleLine = true,
-                    )
-                    IconButton(
-                        onClick = {
-                            if (relayInput.isNotBlank()) {
-                                viewModel.add(relayInput)
-                                relayInput = ""
-                            }
-                        },
-                    ) {
-                        Icon(Icons.Default.Add, contentDescription = "追加")
-                    }
-                }
-
-                if (relayEntries.isEmpty()) {
-                    Text(
-                        text = "リレーが設定されていません",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                } else {
-                    LazyColumn(
-                        modifier = Modifier.heightIn(max = 320.dp),
-                    ) {
-                        items(relayEntries, key = { it.url }) { entry ->
-                            QuickRelayRow(
-                                entry = entry,
-                                onToggle = { enabled -> viewModel.setEnabled(entry.url, enabled) },
-                                onDelete = { viewModel.remove(entry.url) },
-                            )
-                            HorizontalDivider()
-                        }
-                    }
-                }
-            }
-        },
-        confirmButton = {},
-        dismissButton = {
-            TextButton(onClick = onBackToMenu) {
-                Text("戻る")
-            }
-            TextButton(onClick = onDismiss) {
-                Text("閉じる")
-            }
-        },
-    )
-}
-
-@Composable
-private fun QuickRelayRow(
-    entry: RelayEntry,
-    onToggle: (Boolean) -> Unit,
-    onDelete: () -> Unit,
-) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(vertical = 4.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Checkbox(
-            checked = entry.enabled,
-            onCheckedChange = onToggle,
-        )
-        Text(
-            text = entry.url,
-            style = MaterialTheme.typography.bodySmall,
-            modifier = Modifier.weight(1f),
-        )
-        IconButton(onClick = onDelete) {
-            Icon(
-                Icons.Default.Delete,
-                contentDescription = "削除",
-                tint = MaterialTheme.colorScheme.error,
-            )
-        }
-    }
-}
-
-@Composable
 private fun MuteListDialog(
     onDismiss: () -> Unit,
     onBackToMenu: () -> Unit,
+    onUserClick: (String) -> Unit,
     viewModel: MuteListViewModel = viewModel(factory = MuteListViewModel.Factory),
 ) {
     val mutedPubkeys by MuteStore.mutedPubkeys.collectAsState()
@@ -418,6 +320,7 @@ private fun MuteListDialog(
                         MutedUserDialogRow(
                             pubkey = pubkey,
                             profile = profile,
+                            onClick = { onUserClick(pubkey) },
                             onUnmute = { MuteStore.unmute(pubkey) },
                         )
                         HorizontalDivider()
@@ -441,11 +344,13 @@ private fun MuteListDialog(
 private fun MutedUserDialogRow(
     pubkey: String,
     profile: NostrProfile?,
+    onClick: () -> Unit,
     onUnmute: () -> Unit,
 ) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
+            .clickable(onClick = onClick)
             .padding(vertical = 10.dp),
         horizontalArrangement = Arrangement.spacedBy(12.dp),
         verticalAlignment = Alignment.CenterVertically,

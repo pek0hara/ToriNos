@@ -15,5 +15,7 @@ actual object ChannelCacheStore {
     actual suspend fun markRead(relayUrl: String, channelId: String, readAt: Long) = Unit
     actual suspend fun saveScrollPosition(relayUrl: String, channelId: String, messageId: String) = Unit
     actual suspend fun getScrollPosition(relayUrl: String, channelId: String): String? = null
+    actual suspend fun setFavorite(relayUrl: String, channelId: String, isFavorite: Boolean) = Unit
+    actual suspend fun deleteNonFavorites(relayUrl: String) = Unit
     actual suspend fun prune(maxMessages: Int) = Unit
 }

@@ -17,6 +17,7 @@ data class CachedChannelSummary(
     val latestMessagePreview: String?,
     val unreadCount: Int,
     val hasBeenOpened: Boolean,
+    val isFavorite: Boolean = false,
 ) {
     val hasUnread: Boolean get() = unreadCount > 0
 }
@@ -31,5 +32,7 @@ expect object ChannelCacheStore {
     suspend fun saveScrollPosition(relayUrl: String, channelId: String, messageId: String)
     suspend fun getScrollPosition(relayUrl: String, channelId: String): String?
     suspend fun deleteChannel(relayUrl: String, channelId: String)
+    suspend fun setFavorite(relayUrl: String, channelId: String, isFavorite: Boolean)
+    suspend fun deleteNonFavorites(relayUrl: String)
     suspend fun prune(maxMessages: Int = 50_000)
 }

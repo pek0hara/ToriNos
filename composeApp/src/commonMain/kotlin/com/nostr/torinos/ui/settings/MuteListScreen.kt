@@ -1,5 +1,6 @@
 package com.nostr.torinos.ui.settings
 
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
@@ -88,6 +89,7 @@ class MuteListViewModel : SafeViewModel() {
 @Composable
 fun MuteListScreen(
     onBack: () -> Unit = {},
+    onUserClick: (String) -> Unit = {},
     viewModel: MuteListViewModel = viewModel(factory = MuteListViewModel.Factory),
 ) {
     val mutedPubkeys by MuteStore.mutedPubkeys.collectAsState()
@@ -134,6 +136,7 @@ fun MuteListScreen(
                     MutedUserRow(
                         pubkey = pubkey,
                         profile = profile,
+                        onClick = { onUserClick(pubkey) },
                         onUnmute = { MuteStore.unmute(pubkey) },
                     )
                     HorizontalDivider()
@@ -147,11 +150,13 @@ fun MuteListScreen(
 private fun MutedUserRow(
     pubkey: String,
     profile: NostrProfile?,
+    onClick: () -> Unit,
     onUnmute: () -> Unit,
 ) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
+            .clickable(onClick = onClick)
             .padding(horizontal = 16.dp, vertical = 10.dp),
         horizontalArrangement = Arrangement.spacedBy(12.dp),
         verticalAlignment = Alignment.CenterVertically,

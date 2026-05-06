@@ -38,6 +38,8 @@ object NostrRepository {
     private val activeRelays = mutableMapOf<String, NostrRelay>()
     /** subId → (filter, targetRelayUrl) targetRelayUrl=null は全リレー対象 */
     private val activeSubscriptions = mutableMapOf<String, Pair<NostrFilter, String?>>()
+    private val temporaryRelays = mutableMapOf<String, NostrRelay>()
+    private val temporarySubscriptions = mutableMapOf<String, Pair<NostrFilter, String>>()
 
     init {
         scope.launch {
@@ -108,6 +110,54 @@ object NostrRepository {
         }
     }
 
+    suspend fun subscribeTemporaryRelay(subscriptionId: String, filter: NostrFilter, relayUrl: String) {
+        appLog("[Repo] subscribeTemporaryRelay() subId='$subscriptionId' relay=$relayUrl filter=$filter")
+        temporarySubscriptions[subscriptionId] = Pair(filter, relayUrl)
+        var createdRelay = false
+        val relay = temporaryRelays.getOrPut(relayUrl) {
+            createdRelay = true
+            appLog("[Repo] connecting to temporary relay: $relayUrl")
+            NostrRelay(relayUrl, httpClient).also { newRelay ->
+                scope.launch {
+                    try {
+                        newRelay.messages.collect { message ->
+                            when (message) {
+                                is RelayMessage.Closed -> appLog("[Repo] CLOSED from ${newRelay.url} subId=${message.subscriptionId} reason=${message.message}")
+                                else -> appLog("[Repo] message from ${newRelay.url}: $message")
+                            }
+                            bus.emit(message)
+                        }
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Throwable) {
+                        appLog("[NostrRepository] temporary messages collector error for ${newRelay.url}: ${e::class.simpleName}: ${e.message}")
+                    }
+                }
+                scope.launch {
+                    try {
+                        newRelay.connected.collect {
+                            appLog("[Repo] temporary relay connected: ${newRelay.url} resending subscriptions")
+                            temporarySubscriptions.forEach { (subId, filterAndRelay) ->
+                                val (storedFilter, storedRelayUrl) = filterAndRelay
+                                if (storedRelayUrl == newRelay.url) {
+                                    newRelay.send(buildReqMessage(subId, storedFilter))
+                                }
+                            }
+                        }
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Throwable) {
+                        appLog("[NostrRepository] temporary connected collector error for ${newRelay.url}: ${e::class.simpleName}: ${e.message}")
+                    }
+                }
+                newRelay.connect(scope)
+            }
+        }
+        if (!createdRelay) {
+            relay.send(buildReqMessage(subscriptionId, filter))
+        }
+    }
+
     /** サブスクリプションを解除し、リレーに CLOSE を送る */
     fun close(subscriptionId: String) {
         appLog("[Repo] close() subId='$subscriptionId' relayCount=${activeRelays.size}")
@@ -115,6 +165,19 @@ object NostrRepository {
         val msg = buildCloseMessage(subscriptionId)
         scope.launch {
             activeRelays.values.forEach { it.send(msg) }
+        }
+    }
+
+    fun closeTemporaryRelay(subscriptionId: String) {
+        appLog("[Repo] closeTemporaryRelay() subId='$subscriptionId'")
+        val relayUrl = temporarySubscriptions.remove(subscriptionId)?.second
+        val msg = buildCloseMessage(subscriptionId)
+        scope.launch {
+            if (relayUrl != null) {
+                temporaryRelays[relayUrl]?.send(msg)
+            } else {
+                temporaryRelays.values.forEach { it.send(msg) }
+            }
         }
     }
 
