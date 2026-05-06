@@ -47,6 +47,7 @@ class ChannelListViewModel(private val relayUrl: String? = null) : SafeViewModel
         private const val AUTHOR_SUBSCRIPTION_DELAY_MS = 500L
         private const val EMIT_THROTTLE_MS = 250L
         private const val PAGE_SIZE = 50
+        private const val HISTORY_PAGE_SIZE = 200
         private const val MAX_SEEN_MSG_IDS = 5_000
 
         val Factory: ViewModelProvider.Factory = object : ViewModelProvider.Factory {
@@ -89,8 +90,10 @@ class ChannelListViewModel(private val relayUrl: String? = null) : SafeViewModel
     val state: StateFlow<UiState> = _state.asStateFlow()
 
     private val relayKey = relayUrl?.hashCode()?.toString() ?: "all"
-    // Phase 1: kind:40 ページング
+    // 起動時の kind:40 メタ取得（空チャンネル・新規チャンネルの表示用）
     private val kind40SubId = "ch-list-kind40-$relayKey"
+    // 最終アクティビティ順の履歴ページング
+    private val historySubId = "ch-list-history-$relayKey"
     // Phase 2: 発見チャンネルの kind:42 最終アクティビティ取得
     private val activitySubId = "ch-list-activity-$relayKey"
     // ライブ: 全 kind:42 受信（新着・新チャンネル検知）
@@ -116,12 +119,15 @@ class ChannelListViewModel(private val relayUrl: String? = null) : SafeViewModel
     private val requestedNewMetaIds = mutableSetOf<String>()
     private var subscribedAuthorPubkeys: Set<String> = emptySet()
 
-    private var oldestKind40CreatedAt: Long? = null
     private var loadingMore = false
-    private var lastPageKind40Count = 0
-    private var currentPageChannelIds = mutableListOf<String>()
-    private var receivedEoseCount = 0
-    private var expectedEoseCount = 1
+    private var oldestHistoryCreatedAt: Long? = null
+    private var lastHistoryEventCount = 0
+    private var bootstrapChannelIds = mutableListOf<String>()
+    private var bootstrapMetaCompleted = false
+    private var receivedBootstrapEoseCount = 0
+    private var expectedBootstrapEoseCount = 1
+    private var receivedHistoryEoseCount = 0
+    private var expectedHistoryEoseCount = 1
 
     init {
         start()
@@ -159,13 +165,29 @@ class ChannelListViewModel(private val relayUrl: String? = null) : SafeViewModel
             NostrRepository.events(kind40SubId).collect { event ->
                 if (event.kind != 40) return@collect
                 val meta = event.toChannelMeta() ?: return@collect
-                lastPageKind40Count++
-                oldestKind40CreatedAt = minOf(oldestKind40CreatedAt ?: event.createdAt, event.createdAt)
-                currentPageChannelIds.add(event.id)
+                bootstrapChannelIds.add(event.id)
                 channelMap[event.id] = ChannelItem(event, meta)
                 relayUrl?.let { ChannelCacheStore.upsertChannel(it, event, meta) }
                 scheduleAuthorSubscription()
                 emitReady()
+            }
+        }
+
+        // kind:42 履歴ページング: 古い最終アクティビティのチャンネルを発見する
+        jobs += launch {
+            NostrRepository.events(historySubId).collect { event ->
+                if (event.kind != 42) return@collect
+                if (!seenMessageIds.add(event.id)) return@collect
+                if (seenMessageIds.size > MAX_SEEN_MSG_IDS) seenMessageIds.remove(seenMessageIds.first())
+                lastHistoryEventCount++
+                oldestHistoryCreatedAt = minOf(oldestHistoryCreatedAt ?: event.createdAt, event.createdAt)
+                val channelId = event.channelIdFromMessage() ?: return@collect
+                updateActivity(event, channelId)
+                if (!channelMap.containsKey(channelId) && !cachedChannels.containsKey(channelId) && requestedNewMetaIds.add(channelId)) {
+                    pendingNewMetaIds.add(channelId)
+                    scheduleNewMetaSubscription()
+                }
+                emitReady(immediate = _state.value is UiState.Loading)
             }
         }
 
@@ -191,14 +213,29 @@ class ChannelListViewModel(private val relayUrl: String? = null) : SafeViewModel
             }
         }
 
-        // Phase 1 EOSE → Phase 2 発火 + ページ完了
+        // 起動時の kind:40 EOSE → 発見済みチャンネルの activity を補完
         jobs += launch {
             NostrRepository.eose(kind40SubId).collect {
+                if (bootstrapMetaCompleted) return@collect
+                receivedBootstrapEoseCount++
+                if (receivedBootstrapEoseCount < expectedBootstrapEoseCount) return@collect
+                bootstrapMetaCompleted = true
+                val ids = bootstrapChannelIds.toList()
+                bootstrapChannelIds.clear()
+                if (ids.isNotEmpty()) {
+                    triggerActivityFetch(ids)
+                }
+                NostrRepository.close(kind40SubId)
+            }
+        }
+
+        // kind:42 履歴 EOSE → ページ完了
+        jobs += launch {
+            NostrRepository.eose(historySubId).collect {
                 if (!loadingMore) return@collect
-                receivedEoseCount++
-                if (receivedEoseCount >= expectedEoseCount) {
-                    triggerActivityFetch()
-                    onPageCompleted()
+                receivedHistoryEoseCount++
+                if (receivedHistoryEoseCount >= expectedHistoryEoseCount) {
+                    onHistoryPageCompleted()
                 }
             }
         }
@@ -210,14 +247,21 @@ class ChannelListViewModel(private val relayUrl: String? = null) : SafeViewModel
                 NostrFilter(kinds = listOf(42), since = Clock.System.now().epochSeconds),
                 relayUrl = relayUrl,
             )
+            expectedBootstrapEoseCount = if (relayUrl != null) 1 else NostrRepository.relayCount.coerceAtLeast(1)
+            NostrRepository.subscribe(
+                kind40SubId,
+                NostrFilter(kinds = listOf(40), limit = PAGE_SIZE),
+                relayUrl = relayUrl,
+            )
             requestPage(until = null)
         }
     }
 
     fun loadMore() {
         if (loadingMore || (_state.value as? UiState.Ready)?.canLoadMore != true) return
+        val until = oldestHistoryCreatedAt?.minus(1) ?: return
         launch {
-            requestPage(until = oldestKind40CreatedAt?.minus(1))
+            requestPage(until = until)
         }
     }
 
@@ -368,10 +412,9 @@ class ChannelListViewModel(private val relayUrl: String? = null) : SafeViewModel
 
     private suspend fun requestPage(until: Long?) {
         loadingMore = true
-        lastPageKind40Count = 0
-        currentPageChannelIds = mutableListOf()
-        receivedEoseCount = 0
-        expectedEoseCount = if (relayUrl != null) 1 else NostrRepository.relayCount.coerceAtLeast(1)
+        lastHistoryEventCount = 0
+        receivedHistoryEoseCount = 0
+        expectedHistoryEoseCount = if (relayUrl != null) 1 else NostrRepository.relayCount.coerceAtLeast(1)
 
         val current = _state.value as? UiState.Ready
         if (current != null) {
@@ -380,14 +423,14 @@ class ChannelListViewModel(private val relayUrl: String? = null) : SafeViewModel
         schedulePageTimeout()
 
         NostrRepository.subscribe(
-            kind40SubId,
-            NostrFilter(kinds = listOf(40), until = until, limit = PAGE_SIZE),
+            historySubId,
+            NostrFilter(kinds = listOf(42), until = until, limit = HISTORY_PAGE_SIZE),
             relayUrl = relayUrl,
         )
     }
 
-    private fun triggerActivityFetch() {
-        currentPageChannelIds.forEach { channelId ->
+    private fun triggerActivityFetch(channelIds: Collection<String>) {
+        channelIds.distinct().forEach { channelId ->
             val since = cachedChannels[channelId]?.latestMessageCreatedAt
             val filter = if (since != null) {
                 // キャッシュあり: 前回最新以降の差分を取得（最大200件）
@@ -421,12 +464,12 @@ class ChannelListViewModel(private val relayUrl: String? = null) : SafeViewModel
         }
     }
 
-    private fun onPageCompleted() {
+    private fun onHistoryPageCompleted() {
         if (!loadingMore) return
         loadingMore = false
         pageTimeoutJob?.cancel()
         pageTimeoutJob = null
-        val hasMore = lastPageKind40Count >= PAGE_SIZE
+        val hasMore = lastHistoryEventCount >= HISTORY_PAGE_SIZE
         val current = _state.value as? UiState.Ready
         _state.value = UiState.Ready(
             channels = buildChannelList(),
@@ -436,7 +479,7 @@ class ChannelListViewModel(private val relayUrl: String? = null) : SafeViewModel
             canLoadMore = hasMore,
             isLoadingMore = false,
         )
-        NostrRepository.close(kind40SubId)
+        NostrRepository.close(historySubId)
     }
 
     private fun schedulePageTimeout() {
@@ -444,7 +487,7 @@ class ChannelListViewModel(private val relayUrl: String? = null) : SafeViewModel
         pageTimeoutJob = launch {
             delay(PAGE_TIMEOUT_MS)
             if (!loadingMore) return@launch
-            onPageCompleted()
+            onHistoryPageCompleted()
         }
     }
 
@@ -543,6 +586,7 @@ class ChannelListViewModel(private val relayUrl: String? = null) : SafeViewModel
         authorSubscriptionJob?.cancel()
         pageTimeoutJob?.cancel()
         NostrRepository.close(kind40SubId)
+        NostrRepository.close(historySubId)
         NostrRepository.close(liveSubId)
         NostrRepository.close(newMetaSubId)
         NostrRepository.close(authorsSubId)
