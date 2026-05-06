@@ -31,6 +31,8 @@ fun LazyListScope.noteListItems(
     onRepost: ((eventId: String, authorPubkey: String) -> Unit)? = null,
     onUnrepost: ((eventId: String) -> Unit)? = null,
     onHashtagClick: ((tag: String) -> Unit)? = null,
+    onMuteUser: ((pubkey: String) -> Unit)? = null,
+    onUnmuteUser: ((pubkey: String) -> Unit)? = null,
     mutedPubkeys: Set<String> = emptySet(),
     emptyText: String = "ポストがありません",
 ) {
@@ -123,6 +125,12 @@ fun LazyListScope.noteListItems(
                     ownPubkey = ownPubkey,
                     onDelete = { onDelete(event.id) },
                     isMuted = mutedPubkeys.contains(event.pubkey),
+                    onMute = if (onMuteUser != null) {
+                        { onMuteUser(event.pubkey) }
+                    } else null,
+                    onUnmute = if (onUnmuteUser != null) {
+                        { onUnmuteUser(event.pubkey) }
+                    } else null,
                 )
                 HorizontalDivider()
             }

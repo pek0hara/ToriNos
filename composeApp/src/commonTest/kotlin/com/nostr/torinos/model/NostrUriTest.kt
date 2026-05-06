@@ -115,6 +115,17 @@ class NostrUriTest {
     }
 
     @Test
+    fun encodeNevent_withAuthor_returnsDecodableNevent() {
+        val authorPubkey = "f".repeat(64)
+        val nevent = encodeNevent(eventId = zeroId, authorPubkey = authorPubkey)
+        assertTrue(nevent.startsWith("nevent1"))
+
+        val ref = decodeNostrEventReference(nevent)
+        assertEquals(zeroId, ref?.eventId)
+        assertEquals(authorPubkey, ref?.authorPubkey)
+    }
+
+    @Test
     fun decode_unknownHrp_returnsNull() {
         val encoded = com.nostr.torinos.crypto.Bech32.encode("npub", zeroBytes)
         assertNull(decodeNostrEventReference(encoded))

@@ -67,6 +67,8 @@ class UserProfileViewModel(
             }.collect { (follows, loaded) ->
                 if (loaded) {
                     _state.update { it.copy(isFollowing = follows.contains(pubkey), canFollow = true) }
+                } else {
+                    _state.update { it.copy(isFollowing = null, canFollow = false) }
                 }
             }
         }

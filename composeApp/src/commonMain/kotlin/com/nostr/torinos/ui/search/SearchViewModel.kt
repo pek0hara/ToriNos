@@ -28,7 +28,11 @@ class SearchViewModel : SafeViewModel() {
             val query: String,
             val events: List<NostrEvent> = emptyList(),
             val profiles: Map<String, NostrProfile> = emptyMap(),
+            val reactionCounts: Map<String, Int> = emptyMap(),
+            val replyCounts: Map<String, Int> = emptyMap(),
+            val repostCounts: Map<String, Int> = emptyMap(),
             val canLoadMore: Boolean = false,
+            val users: List<Pair<String, NostrProfile>> = emptyList(),
         ) : UiState
     }
 
@@ -47,9 +51,24 @@ class SearchViewModel : SafeViewModel() {
     private val subscriptionJobs = mutableListOf<Job>()
     private var currentEvents = emptyList<NostrEvent>()
     private var currentProfiles = emptyMap<String, NostrProfile>()
+    private var currentReactionCounts = emptyMap<String, Int>()
+    private var currentReplyCounts = emptyMap<String, Int>()
+    private var currentRepostCounts = emptyMap<String, Int>()
+    private val watchedEventIds = linkedSetOf<String>()
+    private var engagementBatchJob: Job? = null
+    private val seenReactionIds = linkedSetOf<String>()
+    private val seenReplyIds = linkedSetOf<String>()
+    private val seenRepostIds = linkedSetOf<String>()
 
-    private val searchSubId = "srch-main"
+    private var searchGeneration = 0
+    private var activeSearchSubId = "srch-main-0"
     private val profileSubId = "sprof-main"
+    private var activeReactionSubId = "sreact-main-0"
+    private var activeReplySubId = "sreply-main-0"
+    private var activeRepostSubId = "srepost-main-0"
+    private var activeUserSubId = "suser-main-0"
+    private val seenUserIds = linkedSetOf<String>()
+    private var currentUsers = emptyList<Pair<String, NostrProfile>>()
 
     fun search(query: String) {
         val trimmed = query.trim()
@@ -60,6 +79,12 @@ class SearchViewModel : SafeViewModel() {
         }
 
         stopSubscriptions()
+        val generation = ++searchGeneration
+        activeSearchSubId = "srch-main-$generation"
+        activeReactionSubId = "sreact-main-$generation"
+        activeReplySubId = "sreply-main-$generation"
+        activeRepostSubId = "srepost-main-$generation"
+        activeUserSubId = "suser-main-$generation"
 
         currentQuery = trimmed
         seenEventIds.clear()
@@ -70,6 +95,15 @@ class SearchViewModel : SafeViewModel() {
         receivedEoseCount = 0
         currentEvents = emptyList()
         currentProfiles = emptyMap()
+        currentReactionCounts = emptyMap()
+        currentReplyCounts = emptyMap()
+        currentRepostCounts = emptyMap()
+        watchedEventIds.clear()
+        seenReactionIds.clear()
+        seenReplyIds.clear()
+        seenRepostIds.clear()
+        seenUserIds.clear()
+        currentUsers = emptyList()
         _state.value = UiState.Loading
 
         startSubscriptions()
@@ -86,6 +120,11 @@ class SearchViewModel : SafeViewModel() {
         appLog("[Search] startSubscriptions() relayCount=${NostrRepository.relayCount}")
 
         // 検索結果イベントを収集
+        val searchSubId = activeSearchSubId
+        val reactionSubId = activeReactionSubId
+        val replySubId = activeReplySubId
+        val repostSubId = activeRepostSubId
+        val userSubId = activeUserSubId
         subscriptionJobs += launch {
             NostrRepository.events(searchSubId).collect { event ->
                 if (event.kind != 1) return@collect
@@ -94,6 +133,7 @@ class SearchViewModel : SafeViewModel() {
                 appLog("[Search] event received id=${event.id.take(8)} pubkey=${event.pubkey.take(8)} added=$added totalSeen=${seenEventIds.size}")
                 scheduleProfileFetch(event.pubkey)
                 scheduleMentionedProfileFetch(event.content)
+                scheduleEngagementFetch(event.id)
             }
         }
 
@@ -129,6 +169,53 @@ class SearchViewModel : SafeViewModel() {
             }
         }
 
+        subscriptionJobs += launch {
+            NostrRepository.events(reactionSubId).collect { event ->
+                if (event.kind != 7) return@collect
+                if (!rememberSeenId(seenReactionIds, event.id)) return@collect
+                val targetId = event.tags.lastOrNull { it.firstOrNull() == "e" }?.getOrNull(1)
+                    ?: return@collect
+                currentReactionCounts = currentReactionCounts +
+                    (targetId to (currentReactionCounts[targetId] ?: 0) + 1)
+                syncReadyState()
+            }
+        }
+
+        subscriptionJobs += launch {
+            NostrRepository.events(replySubId).collect { event ->
+                if (event.kind != 1) return@collect
+                if (!rememberSeenId(seenReplyIds, event.id)) return@collect
+                val targetId = event.tags.lastOrNull { it.firstOrNull() == "e" }?.getOrNull(1)
+                    ?: return@collect
+                currentReplyCounts = currentReplyCounts +
+                    (targetId to (currentReplyCounts[targetId] ?: 0) + 1)
+                syncReadyState()
+            }
+        }
+
+        subscriptionJobs += launch {
+            NostrRepository.events(repostSubId).collect { event ->
+                if (event.kind != 6) return@collect
+                if (!rememberSeenId(seenRepostIds, event.id)) return@collect
+                val targetId = event.tags.lastOrNull { it.firstOrNull() == "e" }?.getOrNull(1)
+                    ?: return@collect
+                currentRepostCounts = currentRepostCounts +
+                    (targetId to (currentRepostCounts[targetId] ?: 0) + 1)
+                syncReadyState()
+            }
+        }
+
+        // ユーザー検索結果（kind:0）
+        subscriptionJobs += launch {
+            NostrRepository.events(userSubId).collect { event ->
+                if (event.kind != 0) return@collect
+                val profile = event.toProfile() ?: return@collect
+                if (!seenUserIds.add(event.pubkey)) return@collect
+                currentUsers = currentUsers + (event.pubkey to profile)
+                syncReadyState()
+            }
+        }
+
         launch {
             requestPage(until = null)
         }
@@ -138,8 +225,13 @@ class SearchViewModel : SafeViewModel() {
         subscriptionJobs.forEach { it.cancel() }
         subscriptionJobs.clear()
         profileBatchJob?.cancel()
-        NostrRepository.close(searchSubId)
+        engagementBatchJob?.cancel()
+        NostrRepository.closeTemporaryRelay(activeSearchSubId)
+        NostrRepository.closeTemporaryRelay(activeUserSubId)
         NostrRepository.close(profileSubId)
+        NostrRepository.close(activeReactionSubId)
+        NostrRepository.close(activeReplySubId)
+        NostrRepository.close(activeRepostSubId)
     }
 
     override fun onCleared() {
@@ -151,27 +243,32 @@ class SearchViewModel : SafeViewModel() {
         loadingMore = true
         lastBatchCount = 0
         receivedEoseCount = 0
-        expectedEoseCount = NostrRepository.relayCount.coerceAtLeast(1)
+        expectedEoseCount = 1
         val current = _state.value as? UiState.Ready
         if (current != null) {
             _state.value = current.copy(canLoadMore = false)
         }
 
         val filter = buildFilter(until)
+        val searchSubId = activeSearchSubId
         appLog("[Search] requestPage() until=$until expectedEoseCount=$expectedEoseCount filter=$filter")
-        NostrRepository.subscribe(searchSubId, filter)
+        NostrRepository.subscribeTemporaryRelay(searchSubId, filter, SEARCH_RELAY_URL)
+
+        if (until == null) {
+            val q = currentQuery
+            val userSubId = activeUserSubId
+            NostrRepository.subscribeTemporaryRelay(
+                userSubId,
+                NostrFilter(kinds = listOf(0), search = q, limit = USER_SEARCH_LIMIT),
+                SEARCH_RELAY_URL,
+            )
+        }
     }
 
     private fun buildFilter(until: Long?): NostrFilter {
         val q = currentQuery
-        return if (q.startsWith("#")) {
-            val tag = q.removePrefix("#").lowercase()
-            appLog("[Search] buildFilter: hashtag mode tag='$tag' until=$until")
-            NostrFilter(kinds = listOf(1), tTags = listOf(tag), until = until, limit = PAGE_SIZE)
-        } else {
-            appLog("[Search] buildFilter: keyword mode search='$q' until=$until")
-            NostrFilter(kinds = listOf(1), search = q, until = until, limit = PAGE_SIZE)
-        }
+        appLog("[Search] buildFilter: NIP-50 search='$q' until=$until")
+        return NostrFilter(kinds = listOf(1), search = q, until = until, limit = PAGE_SIZE)
     }
 
     private fun onPageCompleted() {
@@ -179,7 +276,7 @@ class SearchViewModel : SafeViewModel() {
         val hasMore = lastBatchCount >= PAGE_SIZE
         appLog("[Search] onPageCompleted() lastBatchCount=$lastBatchCount hasMore=$hasMore totalEvents=${currentEvents.size}")
         _state.value = readyState(canLoadMore = hasMore)
-        if (!hasMore) NostrRepository.close(searchSubId)
+        if (!hasMore) NostrRepository.closeTemporaryRelay(activeSearchSubId)
     }
 
     private fun appendEvent(event: NostrEvent): Int {
@@ -195,7 +292,11 @@ class SearchViewModel : SafeViewModel() {
             query = currentQuery,
             events = currentEvents,
             profiles = currentProfiles,
+            reactionCounts = currentReactionCounts,
+            replyCounts = currentReplyCounts,
+            repostCounts = currentRepostCounts,
             canLoadMore = canLoadMore,
+            users = currentUsers,
         )
 
     private fun syncReadyState() {
@@ -204,7 +305,17 @@ class SearchViewModel : SafeViewModel() {
             query = currentQuery,
             events = currentEvents,
             profiles = currentProfiles,
+            reactionCounts = currentReactionCounts,
+            replyCounts = currentReplyCounts,
+            repostCounts = currentRepostCounts,
+            users = currentUsers,
         )
+    }
+
+    private fun rememberSeenId(seenIds: LinkedHashSet<String>, eventId: String): Boolean {
+        if (!seenIds.add(eventId)) return false
+        while (seenIds.size > MAX_SEEN_IDS) seenIds.remove(seenIds.first())
+        return true
     }
 
     private fun scheduleProfileFetch(pubkey: String) {
@@ -223,6 +334,21 @@ class SearchViewModel : SafeViewModel() {
         }
     }
 
+    private fun scheduleEngagementFetch(eventId: String) {
+        if (!watchedEventIds.add(eventId)) return
+        while (watchedEventIds.size > MAX_TRACKED_ENGAGEMENT_EVENTS) {
+            watchedEventIds.remove(watchedEventIds.first())
+        }
+        engagementBatchJob?.cancel()
+        engagementBatchJob = launch {
+            delay(500)
+            val ids = watchedEventIds.toList()
+            NostrRepository.subscribe(activeReactionSubId, NostrFilter(kinds = listOf(7), eTags = ids))
+            NostrRepository.subscribe(activeReplySubId, NostrFilter(kinds = listOf(1), eTags = ids))
+            NostrRepository.subscribe(activeRepostSubId, NostrFilter(kinds = listOf(6), eTags = ids))
+        }
+    }
+
     private fun scheduleMentionedProfileFetch(text: String) {
         extractNpubReferences(text).forEach { reference ->
             scheduleProfileFetch(reference.pubkey)
@@ -231,6 +357,10 @@ class SearchViewModel : SafeViewModel() {
 
     companion object {
         private const val PAGE_SIZE = 30
+        private const val USER_SEARCH_LIMIT = 20
+        private const val MAX_SEEN_IDS = 2_000
+        private const val MAX_TRACKED_ENGAGEMENT_EVENTS = 100
+        private const val SEARCH_RELAY_URL = "wss://search.nos.today"
 
         val Factory: ViewModelProvider.Factory = object : ViewModelProvider.Factory {
             @Suppress("UNCHECKED_CAST")

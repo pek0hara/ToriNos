@@ -37,6 +37,7 @@ import com.nostr.torinos.model.NostrFilter
 import com.nostr.torinos.model.NostrProfile
 import com.nostr.torinos.model.toProfile
 import com.nostr.torinos.network.ChannelCacheStore
+import com.nostr.torinos.network.CustomEmojiStore
 import com.nostr.torinos.network.FollowRepository
 import com.nostr.torinos.network.NostrRepository
 import com.nostr.torinos.ui.channel.ChannelListScreen
@@ -50,7 +51,10 @@ import com.nostr.torinos.ui.profile.FollowListMode
 import com.nostr.torinos.ui.profile.FollowListScreen
 import com.nostr.torinos.ui.profile.MyProfileScreen
 import com.nostr.torinos.ui.profile.UserProfileScreen
+import com.nostr.torinos.ui.relay.RelaySettingsScreen
+import com.nostr.torinos.ui.search.SearchScreen
 import com.nostr.torinos.ui.settings.QuickSettingsDialogs
+import com.nostr.torinos.ui.settings.CustomEmojiSettingsScreen
 import com.nostr.torinos.ui.settings.SettingsScreen
 import com.nostr.torinos.ui.setup.KeySetupScreen
 import com.nostr.torinos.ui.theme.NostrTheme
@@ -65,6 +69,8 @@ import kotlinx.serialization.Serializable
 @Serializable data class ProfileRoute(val pubkey: String)
 @Serializable data class FollowingRoute(val pubkey: String)
 @Serializable data class FollowersRoute(val pubkey: String)
+@Serializable data class SearchRoute(val query: String = "")
+@Serializable data class CustomEmojiRoute(val query: String = "")
 @Serializable data class ThreadRoute(
     val eventId: String,
     val initialTab: String = "replies",
@@ -101,9 +107,17 @@ fun App() {
         var feedScrollToTopRequest by remember { mutableStateOf(0) }
         var currentFeedTab by remember { mutableStateOf(FeedTab.Following) }
         var feedScrollToTopTargetTab by remember { mutableStateOf(FeedTab.Following) }
+        var feedTabChangeRequest by remember { mutableStateOf(0) }
         var showQuickSettings by remember { mutableStateOf(false) }
         val followingFeedListState = remember { LazyListState() }
         val globalFeedListState = remember { LazyListState() }
+
+        // 未登録カスタム絵文字タップ → 絵文字設定画面（検索クエリ付き）へ遷移
+        LaunchedEffect(Unit) {
+            CustomEmojiStore.openSearchEvent.collect { shortcode ->
+                nav.navigate(CustomEmojiRoute(query = shortcode))
+            }
+        }
 
         // 起動時に保存済み秘密鍵から公開鍵を読み込む & DBを整理
         LaunchedEffect(Unit) {
@@ -180,6 +194,9 @@ fun App() {
             replyToPubkey = null
             replyToPreview = null
             FollowRepository.reload()
+            currentFeedTab = FeedTab.Global
+            feedScrollToTopTargetTab = FeedTab.Global
+            feedTabChangeRequest++
             nav.navigate("feed") {
                 popUpTo("feed") { inclusive = true }
                 launchSingleTop = true
@@ -200,6 +217,9 @@ fun App() {
             replyToPubkey = null
             replyToPreview = null
             FollowRepository.reload()
+            currentFeedTab = FeedTab.Global
+            feedScrollToTopTargetTab = FeedTab.Global
+            feedTabChangeRequest++
             nav.navigate("feed") {
                 popUpTo("feed") { inclusive = true }
                 launchSingleTop = true
@@ -301,11 +321,14 @@ fun App() {
                             onOpenReplies = { eventId -> nav.navigate(ThreadRoute(eventId)) },
                             onOpenLikes = { eventId -> nav.navigate(ThreadRoute(eventId, "likes")) },
                             onOpenReposts = { eventId -> nav.navigate(ThreadRoute(eventId, "reposts")) },
+                            onOpenSearch = { query -> nav.navigate(SearchRoute(query)) },
                             ownPubkey = ownPubkey,
                             ownProfile = ownProfile,
                             scrollToTopRequest = feedScrollToTopRequest,
                             scrollToTopTargetTab = feedScrollToTopTargetTab,
                             onCurrentFeedTabChanged = { currentFeedTab = it },
+                            requestedFeedTab = FeedTab.Global,
+                            feedTabChangeRequest = feedTabChangeRequest,
                             followingListState = followingFeedListState,
                             globalListState = globalFeedListState,
                         )
@@ -392,13 +415,38 @@ fun App() {
                             },
                             onMuteListClick = { nav.navigate("mute-list") },
                             onNgWordClick = { nav.navigate("ng-words") },
+                            onCustomEmojiClick = { nav.navigate(CustomEmojiRoute()) },
                         )
                     }
                     composable("mute-list") {
-                        MuteListScreen(onBack = { nav.popBackStack() })
+                        MuteListScreen(
+                            onBack = { nav.popBackStack() },
+                            onUserClick = { pk -> nav.navigate(ProfileRoute(pk)) },
+                        )
                     }
                     composable("ng-words") {
                         NgWordScreen(onBack = { nav.popBackStack() })
+                    }
+                    composable("relay-settings") {
+                        RelaySettingsScreen(onBack = { nav.popBackStack() })
+                    }
+                    composable<CustomEmojiRoute> { backStack ->
+                        val route = backStack.toRoute<CustomEmojiRoute>()
+                        CustomEmojiSettingsScreen(
+                            onBack = { nav.popBackStack() },
+                            initialQuery = route.query,
+                        )
+                    }
+                    composable<SearchRoute> { backStack ->
+                        val route = backStack.toRoute<SearchRoute>()
+                        SearchScreen(
+                            initialQuery = route.query,
+                            onBack = { nav.popBackStack() },
+                            onUserClick = { pk -> nav.navigate(ProfileRoute(pk)) },
+                            onOpenReplies = { eventId -> nav.navigate(ThreadRoute(eventId)) },
+                            onOpenLikes = { eventId -> nav.navigate(ThreadRoute(eventId, "likes")) },
+                            onOpenReposts = { eventId -> nav.navigate(ThreadRoute(eventId, "reposts")) },
+                        )
                     }
                     composable<FollowingRoute> { backStack ->
                         val route = backStack.toRoute<FollowingRoute>()
@@ -454,7 +502,10 @@ fun App() {
                 pendingKeyAction = null
                 showKeySetup = true
             },
+            onRelaySettingsClick = { nav.navigate("relay-settings") },
+            onCustomEmojiSettingsClick = { nav.navigate(CustomEmojiRoute()) },
             onOpenAllSettings = { nav.navigate("settings") },
+            onUserClick = { pk -> nav.navigate(ProfileRoute(pk)) },
         )
 
         if (showPostSheet) {
@@ -479,16 +530,41 @@ fun App() {
                     pendingKeyAction = null
                     // 保存直後に導出済みの公開鍵を直接セット（Keychain 再読み込み不要）
                     ownPubkey = pubkeyHex
+                    ownProfile = null
+                    FollowRepository.reload()
                     when (action) {
                         PendingKeyAction.NewPost -> {
                             replyToId = null
                             replyToPubkey = null
                             replyToPreview = null
+                            currentFeedTab = FeedTab.Global
+                            feedScrollToTopTargetTab = FeedTab.Global
+                            feedTabChangeRequest++
+                            nav.navigate("feed") {
+                                popUpTo("feed") { inclusive = true }
+                                launchSingleTop = true
+                            }
                             showPostSheet = true
                         }
                         PendingKeyAction.Reply -> showPostSheet = true
-                        PendingKeyAction.Profile -> nav.navigate("myprofile") { launchSingleTop = true }
-                        null -> Unit
+                        PendingKeyAction.Profile -> {
+                            currentFeedTab = FeedTab.Global
+                            feedScrollToTopTargetTab = FeedTab.Global
+                            feedTabChangeRequest++
+                            nav.navigate("feed") {
+                                popUpTo("feed") { inclusive = true }
+                                launchSingleTop = true
+                            }
+                        }
+                        null -> {
+                            currentFeedTab = FeedTab.Global
+                            feedScrollToTopTargetTab = FeedTab.Global
+                            feedTabChangeRequest++
+                            nav.navigate("feed") {
+                                popUpTo("feed") { inclusive = true }
+                                launchSingleTop = true
+                            }
+                        }
                     }
                 },
                 onDismiss = {

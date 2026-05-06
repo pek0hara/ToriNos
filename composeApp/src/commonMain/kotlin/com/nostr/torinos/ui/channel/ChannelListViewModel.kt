@@ -36,6 +36,7 @@ data class ChannelItem(
     val latestMessagePreview: String? = null,
     val unreadCount: Int = 0,
     val hasBeenOpened: Boolean = false,
+    val isFavorite: Boolean = false,
 )
 
 class ChannelListViewModel(private val relayUrl: String? = null) : SafeViewModel() {
@@ -68,12 +69,17 @@ class ChannelListViewModel(private val relayUrl: String? = null) : SafeViewModel
         val isDeleting: Boolean = false,
     )
 
+    data class BulkDeleteDialogState(
+        val isDeleting: Boolean = false,
+    )
+
     sealed interface UiState {
         data object Loading : UiState
         data class Ready(
             val channels: List<ChannelItem> = emptyList(),
             val createDialog: CreateDialogState? = null,
             val deleteDialog: DeleteDialogState? = null,
+            val bulkDeleteDialog: BulkDeleteDialogState? = null,
             val canLoadMore: Boolean = false,
             val isLoadingMore: Boolean = false,
         ) : UiState
@@ -188,6 +194,7 @@ class ChannelListViewModel(private val relayUrl: String? = null) : SafeViewModel
         // Phase 1 EOSE → Phase 2 発火 + ページ完了
         jobs += launch {
             NostrRepository.eose(kind40SubId).collect {
+                if (!loadingMore) return@collect
                 receivedEoseCount++
                 if (receivedEoseCount >= expectedEoseCount) {
                     triggerActivityFetch()
@@ -236,6 +243,42 @@ class ChannelListViewModel(private val relayUrl: String? = null) : SafeViewModel
             }
             val s = _state.value as? UiState.Ready ?: return@launch
             _state.value = s.copy(deleteDialog = null)
+        }
+    }
+
+    fun toggleFavorite(channelId: String) {
+        val cacheRelayUrl = relayUrl ?: return
+        val current = _state.value as? UiState.Ready ?: return
+        val item = current.channels.firstOrNull { it.event.id == channelId } ?: return
+        val newFavorite = !item.isFavorite
+        launch {
+            ChannelCacheStore.setFavorite(cacheRelayUrl, channelId, newFavorite)
+        }
+    }
+
+    fun showBulkDeleteDialog() {
+        val current = _state.value as? UiState.Ready ?: return
+        _state.value = current.copy(bulkDeleteDialog = BulkDeleteDialogState())
+    }
+
+    fun dismissBulkDeleteDialog() {
+        val current = _state.value as? UiState.Ready ?: return
+        if (current.bulkDeleteDialog?.isDeleting == true) return
+        _state.value = current.copy(bulkDeleteDialog = null)
+    }
+
+    fun confirmBulkDelete() {
+        val current = _state.value as? UiState.Ready ?: return
+        val dialog = current.bulkDeleteDialog ?: return
+        if (dialog.isDeleting) return
+        val cacheRelayUrl = relayUrl ?: return
+        _state.value = current.copy(bulkDeleteDialog = dialog.copy(isDeleting = true))
+        launch {
+            runCatching {
+                ChannelCacheStore.deleteNonFavorites(cacheRelayUrl)
+            }
+            val s = _state.value as? UiState.Ready ?: return@launch
+            _state.value = s.copy(bulkDeleteDialog = null)
         }
     }
 
@@ -317,6 +360,7 @@ class ChannelListViewModel(private val relayUrl: String? = null) : SafeViewModel
             channels = buildChannelList(),
             createDialog = current?.createDialog,
             deleteDialog = current?.deleteDialog,
+            bulkDeleteDialog = current?.bulkDeleteDialog,
             canLoadMore = current?.canLoadMore ?: false,
             isLoadingMore = current?.isLoadingMore ?: false,
         )
@@ -388,10 +432,11 @@ class ChannelListViewModel(private val relayUrl: String? = null) : SafeViewModel
             channels = buildChannelList(),
             createDialog = current?.createDialog,
             deleteDialog = current?.deleteDialog,
+            bulkDeleteDialog = current?.bulkDeleteDialog,
             canLoadMore = hasMore,
             isLoadingMore = false,
         )
-        if (!hasMore) NostrRepository.close(kind40SubId)
+        NostrRepository.close(kind40SubId)
     }
 
     private fun schedulePageTimeout() {
@@ -455,6 +500,7 @@ class ChannelListViewModel(private val relayUrl: String? = null) : SafeViewModel
                         latestMessagePreview = cached?.latestMessagePreview,
                         unreadCount = cached?.unreadCount ?: 0,
                         hasBeenOpened = cached?.hasBeenOpened ?: false,
+                        isFavorite = cached?.isFavorite ?: false,
                     )
                 }
             }
@@ -479,6 +525,7 @@ class ChannelListViewModel(private val relayUrl: String? = null) : SafeViewModel
             lastActivityAt = latestMessageCreatedAt,
             latestMessagePreview = latestMessagePreview,
             unreadCount = unreadCount,
+            isFavorite = isFavorite,
         )
 
     private fun NostrEvent.channelIdFromMessage(): String? =

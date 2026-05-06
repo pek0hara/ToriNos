@@ -27,6 +27,9 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Star
+import androidx.compose.material.icons.outlined.StarBorder
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
@@ -75,12 +78,12 @@ fun ChannelListScreen(
     onOpenProfile: () -> Unit = {},
 ) {
     val relays by RelayStore.relays.collectAsState(initial = emptyList())
-    val selectedRelayUrl by RelayStore.selectedRelayUrl.collectAsState()
+    val selectedRelayUrl by RelayStore.selectedChannelRelayUrl.collectAsState()
     var showRelayMenu by remember { mutableStateOf(false) }
 
     LaunchedEffect(relays, selectedRelayUrl) {
         if (selectedRelayUrl == null || selectedRelayUrl !in relays) {
-            RelayStore.setSelectedRelayUrl(relays.firstOrNull())
+            RelayStore.setSelectedChannelRelayUrl(relays.firstOrNull())
         }
     }
 
@@ -148,7 +151,7 @@ fun ChannelListScreen(
                                 DropdownMenuItem(
                                     text = { Text(url.relayDisplayName()) },
                                     onClick = {
-                                        RelayStore.setSelectedRelayUrl(url)
+                                        RelayStore.setSelectedChannelRelayUrl(url)
                                         showRelayMenu = false
                                     },
                                     trailingIcon = if (url == selectedRelayUrl) {
@@ -161,6 +164,17 @@ fun ChannelListScreen(
                                     } else null,
                                 )
                             }
+                        }
+                    }
+                },
+                actions = {
+                    if (state is ChannelListViewModel.UiState.Ready) {
+                        IconButton(onClick = viewModel::showBulkDeleteDialog) {
+                            Icon(
+                                Icons.Default.Delete,
+                                contentDescription = "お気に入り以外のキャッシュを削除",
+                                tint = MaterialTheme.colorScheme.onPrimary,
+                            )
                         }
                     }
                 },
@@ -235,6 +249,7 @@ fun ChannelListScreen(
                                             channelName = item.meta.name.ifBlank { "（名前なし）" },
                                         )
                                     },
+                                    onFavoriteClick = { viewModel.toggleFavorite(item.event.id) },
                                 )
                                 HorizontalDivider()
                             }
@@ -282,6 +297,38 @@ fun ChannelListScreen(
                 TextButton(
                     onClick = viewModel::dismissDeleteDialog,
                     enabled = !deleteDialog.isDeleting,
+                ) {
+                    Text("キャンセル")
+                }
+            },
+        )
+    }
+
+    // お気に入り以外のキャッシュ一括削除ダイアログ
+    val bulkDeleteDialog = (state as? ChannelListViewModel.UiState.Ready)?.bulkDeleteDialog
+    if (bulkDeleteDialog != null) {
+        AlertDialog(
+            onDismissRequest = { if (!bulkDeleteDialog.isDeleting) viewModel.dismissBulkDeleteDialog() },
+            title = { Text("キャッシュを一括削除") },
+            text = {
+                Text("お気に入り以外のすべてのチャンネルキャッシュを削除します。既読情報も消えます。")
+            },
+            confirmButton = {
+                Button(
+                    onClick = viewModel::confirmBulkDelete,
+                    enabled = !bulkDeleteDialog.isDeleting,
+                ) {
+                    if (bulkDeleteDialog.isDeleting) {
+                        CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+                    } else {
+                        Text("削除")
+                    }
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = viewModel::dismissBulkDeleteDialog,
+                    enabled = !bulkDeleteDialog.isDeleting,
                 ) {
                     Text("キャンセル")
                 }
@@ -348,9 +395,7 @@ fun ChannelListScreen(
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun ChannelRow(item: ChannelItem, onClick: () -> Unit, onLongClick: () -> Unit = {}) {
-    val authorName = item.authorProfile?.bestName
-        ?: item.event.pubkey.take(8) + "…"
+private fun ChannelRow(item: ChannelItem, onClick: () -> Unit, onLongClick: () -> Unit = {}, onFavoriteClick: () -> Unit = {}) {
     val activityTime = item.lastActivityAt ?: item.event.createdAt
     val timeText = relativeTime(activityTime)
     val barColor = if (item.hasBeenOpened) Color(0xFF4DD0E1) else Color(0xFFBDBDBD)
@@ -404,7 +449,7 @@ private fun ChannelRow(item: ChannelItem, onClick: () -> Unit, onLongClick: () -
                 )
             }
             Text(
-                text = "$authorName · $timeText",
+                text = timeText,
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 maxLines = 1,
@@ -417,6 +462,17 @@ private fun ChannelRow(item: ChannelItem, onClick: () -> Unit, onLongClick: () -
             verticalArrangement = Arrangement.spacedBy(4.dp),
             modifier = Modifier.padding(start = 12.dp),
         ) {
+            IconButton(
+                onClick = onFavoriteClick,
+                modifier = Modifier.size(32.dp),
+            ) {
+                Icon(
+                    imageVector = if (item.isFavorite) Icons.Filled.Star else Icons.Outlined.StarBorder,
+                    contentDescription = if (item.isFavorite) "お気に入り解除" else "お気に入り登録",
+                    tint = if (item.isFavorite) Color(0xFFFFC107) else MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(20.dp),
+                )
+            }
             if (item.unreadCount > 0) {
                 Box(
                     contentAlignment = Alignment.Center,

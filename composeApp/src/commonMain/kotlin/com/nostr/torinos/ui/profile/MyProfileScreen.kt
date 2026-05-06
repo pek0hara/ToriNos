@@ -38,6 +38,7 @@ fun MyProfileScreen(
     onOpenLikes: (eventId: String) -> Unit = {},
     onOpenReposts: (eventId: String) -> Unit = {},
     viewModel: MyProfileViewModel = viewModel(
+        key = "my-profile-$ownPubkey",
         factory = viewModelFactory { initializer { MyProfileViewModel(ownPubkey) } },
     ),
     feedViewModel: FeedViewModel = viewModel(key = "my-feed-$ownPubkey-reposts") {

@@ -31,10 +31,11 @@ class MyProfileViewModel(private val ownPubkey: String) : SafeViewModel() {
     private val _state = MutableStateFlow(MyProfileState())
     val state: StateFlow<MyProfileState> = _state.asStateFlow()
 
-    private val profileSubId = "mp-profile"
-    private val linkedProfileSubId = "mp-linked-profile"
-    private val followerSubId = "mp-followers"
-    private val relayListSubId = "mp-relay-list"
+    private val subIdKey = ownPubkey.take(16)
+    private val profileSubId = "mp-profile-$subIdKey"
+    private val linkedProfileSubId = "mp-linked-profile-$subIdKey"
+    private val followerSubId = "mp-followers-$subIdKey"
+    private val relayListSubId = "mp-relay-list-$subIdKey"
 
     private val collectorJobs = mutableListOf<Job>()
     private var followerCollectorJob: Job? = null

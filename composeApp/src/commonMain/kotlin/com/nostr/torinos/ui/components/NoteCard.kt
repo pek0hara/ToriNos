@@ -37,12 +37,14 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalClipboard
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
@@ -51,8 +53,11 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import com.nostr.torinos.model.NostrEvent
 import com.nostr.torinos.model.NostrProfile
+import com.nostr.torinos.model.encodeNevent
 import com.nostr.torinos.model.stripNostrEventUris
 import com.nostr.torinos.ui.profile.AvatarCircle
+import com.nostr.torinos.ui.settings.setPlainText
+import kotlinx.coroutines.launch
 import kotlinx.datetime.TimeZone
 import kotlinx.datetime.toLocalDateTime
 import kotlin.time.Instant
@@ -88,8 +93,10 @@ fun NoteCard(
 ) {
     var showMenu by remember { mutableStateOf(false) }
     var expandedImageState by remember { mutableStateOf<ExpandedImageState?>(null) }
+    val clipboard = LocalClipboard.current
+    val coroutineScope = rememberCoroutineScope()
     val isOwnPost = ownPubkey != null && event.pubkey == ownPubkey
-    val hasMenu = (isOwnPost && onDelete != null) || (!isOwnPost && (onMute != null || onUnmute != null))
+    val hasMenu = true
     val parsedContent = remember(event.content) {
         parseNoteContent(event.content)
     }
@@ -185,6 +192,29 @@ fun NoteCard(
                             expanded = showMenu,
                             onDismissRequest = { showMenu = false },
                         ) {
+                            DropdownMenuItem(
+                                text = { Text("本文をコピー") },
+                                onClick = {
+                                    showMenu = false
+                                    coroutineScope.launch {
+                                        clipboard.setPlainText(event.content)
+                                    }
+                                },
+                            )
+                            DropdownMenuItem(
+                                text = { Text("投稿IDをコピー") },
+                                onClick = {
+                                    showMenu = false
+                                    coroutineScope.launch {
+                                        clipboard.setPlainText(
+                                            encodeNevent(
+                                                eventId = event.id,
+                                                authorPubkey = event.pubkey,
+                                            ),
+                                        )
+                                    }
+                                },
+                            )
                             if (isOwnPost && onDelete != null) {
                                 DropdownMenuItem(
                                     text = { Text("削除", color = MaterialTheme.colorScheme.error) },
@@ -205,7 +235,7 @@ fun NoteCard(
                                     )
                                 } else if (onMute != null) {
                                     DropdownMenuItem(
-                                        text = { Text("ミュート") },
+                                        text = { Text("ユーザーをミュート") },
                                         onClick = {
                                             showMenu = false
                                             onMute()

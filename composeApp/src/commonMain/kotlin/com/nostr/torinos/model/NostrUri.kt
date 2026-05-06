@@ -1,6 +1,7 @@
 package com.nostr.torinos.model
 
 import com.nostr.torinos.crypto.Bech32
+import com.nostr.torinos.crypto.fromHex
 import com.nostr.torinos.crypto.toHex
 
 data class NostrEventReference(
@@ -85,6 +86,39 @@ fun decodeNpub(bech32: String): String? = runCatching {
     require(bytes.size == 32) { "npub payload must be 32 bytes" }
     bytes.toHex()
 }.getOrNull()
+
+fun encodeNevent(
+    eventId: String,
+    relayUrls: List<String> = emptyList(),
+    authorPubkey: String? = null,
+): String {
+    val eventIdBytes = eventId.fromHex()
+    require(eventIdBytes.size == 32) { "event id must be 32 bytes" }
+
+    val authorPubkeyBytes = authorPubkey?.fromHex()?.also {
+        require(it.size == 32) { "author pubkey must be 32 bytes" }
+    }
+
+    val tlv = buildList {
+        addTlv(type = 0, value = eventIdBytes)
+        relayUrls.distinct().forEach { relayUrl ->
+            addTlv(type = 1, value = relayUrl.encodeToByteArray())
+        }
+        if (authorPubkeyBytes != null) {
+            addTlv(type = 2, value = authorPubkeyBytes)
+        }
+    }.toByteArray()
+
+    return Bech32.encode("nevent", tlv)
+}
+
+private fun MutableList<Byte>.addTlv(type: Int, value: ByteArray) {
+    require(type in 0..255) { "TLV type out of range: $type" }
+    require(value.size <= 255) { "TLV value too long: ${value.size}" }
+    add(type.toByte())
+    add(value.size.toByte())
+    addAll(value.toList())
+}
 
 private fun decodeNevent(bytes: ByteArray): NostrEventReference? {
     var index = 0

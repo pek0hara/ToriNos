@@ -22,6 +22,8 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
 
 class ChannelViewModel(
     private val channelId: String,
@@ -32,17 +34,27 @@ class ChannelViewModel(
         data object Loading : UiState
         data class Ready(
             val channelMeta: ChannelMeta = ChannelMeta(),
+            val channelOwnerPubkey: String? = null,
             val messages: List<NostrEvent> = emptyList(),
             val profiles: Map<String, NostrProfile> = emptyMap(),
             val canLoadMore: Boolean = false,
             val keepScrolledToTop: Boolean = true,
             val initialUnreadMessageId: String? = null,
             val initialScrollMessageId: String? = null,
+            val scrollToBottomRequest: Boolean = false,
             val draftText: String = "",
             val isPosting: Boolean = false,
             val postError: String? = null,
+            val editDialog: EditThreadDialogState? = null,
         ) : UiState
     }
+
+    data class EditThreadDialogState(
+        val title: String = "",
+        val description: String = "",
+        val isSaving: Boolean = false,
+        val error: String? = null,
+    )
 
     private val _state = MutableStateFlow<UiState>(UiState.Loading)
     val state: StateFlow<UiState> = _state.asStateFlow()
@@ -50,6 +62,7 @@ class ChannelViewModel(
     private val shortId = channelId.take(16)
     private val relayKey = relayUrl?.hashCode()?.toString() ?: "all"
     private val metaSubId = "ch-meta-$shortId-$relayKey"
+    private val metaUpdateSubId = "ch-meta-update-$shortId-$relayKey"
     private val msgSubId = "ch-msg-$shortId-$relayKey"
     private val histSubId = "ch-hist-$shortId-$relayKey"
     private val profSubId = "ch-prof-$shortId-$relayKey"
@@ -65,6 +78,8 @@ class ChannelViewModel(
     private var receivedEoseCount = 0
     private var expectedEoseCount = 1
     private var currentChannelMeta = ChannelMeta()
+    private var currentChannelOwnerPubkey: String? = null
+    private var latestMetaUpdateCreatedAt = -1L
     private var currentMessages = emptyList<NostrEvent>()
     private var currentProfiles = emptyMap<String, NostrProfile>()
     private var initialLastReadAt: Long? = null
@@ -112,6 +127,79 @@ class ChannelViewModel(
         }
     }
 
+    fun showEditThreadDialog() {
+        val current = _state.value as? UiState.Ready ?: return
+        _state.value = current.copy(
+            editDialog = EditThreadDialogState(
+                title = current.channelMeta.name,
+                description = current.channelMeta.about,
+            ),
+        )
+    }
+
+    fun dismissEditThreadDialog() {
+        val current = _state.value as? UiState.Ready ?: return
+        if (current.editDialog?.isSaving == true) return
+        _state.value = current.copy(editDialog = null)
+    }
+
+    fun onEditTitleChange(title: String) {
+        val current = _state.value as? UiState.Ready ?: return
+        _state.value = current.copy(editDialog = current.editDialog?.copy(title = title, error = null))
+    }
+
+    fun onEditDescriptionChange(description: String) {
+        val current = _state.value as? UiState.Ready ?: return
+        _state.value = current.copy(editDialog = current.editDialog?.copy(description = description, error = null))
+    }
+
+    fun saveThreadMeta() {
+        val current = _state.value as? UiState.Ready ?: return
+        val dialog = current.editDialog ?: return
+        if (dialog.title.isBlank() || dialog.isSaving) return
+        _state.value = current.copy(editDialog = dialog.copy(isSaving = true, error = null))
+        launch {
+            val privateKeyHex = KeyStorage.loadPrivateKey() ?: run {
+                val s = _state.value as? UiState.Ready ?: return@launch
+                _state.value = s.copy(
+                    editDialog = s.editDialog?.copy(isSaving = false, error = "秘密鍵が設定されていません"),
+                )
+                return@launch
+            }
+            val title = dialog.title.trim()
+            val description = dialog.description.trim()
+            runCatching {
+                val content = buildJsonObject {
+                    put("name", title)
+                    put("about", description)
+                    put("picture", currentChannelMeta.picture)
+                }.toString()
+                val event = signEvent(
+                    privateKeyHex = privateKeyHex,
+                    content = content,
+                    kind = 41,
+                    tags = listOf(listOf("e", channelId), listOf("client", "ToriNos")),
+                )
+                NostrRepository.publish(event)
+            }.onSuccess {
+                currentChannelMeta = currentChannelMeta.copy(name = title, about = description)
+                val s = _state.value as? UiState.Ready ?: return@launch
+                _state.value = s.copy(
+                    channelMeta = currentChannelMeta,
+                    editDialog = null,
+                )
+            }.onFailure { e ->
+                val s = _state.value as? UiState.Ready ?: return@launch
+                _state.value = s.copy(
+                    editDialog = s.editDialog?.copy(
+                        isSaving = false,
+                        error = e.message ?: "保存に失敗しました",
+                    ),
+                )
+            }
+        }
+    }
+
     fun loadMore() {
         if (loadingMore || (_state.value as? UiState.Ready)?.canLoadMore != true) return
         launch {
@@ -122,6 +210,11 @@ class ChannelViewModel(
     fun onScrolledToLatest() {
         markLatestRead()
         saveLatestAsScrollPosition()
+    }
+
+    fun onScrollToBottomConsumed() {
+        val current = _state.value as? UiState.Ready ?: return
+        _state.value = current.copy(scrollToBottomRequest = false)
     }
 
     fun saveScrollPosition(messageId: String) {
@@ -146,7 +239,28 @@ class ChannelViewModel(
                 if (event.kind != 40) return@collect
                 val meta = event.toChannelMeta() ?: return@collect
                 currentChannelMeta = meta
+                currentChannelOwnerPubkey = event.pubkey
                 relayUrl?.let { ChannelCacheStore.upsertChannel(it, event, meta) }
+                scheduleProfileFetch(event.pubkey)
+                NostrRepository.subscribe(
+                    metaUpdateSubId,
+                    NostrFilter(kinds = listOf(41), eTags = listOf(channelId)),
+                    relayUrl = relayUrl,
+                )
+                syncReadyState()
+            }
+        }
+
+        // kind:41 チャンネルメタ更新
+        jobs += launch {
+            NostrRepository.events(metaUpdateSubId).collect { event ->
+                if (event.kind != 41 || event.createdAt <= latestMetaUpdateCreatedAt) return@collect
+                if (event.tags.none { it.firstOrNull() == "e" && it.getOrNull(1) == channelId }) return@collect
+                val owner = currentChannelOwnerPubkey
+                if (owner != null && event.pubkey != owner) return@collect
+                val meta = event.toChannelMeta() ?: return@collect
+                latestMetaUpdateCreatedAt = event.createdAt
+                currentChannelMeta = meta
                 syncReadyState()
             }
         }
@@ -271,7 +385,11 @@ class ChannelViewModel(
     private fun onPageCompleted() {
         loadingMore = false
         val hasMore = lastBatchCount >= PAGE_SIZE
-        _state.value = readyState(canLoadMore = hasMore, keepScrolledToTop = false)
+        _state.value = readyState(
+            canLoadMore = hasMore,
+            keepScrolledToTop = false,
+            scrollToBottomRequest = initialUnreadMessageId() == null,
+        )
         markLatestRead()
         NostrRepository.close(histSubId)
     }
@@ -289,21 +407,25 @@ class ChannelViewModel(
     private fun readyState(
         canLoadMore: Boolean,
         keepScrolledToTop: Boolean,
+        scrollToBottomRequest: Boolean = false,
     ): UiState.Ready =
         UiState.Ready(
             channelMeta = currentChannelMeta,
+            channelOwnerPubkey = currentChannelOwnerPubkey,
             messages = filteredMessages(),
             profiles = currentProfiles,
             canLoadMore = canLoadMore,
             keepScrolledToTop = keepScrolledToTop,
             initialUnreadMessageId = initialUnreadMessageId(),
             initialScrollMessageId = initialScrollMessageId,
+            scrollToBottomRequest = scrollToBottomRequest,
         )
 
     private fun syncReadyState() {
         val current = _state.value as? UiState.Ready ?: return
         _state.value = current.copy(
             channelMeta = currentChannelMeta,
+            channelOwnerPubkey = currentChannelOwnerPubkey,
             messages = filteredMessages(),
             profiles = currentProfiles,
             initialUnreadMessageId = initialUnreadMessageId(),
@@ -361,6 +483,7 @@ class ChannelViewModel(
         jobs.forEach { it.cancel() }
         profileBatchJob?.cancel()
         NostrRepository.close(metaSubId)
+        NostrRepository.close(metaUpdateSubId)
         NostrRepository.close(msgSubId)
         NostrRepository.close(histSubId)
         NostrRepository.close(profSubId)

@@ -4,6 +4,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -12,12 +13,16 @@ import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Send
+import androidx.compose.material.icons.filled.Info
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledTonalButton
@@ -28,6 +33,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
@@ -44,16 +50,19 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.snapshotFlow
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.nostr.torinos.model.ChannelMeta
 import com.nostr.torinos.network.MuteStore
 import com.nostr.torinos.network.RelayStore
 import com.nostr.torinos.ui.components.LazyListScrollbar
 import com.nostr.torinos.ui.components.NoteCard
+import com.nostr.torinos.ui.profile.AvatarCircle
+import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.flow.map
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, FlowPreview::class)
 @Composable
 fun ChannelScreen(
     channelId: String,
@@ -64,7 +73,7 @@ fun ChannelScreen(
     onOpenReposts: (eventId: String) -> Unit = {},
     ownPubkey: String? = null,
 ) {
-    val selectedRelayUrl by RelayStore.selectedRelayUrl.collectAsState()
+    val selectedRelayUrl by RelayStore.selectedChannelRelayUrl.collectAsState()
     val viewModel: ChannelViewModel = viewModel(key = "$channelId-${selectedRelayUrl ?: "all"}") {
         ChannelViewModel(channelId = channelId, relayUrl = selectedRelayUrl)
     }
@@ -72,6 +81,7 @@ fun ChannelScreen(
     val mutedPubkeys by MuteStore.mutedPubkeys.collectAsState()
     val listState = rememberSaveable(channelId, selectedRelayUrl, saver = LazyListState.Saver) { LazyListState() }
     var didApplyInitialScroll by remember(channelId, selectedRelayUrl) { mutableStateOf(false) }
+    var showThreadInfoDialog by remember(channelId, selectedRelayUrl) { mutableStateOf(false) }
 
     Scaffold(
         contentWindowInsets = WindowInsets(0),
@@ -93,6 +103,18 @@ fun ChannelScreen(
                             contentDescription = "戻る",
                             tint = MaterialTheme.colorScheme.onPrimary,
                         )
+                    }
+                },
+                actions = {
+                    val ready = state as? ChannelViewModel.UiState.Ready
+                    if (ready != null) {
+                        IconButton(onClick = { showThreadInfoDialog = true }) {
+                            Icon(
+                                Icons.Default.Info,
+                                contentDescription = "スレッド情報",
+                                tint = MaterialTheme.colorScheme.onPrimary,
+                            )
+                        }
                     }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(
@@ -133,7 +155,9 @@ fun ChannelScreen(
                         if (s.messages.isEmpty()) {
                             Text(
                                 text = "メッセージがありません",
-                                modifier = Modifier.align(Alignment.Center),
+                                modifier = Modifier
+                                    .align(Alignment.Center)
+                                    .padding(horizontal = 32.dp),
                                 style = MaterialTheme.typography.bodyMedium,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
@@ -145,19 +169,26 @@ fun ChannelScreen(
                                     .collect { viewModel.onScrolledToLatest() }
                             }
 
-                            LaunchedEffect(channelId, selectedRelayUrl, s.initialScrollMessageId, s.initialUnreadMessageId, s.messages.size) {
+                            LaunchedEffect(channelId, selectedRelayUrl, s.initialUnreadMessageId, s.messages.size) {
                                 val isAtTop = listState.firstVisibleItemIndex == 0 &&
                                     listState.firstVisibleItemScrollOffset == 0
                                 if (!didApplyInitialScroll) {
-                                    val targetId = s.initialScrollMessageId ?: s.initialUnreadMessageId
-                                    val targetIndex = targetId
+                                    val unreadIndex = s.initialUnreadMessageId
                                         ?.let { id -> s.messages.indexOfFirst { it.id == id } }
                                         ?.takeIf { it >= 0 }
-                                        ?: 0
-                                    listState.scrollToItem(targetIndex)
+                                    if (unreadIndex != null) {
+                                        listState.scrollToItem(unreadIndex)
+                                    }
                                     didApplyInitialScroll = true
                                 } else if (s.keepScrolledToTop && isAtTop) {
                                     listState.scrollToItem(0)
+                                }
+                            }
+
+                            LaunchedEffect(s.scrollToBottomRequest) {
+                                if (s.scrollToBottomRequest && s.messages.isNotEmpty()) {
+                                    listState.scrollToItem(s.messages.size - 1, scrollOffset = Int.MAX_VALUE)
+                                    viewModel.onScrollToBottomConsumed()
                                 }
                             }
 
@@ -267,6 +298,166 @@ fun ChannelScreen(
                         color = MaterialTheme.colorScheme.error,
                         style = MaterialTheme.typography.labelSmall,
                         modifier = Modifier.padding(horizontal = 12.dp, vertical = 2.dp),
+                    )
+                }
+            }
+        }
+    }
+
+    val readyState = state as? ChannelViewModel.UiState.Ready
+    if (showThreadInfoDialog && readyState != null) {
+        ThreadInfoDialog(
+            meta = readyState.channelMeta,
+            ownerPubkey = readyState.channelOwnerPubkey,
+            ownerProfile = readyState.channelOwnerPubkey?.let { readyState.profiles[it] },
+            canEdit = ownPubkey != null && ownPubkey == readyState.channelOwnerPubkey,
+            onDismiss = { showThreadInfoDialog = false },
+            onEditClick = {
+                showThreadInfoDialog = false
+                viewModel.showEditThreadDialog()
+            },
+            onUserClick = onUserClick,
+        )
+    }
+
+    val editDialog = (state as? ChannelViewModel.UiState.Ready)?.editDialog
+    if (editDialog != null) {
+        AlertDialog(
+            onDismissRequest = viewModel::dismissEditThreadDialog,
+            title = { Text("スレッドを編集") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedTextField(
+                        value = editDialog.title,
+                        onValueChange = viewModel::onEditTitleChange,
+                        label = { Text("スレッドタイトル") },
+                        singleLine = true,
+                        enabled = !editDialog.isSaving,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    OutlinedTextField(
+                        value = editDialog.description,
+                        onValueChange = viewModel::onEditDescriptionChange,
+                        label = { Text("スレッド説明") },
+                        maxLines = 4,
+                        enabled = !editDialog.isSaving,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    editDialog.error?.let {
+                        Text(
+                            text = it,
+                            color = MaterialTheme.colorScheme.error,
+                            style = MaterialTheme.typography.labelSmall,
+                        )
+                    }
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = viewModel::saveThreadMeta,
+                    enabled = editDialog.title.isNotBlank() && !editDialog.isSaving,
+                ) {
+                    if (editDialog.isSaving) {
+                        CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+                    } else {
+                        Text("保存")
+                    }
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = viewModel::dismissEditThreadDialog,
+                    enabled = !editDialog.isSaving,
+                ) {
+                    Text("キャンセル")
+                }
+            },
+        )
+    }
+}
+
+@Composable
+private fun ThreadInfoDialog(
+    meta: ChannelMeta,
+    ownerPubkey: String?,
+    ownerProfile: com.nostr.torinos.model.NostrProfile?,
+    canEdit: Boolean,
+    onDismiss: () -> Unit,
+    onEditClick: () -> Unit,
+    onUserClick: (String) -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("スレッド情報") },
+        text = {
+            ThreadInfoContent(
+                meta = meta,
+                ownerPubkey = ownerPubkey,
+                ownerProfile = ownerProfile,
+                onUserClick = onUserClick,
+            )
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) { Text("閉じる") }
+        },
+        dismissButton = if (canEdit) {
+            {
+                TextButton(onClick = onEditClick) { Text("編集") }
+            }
+        } else {
+            null
+        },
+    )
+}
+
+@Composable
+private fun ThreadInfoContent(
+    meta: ChannelMeta,
+    ownerPubkey: String?,
+    ownerProfile: com.nostr.torinos.model.NostrProfile?,
+    onUserClick: (String) -> Unit,
+) {
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Text(
+            text = meta.name.ifBlank { "（タイトルなし）" },
+            style = MaterialTheme.typography.titleMedium,
+            maxLines = 3,
+            overflow = TextOverflow.Ellipsis,
+        )
+        if (meta.about.isNotBlank()) {
+            Text(
+                text = meta.about,
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        if (ownerPubkey != null) {
+            Spacer(modifier = Modifier.size(4.dp))
+            Row(
+                modifier = Modifier.clickable { onUserClick(ownerPubkey) },
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                AvatarCircle(
+                    pubkey = ownerPubkey,
+                    name = ownerProfile?.bestName,
+                    pictureUrl = ownerProfile?.picture,
+                    size = 32,
+                )
+                Column(verticalArrangement = Arrangement.spacedBy(1.dp)) {
+                    Text(
+                        text = "スレッド作成者",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Text(
+                        text = ownerProfile?.bestName ?: ownerPubkey.take(8) + "…" + ownerPubkey.takeLast(8),
+                        style = MaterialTheme.typography.labelMedium,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
                     )
                 }
             }

@@ -33,6 +33,7 @@ class FeedViewModel(
     private val includeRepostsInFeed: Boolean = false,
     private val includeRepliesInFeed: Boolean = false,
     private val hashtag: String? = null,
+    private val filterMutedUsers: Boolean = true,
 ) : SafeViewModel() {
 
     data class UiState(
@@ -393,8 +394,10 @@ class FeedViewModel(
         }
 
         // ミュート・NGワード変更時にフィルタ済みリストを再構築
-        subscriptionJobs += launch {
-            MuteStore.mutedPubkeys.collect { rebuildFilteredEvents() }
+        if (filterMutedUsers) {
+            subscriptionJobs += launch {
+                MuteStore.mutedPubkeys.collect { rebuildFilteredEvents() }
+            }
         }
         subscriptionJobs += launch {
             NgWordStore.ngWords.collect { rebuildFilteredEvents() }
@@ -627,7 +630,7 @@ class FeedViewModel(
     }
 
     private fun isFiltered(event: NostrEvent): Boolean {
-        if (MuteStore.isMuted(event.pubkey)) return true
+        if (filterMutedUsers && MuteStore.isMuted(event.pubkey)) return true
         return NgWordStore.matches(event.content)
     }
 

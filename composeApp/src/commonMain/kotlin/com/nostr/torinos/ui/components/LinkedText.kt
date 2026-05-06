@@ -1,22 +1,33 @@
 package com.nostr.torinos.ui.components
 
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.text.InlineTextContent
+import androidx.compose.foundation.text.appendInlineContent
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.LinkAnnotation
+import androidx.compose.ui.text.Placeholder
+import androidx.compose.ui.text.PlaceholderVerticalAlign
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextLinkStyles
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.style.TextDecoration
+import androidx.compose.ui.unit.em
 import com.nostr.torinos.model.NostrProfile
 import com.nostr.torinos.model.extractNpubReferences
+import com.nostr.torinos.network.CustomEmojiStore
 
 private val hashtagTextRegex = Regex("""(?<![\p{L}\p{N}_])#[\p{L}\p{N}_]+""")
+private val emojiCodeRegex = Regex(""":([a-zA-Z0-9_]+):""")
 
-/** テキスト内のURLをクリッカブルリンクにして表示する */
+/** テキスト内のURLをクリッカブルリンクにして表示する。登録済みカスタム絵文字(:shortcode:)はインライン画像に置換する */
 @Composable
 fun LinkedText(
     text: String,
@@ -27,6 +38,9 @@ fun LinkedText(
     profiles: Map<String, NostrProfile> = emptyMap(),
     onHashtagClick: ((tag: String) -> Unit)? = null,
 ) {
+    val emojis by CustomEmojiStore.emojis.collectAsState()
+    val emojiMap = remember(emojis) { emojis.associate { it.shortcode to it.imageUrl } }
+
     val linkColor = MaterialTheme.colorScheme.primary
     val linkStyle = TextLinkStyles(
         style = SpanStyle(
@@ -54,59 +68,153 @@ fun LinkedText(
             }
         }.sortedBy { it.start }
     }
+
+    val emojiSegments = remember(text, emojiMap) {
+        if (emojiMap.isEmpty()) return@remember emptyList()
+        emojiCodeRegex.findAll(text)
+            .mapNotNull { match ->
+                val shortcode = match.groupValues[1]
+                val imageUrl = emojiMap[shortcode] ?: return@mapNotNull null
+                EmojiSegment(match.range.first, match.range.last + 1, shortcode, imageUrl)
+            }
+            .toList()
+    }
+
+    val unregisteredEmojiSegments = remember(text, emojiMap) {
+        emojiCodeRegex.findAll(text)
+            .filter { match -> match.groupValues[1] !in emojiMap }
+            .map { match ->
+                UnregisteredEmojiSegment(match.range.first, match.range.last + 1, match.groupValues[1])
+            }
+            .toList()
+    }
+
     val profileLabelKey = links.asSequence()
         .filterIsInstance<TextLink.Profile>()
         .joinToString(separator = "|") { link ->
             profiles[link.pubkey]?.bestName?.takeIf { it.isNotBlank() }.orEmpty()
         }
-    val annotated = remember(text, links, profileLabelKey, linkColor, onProfileClick, onHashtagClick) {
+    val annotated = remember(text, links, emojiSegments, unregisteredEmojiSegments, profileLabelKey, linkColor, onProfileClick, onHashtagClick) {
         buildAnnotatedString {
+            val allSegments: List<Segment> = (
+                links.map { Segment.Link(it) } +
+                emojiSegments.map { Segment.Emoji(it) } +
+                unregisteredEmojiSegments.map { Segment.UnregisteredEmoji(it) }
+            ).sortedBy { it.start }
             var cursor = 0
-            for (link in links) {
-                if (link.start < cursor) continue
-                if (link.start > cursor) {
-                    append(text.substring(cursor, link.start))
+            for (segment in allSegments) {
+                if (segment.start < cursor) continue
+                if (segment.start > cursor) {
+                    append(text.substring(cursor, segment.start))
                 }
-                when (link) {
-                    is TextLink.Web -> {
-                        pushLink(LinkAnnotation.Url(url = link.url, styles = linkStyle))
-                        append(link.url)
-                        pop()
+                when (segment) {
+                    is Segment.Link -> when (val link = segment.link) {
+                        is TextLink.Web -> {
+                            pushLink(LinkAnnotation.Url(url = link.url, styles = linkStyle))
+                            append(link.url)
+                            pop()
+                        }
+                        is TextLink.Profile -> {
+                            val label = profiles[link.pubkey]?.bestName
+                                ?.takeIf { it.isNotBlank() }
+                                ?: link.pubkey.shortPubkey()
+                            pushLink(
+                                LinkAnnotation.Clickable(
+                                    tag = "npub:${link.pubkey}",
+                                    styles = linkStyle,
+                                    linkInteractionListener = { onProfileClick?.invoke(link.pubkey) },
+                                ),
+                            )
+                            append("@$label")
+                            pop()
+                        }
+                        is TextLink.Hashtag -> {
+                            pushLink(
+                                LinkAnnotation.Clickable(
+                                    tag = "hashtag:${link.tag}",
+                                    styles = linkStyle,
+                                    linkInteractionListener = { onHashtagClick?.invoke(link.tag) },
+                                ),
+                            )
+                            append(text.substring(link.start, link.endExclusive))
+                            pop()
+                        }
                     }
-                    is TextLink.Profile -> {
-                        val label = profiles[link.pubkey]?.bestName
-                            ?.takeIf { it.isNotBlank() }
-                            ?: link.pubkey.shortPubkey()
+                    is Segment.Emoji -> appendInlineContent(
+                        id = ":${segment.data.shortcode}:",
+                        alternateText = ":${segment.data.shortcode}:",
+                    )
+                    is Segment.UnregisteredEmoji -> {
                         pushLink(
                             LinkAnnotation.Clickable(
-                                tag = "npub:${link.pubkey}",
+                                tag = "emoji:${segment.data.shortcode}",
                                 styles = linkStyle,
-                                linkInteractionListener = { onProfileClick?.invoke(link.pubkey) },
+                                linkInteractionListener = {
+                                    CustomEmojiStore.requestOpenSearch(segment.data.shortcode)
+                                },
                             ),
                         )
-                        append("@$label")
-                        pop()
-                    }
-                    is TextLink.Hashtag -> {
-                        pushLink(
-                            LinkAnnotation.Clickable(
-                                tag = "hashtag:${link.tag}",
-                                styles = linkStyle,
-                                linkInteractionListener = { onHashtagClick?.invoke(link.tag) },
-                            ),
-                        )
-                        append(text.substring(link.start, link.endExclusive))
+                        append(":${segment.data.shortcode}:")
                         pop()
                     }
                 }
-                cursor = link.endExclusive
+                cursor = segment.end
             }
             if (cursor < text.length) {
                 append(text.substring(cursor))
             }
         }
     }
-    Text(text = annotated, modifier = modifier, style = style, color = color)
+
+    val inlineContent = emojiSegments.distinctBy { it.shortcode }.associate { emoji ->
+        ":${emoji.shortcode}:" to InlineTextContent(
+            Placeholder(
+                width = 1.2f.em,
+                height = 1.2f.em,
+                placeholderVerticalAlign = PlaceholderVerticalAlign.Center,
+            ),
+        ) {
+            NetworkImage(
+                url = emoji.imageUrl,
+                contentDescription = ":${emoji.shortcode}:",
+                contentScale = ContentScale.Fit,
+                modifier = Modifier.fillMaxSize(),
+            )
+        }
+    }
+
+    Text(text = annotated, modifier = modifier, style = style, color = color, inlineContent = inlineContent)
+}
+
+private data class EmojiSegment(
+    val start: Int,
+    val end: Int,
+    val shortcode: String,
+    val imageUrl: String,
+)
+
+private data class UnregisteredEmojiSegment(
+    val start: Int,
+    val end: Int,
+    val shortcode: String,
+)
+
+private sealed class Segment {
+    abstract val start: Int
+    abstract val end: Int
+
+    class Link(val link: TextLink) : Segment() {
+        override val start get() = link.start
+        override val end get() = link.endExclusive
+    }
+    class Emoji(val data: EmojiSegment) : Segment() {
+        override val start get() = data.start
+        override val end get() = data.end
+    }
+    class UnregisteredEmoji(val data: UnregisteredEmojiSegment) : Segment() {
+        override val start get() = data.start
+        override val end get() = data.end
+    }
 }
 
 private sealed class TextLink(

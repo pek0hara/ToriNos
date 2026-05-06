@@ -1,9 +1,6 @@
 package com.nostr.torinos.ui.feed
 
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
-import androidx.compose.foundation.text.BasicTextField
-import androidx.compose.foundation.text.KeyboardActions
-import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -14,9 +11,8 @@ import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.Check
-import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
-import androidx.compose.material.icons.filled.Tag
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -40,12 +36,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.focus.FocusRequester
-import androidx.compose.ui.focus.focusRequester
-import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.platform.LocalSoftwareKeyboardController
-import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.runtime.collectAsState
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -65,63 +56,49 @@ fun FeedScreen(
     onOpenReplies: (eventId: String) -> Unit = {},
     onOpenLikes: (eventId: String) -> Unit = {},
     onOpenReposts: (eventId: String) -> Unit = {},
+    onOpenSearch: (query: String) -> Unit = {},
     ownPubkey: String? = null,
     ownProfile: NostrProfile? = null,
     scrollToTopRequest: Int = 0,
     scrollToTopTargetTab: FeedTab = FeedTab.Following,
     onCurrentFeedTabChanged: (FeedTab) -> Unit = {},
+    requestedFeedTab: FeedTab = FeedTab.Following,
+    feedTabChangeRequest: Int = 0,
     followingListState: LazyListState? = null,
     globalListState: LazyListState? = null,
     /** null = グローバルフィード、非null = 特定ユーザーのポスト */
     authorPubkey: String? = null,
 ) {
     val relays by RelayStore.relays.collectAsState(initial = emptyList())
-    val selectedRelayUrl by RelayStore.selectedRelayUrl.collectAsState()
+    val selectedFollowingRelayUrl by RelayStore.selectedFollowingRelayUrl.collectAsState()
+    val selectedGlobalRelayUrl by RelayStore.selectedGlobalRelayUrl.collectAsState()
     val followedPubkeys by FollowRepository.followedPubkeys.collectAsState()
     var showRelayMenu by remember { mutableStateOf(false) }
     var feedTab by rememberSaveable { mutableStateOf(FeedTab.Following) }
     var handledScrollToTopRequest by remember { mutableStateOf(scrollToTopRequest) }
-    var isHashtagFilterEditing by rememberSaveable { mutableStateOf(false) }
-    var hashtagDraft by rememberSaveable { mutableStateOf("") }
-    var activeHashtag by rememberSaveable { mutableStateOf<String?>(null) }
-    val hashtagFocusRequester = remember { FocusRequester() }
-    val keyboardController = LocalSoftwareKeyboardController.current
 
     fun setFeedTab(tab: FeedTab) {
         feedTab = tab
         onCurrentFeedTabChanged(tab)
     }
 
-    fun applyHashtagFilter() {
-        val tag = hashtagDraft.normalizedHashtag()
-        activeHashtag = tag
-        hashtagDraft = tag.orEmpty()
-        isHashtagFilterEditing = tag != null
-        keyboardController?.hide()
-    }
-
-    fun clearHashtagFilter() {
-        activeHashtag = null
-        hashtagDraft = ""
-        isHashtagFilterEditing = false
-        keyboardController?.hide()
-    }
-
-    fun selectHashtagFilter(tag: String) {
-        val normalized = tag.normalizedHashtag() ?: return
-        activeHashtag = normalized
-        hashtagDraft = normalized
-        isHashtagFilterEditing = true
-    }
-
     LaunchedEffect(Unit) {
         onCurrentFeedTabChanged(feedTab)
     }
 
-    // リレーリストが変わったら選択中 URL を有効なものに補正
-    LaunchedEffect(relays, selectedRelayUrl) {
-        if (selectedRelayUrl == null || selectedRelayUrl !in relays) {
-            RelayStore.setSelectedRelayUrl(relays.firstOrNull())
+    LaunchedEffect(feedTabChangeRequest) {
+        if (feedTabChangeRequest > 0 && authorPubkey == null) {
+            setFeedTab(requestedFeedTab)
+        }
+    }
+
+    // リレーリストが変わったら、各タブの選択中 URL を有効なものに補正する。
+    LaunchedEffect(relays, selectedFollowingRelayUrl, selectedGlobalRelayUrl) {
+        if (selectedFollowingRelayUrl != null && selectedFollowingRelayUrl !in relays) {
+            RelayStore.setSelectedFollowingRelayUrl(null)
+        }
+        if (selectedGlobalRelayUrl == null || selectedGlobalRelayUrl !in relays) {
+            RelayStore.setSelectedGlobalRelayUrl(relays.firstOrNull())
         }
     }
 
@@ -135,8 +112,13 @@ fun FeedScreen(
         }
     }
 
-    val activeRelayUrl = selectedRelayUrl
-    val activeHashtagFilter = activeHashtag
+    val selectedFeedRelayUrl = when {
+        authorPubkey != null -> selectedGlobalRelayUrl
+        feedTab == FeedTab.Following -> selectedFollowingRelayUrl
+        else -> selectedGlobalRelayUrl
+    }
+    val canSelectAllRelays = authorPubkey == null && feedTab == FeedTab.Following
+    val activeRelayUrl = selectedFeedRelayUrl
 
     Scaffold(
         contentWindowInsets = WindowInsets(0),
@@ -144,91 +126,66 @@ fun FeedScreen(
             Column {
                 TopAppBar(
                     title = {
-                        if (isHashtagFilterEditing) {
-                            LaunchedEffect(Unit) {
-                                hashtagFocusRequester.requestFocus()
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.Start,
+                        ) {
+                            Text(
+                                text = selectedFeedRelayUrl?.relayDisplayName()
+                                    ?: if (canSelectAllRelays) "すべてのリレー" else "—",
+                                modifier = Modifier.weight(1f, fill = false),
+                                color = MaterialTheme.colorScheme.onPrimary,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                            IconButton(onClick = { showRelayMenu = true }) {
+                                Icon(
+                                    Icons.Default.ArrowDropDown,
+                                    contentDescription = "リレー切り替え",
+                                    tint = MaterialTheme.colorScheme.onPrimary,
+                                )
                             }
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.Start,
+                            DropdownMenu(
+                                expanded = showRelayMenu,
+                                onDismissRequest = { showRelayMenu = false },
                             ) {
-                                Text(
-                                    text = "#",
-                                    color = MaterialTheme.colorScheme.onPrimary,
-                                    style = MaterialTheme.typography.titleLarge,
-                                )
-                                BasicTextField(
-                                    value = hashtagDraft,
-                                    onValueChange = { hashtagDraft = it.sanitizedHashtagInput() },
-                                    singleLine = true,
-                                    textStyle = MaterialTheme.typography.titleMedium.copy(
-                                        color = MaterialTheme.colorScheme.onPrimary,
-                                    ),
-                                    cursorBrush = SolidColor(MaterialTheme.colorScheme.onPrimary),
-                                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
-                                    keyboardActions = KeyboardActions(onSearch = { applyHashtagFilter() }),
-                                    modifier = Modifier
-                                        .weight(1f)
-                                        .focusRequester(hashtagFocusRequester),
-                                    decorationBox = { innerTextField ->
-                                        if (hashtagDraft.isBlank()) {
-                                            Text(
-                                                text = "ハッシュタグ",
-                                                color = MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.7f),
-                                                maxLines = 1,
-                                            )
-                                        }
-                                        innerTextField()
-                                    },
-                                )
-                                IconButton(onClick = { clearHashtagFilter() }) {
-                                    Icon(
-                                        Icons.Default.Close,
-                                        contentDescription = "ハッシュタグフィルターを解除",
-                                        tint = MaterialTheme.colorScheme.onPrimary,
+                                if (canSelectAllRelays) {
+                                    DropdownMenuItem(
+                                        text = { Text("すべてのリレー") },
+                                        onClick = {
+                                            RelayStore.setSelectedFollowingRelayUrl(null)
+                                            showRelayMenu = false
+                                        },
+                                        trailingIcon = if (selectedFeedRelayUrl == null) {
+                                            {
+                                                Icon(
+                                                    Icons.Default.Check,
+                                                    contentDescription = null,
+                                                )
+                                            }
+                                        } else null,
                                     )
                                 }
-                            }
-                        } else {
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.Start,
-                            ) {
-                                Text(
-                                    text = selectedRelayUrl?.relayDisplayName() ?: "—",
-                                    modifier = Modifier.weight(1f, fill = false),
-                                    color = MaterialTheme.colorScheme.onPrimary,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis,
-                                )
-                                IconButton(onClick = { showRelayMenu = true }) {
-                                    Icon(
-                                        Icons.Default.ArrowDropDown,
-                                        contentDescription = "リレー切り替え",
-                                        tint = MaterialTheme.colorScheme.onPrimary,
+                                relays.forEach { url ->
+                                    DropdownMenuItem(
+                                        text = { Text(url.relayDisplayName()) },
+                                        onClick = {
+                                            if (canSelectAllRelays) {
+                                                RelayStore.setSelectedFollowingRelayUrl(url)
+                                            } else {
+                                                RelayStore.setSelectedGlobalRelayUrl(url)
+                                            }
+                                            showRelayMenu = false
+                                        },
+                                        trailingIcon = if (url == selectedFeedRelayUrl) {
+                                            {
+                                                Icon(
+                                                    Icons.Default.Check,
+                                                    contentDescription = null,
+                                                )
+                                            }
+                                        } else null,
                                     )
-                                }
-                                DropdownMenu(
-                                    expanded = showRelayMenu,
-                                    onDismissRequest = { showRelayMenu = false },
-                                ) {
-                                    relays.forEach { url ->
-                                        DropdownMenuItem(
-                                            text = { Text(url.relayDisplayName()) },
-                                            onClick = {
-                                                RelayStore.setSelectedRelayUrl(url)
-                                                showRelayMenu = false
-                                            },
-                                            trailingIcon = if (url == selectedRelayUrl) {
-                                                {
-                                                    Icon(
-                                                        Icons.Default.Check,
-                                                        contentDescription = null,
-                                                    )
-                                                }
-                                            } else null,
-                                        )
-                                    }
                                 }
                             }
                         }
@@ -247,19 +204,10 @@ fun FeedScreen(
                     },
                     actions = {
                         if (authorPubkey == null) {
-                            IconButton(
-                                onClick = {
-                                    if (isHashtagFilterEditing) {
-                                        applyHashtagFilter()
-                                    } else {
-                                        hashtagDraft = activeHashtag.orEmpty()
-                                        isHashtagFilterEditing = true
-                                    }
-                                },
-                            ) {
+                            IconButton(onClick = { onOpenSearch("") }) {
                                 Icon(
-                                    Icons.Default.Tag,
-                                    contentDescription = "ハッシュタグフィルター",
+                                    Icons.Default.Search,
+                                    contentDescription = "検索",
                                     tint = MaterialTheme.colorScheme.onPrimary,
                                 )
                             }
@@ -323,14 +271,15 @@ fun FeedScreen(
             feedTab == FeedTab.Following -> {
                 key(FeedTab.Following) {
                     val followingAuthors = followedPubkeys.sorted()
+                    val ownerKey = ownPubkey ?: "anonymous"
                     FeedTimelinePane(
                         viewModelKey = "global-${FeedTab.Following.name}-${activeRelayUrl ?: "all"}-" +
-                            "${followingAuthors.joinToString(separator = ",")}-true-${activeHashtagFilter ?: "none"}",
+                            "$ownerKey-${followingAuthors.joinToString(separator = ",")}-true",
                         authorPubkey = null,
                         authorPubkeys = followingAuthors,
                         relayUrl = activeRelayUrl,
                         includeRepostsInFeed = true,
-                        hashtag = activeHashtagFilter,
+                        hashtag = null,
                         ownPubkey = ownPubkey,
                         onUserClick = onUserClick,
                         modifier = timelineModifier,
@@ -338,7 +287,7 @@ fun FeedScreen(
                         onOpenReplies = onOpenReplies,
                         onOpenLikes = onOpenLikes,
                         onOpenReposts = onOpenReposts,
-                        onHashtagClick = ::selectHashtagFilter,
+                        onHashtagClick = { tag -> onOpenSearch("#$tag") },
                         listState = followingListState,
                     )
                 }
@@ -346,14 +295,15 @@ fun FeedScreen(
 
             else -> {
                 key(FeedTab.Global) {
+                    val ownerKey = ownPubkey ?: "anonymous"
                     FeedTimelinePane(
                         viewModelKey = "global-${FeedTab.Global.name}-${activeRelayUrl ?: "all"}-all-false-" +
-                            "${activeHashtagFilter ?: "none"}",
+                            ownerKey,
                         authorPubkey = null,
                         authorPubkeys = null,
                         relayUrl = activeRelayUrl,
                         includeRepostsInFeed = false,
-                        hashtag = activeHashtagFilter,
+                        hashtag = null,
                         ownPubkey = ownPubkey,
                         onUserClick = onUserClick,
                         modifier = timelineModifier,
@@ -361,7 +311,7 @@ fun FeedScreen(
                         onOpenReplies = onOpenReplies,
                         onOpenLikes = onOpenLikes,
                         onOpenReposts = onOpenReposts,
-                        onHashtagClick = ::selectHashtagFilter,
+                        onHashtagClick = { tag -> onOpenSearch("#$tag") },
                         listState = globalListState,
                     )
                 }
@@ -465,14 +415,3 @@ private const val SwipeThresholdPx = 80f
 
 private fun String.relayDisplayName(): String =
     removePrefix("wss://").removePrefix("ws://").trimEnd('/')
-
-private fun String.sanitizedHashtagInput(): String =
-    trimStart()
-        .removePrefix("#")
-        .filterNot { it.isWhitespace() }
-
-private fun String.normalizedHashtag(): String? =
-    sanitizedHashtagInput()
-        .trim('#')
-        .lowercase()
-        .takeIf { it.isNotBlank() }

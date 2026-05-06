@@ -42,16 +42,18 @@ fun UserProfileScreen(
         initial = RelayStore.defaults.filter { it.enabled }.map { it.url },
     )
     val contentRelayUrl = relays.firstOrNull()
-    val viewModel: UserProfileViewModel = viewModel(key = "profile-$pubkey-${contentRelayUrl ?: "all"}") {
+    val ownerKey = ownPubkey ?: "anonymous"
+    val viewModel: UserProfileViewModel = viewModel(key = "profile-$pubkey-${contentRelayUrl ?: "all"}-$ownerKey") {
         UserProfileViewModel(pubkey, deferredRelayUrl = contentRelayUrl)
     }
-    val feedViewModel: FeedViewModel = viewModel(key = "user-feed-$pubkey-${contentRelayUrl ?: "all"}") {
+    val feedViewModel: FeedViewModel = viewModel(key = "user-feed-$pubkey-${contentRelayUrl ?: "all"}-$ownerKey") {
         FeedViewModel(
             authorPubkey = pubkey,
             relayUrl = contentRelayUrl,
             autoStart = false,
             includeRepostsInFeed = true,
             includeRepliesInFeed = true,
+            filterMutedUsers = false,
         )
     }
     val state by viewModel.state.collectAsState()

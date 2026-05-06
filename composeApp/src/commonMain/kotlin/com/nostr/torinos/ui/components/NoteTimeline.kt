@@ -89,6 +89,8 @@ fun NoteTimeline(
             },
             onUnrepost = onUnrepost,
             onHashtagClick = onHashtagClick,
+            onMuteUser = MuteStore::mute,
+            onUnmuteUser = MuteStore::unmute,
             mutedPubkeys = mutedPubkeys,
             emptyText = emptyText,
         )

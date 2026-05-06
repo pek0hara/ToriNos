@@ -1,5 +1,6 @@
 package com.nostr.torinos.ui.search
 
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -23,39 +24,57 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.PrimaryTabRow
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Tab
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.runtime.collectAsState
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.nostr.torinos.model.NostrProfile
 import com.nostr.torinos.ui.components.NoteCard
+import com.nostr.torinos.ui.profile.AvatarCircle
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SearchScreen(
+    initialQuery: String = "",
     onBack: () -> Unit = {},
     onUserClick: (pubkey: String) -> Unit = {},
+    onOpenReplies: (eventId: String) -> Unit = {},
+    onOpenLikes: (eventId: String) -> Unit = {},
+    onOpenReposts: (eventId: String) -> Unit = {},
     viewModel: SearchViewModel = viewModel(key = "search") { SearchViewModel() },
 ) {
-    var inputText by remember { mutableStateOf("") }
+    var inputText by remember(initialQuery) { mutableStateOf(initialQuery) }
+    var selectedTab by remember { mutableIntStateOf(0) }
     val state by viewModel.state.collectAsState()
     val keyboardController = LocalSoftwareKeyboardController.current
 
     fun doSearch() {
         keyboardController?.hide()
         viewModel.search(inputText)
+    }
+
+    LaunchedEffect(initialQuery) {
+        if (initialQuery.isNotBlank()) {
+            viewModel.search(initialQuery)
+        }
     }
 
     Scaffold(
@@ -110,6 +129,20 @@ fun SearchScreen(
                 }
             }
 
+            // タブ
+            PrimaryTabRow(selectedTabIndex = selectedTab) {
+                Tab(
+                    selected = selectedTab == 0,
+                    onClick = { selectedTab = 0 },
+                    text = { Text("ポスト") },
+                )
+                Tab(
+                    selected = selectedTab == 1,
+                    onClick = { selectedTab = 1 },
+                    text = { Text("ユーザー") },
+                )
+            }
+
             // 結果エリア
             Box(modifier = Modifier.fillMaxSize()) {
                 when (val s = state) {
@@ -141,39 +174,68 @@ fun SearchScreen(
                     }
 
                     is SearchViewModel.UiState.Ready -> {
-                        if (s.events.isEmpty()) {
-                            Text(
-                                text = "「${s.query}」の結果はありませんでした",
-                                modifier = Modifier
-                                    .align(Alignment.Center)
-                                    .padding(horizontal = 32.dp),
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                textAlign = TextAlign.Center,
-                            )
-                        } else {
-                            LazyColumn(modifier = Modifier.fillMaxSize()) {
-                                items(s.events, key = { it.id }) { event ->
-                                    NoteCard(
-                                        event = event,
-                                        profile = s.profiles[event.pubkey],
-                                        profiles = s.profiles,
-                                        replyCount = 0,
-                                        reactionCount = 0,
-                                        onUserClick = onUserClick,
-                                    )
-                                    HorizontalDivider()
+                        if (selectedTab == 1) {
+                            if (s.users.isEmpty()) {
+                                Text(
+                                    text = "「${s.query}」に一致するユーザーはいません",
+                                    modifier = Modifier
+                                        .align(Alignment.Center)
+                                        .padding(horizontal = 32.dp),
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    textAlign = TextAlign.Center,
+                                )
+                            } else {
+                                LazyColumn(modifier = Modifier.fillMaxSize()) {
+                                    items(s.users, key = { it.first }) { (pubkey, profile) ->
+                                        UserSearchRow(
+                                            pubkey = pubkey,
+                                            profile = profile,
+                                            onClick = { onUserClick(pubkey) },
+                                        )
+                                        HorizontalDivider()
+                                    }
                                 }
-                                if (s.canLoadMore) {
-                                    item {
-                                        Box(
-                                            modifier = Modifier
-                                                .fillMaxWidth()
-                                                .padding(16.dp),
-                                            contentAlignment = Alignment.Center,
-                                        ) {
-                                            FilledTonalButton(onClick = viewModel::loadMore) {
-                                                Text("さらに読み込む")
+                            }
+                        } else {
+                            if (s.events.isEmpty()) {
+                                Text(
+                                    text = "「${s.query}」の結果はありませんでした",
+                                    modifier = Modifier
+                                        .align(Alignment.Center)
+                                        .padding(horizontal = 32.dp),
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    textAlign = TextAlign.Center,
+                                )
+                            } else {
+                                LazyColumn(modifier = Modifier.fillMaxSize()) {
+                                    items(s.events, key = { it.id }) { event ->
+                                        NoteCard(
+                                            event = event,
+                                            profile = s.profiles[event.pubkey],
+                                            profiles = s.profiles,
+                                            replyCount = s.replyCounts[event.id] ?: 0,
+                                            reactionCount = s.reactionCounts[event.id] ?: 0,
+                                            repostCount = s.repostCounts[event.id] ?: 0,
+                                            onUserClick = onUserClick,
+                                            onOpenReplies = { onOpenReplies(event.id) },
+                                            onOpenLikes = { onOpenLikes(event.id) },
+                                            onOpenReposts = { onOpenReposts(event.id) },
+                                        )
+                                        HorizontalDivider()
+                                    }
+                                    if (s.canLoadMore) {
+                                        item {
+                                            Box(
+                                                modifier = Modifier
+                                                    .fillMaxWidth()
+                                                    .padding(16.dp),
+                                                contentAlignment = Alignment.Center,
+                                            ) {
+                                                FilledTonalButton(onClick = viewModel::loadMore) {
+                                                    Text("さらに読み込む")
+                                                }
                                             }
                                         }
                                     }
@@ -182,6 +244,46 @@ fun SearchScreen(
                         }
                     }
                 }
+            }
+        }
+    }
+}
+
+@Composable
+private fun UserSearchRow(pubkey: String, profile: NostrProfile, onClick: () -> Unit) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .padding(horizontal = 16.dp, vertical = 12.dp),
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        AvatarCircle(
+            pubkey = pubkey,
+            name = profile.bestName,
+            pictureUrl = profile.picture,
+            size = 44,
+        )
+        Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Text(
+                text = profile.bestName ?: (pubkey.take(8) + "…" + pubkey.takeLast(8)),
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = FontWeight.Medium,
+            )
+            profile.nip05?.takeIf { it.isNotBlank() }?.let { nip05 ->
+                Text(
+                    text = nip05,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.primary,
+                )
+            } ?: profile.about?.takeIf { it.isNotBlank() }?.let { about ->
+                Text(
+                    text = about,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                )
             }
         }
     }
