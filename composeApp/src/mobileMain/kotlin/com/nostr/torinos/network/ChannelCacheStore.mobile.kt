@@ -2,8 +2,8 @@ package com.nostr.torinos.network
 
 import com.nostr.torinos.model.ChannelMeta
 import com.nostr.torinos.model.NostrEvent
-import com.nostr.torinos.network.cache.CachedChannelEntity
 import com.nostr.torinos.network.cache.CachedChannelMessageEntity
+import com.nostr.torinos.network.cache.CachedChannelMessageRelayEntity
 import com.nostr.torinos.network.cache.ChannelReadStateEntity
 import com.nostr.torinos.network.cache.createChannelCacheDatabase
 import kotlinx.coroutines.flow.Flow
@@ -36,33 +36,30 @@ actual object ChannelCacheStore {
         }
 
     actual suspend fun getLastReadAt(relayUrl: String, channelId: String): Long? =
-        dao.getLastReadAt(relayUrl, channelId)
+        dao.getLastReadAt(channelId)
 
     actual suspend fun getMessages(relayUrl: String, channelId: String, limit: Int): List<NostrEvent> =
-        dao.getMessages(relayUrl, channelId, limit)
+        dao.getMessages(channelId, limit)
             .mapNotNull { raw ->
                 runCatching { json.decodeFromString(NostrEvent.serializer(), raw) }.getOrNull()
             }
 
     actual suspend fun upsertChannel(relayUrl: String, event: NostrEvent, meta: ChannelMeta) {
         dao.upsertChannel(
-            CachedChannelEntity(
-                relayUrl = relayUrl,
-                channelId = event.id,
-                name = meta.name,
-                about = meta.about,
-                picture = meta.picture,
-                ownerPubkey = event.pubkey,
-                createdAt = event.createdAt,
-                updatedAt = event.createdAt,
-            )
+            channelId = event.id,
+            name = meta.name,
+            about = meta.about,
+            picture = meta.picture,
+            ownerPubkey = event.pubkey,
+            createdAt = event.createdAt,
+            updatedAt = event.createdAt,
         )
+        dao.upsertChannelRelay(relayUrl = relayUrl, channelId = event.id, seenAt = event.createdAt)
     }
 
     actual suspend fun upsertMessage(relayUrl: String, event: NostrEvent, channelId: String) {
         dao.insertMessage(
             CachedChannelMessageEntity(
-                relayUrl = relayUrl,
                 channelId = channelId,
                 eventId = event.id,
                 pubkey = event.pubkey,
@@ -71,17 +68,21 @@ actual object ChannelCacheStore {
                 rawJson = json.encodeToString(NostrEvent.serializer(), event),
             )
         )
+        dao.insertMessageRelay(CachedChannelMessageRelayEntity(relayUrl = relayUrl, eventId = event.id))
+        dao.upsertChannelRelay(relayUrl = relayUrl, channelId = channelId, seenAt = event.createdAt)
     }
 
     actual suspend fun deleteChannel(relayUrl: String, channelId: String) {
-        dao.deleteMessages(relayUrl, channelId)
-        dao.deleteReadState(relayUrl, channelId)
+        dao.deleteMessageRelays(channelId)
+        dao.deleteMessages(channelId)
+        dao.deleteReadState(channelId)
+        dao.deleteChannelRelays(channelId)
+        dao.deleteChannel(channelId)
     }
 
     actual suspend fun markRead(relayUrl: String, channelId: String, readAt: Long) {
         dao.upsertReadState(
             ChannelReadStateEntity(
-                relayUrl = relayUrl,
                 channelId = channelId,
                 lastReadAt = readAt,
             )
@@ -89,25 +90,28 @@ actual object ChannelCacheStore {
     }
 
     actual suspend fun saveScrollPosition(relayUrl: String, channelId: String, messageId: String) {
-        dao.upsertScrollPosition(relayUrl, channelId, messageId)
+        dao.upsertScrollPosition(channelId, messageId)
     }
 
     actual suspend fun getScrollPosition(relayUrl: String, channelId: String): String? =
-        dao.getScrollPosition(relayUrl, channelId)
+        dao.getScrollPosition(channelId)
 
     actual suspend fun setFavorite(relayUrl: String, channelId: String, isFavorite: Boolean) {
-        dao.setFavorite(relayUrl, channelId, isFavorite)
+        dao.setFavorite(channelId, isFavorite)
     }
 
     actual suspend fun deleteNonFavorites(relayUrl: String) {
         dao.deleteNonFavoriteMessages(relayUrl)
+        dao.deleteOrphanMessages()
         dao.deleteNonFavoriteReadStates(relayUrl)
         dao.deleteNonFavoriteChannels(relayUrl)
+        dao.deleteOrphanChannels()
     }
 
     actual suspend fun prune(maxMessages: Int) {
         dao.getDistinctRelayUrls().forEach { relayUrl ->
             dao.pruneMessagesByRelay(relayUrl, maxMessages)
         }
+        dao.deleteOrphanMessages()
     }
 }

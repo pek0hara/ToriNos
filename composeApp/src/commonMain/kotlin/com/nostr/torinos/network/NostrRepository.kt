@@ -38,7 +38,7 @@ object NostrRepository {
     private val activeRelays = mutableMapOf<String, NostrRelay>()
     /** subId → (filter, targetRelayUrl) targetRelayUrl=null は全リレー対象 */
     private val activeSubscriptions = mutableMapOf<String, Pair<NostrFilter, String?>>()
-    private val temporaryRelays = mutableMapOf<String, NostrRelay>()
+    private val temporaryRelays = mutableMapOf<String, TemporaryRelayHandle>()
     private val temporarySubscriptions = mutableMapOf<String, Pair<NostrFilter, String>>()
 
     init {
@@ -114,11 +114,11 @@ object NostrRepository {
         appLog("[Repo] subscribeTemporaryRelay() subId='$subscriptionId' relay=$relayUrl filter=$filter")
         temporarySubscriptions[subscriptionId] = Pair(filter, relayUrl)
         var createdRelay = false
-        val relay = temporaryRelays.getOrPut(relayUrl) {
+        val handle = temporaryRelays.getOrPut(relayUrl) {
             createdRelay = true
             appLog("[Repo] connecting to temporary relay: $relayUrl")
-            NostrRelay(relayUrl, httpClient).also { newRelay ->
-                scope.launch {
+            NostrRelay(relayUrl, httpClient).let { newRelay ->
+                val messageJob = scope.launch {
                     try {
                         newRelay.messages.collect { message ->
                             when (message) {
@@ -133,7 +133,7 @@ object NostrRepository {
                         appLog("[NostrRepository] temporary messages collector error for ${newRelay.url}: ${e::class.simpleName}: ${e.message}")
                     }
                 }
-                scope.launch {
+                val connectedJob = scope.launch {
                     try {
                         newRelay.connected.collect {
                             appLog("[Repo] temporary relay connected: ${newRelay.url} resending subscriptions")
@@ -151,10 +151,11 @@ object NostrRepository {
                     }
                 }
                 newRelay.connect(scope)
+                TemporaryRelayHandle(newRelay, listOf(messageJob, connectedJob))
             }
         }
         if (!createdRelay) {
-            relay.send(buildReqMessage(subscriptionId, filter))
+            handle.relay.send(buildReqMessage(subscriptionId, filter))
         }
     }
 
@@ -174,9 +175,14 @@ object NostrRepository {
         val msg = buildCloseMessage(subscriptionId)
         scope.launch {
             if (relayUrl != null) {
-                temporaryRelays[relayUrl]?.send(msg)
+                temporaryRelays[relayUrl]?.relay?.send(msg)
+                if (temporarySubscriptions.values.none { it.second == relayUrl }) {
+                    temporaryRelays.remove(relayUrl)?.close()
+                }
             } else {
-                temporaryRelays.values.forEach { it.send(msg) }
+                temporaryRelays.values.forEach { it.relay.send(msg) }
+                temporaryRelays.values.forEach { it.close() }
+                temporaryRelays.clear()
             }
         }
     }
@@ -255,4 +261,14 @@ object NostrRepository {
             .filterIsInstance<RelayMessage.Closed>()
             .filter { it.subscriptionId == subscriptionId }
             .map { }
+}
+
+private data class TemporaryRelayHandle(
+    val relay: NostrRelay,
+    val collectorJobs: List<kotlinx.coroutines.Job>,
+) {
+    fun close() {
+        relay.disconnect()
+        collectorJobs.forEach { it.cancel() }
+    }
 }

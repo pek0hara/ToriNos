@@ -5,6 +5,7 @@ import androidx.room.ConstructedBy
 import androidx.room.Database
 import androidx.room.Entity
 import androidx.room.Insert
+import androidx.room.Index
 import androidx.room.OnConflictStrategy
 import androidx.room.Query
 import androidx.room.RoomDatabase
@@ -26,12 +27,132 @@ val MIGRATION_2_3 = object : Migration(2, 3) {
     }
 }
 
+val MIGRATION_3_4 = object : Migration(3, 4) {
+    override fun migrate(connection: SQLiteConnection) {
+        connection.execSQL("ALTER TABLE channels RENAME TO channels_v3")
+        connection.execSQL("ALTER TABLE channel_messages RENAME TO channel_messages_v3")
+        connection.execSQL("ALTER TABLE channel_read_states RENAME TO channel_read_states_v3")
+
+        connection.execSQL(
+            """
+            CREATE TABLE IF NOT EXISTS channels (
+                channelId TEXT NOT NULL PRIMARY KEY,
+                name TEXT NOT NULL,
+                about TEXT NOT NULL,
+                picture TEXT NOT NULL,
+                ownerPubkey TEXT NOT NULL,
+                createdAt INTEGER NOT NULL,
+                updatedAt INTEGER NOT NULL,
+                isFavorite INTEGER NOT NULL
+            )
+            """.trimIndent()
+        )
+        connection.execSQL(
+            """
+            CREATE TABLE IF NOT EXISTS channel_relays (
+                relayUrl TEXT NOT NULL,
+                channelId TEXT NOT NULL,
+                firstSeenAt INTEGER NOT NULL,
+                lastSeenAt INTEGER NOT NULL,
+                PRIMARY KEY(relayUrl, channelId)
+            )
+            """.trimIndent()
+        )
+        connection.execSQL(
+            """
+            CREATE TABLE IF NOT EXISTS channel_messages (
+                eventId TEXT NOT NULL PRIMARY KEY,
+                channelId TEXT NOT NULL,
+                pubkey TEXT NOT NULL,
+                createdAt INTEGER NOT NULL,
+                content TEXT NOT NULL,
+                rawJson TEXT NOT NULL
+            )
+            """.trimIndent()
+        )
+        connection.execSQL(
+            """
+            CREATE TABLE IF NOT EXISTS channel_message_relays (
+                relayUrl TEXT NOT NULL,
+                eventId TEXT NOT NULL,
+                PRIMARY KEY(relayUrl, eventId)
+            )
+            """.trimIndent()
+        )
+        connection.execSQL(
+            """
+            CREATE TABLE IF NOT EXISTS channel_read_states (
+                channelId TEXT NOT NULL PRIMARY KEY,
+                lastReadAt INTEGER NOT NULL,
+                lastScrolledMessageId TEXT
+            )
+            """.trimIndent()
+        )
+        connection.execSQL("CREATE INDEX IF NOT EXISTS index_channel_relays_channelId ON channel_relays(channelId)")
+        connection.execSQL("CREATE INDEX IF NOT EXISTS index_channel_messages_channelId ON channel_messages(channelId)")
+        connection.execSQL("CREATE INDEX IF NOT EXISTS index_channel_message_relays_eventId ON channel_message_relays(eventId)")
+
+        connection.execSQL(
+            """
+            INSERT OR REPLACE INTO channels
+                (channelId, name, about, picture, ownerPubkey, createdAt, updatedAt, isFavorite)
+            SELECT
+                channelId,
+                name,
+                about,
+                picture,
+                ownerPubkey,
+                MIN(createdAt),
+                MAX(updatedAt),
+                MAX(isFavorite)
+            FROM channels_v3
+            GROUP BY channelId
+            """.trimIndent()
+        )
+        connection.execSQL(
+            """
+            INSERT OR IGNORE INTO channel_relays (relayUrl, channelId, firstSeenAt, lastSeenAt)
+            SELECT relayUrl, channelId, MIN(createdAt), MAX(updatedAt)
+            FROM channels_v3
+            GROUP BY relayUrl, channelId
+            """.trimIndent()
+        )
+        connection.execSQL(
+            """
+            INSERT OR IGNORE INTO channel_messages
+                (eventId, channelId, pubkey, createdAt, content, rawJson)
+            SELECT eventId, channelId, pubkey, createdAt, content, rawJson
+            FROM channel_messages_v3
+            """.trimIndent()
+        )
+        connection.execSQL(
+            """
+            INSERT OR IGNORE INTO channel_message_relays (relayUrl, eventId)
+            SELECT relayUrl, eventId
+            FROM channel_messages_v3
+            """.trimIndent()
+        )
+        connection.execSQL(
+            """
+            INSERT OR REPLACE INTO channel_read_states
+                (channelId, lastReadAt, lastScrolledMessageId)
+            SELECT channelId, MAX(lastReadAt), MAX(lastScrolledMessageId)
+            FROM channel_read_states_v3
+            GROUP BY channelId
+            """.trimIndent()
+        )
+
+        connection.execSQL("DROP TABLE channels_v3")
+        connection.execSQL("DROP TABLE channel_messages_v3")
+        connection.execSQL("DROP TABLE channel_read_states_v3")
+    }
+}
+
 @Entity(
     tableName = "channels",
-    primaryKeys = ["relayUrl", "channelId"],
+    primaryKeys = ["channelId"],
 )
 data class CachedChannelEntity(
-    val relayUrl: String,
     val channelId: String,
     val name: String,
     val about: String,
@@ -43,11 +164,23 @@ data class CachedChannelEntity(
 )
 
 @Entity(
+    tableName = "channel_relays",
+    primaryKeys = ["relayUrl", "channelId"],
+    indices = [Index("channelId")],
+)
+data class CachedChannelRelayEntity(
+    val relayUrl: String,
+    val channelId: String,
+    val firstSeenAt: Long,
+    val lastSeenAt: Long,
+)
+
+@Entity(
     tableName = "channel_messages",
-    primaryKeys = ["relayUrl", "eventId"],
+    primaryKeys = ["eventId"],
+    indices = [Index("channelId")],
 )
 data class CachedChannelMessageEntity(
-    val relayUrl: String,
     val channelId: String,
     val eventId: String,
     val pubkey: String,
@@ -57,11 +190,20 @@ data class CachedChannelMessageEntity(
 )
 
 @Entity(
+    tableName = "channel_message_relays",
+    primaryKeys = ["relayUrl", "eventId"],
+    indices = [Index("eventId")],
+)
+data class CachedChannelMessageRelayEntity(
+    val relayUrl: String,
+    val eventId: String,
+)
+
+@Entity(
     tableName = "channel_read_states",
-    primaryKeys = ["relayUrl", "channelId"],
+    primaryKeys = ["channelId"],
 )
 data class ChannelReadStateEntity(
-    val relayUrl: String,
     val channelId: String,
     val lastReadAt: Long,
     val lastScrolledMessageId: String? = null,
@@ -88,7 +230,7 @@ interface ChannelCacheDao {
     @Query(
         """
         SELECT
-            c.relayUrl AS relayUrl,
+            :relayUrl AS relayUrl,
             c.channelId AS channelId,
             c.name AS name,
             c.about AS about,
@@ -101,25 +243,27 @@ interface ChannelCacheDao {
             (
                 SELECT COUNT(*)
                 FROM channel_messages unread
-                WHERE unread.relayUrl = c.relayUrl
-                  AND unread.channelId = c.channelId
+                WHERE unread.channelId = c.channelId
                   AND unread.createdAt > COALESCE(r.lastReadAt, 0)
             ) AS unreadCount,
             CASE WHEN r.lastReadAt IS NOT NULL THEN 1 ELSE 0 END AS hasBeenOpened,
             c.isFavorite AS isFavorite
         FROM channels c
         LEFT JOIN channel_read_states r
-            ON r.relayUrl = c.relayUrl AND r.channelId = c.channelId
+            ON r.channelId = c.channelId
         LEFT JOIN channel_messages latest
-            ON latest.relayUrl = c.relayUrl
-           AND latest.eventId = (
+            ON latest.eventId = (
                 SELECT m.eventId
                 FROM channel_messages m
-                WHERE m.relayUrl = c.relayUrl AND m.channelId = c.channelId
+                WHERE m.channelId = c.channelId
                 ORDER BY m.createdAt DESC, m.eventId DESC
                 LIMIT 1
            )
-        WHERE c.relayUrl = :relayUrl
+        WHERE EXISTS (
+            SELECT 1
+            FROM channel_relays cr
+            WHERE cr.relayUrl = :relayUrl AND cr.channelId = c.channelId
+        )
         ORDER BY c.isFavorite DESC, COALESCE(latest.createdAt, c.createdAt) DESC
         """
     )
@@ -129,36 +273,68 @@ interface ChannelCacheDao {
         """
         SELECT lastReadAt
         FROM channel_read_states
-        WHERE relayUrl = :relayUrl AND channelId = :channelId
+        WHERE channelId = :channelId
         LIMIT 1
         """
     )
-    suspend fun getLastReadAt(relayUrl: String, channelId: String): Long?
+    suspend fun getLastReadAt(channelId: String): Long?
 
     @Query(
         """
         SELECT lastScrolledMessageId
         FROM channel_read_states
-        WHERE relayUrl = :relayUrl AND channelId = :channelId
+        WHERE channelId = :channelId
         LIMIT 1
         """
     )
-    suspend fun getScrollPosition(relayUrl: String, channelId: String): String?
+    suspend fun getScrollPosition(channelId: String): String?
 
     @Query(
         """
-        INSERT INTO channel_read_states (relayUrl, channelId, lastReadAt, lastScrolledMessageId)
-        VALUES (:relayUrl, :channelId, 0, :messageId)
-        ON CONFLICT(relayUrl, channelId) DO UPDATE SET lastScrolledMessageId = :messageId
+        INSERT INTO channel_read_states (channelId, lastReadAt, lastScrolledMessageId)
+        VALUES (:channelId, 0, :messageId)
+        ON CONFLICT(channelId) DO UPDATE SET lastScrolledMessageId = :messageId
         """
     )
-    suspend fun upsertScrollPosition(relayUrl: String, channelId: String, messageId: String)
+    suspend fun upsertScrollPosition(channelId: String, messageId: String)
 
-    @Insert(onConflict = OnConflictStrategy.REPLACE)
-    suspend fun upsertChannel(channel: CachedChannelEntity)
+    @Query(
+        """
+        INSERT INTO channels (channelId, name, about, picture, ownerPubkey, createdAt, updatedAt, isFavorite)
+        VALUES (:channelId, :name, :about, :picture, :ownerPubkey, :createdAt, :updatedAt, 0)
+        ON CONFLICT(channelId) DO UPDATE SET
+            name = excluded.name,
+            about = excluded.about,
+            picture = excluded.picture,
+            ownerPubkey = excluded.ownerPubkey,
+            createdAt = excluded.createdAt,
+            updatedAt = excluded.updatedAt
+        """
+    )
+    suspend fun upsertChannel(
+        channelId: String,
+        name: String,
+        about: String,
+        picture: String,
+        ownerPubkey: String,
+        createdAt: Long,
+        updatedAt: Long,
+    )
+
+    @Query(
+        """
+        INSERT INTO channel_relays (relayUrl, channelId, firstSeenAt, lastSeenAt)
+        VALUES (:relayUrl, :channelId, :seenAt, :seenAt)
+        ON CONFLICT(relayUrl, channelId) DO UPDATE SET lastSeenAt = MAX(lastSeenAt, :seenAt)
+        """
+    )
+    suspend fun upsertChannelRelay(relayUrl: String, channelId: String, seenAt: Long)
 
     @Insert(onConflict = OnConflictStrategy.IGNORE)
     suspend fun insertMessage(message: CachedChannelMessageEntity)
+
+    @Insert(onConflict = OnConflictStrategy.IGNORE)
+    suspend fun insertMessageRelay(relay: CachedChannelMessageRelayEntity)
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertReadState(state: ChannelReadStateEntity)
@@ -166,32 +342,46 @@ interface ChannelCacheDao {
     @Query(
         """
         SELECT rawJson FROM channel_messages
-        WHERE relayUrl = :relayUrl AND channelId = :channelId
+        WHERE channelId = :channelId
         ORDER BY createdAt ASC
         LIMIT :limit
         """
     )
-    suspend fun getMessages(relayUrl: String, channelId: String, limit: Int): List<String>
+    suspend fun getMessages(channelId: String, limit: Int): List<String>
 
-    @Query("DELETE FROM channels WHERE relayUrl = :relayUrl AND channelId = :channelId")
-    suspend fun deleteChannel(relayUrl: String, channelId: String)
+    @Query("DELETE FROM channels WHERE channelId = :channelId")
+    suspend fun deleteChannel(channelId: String)
 
-    @Query("DELETE FROM channel_messages WHERE relayUrl = :relayUrl AND channelId = :channelId")
-    suspend fun deleteMessages(relayUrl: String, channelId: String)
+    @Query("DELETE FROM channel_messages WHERE channelId = :channelId")
+    suspend fun deleteMessages(channelId: String)
 
-    @Query("DELETE FROM channel_read_states WHERE relayUrl = :relayUrl AND channelId = :channelId")
-    suspend fun deleteReadState(relayUrl: String, channelId: String)
+    @Query("DELETE FROM channel_read_states WHERE channelId = :channelId")
+    suspend fun deleteReadState(channelId: String)
 
-    @Query("SELECT DISTINCT relayUrl FROM channel_messages")
+    @Query("DELETE FROM channel_relays WHERE channelId = :channelId")
+    suspend fun deleteChannelRelays(channelId: String)
+
+    @Query(
+        """
+        DELETE FROM channel_message_relays
+        WHERE eventId IN (
+            SELECT eventId FROM channel_messages WHERE channelId = :channelId
+        )
+        """
+    )
+    suspend fun deleteMessageRelays(channelId: String)
+
+    @Query("SELECT DISTINCT relayUrl FROM channel_message_relays")
     suspend fun getDistinctRelayUrls(): List<String>
 
     @Query(
         """
-        DELETE FROM channel_messages
+        DELETE FROM channel_message_relays
         WHERE relayUrl = :relayUrl AND eventId NOT IN (
-            SELECT eventId
-            FROM channel_messages
-            WHERE relayUrl = :relayUrl
+            SELECT m.eventId
+            FROM channel_messages m
+            INNER JOIN channel_message_relays mr ON mr.eventId = m.eventId
+            WHERE mr.relayUrl = :relayUrl
             ORDER BY createdAt DESC
             LIMIT :maxMessages
         )
@@ -199,17 +389,33 @@ interface ChannelCacheDao {
     )
     suspend fun pruneMessagesByRelay(relayUrl: String, maxMessages: Int)
 
-    @Query("UPDATE channels SET isFavorite = :isFavorite WHERE relayUrl = :relayUrl AND channelId = :channelId")
-    suspend fun setFavorite(relayUrl: String, channelId: String, isFavorite: Boolean)
+    @Query("DELETE FROM channel_messages WHERE eventId NOT IN (SELECT eventId FROM channel_message_relays)")
+    suspend fun deleteOrphanMessages()
 
-    @Query("SELECT channelId FROM channels WHERE relayUrl = :relayUrl AND isFavorite = 1")
+    @Query("DELETE FROM channels WHERE channelId NOT IN (SELECT channelId FROM channel_relays)")
+    suspend fun deleteOrphanChannels()
+
+    @Query("UPDATE channels SET isFavorite = :isFavorite WHERE channelId = :channelId")
+    suspend fun setFavorite(channelId: String, isFavorite: Boolean)
+
+    @Query(
+        """
+        SELECT c.channelId
+        FROM channels c
+        INNER JOIN channel_relays cr ON cr.channelId = c.channelId
+        WHERE cr.relayUrl = :relayUrl AND c.isFavorite = 1
+        """
+    )
     suspend fun getFavoriteChannelIds(relayUrl: String): List<String>
 
     @Query(
         """
-        DELETE FROM channel_messages
-        WHERE relayUrl = :relayUrl AND channelId NOT IN (
-            SELECT channelId FROM channels WHERE relayUrl = :relayUrl AND isFavorite = 1
+        DELETE FROM channel_message_relays
+        WHERE relayUrl = :relayUrl AND eventId IN (
+            SELECT m.eventId
+            FROM channel_messages m
+            INNER JOIN channels c ON c.channelId = m.channelId
+            WHERE c.isFavorite = 0
         )
         """
     )
@@ -218,24 +424,36 @@ interface ChannelCacheDao {
     @Query(
         """
         DELETE FROM channel_read_states
-        WHERE relayUrl = :relayUrl AND channelId NOT IN (
-            SELECT channelId FROM channels WHERE relayUrl = :relayUrl AND isFavorite = 1
+        WHERE channelId IN (
+            SELECT cr.channelId
+            FROM channel_relays cr
+            INNER JOIN channels c ON c.channelId = cr.channelId
+            WHERE cr.relayUrl = :relayUrl AND c.isFavorite = 0
         )
         """
     )
     suspend fun deleteNonFavoriteReadStates(relayUrl: String)
 
-    @Query("DELETE FROM channels WHERE relayUrl = :relayUrl AND isFavorite = 0")
+    @Query(
+        """
+        DELETE FROM channel_relays
+        WHERE relayUrl = :relayUrl AND channelId IN (
+            SELECT channelId FROM channels WHERE isFavorite = 0
+        )
+        """
+    )
     suspend fun deleteNonFavoriteChannels(relayUrl: String)
 }
 
 @Database(
     entities = [
         CachedChannelEntity::class,
+        CachedChannelRelayEntity::class,
         CachedChannelMessageEntity::class,
+        CachedChannelMessageRelayEntity::class,
         ChannelReadStateEntity::class,
     ],
-    version = 3,
+    version = 4,
 )
 @ConstructedBy(ChannelCacheDatabaseConstructor::class)
 abstract class ChannelCacheDatabase : RoomDatabase() {

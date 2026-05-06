@@ -120,6 +120,8 @@ class ChannelListViewModel(private val relayUrl: String? = null) : SafeViewModel
     private var subscribedAuthorPubkeys: Set<String> = emptySet()
 
     private var loadingMore = false
+    private var oldestBootstrapCreatedAt: Long? = null
+    private var lastBootstrapEventCount = 0
     private var oldestHistoryCreatedAt: Long? = null
     private var lastHistoryEventCount = 0
     private var bootstrapChannelIds = mutableListOf<String>()
@@ -164,6 +166,8 @@ class ChannelListViewModel(private val relayUrl: String? = null) : SafeViewModel
         jobs += launch {
             NostrRepository.events(kind40SubId).collect { event ->
                 if (event.kind != 40) return@collect
+                lastBootstrapEventCount++
+                oldestBootstrapCreatedAt = minOf(oldestBootstrapCreatedAt ?: event.createdAt, event.createdAt)
                 val meta = event.toChannelMeta() ?: return@collect
                 bootstrapChannelIds.add(event.id)
                 channelMap[event.id] = ChannelItem(event, meta)
@@ -177,10 +181,10 @@ class ChannelListViewModel(private val relayUrl: String? = null) : SafeViewModel
         jobs += launch {
             NostrRepository.events(historySubId).collect { event ->
                 if (event.kind != 42) return@collect
-                if (!seenMessageIds.add(event.id)) return@collect
-                if (seenMessageIds.size > MAX_SEEN_MSG_IDS) seenMessageIds.remove(seenMessageIds.first())
                 lastHistoryEventCount++
                 oldestHistoryCreatedAt = minOf(oldestHistoryCreatedAt ?: event.createdAt, event.createdAt)
+                if (!seenMessageIds.add(event.id)) return@collect
+                if (seenMessageIds.size > MAX_SEEN_MSG_IDS) seenMessageIds.remove(seenMessageIds.first())
                 val channelId = event.channelIdFromMessage() ?: return@collect
                 updateActivity(event, channelId)
                 if (!channelMap.containsKey(channelId) && !cachedChannels.containsKey(channelId) && requestedNewMetaIds.add(channelId)) {
@@ -219,13 +223,19 @@ class ChannelListViewModel(private val relayUrl: String? = null) : SafeViewModel
                 if (bootstrapMetaCompleted) return@collect
                 receivedBootstrapEoseCount++
                 if (receivedBootstrapEoseCount < expectedBootstrapEoseCount) return@collect
-                bootstrapMetaCompleted = true
                 val ids = bootstrapChannelIds.toList()
                 bootstrapChannelIds.clear()
                 if (ids.isNotEmpty()) {
                     triggerActivityFetch(ids)
                 }
-                NostrRepository.close(kind40SubId)
+                val nextUntil = oldestBootstrapCreatedAt?.minus(1)
+                if (lastBootstrapEventCount >= PAGE_SIZE && nextUntil != null) {
+                    NostrRepository.closeSuspending(kind40SubId)
+                    requestBootstrapMetaPage(until = nextUntil)
+                } else {
+                    bootstrapMetaCompleted = true
+                    NostrRepository.close(kind40SubId)
+                }
             }
         }
 
@@ -247,12 +257,7 @@ class ChannelListViewModel(private val relayUrl: String? = null) : SafeViewModel
                 NostrFilter(kinds = listOf(42), since = Clock.System.now().epochSeconds),
                 relayUrl = relayUrl,
             )
-            expectedBootstrapEoseCount = if (relayUrl != null) 1 else NostrRepository.relayCount.coerceAtLeast(1)
-            NostrRepository.subscribe(
-                kind40SubId,
-                NostrFilter(kinds = listOf(40), limit = PAGE_SIZE),
-                relayUrl = relayUrl,
-            )
+            requestBootstrapMetaPage(until = null)
             requestPage(until = null)
         }
     }
@@ -425,6 +430,17 @@ class ChannelListViewModel(private val relayUrl: String? = null) : SafeViewModel
         NostrRepository.subscribe(
             historySubId,
             NostrFilter(kinds = listOf(42), until = until, limit = HISTORY_PAGE_SIZE),
+            relayUrl = relayUrl,
+        )
+    }
+
+    private suspend fun requestBootstrapMetaPage(until: Long?) {
+        lastBootstrapEventCount = 0
+        receivedBootstrapEoseCount = 0
+        expectedBootstrapEoseCount = if (relayUrl != null) 1 else NostrRepository.relayCount.coerceAtLeast(1)
+        NostrRepository.subscribe(
+            kind40SubId,
+            NostrFilter(kinds = listOf(40), until = until, limit = PAGE_SIZE),
             relayUrl = relayUrl,
         )
     }
