@@ -4,16 +4,25 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.AddPhotoAlternate
+import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material3.Button
+import androidx.compose.material3.Card
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
@@ -21,6 +30,8 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -29,9 +40,14 @@ import androidx.compose.runtime.setValue
 import kotlinx.coroutines.launch
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalClipboard
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.Dialog
+import androidx.lifecycle.viewmodel.compose.viewModel
+import androidx.lifecycle.viewmodel.initializer
+import androidx.lifecycle.viewmodel.viewModelFactory
 import com.nostr.torinos.crypto.KeyStorage
 import com.nostr.torinos.crypto.derivePublicKey
 import com.nostr.torinos.crypto.fromHex
@@ -41,6 +57,11 @@ import com.nostr.torinos.crypto.hexToNsec
 import com.nostr.torinos.crypto.normalizePrivateKey
 import com.nostr.torinos.crypto.rememberPasswordManagerSaver
 import com.nostr.torinos.crypto.toHex
+import com.nostr.torinos.model.NostrProfile
+import com.nostr.torinos.ui.components.rememberImagePickerLauncher
+import com.nostr.torinos.ui.profile.AvatarCircle
+import com.nostr.torinos.ui.profile.EditProfileViewModel
+import com.nostr.torinos.ui.settings.setPlainText
 import com.nostr.torinos.util.loggingExceptionHandler
 import com.nostr.torinos.util.logException
 
@@ -49,6 +70,7 @@ fun KeySetupScreen(onSetupComplete: (pubkeyHex: String) -> Unit, onDismiss: (() 
     var importKey by remember { mutableStateOf("") }
     var error by remember { mutableStateOf<String?>(null) }
     var generatedInfo by remember { mutableStateOf<Pair<String, String>?>(null) } // priv, pub
+    var initialProfilePubkey by remember { mutableStateOf<String?>(null) }
     val scope = rememberCoroutineScope()
     val uiExceptionHandler = remember {
         loggingExceptionHandler("KeySetupScreen", "Uncaught UI coroutine exception")
@@ -83,7 +105,7 @@ fun KeySetupScreen(onSetupComplete: (pubkeyHex: String) -> Unit, onDismiss: (() 
             Spacer(modifier = Modifier.height(8.dp))
             KeyInfoCard(
                 title = "Nostr とは",
-                body = "ひとつの会社が管理するSNSではなく、公開鍵をIDとして使う分散型のネットワークです。同じ鍵を使えば、対応している別のアプリでも同じアカウントとして利用できます。",
+                body = "• Nostrは、特定の会社に依存しないSNSの仕組み（ルール）です\n• アカウントは「鍵」で管理され、どのアプリでも同じIDで使えます\n• 投稿は複数のサーバーに分散して保存され、消えにくいのが特徴です",
             )
             Spacer(modifier = Modifier.height(24.dp))
             Text(
@@ -121,7 +143,7 @@ fun KeySetupScreen(onSetupComplete: (pubkeyHex: String) -> Unit, onDismiss: (() 
                                 logException("KeySetupScreen", it, "Failed to save generated private key")
                                 "秘密鍵を保存できませんでした: ${it.message}"
                             }
-                            if (err == null) onSetupComplete(pub) else error = err
+                            if (err == null) initialProfilePubkey = pub else error = err
                         }
                     },
                     modifier = Modifier.fillMaxWidth(),
@@ -191,10 +213,132 @@ fun KeySetupScreen(onSetupComplete: (pubkeyHex: String) -> Unit, onDismiss: (() 
             }
         }
     }
+
+    initialProfilePubkey?.let { pubkey ->
+        InitialProfileDialog(
+            pubkey = pubkey,
+            onComplete = {
+                initialProfilePubkey = null
+                onSetupComplete(pubkey)
+            },
+        )
+    }
+}
+
+@Composable
+private fun InitialProfileDialog(
+    pubkey: String,
+    onComplete: () -> Unit,
+    viewModel: EditProfileViewModel = viewModel(
+        key = "initial-profile-$pubkey",
+        factory = viewModelFactory { initializer { EditProfileViewModel() } },
+    ),
+) {
+    val state by viewModel.state.collectAsState()
+    val pickImage = rememberImagePickerLauncher { bytes, mime ->
+        if (bytes != null && mime != null) viewModel.uploadProfileImage(bytes, mime)
+    }
+
+    LaunchedEffect(state.saved) {
+        if (state.saved) {
+            viewModel.clearSaved()
+            onComplete()
+        }
+    }
+
+    Dialog(onDismissRequest = { if (!state.isSaving) onComplete() }) {
+        Card {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                Text("プロフィールを設定", style = MaterialTheme.typography.titleMedium)
+
+                Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+                    AvatarCircle(
+                        pubkey = pubkey,
+                        name = state.displayName.ifBlank { state.name }.ifBlank { null },
+                        pictureUrl = state.picture.ifBlank { null },
+                        size = 80,
+                    )
+                }
+
+                OutlinedTextField(
+                    value = state.displayName,
+                    onValueChange = { name ->
+                        viewModel.onDisplayNameChange(name)
+                        viewModel.onNameChange(name)
+                    },
+                    label = { Text("名前") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                    enabled = !state.isSaving,
+                )
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    OutlinedTextField(
+                        value = state.picture,
+                        onValueChange = viewModel::onPictureChange,
+                        label = { Text("プロフィール画像URL") },
+                        singleLine = true,
+                        modifier = Modifier.weight(1f),
+                        enabled = !state.isSaving,
+                    )
+                    IconButton(
+                        onClick = pickImage,
+                        enabled = !state.isUploadingImage && !state.isSaving,
+                    ) {
+                        if (state.isUploadingImage) {
+                            CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
+                        } else {
+                            Icon(
+                                imageVector = Icons.Default.AddPhotoAlternate,
+                                contentDescription = "画像を選択してアップロード",
+                            )
+                        }
+                    }
+                }
+
+                state.error?.let {
+                    Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.labelSmall)
+                }
+
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                    TextButton(onClick = onComplete, enabled = !state.isSaving) { Text("あとで") }
+                    Button(
+                        onClick = {
+                            viewModel.initFrom(NostrProfile())
+                            viewModel.onNameChange(state.name)
+                            viewModel.onDisplayNameChange(state.displayName)
+                            viewModel.onPictureChange(state.picture)
+                            viewModel.save()
+                        },
+                        enabled = !state.isSaving &&
+                            !state.isUploadingImage &&
+                            (state.displayName.isNotBlank() || state.picture.isNotBlank()),
+                    ) {
+                        if (state.isSaving) {
+                            CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+                        } else {
+                            Text("保存して始める")
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
 
 @Composable
 private fun GeneratedKeyValues(npub: String, nsec: String) {
+    val clipboard = LocalClipboard.current
+    val scope = rememberCoroutineScope()
     Surface(
         modifier = Modifier.fillMaxWidth(),
         color = MaterialTheme.colorScheme.surface,
@@ -210,10 +354,6 @@ private fun GeneratedKeyValues(npub: String, nsec: String) {
                 style = MaterialTheme.typography.labelMedium,
                 color = MaterialTheme.colorScheme.onSurface,
             )
-            KeyInfoCard(
-                title = "公開鍵とは",
-                body = "あなたを識別するためのIDです。他のユーザーに公開されます。",
-            )
             SelectionContainer {
                 Text(
                     text = npub,
@@ -223,14 +363,9 @@ private fun GeneratedKeyValues(npub: String, nsec: String) {
             }
             Spacer(modifier = Modifier.height(4.dp))
             Text(
-                text = "秘密鍵（必ずメモしてください）",
+                text = "秘密鍵（ログインに必要です。必ずメモしてください。）",
                 style = MaterialTheme.typography.labelMedium,
                 color = MaterialTheme.colorScheme.onSurface,
-            )
-            KeyInfoCard(
-                title = "秘密鍵とは",
-                body = "あなた本人であることを証明するための鍵です。秘密鍵を知っている人は、あなたとして投稿や操作ができてしまいます。秘密鍵がないと同じアカウントを使えなくなります。",
-                isWarning = true,
             )
             Surface(
                 color = MaterialTheme.colorScheme.errorContainer,
@@ -238,12 +373,23 @@ private fun GeneratedKeyValues(npub: String, nsec: String) {
                 shape = MaterialTheme.shapes.small,
                 modifier = Modifier.fillMaxWidth(),
             ) {
-                SelectionContainer {
-                    Text(
-                        text = nsec,
-                        style = MaterialTheme.typography.bodySmall,
-                        modifier = Modifier.padding(12.dp),
-                    )
+                Row(
+                    modifier = Modifier.padding(start = 12.dp, top = 4.dp, bottom = 4.dp, end = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    SelectionContainer(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = nsec,
+                            style = MaterialTheme.typography.bodySmall,
+                            modifier = Modifier.padding(vertical = 8.dp),
+                        )
+                    }
+                    IconButton(onClick = { scope.launch { clipboard.setPlainText(nsec) } }) {
+                        Icon(
+                            imageVector = Icons.Default.ContentCopy,
+                            contentDescription = "コピー",
+                        )
+                    }
                 }
             }
         }

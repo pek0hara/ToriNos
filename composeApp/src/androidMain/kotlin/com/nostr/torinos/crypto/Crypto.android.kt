@@ -14,10 +14,15 @@ actual fun generatePrivateKey(): ByteArray {
 }
 
 actual fun derivePublicKey(privateKey: ByteArray): ByteArray {
-    // 33バイト圧縮公開鍵 → 先頭1バイト(prefix)を除いた x-only 32バイト
-    val compressed = Secp256k1.pubkeyCreate(privateKey)
+    val compressed = secp256k1CompressedPublicKey(privateKey)
     return compressed.copyOfRange(1, 33)
 }
 
 actual fun schnorrSign(data: ByteArray, privateKey: ByteArray): ByteArray =
     Secp256k1.signSchnorr(data, privateKey, null)
+
+internal actual fun secp256k1CompressedPublicKey(privateKey: ByteArray): ByteArray =
+    Secp256k1.pubKeyCompress(Secp256k1.pubkeyCreate(privateKey))
+
+internal actual fun secp256k1PublicKeyTweakMul(publicKey: ByteArray, tweak: ByteArray): ByteArray =
+    Secp256k1.pubKeyTweakMul(publicKey, tweak)

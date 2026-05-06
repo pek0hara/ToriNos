@@ -12,6 +12,12 @@ expect fun derivePublicKey(privateKey: ByteArray): ByteArray
 /** secp256k1 Schnorr 署名（64バイト） */
 expect fun schnorrSign(data: ByteArray, privateKey: ByteArray): ByteArray
 
+/** secp256k1 公開鍵（33バイト圧縮形式）を導出 */
+internal expect fun secp256k1CompressedPublicKey(privateKey: ByteArray): ByteArray
+
+/** secp256k1 public key tweak multiplication。戻り値は 33 または 65 バイト公開鍵。 */
+internal expect fun secp256k1PublicKeyTweakMul(publicKey: ByteArray, tweak: ByteArray): ByteArray
+
 // ---- Hex ユーティリティ ----
 
 private val HEX = "0123456789abcdef".toCharArray()
