@@ -13,6 +13,12 @@ local.properties
 # Kotlin incremental/caches
 .kotlin/
 
+# extracted/generated dependency sources
+/androidMain/
+/commonMain/
+/jvmMain/
+/META-INF/
+
 # Xcode user-specific state
 **/xcuserdata/
 *.xcuserstate
