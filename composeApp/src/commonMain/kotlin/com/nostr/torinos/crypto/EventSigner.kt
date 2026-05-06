@@ -4,7 +4,6 @@ import com.nostr.torinos.model.NostrEvent
 import kotlin.time.Clock
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
-import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.add
 import kotlinx.serialization.json.addJsonArray
 import kotlinx.serialization.json.buildJsonArray
@@ -65,3 +64,27 @@ fun signEvent(
     )
 }
 
+fun calculateEventId(event: NostrEvent): String =
+    sha256(serializedEventPayload(event).encodeToByteArray()).toHex()
+
+fun isValidEvent(event: NostrEvent): Boolean = runCatching {
+    event.id.length == 64 &&
+        event.pubkey.length == 64 &&
+        event.sig.length == 128 &&
+        event.id == calculateEventId(event) &&
+        schnorrVerify(event.sig.fromHex(), event.id.fromHex(), event.pubkey.fromHex())
+}.getOrDefault(false)
+
+private fun serializedEventPayload(event: NostrEvent): String =
+    buildJsonArray {
+        add(0)
+        add(event.pubkey)
+        add(event.createdAt)
+        add(event.kind)
+        add(buildJsonArray {
+            event.tags.forEach { tag ->
+                addJsonArray { tag.forEach { add(it) } }
+            }
+        })
+        add(event.content)
+    }.let { signingJson.encodeToString(it) }

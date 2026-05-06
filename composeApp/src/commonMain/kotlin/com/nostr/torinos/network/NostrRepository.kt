@@ -35,7 +35,7 @@ object NostrRepository {
     private val bus = MutableSharedFlow<RelayMessage>(extraBufferCapacity = 512)
 
     internal val httpClient = createHttpClient()
-    private val activeRelays = mutableMapOf<String, NostrRelay>()
+    private val activeRelays = mutableMapOf<String, ActiveRelayHandle>()
     /** subId → (filter, targetRelayUrl) targetRelayUrl=null は全リレー対象 */
     private val activeSubscriptions = mutableMapOf<String, Pair<NostrFilter, String?>>()
     private val temporaryRelays = mutableMapOf<String, TemporaryRelayHandle>()
@@ -47,15 +47,14 @@ object NostrRepository {
             RelayStore.relays.collect { urls ->
                 // 削除されたリレーを切断
                 (activeRelays.keys - urls.toSet()).forEach { url ->
-                    activeRelays.remove(url)?.disconnect()
+                    activeRelays.remove(url)?.close()
                 }
                 // 追加されたリレーに接続
                 (urls - activeRelays.keys.toSet()).forEach { url ->
                     appLog("[Repo] connecting to relay: $url")
                     val relay = NostrRelay(url, httpClient)
-                    activeRelays[url] = relay
                     // connect() より先に購読を張り、接続直後の EVENT/EOSE を取り逃がさない。
-                    scope.launch {
+                    val messageJob = scope.launch {
                         try {
                             relay.messages.collect { message ->
                                 when (message) {
@@ -71,7 +70,7 @@ object NostrRepository {
                         }
                     }
                     // connect() より先に購読を張り、接続完了通知の取り逃がしも防ぐ。
-                    scope.launch {
+                    val connectedJob = scope.launch {
                         try {
                             relay.connected.collect {
                                 appLog("[Repo] relay connected: ${relay.url} resending ${activeSubscriptions.size} subscriptions")
@@ -88,6 +87,7 @@ object NostrRepository {
                             appLog("[NostrRepository] connected collector error for ${relay.url}: ${e::class.simpleName}: ${e.message}")
                         }
                     }
+                    activeRelays[url] = ActiveRelayHandle(relay, listOf(messageJob, connectedJob))
                     relay.connect(scope)
                 }
             }
@@ -103,7 +103,11 @@ object NostrRepository {
         appLog("[Repo] subscribe() subId='$subscriptionId' relay=${relayUrl ?: "all"} filter=$filter")
         activeSubscriptions[subscriptionId] = Pair(filter, relayUrl)
         val message = buildReqMessage(subscriptionId, filter)
-        val targets = if (relayUrl != null) listOfNotNull(activeRelays[relayUrl]) else activeRelays.values.toList()
+        val targets = if (relayUrl != null) {
+            listOfNotNull(activeRelays[relayUrl]?.relay)
+        } else {
+            activeRelays.values.map { it.relay }
+        }
         targets.forEach { relay ->
             appLog("[Repo] sending REQ to ${relay.url}")
             relay.send(message)
@@ -165,7 +169,7 @@ object NostrRepository {
         activeSubscriptions.remove(subscriptionId)
         val msg = buildCloseMessage(subscriptionId)
         scope.launch {
-            activeRelays.values.forEach { it.send(msg) }
+            activeRelays.values.forEach { it.relay.send(msg) }
         }
     }
 
@@ -192,7 +196,7 @@ object NostrRepository {
         appLog("[Repo] closeSuspending() subId='$subscriptionId' relayCount=${activeRelays.size}")
         activeSubscriptions.remove(subscriptionId)
         val msg = buildCloseMessage(subscriptionId)
-        activeRelays.values.forEach { it.send(msg) }
+        activeRelays.values.forEach { it.relay.send(msg) }
     }
 
     /** 現在接続中のリレー数 */
@@ -202,7 +206,7 @@ object NostrRepository {
     suspend fun publish(event: NostrEvent) {
         val message = buildEventMessage(event)
         appLog("[Repo] publish event id=${event.id.take(8)}")
-        activeRelays.values.forEach { it.send(message) }
+        activeRelays.values.forEach { it.relay.send(message) }
     }
 
     /** 署名済みイベントを指定リレーにだけ送信する。未接続リレーは一時接続して送る。 */
@@ -215,7 +219,7 @@ object NostrRepository {
 
         val failedRelays = mutableListOf<String>()
         targets.forEach { url ->
-            val activeRelay = activeRelays[url]
+            val activeRelay = activeRelays[url]?.relay
             if (activeRelay != null) {
                 activeRelay.send(message)
             } else {
@@ -264,6 +268,16 @@ object NostrRepository {
 }
 
 private data class TemporaryRelayHandle(
+    val relay: NostrRelay,
+    val collectorJobs: List<kotlinx.coroutines.Job>,
+) {
+    fun close() {
+        relay.disconnect()
+        collectorJobs.forEach { it.cancel() }
+    }
+}
+
+private data class ActiveRelayHandle(
     val relay: NostrRelay,
     val collectorJobs: List<kotlinx.coroutines.Job>,
 ) {

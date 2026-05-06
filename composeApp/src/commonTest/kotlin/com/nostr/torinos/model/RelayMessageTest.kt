@@ -21,13 +21,11 @@ class RelayMessageTest {
     // ---- parseRelayMessage ----
 
     @Test
-    fun parse_eventMessage_returnsEvent() {
+    fun parse_eventMessageWithInvalidSignature_returnsUnknown() {
         val raw = buildRawEventMessage("sub1", dummyEvent)
         val parsed = parseRelayMessage(raw)
-        assertIs<RelayMessage.Event>(parsed)
-        assertEquals("sub1", parsed.subscriptionId)
-        assertEquals(dummyEvent.id, parsed.event.id)
-        assertEquals(dummyEvent.content, parsed.event.content)
+        assertIs<RelayMessage.Unknown>(parsed)
+        assertEquals(raw, parsed.raw)
     }
 
     @Test

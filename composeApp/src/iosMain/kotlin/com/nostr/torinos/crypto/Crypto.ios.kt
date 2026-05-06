@@ -37,6 +37,9 @@ actual fun derivePublicKey(privateKey: ByteArray): ByteArray {
 actual fun schnorrSign(data: ByteArray, privateKey: ByteArray): ByteArray =
     Secp256k1.signSchnorr(data, privateKey, null)
 
+actual fun schnorrVerify(signature: ByteArray, data: ByteArray, publicKey: ByteArray): Boolean =
+    Secp256k1.verifySchnorr(signature, data, publicKey)
+
 internal actual fun secp256k1CompressedPublicKey(privateKey: ByteArray): ByteArray =
     Secp256k1.pubKeyCompress(Secp256k1.pubkeyCreate(privateKey))
 

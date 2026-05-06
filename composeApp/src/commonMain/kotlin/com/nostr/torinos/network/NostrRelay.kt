@@ -30,7 +30,10 @@ class NostrRelay(
     private val _connected = MutableSharedFlow<Unit>(replay = 1, extraBufferCapacity = 1)
     val connected: SharedFlow<Unit> = _connected.asSharedFlow()
 
-    private val sendQueue = Channel<String>(capacity = 512)
+    // ArrayDeque で保持することで、切断中のメッセージが再接続後も送信される。
+    // first() でピークしてから send 後に removeFirst() するため、送信失敗時もキューに残る。
+    private val pendingMessages = ArrayDeque<String>()
+    private val sendSignal = Channel<Unit>(Channel.CONFLATED)
     private var job: Job? = null
 
     fun connect(scope: CoroutineScope) {
@@ -47,9 +50,14 @@ class NostrRelay(
                             _connected.emit(Unit)
                             val sender = launch {
                                 try {
-                                    for (msg in sendQueue) {
-                                        appLog("[Relay] send to $url: $msg")
-                                        outgoing.send(Frame.Text(msg))
+                                    while (isActive) {
+                                        while (pendingMessages.isNotEmpty()) {
+                                            val msg = pendingMessages.first()
+                                            appLog("[Relay] send to $url: $msg")
+                                            outgoing.send(Frame.Text(msg))
+                                            pendingMessages.removeFirst()
+                                        }
+                                        sendSignal.receive()
                                     }
                                 } catch (e: CancellationException) {
                                     throw e
@@ -82,7 +90,8 @@ class NostrRelay(
     }
 
     suspend fun send(message: String) {
-        sendQueue.send(message)
+        pendingMessages.addLast(message)
+        sendSignal.trySend(Unit)
     }
 
     fun disconnect() {

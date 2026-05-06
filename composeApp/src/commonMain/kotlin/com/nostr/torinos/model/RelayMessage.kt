@@ -1,5 +1,6 @@
 package com.nostr.torinos.model
 
+import com.nostr.torinos.crypto.isValidEvent
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.decodeFromJsonElement
@@ -29,10 +30,17 @@ fun buildEventMessage(event: NostrEvent): String {
 fun parseRelayMessage(raw: String): RelayMessage = try {
     val array = json.parseToJsonElement(raw).jsonArray
     when (array[0].jsonPrimitive.content) {
-        "EVENT" -> RelayMessage.Event(
-            subscriptionId = array[1].jsonPrimitive.content,
-            event = json.decodeFromJsonElement(array[2]),
-        )
+        "EVENT" -> {
+            val event = json.decodeFromJsonElement<NostrEvent>(array[2])
+            if (isValidEvent(event)) {
+                RelayMessage.Event(
+                    subscriptionId = array[1].jsonPrimitive.content,
+                    event = event,
+                )
+            } else {
+                RelayMessage.Unknown(raw)
+            }
+        }
         "EOSE" -> RelayMessage.EndOfStoredEvents(array[1].jsonPrimitive.content)
         "CLOSED" -> RelayMessage.Closed(
             subscriptionId = array[1].jsonPrimitive.content,

@@ -12,6 +12,9 @@ expect fun derivePublicKey(privateKey: ByteArray): ByteArray
 /** secp256k1 Schnorr 署名（64バイト） */
 expect fun schnorrSign(data: ByteArray, privateKey: ByteArray): ByteArray
 
+/** secp256k1 Schnorr 署名検証 */
+expect fun schnorrVerify(signature: ByteArray, data: ByteArray, publicKey: ByteArray): Boolean
+
 /** secp256k1 公開鍵（33バイト圧縮形式）を導出 */
 internal expect fun secp256k1CompressedPublicKey(privateKey: ByteArray): ByteArray
 
