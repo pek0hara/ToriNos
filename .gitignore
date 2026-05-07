@@ -9,6 +9,8 @@ build/
 
 # Local environment
 local.properties
+*.jks
+*.keystore
 
 # Kotlin incremental/caches
 .kotlin/
