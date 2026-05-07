@@ -56,6 +56,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.runtime.collectAsState
@@ -339,58 +340,84 @@ fun ChannelListScreen(
     // 新規チャンネル作成ダイアログ
     val dialog = (state as? ChannelListViewModel.UiState.Ready)?.createDialog
     if (dialog != null) {
-        AlertDialog(
-            onDismissRequest = { if (!dialog.isCreating) viewModel.dismissCreateDialog() },
-            title = { Text("新規チャンネル") },
-            text = {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    OutlinedTextField(
-                        value = dialog.name,
-                        onValueChange = viewModel::onCreateNameChange,
-                        label = { Text("チャンネル名 *") },
-                        singleLine = true,
-                        enabled = !dialog.isCreating,
-                        modifier = Modifier.fillMaxWidth(),
-                    )
-                    OutlinedTextField(
-                        value = dialog.about,
-                        onValueChange = viewModel::onCreateAboutChange,
-                        label = { Text("説明") },
-                        maxLines = 3,
-                        enabled = !dialog.isCreating,
-                        modifier = Modifier.fillMaxWidth(),
-                    )
-                    if (dialog.error != null) {
-                        Text(
-                            text = dialog.error,
-                            color = MaterialTheme.colorScheme.error,
-                            style = MaterialTheme.typography.labelSmall,
-                        )
-                    }
-                }
-            },
-            confirmButton = {
-                Button(
-                    onClick = viewModel::createChannel,
-                    enabled = dialog.name.isNotBlank() && !dialog.isCreating,
-                ) {
-                    if (dialog.isCreating) {
-                        CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
-                    } else {
-                        Text("作成")
-                    }
-                }
-            },
-            dismissButton = {
-                TextButton(
-                    onClick = viewModel::dismissCreateDialog,
-                    enabled = !dialog.isCreating,
-                ) {
-                    Text("キャンセル")
-                }
-            },
+        CreateChannelDialog(
+            dialog = dialog,
+            onDismiss = viewModel::dismissCreateDialog,
+            onNameChange = viewModel::onCreateNameChange,
+            onAboutChange = viewModel::onCreateAboutChange,
+            onCreate = viewModel::createChannel,
         )
     }
+}
+
+@Composable
+private fun CreateChannelDialog(
+    dialog: ChannelListViewModel.CreateDialogState,
+    onDismiss: () -> Unit,
+    onNameChange: (String) -> Unit,
+    onAboutChange: (String) -> Unit,
+    onCreate: () -> Unit,
+) {
+    var nameValue by remember { mutableStateOf(TextFieldValue(dialog.name)) }
+    var aboutValue by remember { mutableStateOf(TextFieldValue(dialog.about)) }
+
+    AlertDialog(
+        onDismissRequest = { if (!dialog.isCreating) onDismiss() },
+        title = { Text("新規チャンネル") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedTextField(
+                    value = nameValue,
+                    onValueChange = {
+                        nameValue = it
+                        onNameChange(it.text)
+                    },
+                    label = { Text("チャンネル名 *") },
+                    singleLine = true,
+                    enabled = !dialog.isCreating,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                OutlinedTextField(
+                    value = aboutValue,
+                    onValueChange = {
+                        aboutValue = it
+                        onAboutChange(it.text)
+                    },
+                    label = { Text("説明") },
+                    maxLines = 3,
+                    enabled = !dialog.isCreating,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                if (dialog.error != null) {
+                    Text(
+                        text = dialog.error,
+                        color = MaterialTheme.colorScheme.error,
+                        style = MaterialTheme.typography.labelSmall,
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = onCreate,
+                enabled = nameValue.text.isNotBlank() && !dialog.isCreating,
+            ) {
+                if (dialog.isCreating) {
+                    CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+                } else {
+                    Text("作成")
+                }
+            }
+        },
+        dismissButton = {
+            TextButton(
+                onClick = onDismiss,
+                enabled = !dialog.isCreating,
+            ) {
+                Text("キャンセル")
+            }
+        },
+    )
 }
 
 @OptIn(ExperimentalFoundationApi::class)
