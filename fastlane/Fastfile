@@ -1,0 +1,28 @@
+default_platform(:ios)
+
+platform :ios do
+  desc "Upload TestFlight metadata and optionally distribute to external testers"
+  lane :testflight_info do |options|
+    feedback_email = ENV.fetch("TESTFLIGHT_FEEDBACK_EMAIL")
+    contact_first_name = ENV.fetch("TESTFLIGHT_CONTACT_FIRST_NAME")
+    contact_last_name = ENV.fetch("TESTFLIGHT_CONTACT_LAST_NAME")
+    contact_phone = ENV.fetch("TESTFLIGHT_CONTACT_PHONE")
+
+    upload_to_testflight(
+      app_identifier: "com.nostr.torinos.app",
+      skip_waiting_for_build_processing: false,
+      skip_submission: options[:skip_submission] != false,
+      beta_app_description: options[:description] || "ToriNos beta version.",
+      beta_app_feedback_email: feedback_email,
+      changelog: options[:what_to_test] || "Please test the main app flows.",
+      beta_app_review_info: {
+        contact_first_name: contact_first_name,
+        contact_last_name: contact_last_name,
+        contact_email: feedback_email,
+        contact_phone: contact_phone,
+        demo_account_required: false,
+        notes: options[:review_notes] || "No demo account is required."
+      }
+    )
+  end
+end
