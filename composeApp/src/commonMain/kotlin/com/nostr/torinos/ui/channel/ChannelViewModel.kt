@@ -74,6 +74,7 @@ class ChannelViewModel(
 
     private var oldestCreatedAt: Long? = null
     private var loadingMore = false
+    private var isInitialDiffFetch = false
     private var lastBatchCount = 0
     private var receivedEoseCount = 0
     private var expectedEoseCount = 1
@@ -352,9 +353,40 @@ class ChannelViewModel(
             }
             // チャンネルメタ取得
             NostrRepository.subscribe(metaSubId, NostrFilter(ids = listOf(channelId)), relayUrl = relayUrl)
-            // リレーから最新ページを取得（DB との差分が自動的にマージされる）
-            requestPage(until = null)
+            // 初回取得: DB に何かあれば最新以降の差分のみ、無ければ最新 PAGE_SIZE
+            startInitialFetch(cacheLatest = currentMessages.lastOrNull()?.createdAt)
         }
+    }
+
+    private suspend fun startInitialFetch(cacheLatest: Long?) {
+        isInitialDiffFetch = cacheLatest != null
+        loadingMore = true
+        lastBatchCount = 0
+        receivedEoseCount = 0
+        expectedEoseCount = if (relayUrl != null) 1 else NostrRepository.relayCount.coerceAtLeast(1)
+        val current = _state.value as? UiState.Ready
+        if (current != null) {
+            _state.value = current.copy(canLoadMore = false)
+        }
+
+        // ライブ購読: 起動時刻以降の新着のみ受信（リレー default cap 分の過去履歴を流させない）
+        NostrRepository.subscribe(
+            msgSubId,
+            NostrFilter(
+                kinds = listOf(42),
+                eTags = listOf(channelId),
+                since = Clock.System.now().epochSeconds,
+            ),
+            relayUrl = relayUrl,
+        )
+
+        // 履歴ページ: キャッシュがあれば最新 createdAt 以降の差分のみ、無ければ最新 PAGE_SIZE 件
+        val histFilter = if (cacheLatest != null) {
+            NostrFilter(kinds = listOf(42), eTags = listOf(channelId), since = cacheLatest + 1)
+        } else {
+            NostrFilter(kinds = listOf(42), eTags = listOf(channelId), until = null, limit = PAGE_SIZE)
+        }
+        NostrRepository.subscribe(histSubId, histFilter, relayUrl = relayUrl)
     }
 
     private suspend fun requestPage(until: Long?) {
@@ -366,15 +398,6 @@ class ChannelViewModel(
         if (current != null) {
             _state.value = current.copy(canLoadMore = false)
         }
-
-        // 初回のみライブ購読
-        if (until == null) {
-            NostrRepository.subscribe(
-                msgSubId,
-                NostrFilter(kinds = listOf(42), eTags = listOf(channelId)),
-                relayUrl = relayUrl,
-            )
-        }
         NostrRepository.subscribe(
             histSubId,
             NostrFilter(kinds = listOf(42), eTags = listOf(channelId), until = until, limit = PAGE_SIZE),
@@ -384,7 +407,9 @@ class ChannelViewModel(
 
     private fun onPageCompleted() {
         loadingMore = false
-        val hasMore = lastBatchCount >= PAGE_SIZE
+        // 初回差分取得時は受信件数が 0 でも古い方向にキャッシュがあるので true、それ以外は従来の閾値判定
+        val hasMore = if (isInitialDiffFetch) true else lastBatchCount >= PAGE_SIZE
+        isInitialDiffFetch = false
         _state.value = readyState(
             canLoadMore = hasMore,
             keepScrolledToTop = false,

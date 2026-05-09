@@ -38,6 +38,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.runtime.collectAsState
 import androidx.compose.material3.Card
 import androidx.compose.ui.window.Dialog
+import com.nostr.torinos.ui.components.EditableImage
+import com.nostr.torinos.ui.components.ImageCropperDialog
 import com.nostr.torinos.ui.components.NetworkImage
 import com.nostr.torinos.ui.components.rememberImagePickerLauncher
 
@@ -48,12 +50,14 @@ fun EditProfileSheet(
     onSaved: (NostrProfile) -> Unit = {},
 ) {
     val state by viewModel.state.collectAsState()
+    var avatarImageToCrop by remember { mutableStateOf<EditableImage?>(null) }
+    var bannerImageToCrop by remember { mutableStateOf<EditableImage?>(null) }
 
     val pickImage = rememberImagePickerLauncher { bytes, mime ->
-        if (bytes != null && mime != null) viewModel.uploadProfileImage(bytes, mime)
+        if (bytes != null && mime != null) avatarImageToCrop = EditableImage(bytes, mime)
     }
     val pickBanner = rememberImagePickerLauncher { bytes, mime ->
-        if (bytes != null && mime != null) viewModel.uploadBannerImage(bytes, mime)
+        if (bytes != null && mime != null) bannerImageToCrop = EditableImage(bytes, mime)
     }
 
     LaunchedEffect(state.saved) {
@@ -77,6 +81,34 @@ fun EditProfileSheet(
                 )
             }
         }
+    }
+
+    avatarImageToCrop?.let { image ->
+        ImageCropperDialog(
+            image = image,
+            title = "アイコンを調整",
+            aspectRatio = 1f,
+            circularMask = true,
+            onDismiss = { avatarImageToCrop = null },
+            onCropped = { bytes, mime ->
+                avatarImageToCrop = null
+                viewModel.uploadProfileImage(bytes, mime)
+            },
+        )
+    }
+
+    bannerImageToCrop?.let { image ->
+        ImageCropperDialog(
+            image = image,
+            title = "バナーを調整",
+            aspectRatio = 3f,
+            circularMask = false,
+            onDismiss = { bannerImageToCrop = null },
+            onCropped = { bytes, mime ->
+                bannerImageToCrop = null
+                viewModel.uploadBannerImage(bytes, mime)
+            },
+        )
     }
 }
 
@@ -228,9 +260,10 @@ fun BannerEditDialog(
 ) {
     val state by viewModel.state.collectAsState()
     var url by remember { mutableStateOf(currentProfile?.banner ?: "") }
+    var imageToCrop by remember { mutableStateOf<EditableImage?>(null) }
 
     val pickImage = rememberImagePickerLauncher { bytes, mime ->
-        if (bytes != null && mime != null) viewModel.uploadBannerImage(bytes, mime)
+        if (bytes != null && mime != null) imageToCrop = EditableImage(bytes, mime)
     }
 
     LaunchedEffect(state.banner) {
@@ -310,6 +343,20 @@ fun BannerEditDialog(
             }
         }
     }
+
+    imageToCrop?.let { image ->
+        ImageCropperDialog(
+            image = image,
+            title = "バナーを調整",
+            aspectRatio = 3f,
+            circularMask = false,
+            onDismiss = { imageToCrop = null },
+            onCropped = { bytes, mime ->
+                imageToCrop = null
+                viewModel.uploadBannerImage(bytes, mime)
+            },
+        )
+    }
 }
 
 @Composable
@@ -322,9 +369,10 @@ fun AvatarEditDialog(
 ) {
     val state by viewModel.state.collectAsState()
     var url by remember { mutableStateOf(currentProfile?.picture ?: "") }
+    var imageToCrop by remember { mutableStateOf<EditableImage?>(null) }
 
     val pickImage = rememberImagePickerLauncher { bytes, mime ->
-        if (bytes != null && mime != null) viewModel.uploadProfileImage(bytes, mime)
+        if (bytes != null && mime != null) imageToCrop = EditableImage(bytes, mime)
     }
 
     LaunchedEffect(state.picture) {
@@ -397,6 +445,20 @@ fun AvatarEditDialog(
                 }
             }
         }
+    }
+
+    imageToCrop?.let { image ->
+        ImageCropperDialog(
+            image = image,
+            title = "アイコンを調整",
+            aspectRatio = 1f,
+            circularMask = true,
+            onDismiss = { imageToCrop = null },
+            onCropped = { bytes, mime ->
+                imageToCrop = null
+                viewModel.uploadProfileImage(bytes, mime)
+            },
+        )
     }
 }
 

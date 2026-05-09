@@ -10,12 +10,16 @@ import androidx.compose.material.icons.filled.Create
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
+import androidx.compose.material3.DrawerValue
+import androidx.compose.material3.ModalNavigationDrawer
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
+import androidx.compose.material3.rememberDrawerState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import kotlin.coroutines.cancellation.CancellationException
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -31,6 +35,9 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.toRoute
+import androidx.lifecycle.viewmodel.compose.viewModel
+import androidx.lifecycle.viewmodel.initializer
+import androidx.lifecycle.viewmodel.viewModelFactory
 import com.nostr.torinos.crypto.isWriteSupported
 import com.nostr.torinos.crypto.loadPublicKey
 import com.nostr.torinos.model.NostrFilter
@@ -44,6 +51,8 @@ import com.nostr.torinos.ui.channel.ChannelListScreen
 import com.nostr.torinos.ui.channel.ChannelScreen
 import com.nostr.torinos.ui.feed.FeedTab
 import com.nostr.torinos.ui.feed.FeedScreen
+import com.nostr.torinos.ui.notification.NotificationsDrawer
+import com.nostr.torinos.ui.notification.NotificationsViewModel
 import com.nostr.torinos.ui.settings.MuteListScreen
 import com.nostr.torinos.ui.settings.NgWordScreen
 import com.nostr.torinos.ui.post.PostSheet
@@ -104,11 +113,20 @@ fun App() {
 
         var ownPubkey by remember { mutableStateOf<String?>(null) }
         var ownProfile by remember { mutableStateOf<NostrProfile?>(null) }
+        var isAccountLoaded by remember { mutableStateOf(false) }
+        val notificationsViewModel = ownPubkey?.let { pubkey ->
+            viewModel<NotificationsViewModel>(
+                key = "notifications-$pubkey",
+                factory = viewModelFactory { initializer { NotificationsViewModel(pubkey) } },
+            )
+        }
+        val notificationsState = notificationsViewModel?.state?.collectAsState()?.value
         var feedScrollToTopRequest by remember { mutableStateOf(0) }
         var currentFeedTab by remember { mutableStateOf(FeedTab.Following) }
         var feedScrollToTopTargetTab by remember { mutableStateOf(FeedTab.Following) }
         var feedTabChangeRequest by remember { mutableStateOf(0) }
         var showQuickSettings by remember { mutableStateOf(false) }
+        val notificationsDrawerState = rememberDrawerState(DrawerValue.Closed)
         val followingFeedListState = remember { LazyListState() }
         val globalFeedListState = remember { LazyListState() }
 
@@ -128,6 +146,8 @@ fun App() {
                 throw e
             } catch (e: Throwable) {
                 logException("App", e, "Failed to load public key on startup")
+            } finally {
+                isAccountLoaded = true
             }
             try {
                 ChannelCacheStore.prune()
@@ -187,6 +207,7 @@ fun App() {
         fun clearLocalAccountState() {
             ownPubkey = null
             ownProfile = null
+            isAccountLoaded = true
             showPostSheet = false
             showKeySetup = false
             pendingKeyAction = null
@@ -210,6 +231,7 @@ fun App() {
             }
             ownPubkey = pubkey
             ownProfile = null
+            isAccountLoaded = true
             showPostSheet = false
             showKeySetup = false
             pendingKeyAction = null
@@ -237,64 +259,80 @@ fun App() {
         val isChannelThreadRoute = threadRoute?.source == ThreadSourceChannel
         val isProfileRoute = currentRoute == "myprofile" ||
             routeName?.endsWith("ProfileRoute") == true
-        val hasBottomBar = currentRoute in bottomBarRoutes || isChannelRoute || isChannelThreadRoute || isProfileRoute
+        val hasBottomBar = currentRoute in bottomBarRoutes || isChannelThreadRoute || isProfileRoute
 
-        Scaffold(
-            contentWindowInsets = WindowInsets(0),
-            floatingActionButton = {
-                if (isWriteSupported && currentRoute == "feed") {
-                    FloatingActionButton(onClick = {
-                        runWithPrivateKey(PendingKeyAction.NewPost) {
-                            replyToId = null
-                            replyToPubkey = null
-                            replyToPreview = null
-                            showPostSheet = true
-                        }
-                    }) {
-                        Icon(Icons.Default.Create, contentDescription = "ポスト")
-                    }
-                }
+        ModalNavigationDrawer(
+            drawerState = notificationsDrawerState,
+            drawerContent = {
+                NotificationsDrawer(
+                    ownPubkey = ownPubkey,
+                    onUserClick = { pubkey ->
+                        scope.launch { notificationsDrawerState.close() }
+                        nav.navigate(ProfileRoute(pubkey))
+                    },
+                    onOpenThread = { eventId ->
+                        scope.launch { notificationsDrawerState.close() }
+                        nav.navigate(ThreadRoute(eventId))
+                    },
+                )
             },
-            bottomBar = {
-                if (hasBottomBar) {
-                    NavigationBar {
-                        NavigationBarItem(
-                            icon = { Icon(Icons.Default.Home, contentDescription = null) },
-                            label = { Text("フィード") },
-                            selected = currentRoute == "feed",
-                            onClick = {
-                                if (currentRoute == "feed") {
-                                    feedScrollToTopTargetTab = currentFeedTab
-                                    feedScrollToTopRequest++
-                                } else {
-                                    nav.navigate("feed") {
+        ) {
+            Scaffold(
+                contentWindowInsets = WindowInsets(0),
+                floatingActionButton = {
+                    if (isWriteSupported && currentRoute == "feed") {
+                        FloatingActionButton(onClick = {
+                            runWithPrivateKey(PendingKeyAction.NewPost) {
+                                replyToId = null
+                                replyToPubkey = null
+                                replyToPreview = null
+                                showPostSheet = true
+                            }
+                        }) {
+                            Icon(Icons.Default.Create, contentDescription = "ポスト")
+                        }
+                    }
+                },
+                bottomBar = {
+                    if (hasBottomBar) {
+                        NavigationBar {
+                            NavigationBarItem(
+                                icon = { Icon(Icons.Default.Home, contentDescription = null) },
+                                label = { Text("フィード") },
+                                selected = currentRoute == "feed",
+                                onClick = {
+                                    if (currentRoute == "feed") {
+                                        feedScrollToTopTargetTab = currentFeedTab
+                                        feedScrollToTopRequest++
+                                    } else {
+                                        nav.navigate("feed") {
+                                            popUpTo("feed") { saveState = true; inclusive = false }
+                                            launchSingleTop = true
+                                            restoreState = true
+                                        }
+                                    }
+                                },
+                            )
+                            NavigationBarItem(
+                                icon = { Icon(Icons.AutoMirrored.Filled.List, contentDescription = null) },
+                                label = { Text("チャンネル") },
+                                selected = currentRoute == "channels" || isChannelRoute || isChannelThreadRoute,
+                                onClick = {
+                                    nav.navigate("channels") {
                                         popUpTo("feed") { saveState = true; inclusive = false }
                                         launchSingleTop = true
                                         restoreState = true
                                     }
-                                }
-                            },
-                        )
-                        NavigationBarItem(
-                            icon = { Icon(Icons.AutoMirrored.Filled.List, contentDescription = null) },
-                            label = { Text("チャンネル") },
-                            selected = currentRoute == "channels" || isChannelRoute || isChannelThreadRoute,
-                            onClick = {
-                                nav.navigate("channels") {
-                                    popUpTo("feed") { saveState = true; inclusive = false }
-                                    launchSingleTop = true
-                                    restoreState = true
-                                }
-                            },
-                        )
+                                },
+                            )
+                        }
                     }
-                }
-            },
-        ) { padding ->
+                },
+            ) { padding ->
             Column(
                 modifier = Modifier
                     .fillMaxSize()
-                    .padding(bottom = if (hasBottomBar) padding.calculateBottomPadding() else 0.dp),
+                    .padding(bottom = padding.calculateBottomPadding()),
             ) {
                 NavHost(
                     navController = nav,
@@ -304,6 +342,10 @@ fun App() {
                     composable("feed") {
                         FeedScreen(
                             onOpenSettings = { showQuickSettings = true },
+                            onOpenNotifications = {
+                                notificationsViewModel?.markAllRead()
+                                scope.launch { notificationsDrawerState.open() }
+                            },
                             onUserClick = { pubkey -> nav.navigate(ProfileRoute(pubkey)) },
                             onOpenProfile = {
                                 runWithPrivateKey(PendingKeyAction.Profile) {
@@ -324,6 +366,7 @@ fun App() {
                             onOpenSearch = { query -> nav.navigate(SearchRoute(query)) },
                             ownPubkey = ownPubkey,
                             ownProfile = ownProfile,
+                            isAccountLoaded = isAccountLoaded,
                             scrollToTopRequest = feedScrollToTopRequest,
                             scrollToTopTargetTab = feedScrollToTopTargetTab,
                             onCurrentFeedTabChanged = { currentFeedTab = it },
@@ -331,6 +374,7 @@ fun App() {
                             feedTabChangeRequest = feedTabChangeRequest,
                             followingListState = followingFeedListState,
                             globalListState = globalFeedListState,
+                            hasNotifications = notificationsState?.hasUnread == true,
                         )
                     }
                     composable("channels") {
@@ -490,6 +534,7 @@ fun App() {
                         )
                     }
                 }
+            }
             }
         }
 

@@ -1,6 +1,5 @@
 package com.nostr.torinos.ui.profile
 
-import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
@@ -17,7 +16,6 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.runtime.collectAsState
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.lifecycle.viewmodel.initializer
@@ -41,27 +39,30 @@ fun MyProfileScreen(
         key = "my-profile-$ownPubkey",
         factory = viewModelFactory { initializer { MyProfileViewModel(ownPubkey) } },
     ),
-    feedViewModel: FeedViewModel = viewModel(key = "my-feed-$ownPubkey-reposts") {
+    postsViewModel: FeedViewModel = viewModel(key = "my-feed-$ownPubkey-posts") {
+        FeedViewModel(
+            authorPubkey = ownPubkey,
+            includeRepostsInFeed = true,
+            includeRepliesInFeed = false,
+        )
+    },
+    postsAndRepliesViewModel: FeedViewModel = viewModel(key = "my-feed-$ownPubkey-posts-replies") {
         FeedViewModel(
             authorPubkey = ownPubkey,
             includeRepostsInFeed = true,
             includeRepliesInFeed = true,
         )
     },
-    reactionsViewModel: MyProfileReactionsViewModel = viewModel(
-        key = "my-reactions-$ownPubkey",
-        factory = viewModelFactory { initializer { MyProfileReactionsViewModel(ownPubkey) } },
-    ),
 ) {
     val state by viewModel.state.collectAsState()
-    val feedState by feedViewModel.state.collectAsState()
-    val reactionsState by reactionsViewModel.state.collectAsState()
+    val postsState by postsViewModel.state.collectAsState()
+    val postsAndRepliesState by postsAndRepliesViewModel.state.collectAsState()
     var showRelayList by remember { mutableStateOf(false) }
     var showBannerEdit by remember { mutableStateOf(false) }
     var showAvatarEdit by remember { mutableStateOf(false) }
     var showNameEdit by remember { mutableStateOf(false) }
     var showAboutEdit by remember { mutableStateOf(false) }
-    var selectedTab by remember { mutableStateOf(MyProfileTab.Posts) }
+    var selectedTab by remember(ownPubkey) { mutableStateOf(ProfileTimelineTab.Posts) }
     val editProfileViewModel = viewModel<EditProfileViewModel>(
         key = "editProfile",
         factory = viewModelFactory { initializer { EditProfileViewModel() } },
@@ -69,7 +70,8 @@ fun MyProfileScreen(
 
     LaunchedEffect(state.profile) {
         val profile = state.profile ?: return@LaunchedEffect
-        feedViewModel.injectProfile(ownPubkey, profile)
+        postsViewModel.injectProfile(ownPubkey, profile)
+        postsAndRepliesViewModel.injectProfile(ownPubkey, profile)
     }
 
     Scaffold(
@@ -126,6 +128,7 @@ fun MyProfileScreen(
                     relayUrls = state.relayUrls,
                     onUserClick = onUserClick,
                     onBack = onBack,
+                    onOpenSettings = onOpenSettings,
                     onEditBanner = { showBannerEdit = true },
                     onEditAvatar = { showAvatarEdit = true },
                     onEditName = { showNameEdit = true },
@@ -151,7 +154,7 @@ fun MyProfileScreen(
 
             item {
                 PrimaryTabRow(selectedTabIndex = selectedTab.ordinal) {
-                    MyProfileTab.entries.forEach { tab ->
+                    ProfileTimelineTab.entries.forEach { tab ->
                         Tab(
                             selected = selectedTab == tab,
                             onClick = { selectedTab = tab },
@@ -164,18 +167,18 @@ fun MyProfileScreen(
         }
 
         when (selectedTab) {
-            MyProfileTab.Posts -> NoteTimeline(
-                state = feedState,
+            ProfileTimelineTab.Posts -> NoteTimeline(
+                state = postsState,
                 ownPubkey = ownPubkey,
                 onUserClick = onUserClick,
-                onLoadMore = feedViewModel::loadMore,
-                onLike = feedViewModel::react,
-                onUnlike = feedViewModel::unreact,
-                onDelete = feedViewModel::deleteEvent,
+                onLoadMore = postsViewModel::loadMore,
+                onLike = postsViewModel::react,
+                onUnlike = postsViewModel::unreact,
+                onDelete = postsViewModel::deleteEvent,
                 modifier = Modifier
                     .fillMaxSize()
                     .padding(padding)
-                    .profileTabSwipe(
+                    .profileTimelineTabSwipe(
                         currentTab = selectedTab,
                         onTabChange = { selectedTab = it },
                     ),
@@ -183,53 +186,33 @@ fun MyProfileScreen(
                 onOpenReplies = onOpenReplies,
                 onOpenLikes = onOpenLikes,
                 onOpenReposts = onOpenReposts,
-                onRepost = feedViewModel::repost,
-                onUnrepost = feedViewModel::unrepost,
+                onRepost = postsViewModel::repost,
+                onUnrepost = postsViewModel::unrepost,
                 header = profileHeader,
             )
-            MyProfileTab.Reactions -> MyProfileReactionsList(
-                state = reactionsState,
+            ProfileTimelineTab.PostsAndReplies -> NoteTimeline(
+                state = postsAndRepliesState,
+                ownPubkey = ownPubkey,
                 onUserClick = onUserClick,
-                onOpenThread = onOpenReplies,
+                onLoadMore = postsAndRepliesViewModel::loadMore,
+                onLike = postsAndRepliesViewModel::react,
+                onUnlike = postsAndRepliesViewModel::unreact,
+                onDelete = postsAndRepliesViewModel::deleteEvent,
                 modifier = Modifier
                     .fillMaxSize()
                     .padding(padding)
-                    .profileTabSwipe(
+                    .profileTimelineTabSwipe(
                         currentTab = selectedTab,
                         onTabChange = { selectedTab = it },
                     ),
+                onReply = onReply,
+                onOpenReplies = onOpenReplies,
+                onOpenLikes = onOpenLikes,
+                onOpenReposts = onOpenReposts,
+                onRepost = postsAndRepliesViewModel::repost,
+                onUnrepost = postsAndRepliesViewModel::unrepost,
                 header = profileHeader,
             )
         }
     }
 }
-
-private enum class MyProfileTab(val label: String) {
-    Posts("投稿"),
-    Reactions("反応"),
-}
-
-private fun Modifier.profileTabSwipe(
-    currentTab: MyProfileTab,
-    onTabChange: (MyProfileTab) -> Unit,
-): Modifier = pointerInput(currentTab) {
-    var dragAmount = 0f
-    detectHorizontalDragGestures(
-        onDragStart = { dragAmount = 0f },
-        onHorizontalDrag = { change, amount ->
-            dragAmount += amount
-            change.consume()
-        },
-        onDragEnd = {
-            when {
-                dragAmount < -SwipeThresholdPx && currentTab == MyProfileTab.Posts ->
-                    onTabChange(MyProfileTab.Reactions)
-                dragAmount > SwipeThresholdPx && currentTab == MyProfileTab.Reactions ->
-                    onTabChange(MyProfileTab.Posts)
-            }
-        },
-        onDragCancel = { dragAmount = 0f },
-    )
-}
-
-private const val SwipeThresholdPx = 80f

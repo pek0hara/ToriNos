@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.Spacer
@@ -123,182 +124,136 @@ fun ChannelScreen(
                 ),
             )
         },
+        bottomBar = {
+            val ready = state as? ChannelViewModel.UiState.Ready
+            ChannelMessageInputBar(
+                ready = ready,
+                onDraftChange = viewModel::onDraftChange,
+                onSend = viewModel::sendMessage,
+            )
+        },
     ) { padding ->
-        Column(
+        Box(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(padding)
-                .imePadding(),
+                .padding(padding),
         ) {
-            Box(
-                modifier = Modifier
-                    .weight(1f)
-                    .fillMaxWidth(),
-            ) {
-                when (val s = state) {
-                    is ChannelViewModel.UiState.Loading -> {
-                        Column(
-                            modifier = Modifier.align(Alignment.Center),
-                            horizontalAlignment = Alignment.CenterHorizontally,
-                            verticalArrangement = Arrangement.spacedBy(16.dp),
-                        ) {
-                            CircularProgressIndicator()
-                            Text(
-                                text = "メッセージを読み込み中…",
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                        }
+            when (val s = state) {
+                is ChannelViewModel.UiState.Loading -> {
+                    Column(
+                        modifier = Modifier.align(Alignment.Center),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(16.dp),
+                    ) {
+                        CircularProgressIndicator()
+                        Text(
+                            text = "メッセージを読み込み中…",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
                     }
+                }
 
-                    is ChannelViewModel.UiState.Ready -> {
-                        if (s.messages.isEmpty()) {
-                            Text(
-                                text = "メッセージがありません",
-                                modifier = Modifier
-                                    .align(Alignment.Center)
-                                    .padding(horizontal = 32.dp),
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                        } else {
-                            LaunchedEffect(listState) {
-                                snapshotFlow { !listState.canScrollForward && listState.layoutInfo.totalItemsCount > 0 }
-                                    .distinctUntilChanged()
-                                    .filter { it }
-                                    .collect { viewModel.onScrolledToLatest() }
-                            }
+                is ChannelViewModel.UiState.Ready -> {
+                    if (s.messages.isEmpty()) {
+                        Text(
+                            text = "メッセージがありません",
+                            modifier = Modifier
+                                .align(Alignment.Center)
+                                .padding(horizontal = 32.dp),
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    } else {
+                        LaunchedEffect(listState) {
+                            snapshotFlow { !listState.canScrollForward && listState.layoutInfo.totalItemsCount > 0 }
+                                .distinctUntilChanged()
+                                .filter { it }
+                                .collect { viewModel.onScrolledToLatest() }
+                        }
 
-                            LaunchedEffect(channelId, selectedRelayUrl, s.initialUnreadMessageId, s.messages.size) {
-                                val isAtTop = listState.firstVisibleItemIndex == 0 &&
-                                    listState.firstVisibleItemScrollOffset == 0
-                                if (!didApplyInitialScroll) {
-                                    val unreadIndex = s.initialUnreadMessageId
-                                        ?.let { id -> s.messages.indexOfFirst { it.id == id } }
-                                        ?.takeIf { it >= 0 }
-                                    if (unreadIndex != null) {
-                                        listState.scrollToItem(unreadIndex)
-                                    }
-                                    didApplyInitialScroll = true
-                                } else if (s.keepScrolledToTop && isAtTop) {
-                                    listState.scrollToItem(0)
+                        LaunchedEffect(channelId, selectedRelayUrl, s.initialUnreadMessageId, s.messages.size) {
+                            val isAtTop = listState.firstVisibleItemIndex == 0 &&
+                                listState.firstVisibleItemScrollOffset == 0
+                            if (!didApplyInitialScroll) {
+                                val unreadIndex = s.initialUnreadMessageId
+                                    ?.let { id -> s.messages.indexOfFirst { it.id == id } }
+                                    ?.takeIf { it >= 0 }
+                                if (unreadIndex != null) {
+                                    listState.scrollToItem(unreadIndex)
                                 }
+                                didApplyInitialScroll = true
+                            } else if (s.keepScrolledToTop && isAtTop) {
+                                listState.scrollToItem(0)
                             }
+                        }
 
-                            LaunchedEffect(s.scrollToBottomRequest) {
-                                if (s.scrollToBottomRequest && s.messages.isNotEmpty()) {
-                                    listState.scrollToItem(s.messages.size - 1, scrollOffset = Int.MAX_VALUE)
-                                    viewModel.onScrollToBottomConsumed()
+                        LaunchedEffect(s.scrollToBottomRequest) {
+                            if (s.scrollToBottomRequest && s.messages.isNotEmpty()) {
+                                listState.scrollToItem(s.messages.lastIndex)
+                                viewModel.onScrollToBottomConsumed()
+                            }
+                        }
+
+                        LaunchedEffect(listState) {
+                            snapshotFlow { listState.firstVisibleItemIndex to didApplyInitialScroll }
+                                .filter { (_, applied) -> applied }
+                                .map { (index, _) -> index }
+                                .distinctUntilChanged()
+                                .debounce(500)
+                                .collect { index ->
+                                    val messages = (viewModel.state.value as? ChannelViewModel.UiState.Ready)?.messages ?: return@collect
+                                    val messageId = messages.getOrNull(index)?.id ?: return@collect
+                                    viewModel.saveScrollPosition(messageId)
                                 }
-                            }
+                        }
 
-                            LaunchedEffect(listState) {
-                                snapshotFlow { listState.firstVisibleItemIndex to didApplyInitialScroll }
-                                    .filter { (_, applied) -> applied }
-                                    .map { (index, _) -> index }
-                                    .distinctUntilChanged()
-                                    .debounce(500)
-                                    .collect { index ->
-                                        val messages = (viewModel.state.value as? ChannelViewModel.UiState.Ready)?.messages ?: return@collect
-                                        val messageId = messages.getOrNull(index)?.id ?: return@collect
-                                        viewModel.saveScrollPosition(messageId)
-                                    }
-                            }
-
-                            Box(modifier = Modifier.fillMaxSize()) {
-                                LazyColumn(
-                                    state = listState,
-                                    modifier = Modifier.fillMaxSize(),
-                                ) {
-                                    items(s.messages, key = { it.id }) { message ->
-                                        NoteCard(
-                                            event = message,
-                                            profile = s.profiles[message.pubkey],
-                                            profiles = s.profiles,
-                                            replyCount = 0,
-                                            reactionCount = 0,
-                                            onUserClick = onUserClick,
-                                            onOpenReplies = { onOpenThread(message.id) },
-                                            onOpenLikes = { onOpenLikes(message.id) },
-                                            onOpenReposts = { onOpenReposts(message.id) },
-                                            ownPubkey = ownPubkey,
-                                            isMuted = mutedPubkeys.contains(message.pubkey),
-                                        )
-                                        HorizontalDivider()
-                                    }
-                                    if (s.canLoadMore) {
-                                        item {
-                                            Box(
-                                                modifier = Modifier
-                                                    .fillMaxWidth()
-                                                    .padding(16.dp),
-                                                contentAlignment = Alignment.Center,
-                                            ) {
-                                                FilledTonalButton(onClick = viewModel::loadMore) {
-                                                    Text("さらに読み込む")
-                                                }
+                        Box(modifier = Modifier.fillMaxSize()) {
+                            LazyColumn(
+                                state = listState,
+                                modifier = Modifier.fillMaxSize(),
+                            ) {
+                                items(s.messages, key = { it.id }) { message ->
+                                    NoteCard(
+                                        event = message,
+                                        profile = s.profiles[message.pubkey],
+                                        profiles = s.profiles,
+                                        replyCount = 0,
+                                        reactionCount = 0,
+                                        onUserClick = onUserClick,
+                                        onOpenReplies = { onOpenThread(message.id) },
+                                        onOpenLikes = { onOpenLikes(message.id) },
+                                        onOpenReposts = { onOpenReposts(message.id) },
+                                        ownPubkey = ownPubkey,
+                                        isMuted = mutedPubkeys.contains(message.pubkey),
+                                    )
+                                    HorizontalDivider()
+                                }
+                                if (s.canLoadMore) {
+                                    item {
+                                        Box(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .padding(16.dp),
+                                            contentAlignment = Alignment.Center,
+                                        ) {
+                                            FilledTonalButton(onClick = viewModel::loadMore) {
+                                                Text("さらに読み込む")
                                             }
                                         }
                                     }
                                 }
-                                LazyListScrollbar(
-                                    state = listState,
-                                    modifier = Modifier
-                                        .align(Alignment.CenterEnd)
-                                        .fillMaxHeight()
-                                        .padding(vertical = 8.dp, horizontal = 2.dp)
-                                        .width(16.dp),
-                                )
                             }
-                        }
-                    }
-                }
-            }
-
-            // 入力バー
-            val ready = state as? ChannelViewModel.UiState.Ready
-            HorizontalDivider()
-            Column(modifier = Modifier.fillMaxWidth()) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 8.dp, vertical = 4.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(4.dp),
-                ) {
-                    OutlinedTextField(
-                        value = ready?.draftText ?: "",
-                        onValueChange = viewModel::onDraftChange,
-                        modifier = Modifier.weight(1f),
-                        placeholder = { Text("メッセージを入力…") },
-                        maxLines = 4,
-                        enabled = ready != null && !ready.isPosting,
-                    )
-                    IconButton(
-                        onClick = viewModel::sendMessage,
-                        enabled = ready != null && ready.draftText.isNotBlank() && !ready.isPosting,
-                    ) {
-                        if (ready?.isPosting == true) {
-                            CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
-                        } else {
-                            Icon(
-                                Icons.AutoMirrored.Filled.Send,
-                                contentDescription = "送信",
-                                tint = if (ready != null && ready.draftText.isNotBlank())
-                                    MaterialTheme.colorScheme.primary
-                                else
-                                    MaterialTheme.colorScheme.onSurfaceVariant,
+                            LazyListScrollbar(
+                                state = listState,
+                                modifier = Modifier
+                                    .align(Alignment.CenterEnd)
+                                    .fillMaxHeight()
+                                    .padding(vertical = 8.dp, horizontal = 2.dp)
+                                    .width(16.dp),
                             )
                         }
                     }
-                }
-                if (ready?.postError != null) {
-                    Text(
-                        text = ready.postError,
-                        color = MaterialTheme.colorScheme.error,
-                        style = MaterialTheme.typography.labelSmall,
-                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 2.dp),
-                    )
                 }
             }
         }
@@ -373,6 +328,64 @@ fun ChannelScreen(
                 }
             },
         )
+    }
+}
+
+@Composable
+private fun ChannelMessageInputBar(
+    ready: ChannelViewModel.UiState.Ready?,
+    onDraftChange: (String) -> Unit,
+    onSend: () -> Unit,
+) {
+    HorizontalDivider()
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .imePadding()
+            .navigationBarsPadding(),
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 8.dp, vertical = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            OutlinedTextField(
+                value = ready?.draftText ?: "",
+                onValueChange = onDraftChange,
+                modifier = Modifier.weight(1f),
+                placeholder = { Text("メッセージを入力…") },
+                maxLines = 4,
+                enabled = ready != null && !ready.isPosting,
+            )
+            IconButton(
+                onClick = onSend,
+                enabled = ready != null && ready.draftText.isNotBlank() && !ready.isPosting,
+            ) {
+                if (ready?.isPosting == true) {
+                    CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
+                } else {
+                    Icon(
+                        Icons.AutoMirrored.Filled.Send,
+                        contentDescription = "送信",
+                        tint = if (ready != null && ready.draftText.isNotBlank()) {
+                            MaterialTheme.colorScheme.primary
+                        } else {
+                            MaterialTheme.colorScheme.onSurfaceVariant
+                        },
+                    )
+                }
+            }
+        }
+        if (ready?.postError != null) {
+            Text(
+                text = ready.postError,
+                color = MaterialTheme.colorScheme.error,
+                style = MaterialTheme.typography.labelSmall,
+                modifier = Modifier.padding(horizontal = 12.dp, vertical = 2.dp),
+            )
+        }
     }
 }
 

@@ -2,6 +2,8 @@ package com.nostr.torinos.ui.post
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -50,6 +52,7 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.nostr.torinos.network.RelayEntry
 import com.nostr.torinos.ui.components.rememberImagePickerLauncher
@@ -81,9 +84,22 @@ fun PostSheet(
         }
     }
 
-    Dialog(onDismissRequest = onDismiss) {
-        Card {
-            Box(modifier = Modifier.padding(top = 8.dp)) {
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false),
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(16.dp)
+                .imePadding(),
+            contentAlignment = Alignment.Center,
+        ) {
+            Card(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = 560.dp),
+            ) {
                 PostSheetContent(
                     state = state,
                     title = if (replyToId != null) "返信" else "新しいポスト",
@@ -121,8 +137,7 @@ private fun PostSheetContent(
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 16.dp)
-            .imePadding(),
+            .padding(horizontal = 16.dp, vertical = 12.dp),
     ) {
         Text(
             text = title,
@@ -130,53 +145,68 @@ private fun PostSheetContent(
         )
         Spacer(modifier = Modifier.height(12.dp))
 
-        replyToPreview?.takeIf { it.isNotBlank() }?.let { preview ->
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .border(
-                        width = 1.dp,
-                        color = MaterialTheme.colorScheme.outlineVariant,
-                        shape = MaterialTheme.shapes.small,
-                    )
-                    .padding(10.dp),
-                verticalArrangement = Arrangement.spacedBy(4.dp),
-            ) {
-                Text(
-                    text = "返信先",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                Text(
-                    text = preview,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurface,
-                    maxLines = 3,
-                    overflow = TextOverflow.Ellipsis,
-                )
-            }
-            Spacer(modifier = Modifier.height(12.dp))
-        }
-
-        OutlinedTextField(
-            value = state.text,
-            onValueChange = { if (it.length <= MAX_CHARS) onTextChange(it) },
+        Column(
             modifier = Modifier
-                .fillMaxWidth()
-                .height(140.dp),
-            placeholder = { Text("今何してる？") },
-            maxLines = 6,
-        )
-
-        if (state.images.isNotEmpty()) {
-            Spacer(modifier = Modifier.height(10.dp))
-            LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                items(state.images, key = { it.id }) { attachment ->
-                    ImageThumbnail(
-                        attachment = attachment,
-                        onRemove = { onRemoveImage(attachment.id) },
+                .weight(1f, fill = false)
+                .verticalScroll(rememberScrollState()),
+        ) {
+            replyToPreview?.takeIf { it.isNotBlank() }?.let { preview ->
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .border(
+                            width = 1.dp,
+                            color = MaterialTheme.colorScheme.outlineVariant,
+                            shape = MaterialTheme.shapes.small,
+                        )
+                        .padding(10.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
+                    Text(
+                        text = "返信先",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Text(
+                        text = preview,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurface,
+                        maxLines = 3,
+                        overflow = TextOverflow.Ellipsis,
                     )
                 }
+                Spacer(modifier = Modifier.height(12.dp))
+            }
+
+            OutlinedTextField(
+                value = state.text,
+                onValueChange = { if (it.length <= MAX_CHARS) onTextChange(it) },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(140.dp),
+                placeholder = { Text("今何してる？") },
+                maxLines = 6,
+            )
+
+            if (state.images.isNotEmpty()) {
+                Spacer(modifier = Modifier.height(10.dp))
+                LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    items(state.images, key = { it.id }) { attachment ->
+                        ImageThumbnail(
+                            attachment = attachment,
+                            onRemove = { onRemoveImage(attachment.id) },
+                        )
+                    }
+                }
+            }
+
+            state.error?.let { error ->
+                Spacer(modifier = Modifier.height(8.dp))
+                Text(
+                    text = error,
+                    color = MaterialTheme.colorScheme.error,
+                    style = MaterialTheme.typography.labelSmall,
+                )
             }
         }
 
@@ -251,17 +281,6 @@ private fun PostSheetContent(
                 }
             }
         }
-
-        state.error?.let { error ->
-            Text(
-                text = error,
-                color = MaterialTheme.colorScheme.error,
-                style = MaterialTheme.typography.labelSmall,
-                modifier = Modifier.padding(bottom = 8.dp),
-            )
-        }
-
-        Spacer(modifier = Modifier.height(8.dp))
     }
 }
 

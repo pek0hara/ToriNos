@@ -72,6 +72,7 @@ class FeedViewModel(
     private val seenEventIds = linkedSetOf<String>()
     private val rawEvents = linkedMapOf<String, NostrEvent>()
     private val canonicalEvents = linkedMapOf<String, NostrEvent>()
+    private val eventSortTimes = mutableMapOf<String, Long>()
     private val pendingQuoteIds = linkedSetOf<String>()
     private val pendingRepostTargets = mutableMapOf<String, PendingRepostTarget>()
     private var subscriptionsStarted = false
@@ -115,6 +116,7 @@ class FeedViewModel(
             seenEventIds.remove(eventId)
             rawEvents.remove(eventId)
             canonicalEvents.remove(eventId)
+            eventSortTimes.remove(eventId)
         }
     }
 
@@ -238,7 +240,7 @@ class FeedViewModel(
                 // タブ再表示時はライブ購読を再開し、離れていた間のギャップを補完する
                 val nowSec = Clock.System.now().epochSeconds
                 subscribeLiveFeed(since = nowSec)
-                val gapSince = rawEvents.values.maxOfOrNull { it.createdAt }
+                val gapSince = eventSortTimes.values.maxOrNull()
                 if (gapSince != null && gapSince < nowSec - 5) {
                     requestGapFill(since = gapSince, until = nowSec)
                 }
@@ -408,7 +410,7 @@ class FeedViewModel(
             NostrRepository.events(ids.repostTarget).collect { event ->
                 if (event.kind != 1) return@collect
                 val pending = pendingRepostTargets.remove(event.id) ?: return@collect
-                appendEvent(event.copy(createdAt = pending.repostedAt))
+                appendEvent(event, timelineCreatedAt = pending.repostedAt)
                 markRepostedBy(event.id, pending.reposterPubkey)
                 scheduleProfileFetch(event.pubkey)
                 scheduleProfileFetch(pending.reposterPubkey)
@@ -577,7 +579,7 @@ class FeedViewModel(
     }
 
     private fun liveSince(): Long {
-        val latestEventAt = rawEvents.values.maxOfOrNull { it.createdAt }
+        val latestEventAt = eventSortTimes.values.maxOrNull()
         val recentWindowStart = Clock.System.now().epochSeconds - LIVE_SUBSCRIPTION_SINCE_OVERLAP_SECONDS
         return maxOf(latestEventAt ?: recentWindowStart, recentWindowStart)
     }
@@ -606,22 +608,30 @@ class FeedViewModel(
     }
 
     /** イベントをリストに追加し、追加できた件数（0 or 1）を返す */
-    private fun appendEvent(event: NostrEvent): Int {
+    private fun appendEvent(event: NostrEvent, timelineCreatedAt: Long = event.createdAt): Int {
         if (event.kind != 1) return 0
-        if (!rememberSeenId(seenEventIds, event.id)) return 0
+        if (!rememberSeenId(seenEventIds, event.id)) {
+            updateTimelineSortTime(event.id, timelineCreatedAt)
+            return 0
+        }
         rawEvents[event.id] = event
         if (event.id !in canonicalEvents) {
             canonicalEvents[event.id] = event
         }
-        while (rawEvents.size > MAX_SEEN_IDS) rawEvents.remove(rawEvents.keys.first())
+        eventSortTimes[event.id] = timelineCreatedAt
+        while (rawEvents.size > MAX_SEEN_IDS) {
+            val removedId = rawEvents.keys.first()
+            rawEvents.remove(removedId)
+            eventSortTimes.remove(removedId)
+        }
         while (canonicalEvents.size > MAX_SEEN_IDS) canonicalEvents.remove(canonicalEvents.keys.first())
-        if (oldestCreatedAt == null || event.createdAt < (oldestCreatedAt ?: Long.MAX_VALUE)) {
-            oldestCreatedAt = event.createdAt
+        if (oldestCreatedAt == null || timelineCreatedAt < (oldestCreatedAt ?: Long.MAX_VALUE)) {
+            oldestCreatedAt = timelineCreatedAt
         }
         if (isFiltered(event)) return 0
         val cur = _state.value
         if (cur.events.any { it.id == event.id }) return 0
-        val updated = (cur.events + event).sortedByDescending { it.createdAt }
+        val updated = sortTimelineEvents(cur.events + event)
         _state.value = cur.copy(events = updated)
         val quoteIds = quotedEventIds(event)
         scheduleQuoteFetch(quoteIds)
@@ -637,7 +647,7 @@ class FeedViewModel(
     private fun rebuildFilteredEvents() {
         val filtered = rawEvents.values
             .filter { !isFiltered(it) }
-            .sortedByDescending { it.createdAt }
+            .let(::sortTimelineEvents)
         _state.value = _state.value.copy(events = filtered)
     }
 
@@ -652,15 +662,12 @@ class FeedViewModel(
 
         if (targetEvent != null) {
             canonicalEvents[targetEvent.id] = targetEvent
-            val timelineEvent = targetEvent.copy(createdAt = repost.createdAt)
-            val appended = appendEvent(timelineEvent)
-            if (appended > 0) {
-                markRepostedBy(targetEvent.id, repost.pubkey)
-                    scheduleProfileFetch(targetEvent.pubkey)
-                    scheduleProfileFetch(repost.pubkey)
-                    scheduleMentionedProfileFetch(targetEvent.content)
-                    scheduleEngagementFetch(targetEvent.id)
-                }
+            val appended = appendEvent(targetEvent, timelineCreatedAt = repost.createdAt)
+            markRepostedBy(targetEvent.id, repost.pubkey)
+            scheduleProfileFetch(targetEvent.pubkey)
+            scheduleProfileFetch(repost.pubkey)
+            scheduleMentionedProfileFetch(targetEvent.content)
+            scheduleEngagementFetch(targetEvent.id)
             return appended
         }
 
@@ -702,6 +709,18 @@ class FeedViewModel(
             repostedByPubkeys = cur.repostedByPubkeys + (eventId to reposterPubkey),
         )
     }
+
+    private fun updateTimelineSortTime(eventId: String, timelineCreatedAt: Long) {
+        val currentSortTime = eventSortTimes[eventId]
+        if (currentSortTime != null && timelineCreatedAt <= currentSortTime) return
+        eventSortTimes[eventId] = timelineCreatedAt
+        val cur = _state.value
+        if (cur.events.none { it.id == eventId }) return
+        _state.value = cur.copy(events = sortTimelineEvents(cur.events))
+    }
+
+    private fun sortTimelineEvents(events: List<NostrEvent>): List<NostrEvent> =
+        events.sortedByDescending { eventSortTimes[it.id] ?: it.createdAt }
 
     private fun rememberSeenId(seenIds: LinkedHashSet<String>, eventId: String): Boolean {
         if (!seenIds.add(eventId)) return false

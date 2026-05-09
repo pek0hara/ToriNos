@@ -25,6 +25,7 @@ import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.FileDownload
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
@@ -81,6 +82,7 @@ internal fun ProfileHeader(
     onMuteToggle: () -> Unit = {},
     onUserClick: (String) -> Unit = {},
     onBack: (() -> Unit)? = null,
+    onOpenSettings: (() -> Unit)? = null,
     onEditBanner: (() -> Unit)? = null,
     onEditAvatar: (() -> Unit)? = null,
     onEditName: (() -> Unit)? = null,
@@ -90,7 +92,10 @@ internal fun ProfileHeader(
     val coroutineScope = rememberCoroutineScope()
     val npub = remember(pubkey) { hexToNpub(pubkey) }
     var pubkeyCopied by remember(pubkey) { mutableStateOf(false) }
-    val hasBannerArea = !profile?.banner.isNullOrBlank() || (isOwnProfile && onEditBanner != null) || onBack != null
+    val hasBannerArea = !profile?.banner.isNullOrBlank() ||
+        (isOwnProfile && onEditBanner != null) ||
+        onBack != null ||
+        (isOwnProfile && onOpenSettings != null)
 
     LaunchedEffect(pubkeyCopied) {
         if (pubkeyCopied) {
@@ -150,6 +155,22 @@ internal fun ProfileHeader(
                         Icon(
                             Icons.AutoMirrored.Filled.ArrowBack,
                             contentDescription = "戻る",
+                            tint = Color.White,
+                        )
+                    }
+                }
+                if (isOwnProfile && onOpenSettings != null) {
+                    IconButton(
+                        onClick = onOpenSettings,
+                        modifier = Modifier
+                            .align(Alignment.TopEnd)
+                            .statusBarsPadding()
+                            .padding(end = 8.dp, top = 8.dp)
+                            .background(Color.Black.copy(alpha = 0.35f), CircleShape),
+                    ) {
+                        Icon(
+                            Icons.Default.Settings,
+                            contentDescription = "設定",
                             tint = Color.White,
                         )
                     }
@@ -333,20 +354,20 @@ private fun ProfileAvatar(
     onEditAvatar: (() -> Unit)?,
     modifier: Modifier = Modifier,
 ) {
-    if (onEditAvatar != null) {
-        Box(modifier = modifier.size(size.dp)) {
-            val avatarFrameModifier = if (size >= 80) {
-                Modifier.border(4.dp, MaterialTheme.colorScheme.surface, CircleShape)
-            } else {
-                Modifier
-            }
-            AvatarCircle(
-                pubkey = pubkey,
-                name = profile?.bestName,
-                pictureUrl = profile?.picture,
-                size = size,
-                modifier = avatarFrameModifier,
-            )
+    Box(modifier = modifier.size(size.dp)) {
+        val avatarFrameModifier = if (onEditAvatar != null && size >= 80) {
+            Modifier.border(4.dp, MaterialTheme.colorScheme.surface, CircleShape)
+        } else {
+            Modifier
+        }
+        AvatarCircle(
+            pubkey = pubkey,
+            name = profile?.bestName,
+            pictureUrl = profile?.picture,
+            size = size,
+            modifier = avatarFrameModifier,
+        )
+        if (onEditAvatar != null) {
             Box(
                 modifier = Modifier
                     .align(Alignment.BottomEnd)
@@ -364,14 +385,6 @@ private fun ProfileAvatar(
                 )
             }
         }
-    } else {
-        AvatarCircle(
-            pubkey = pubkey,
-            name = profile?.bestName,
-            pictureUrl = profile?.picture,
-            size = size,
-            modifier = modifier,
-        )
     }
 }
 
@@ -572,6 +585,7 @@ internal fun AvatarCircle(pubkey: String, name: String?, pictureUrl: String? = n
         Box(
             modifier = modifier
                 .size(size.dp)
+                .clip(CircleShape)
                 .background(avatarColor(pubkey), CircleShape),
             contentAlignment = Alignment.Center,
         ) {

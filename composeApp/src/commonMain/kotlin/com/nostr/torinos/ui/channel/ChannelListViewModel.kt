@@ -60,6 +60,7 @@ class ChannelListViewModel(private val relayUrl: String? = null) : SafeViewModel
     data class CreateDialogState(
         val name: String = "",
         val about: String = "",
+        val body: String = "",
         val isCreating: Boolean = false,
         val error: String? = null,
     )
@@ -67,7 +68,9 @@ class ChannelListViewModel(private val relayUrl: String? = null) : SafeViewModel
     data class DeleteDialogState(
         val channelId: String,
         val channelName: String,
+        val deleteFromRelays: Boolean = false,
         val isDeleting: Boolean = false,
+        val error: String? = null,
     )
 
     data class BulkDeleteDialogState(
@@ -81,6 +84,7 @@ class ChannelListViewModel(private val relayUrl: String? = null) : SafeViewModel
             val createDialog: CreateDialogState? = null,
             val deleteDialog: DeleteDialogState? = null,
             val bulkDeleteDialog: BulkDeleteDialogState? = null,
+            val createdChannelIdToOpen: String? = null,
             val canLoadMore: Boolean = false,
             val isLoadingMore: Boolean = false,
         ) : UiState
@@ -270,9 +274,15 @@ class ChannelListViewModel(private val relayUrl: String? = null) : SafeViewModel
         }
     }
 
-    fun showDeleteDialog(channelId: String, channelName: String) {
+    fun showDeleteDialog(channelId: String, channelName: String, deleteFromRelays: Boolean) {
         val current = _state.value as? UiState.Ready ?: return
-        _state.value = current.copy(deleteDialog = DeleteDialogState(channelId, channelName))
+        _state.value = current.copy(
+            deleteDialog = DeleteDialogState(
+                channelId = channelId,
+                channelName = channelName,
+                deleteFromRelays = deleteFromRelays,
+            ),
+        )
     }
 
     fun dismissDeleteDialog() {
@@ -284,14 +294,58 @@ class ChannelListViewModel(private val relayUrl: String? = null) : SafeViewModel
         val current = _state.value as? UiState.Ready ?: return
         val dialog = current.deleteDialog ?: return
         if (dialog.isDeleting) return
-        val cacheRelayUrl = relayUrl ?: return
-        _state.value = current.copy(deleteDialog = dialog.copy(isDeleting = true))
+        _state.value = current.copy(deleteDialog = dialog.copy(isDeleting = true, error = null))
         launch {
-            runCatching {
-                ChannelCacheStore.deleteChannel(cacheRelayUrl, dialog.channelId)
+            if (dialog.deleteFromRelays) {
+                val privateKeyHex = KeyStorage.loadPrivateKey() ?: run {
+                    val s = _state.value as? UiState.Ready ?: return@launch
+                    _state.value = s.copy(
+                        deleteDialog = s.deleteDialog?.copy(
+                            isDeleting = false,
+                            error = "秘密鍵が設定されていません",
+                        ),
+                    )
+                    return@launch
+                }
+                runCatching {
+                    val deletion = signEvent(
+                        privateKeyHex = privateKeyHex,
+                        content = "",
+                        kind = 5,
+                        tags = listOf(
+                            listOf("e", dialog.channelId),
+                            listOf("k", "40"),
+                            listOf("client", "ToriNos"),
+                        ),
+                    )
+                    NostrRepository.publish(deletion)
+                    relayUrl?.let { ChannelCacheStore.deleteChannel(it, dialog.channelId) }
+                }.onSuccess {
+                    channelMap.remove(dialog.channelId)
+                    cachedChannels.remove(dialog.channelId)
+                    val s = _state.value as? UiState.Ready ?: return@launch
+                    _state.value = s.copy(
+                        channels = buildChannelList(),
+                        deleteDialog = null,
+                    )
+                }.onFailure { e ->
+                    val s = _state.value as? UiState.Ready ?: return@launch
+                    _state.value = s.copy(
+                        deleteDialog = s.deleteDialog?.copy(
+                            isDeleting = false,
+                            error = e.message ?: "削除要求を送信できませんでした",
+                        ),
+                    )
+                }
+            } else {
+                relayUrl?.let { cacheRelayUrl ->
+                    runCatching {
+                        ChannelCacheStore.deleteChannel(cacheRelayUrl, dialog.channelId)
+                    }
+                }
+                val s = _state.value as? UiState.Ready ?: return@launch
+                _state.value = s.copy(deleteDialog = null)
             }
-            val s = _state.value as? UiState.Ready ?: return@launch
-            _state.value = s.copy(deleteDialog = null)
         }
     }
 
@@ -341,6 +395,11 @@ class ChannelListViewModel(private val relayUrl: String? = null) : SafeViewModel
         _state.value = current.copy(createDialog = null)
     }
 
+    fun consumeCreatedChannelNavigation() {
+        val current = _state.value as? UiState.Ready ?: return
+        _state.value = current.copy(createdChannelIdToOpen = null)
+    }
+
     fun onCreateNameChange(name: String) {
         val current = _state.value as? UiState.Ready ?: return
         _state.value = current.copy(createDialog = current.createDialog?.copy(name = name, error = null))
@@ -349,6 +408,11 @@ class ChannelListViewModel(private val relayUrl: String? = null) : SafeViewModel
     fun onCreateAboutChange(about: String) {
         val current = _state.value as? UiState.Ready ?: return
         _state.value = current.copy(createDialog = current.createDialog?.copy(about = about, error = null))
+    }
+
+    fun onCreateBodyChange(body: String) {
+        val current = _state.value as? UiState.Ready ?: return
+        _state.value = current.copy(createDialog = current.createDialog?.copy(body = body, error = null))
     }
 
     fun createChannel() {
@@ -363,16 +427,42 @@ class ChannelListViewModel(private val relayUrl: String? = null) : SafeViewModel
                 return@launch
             }
             runCatching {
+                val meta = ChannelMeta(
+                    name = dialog.name.trim(),
+                    about = dialog.about.trim(),
+                    picture = "",
+                )
                 val content = buildJsonObject {
-                    put("name", dialog.name.trim())
-                    put("about", dialog.about.trim())
+                    put("name", meta.name)
+                    put("about", meta.about)
                     put("picture", "")
                 }.toString()
                 val event = signEvent(privateKeyHex, content, kind = 40, tags = listOf(listOf("client", "ToriNos")))
                 NostrRepository.publish(event)
-            }.onSuccess {
+                val firstPost = dialog.body.trim().takeIf { it.isNotBlank() }?.let { body ->
+                    signEvent(
+                        privateKeyHex = privateKeyHex,
+                        content = body,
+                        kind = 42,
+                        tags = listOf(listOf("e", event.id, "", "root"), listOf("client", "ToriNos")),
+                    ).also { NostrRepository.publish(it) }
+                }
+                Triple(event, meta, firstPost)
+            }.onSuccess { (event, meta, firstPost) ->
+                channelMap[event.id] = ChannelItem(event, meta)
+                lastActivities[event.id] = firstPost?.createdAt ?: event.createdAt
+                relayUrl?.let { ChannelCacheStore.upsertChannel(it, event, meta) }
+                firstPost?.let { post ->
+                    seenMessageIds.add(post.id)
+                    updateActivity(post, event.id)
+                }
+                scheduleAuthorSubscription()
                 val s = _state.value as? UiState.Ready ?: return@launch
-                _state.value = s.copy(createDialog = null)
+                _state.value = s.copy(
+                    channels = buildChannelList(),
+                    createDialog = null,
+                    createdChannelIdToOpen = event.id,
+                )
             }.onFailure { e ->
                 val s = _state.value as? UiState.Ready ?: return@launch
                 _state.value = s.copy(createDialog = s.createDialog?.copy(isCreating = false, error = e.message ?: "作成に失敗しました"))
@@ -410,6 +500,7 @@ class ChannelListViewModel(private val relayUrl: String? = null) : SafeViewModel
             createDialog = current?.createDialog,
             deleteDialog = current?.deleteDialog,
             bulkDeleteDialog = current?.bulkDeleteDialog,
+            createdChannelIdToOpen = current?.createdChannelIdToOpen,
             canLoadMore = current?.canLoadMore ?: false,
             isLoadingMore = current?.isLoadingMore ?: false,
         )
@@ -563,7 +654,10 @@ class ChannelListViewModel(private val relayUrl: String? = null) : SafeViewModel
                     )
                 }
             }
-            .sortedByDescending { it.lastActivityAt ?: it.event.createdAt }
+            .sortedWith(
+                compareBy<ChannelItem> { it.lastActivityAt == null }
+                    .thenByDescending { it.lastActivityAt ?: it.event.createdAt },
+            )
 
     private fun CachedChannelSummary.toChannelItem(): ChannelItem =
         ChannelItem(

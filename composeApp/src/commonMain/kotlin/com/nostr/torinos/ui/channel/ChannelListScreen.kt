@@ -94,6 +94,28 @@ fun ChannelListScreen(
     }
     val state by viewModel.state.collectAsState()
     val listState = rememberSaveable(activeRelayUrl, saver = LazyListState.Saver) { LazyListState() }
+    val createdChannelIdToOpen = (state as? ChannelListViewModel.UiState.Ready)?.createdChannelIdToOpen
+
+    LaunchedEffect(createdChannelIdToOpen) {
+        val channelId = createdChannelIdToOpen ?: return@LaunchedEffect
+        viewModel.consumeCreatedChannelNavigation()
+        onChannelClick(channelId)
+    }
+
+    var previousTopKey by remember(activeRelayUrl) { mutableStateOf<String?>(null) }
+    val currentTopKey = (state as? ChannelListViewModel.UiState.Ready)?.channels?.firstOrNull()?.event?.id
+
+    LaunchedEffect(currentTopKey) {
+        val prev = previousTopKey
+        val curr = currentTopKey
+        if (curr != null && prev != null && curr != prev) {
+            val firstVisibleKey = listState.layoutInfo.visibleItemsInfo.firstOrNull()?.key as? String
+            if (firstVisibleKey == prev) {
+                listState.scrollToItem(0)
+            }
+        }
+        previousTopKey = curr
+    }
 
     LaunchedEffect(listState) {
         snapshotFlow {
@@ -248,6 +270,7 @@ fun ChannelListScreen(
                                         viewModel.showDeleteDialog(
                                             channelId = item.event.id,
                                             channelName = item.meta.name.ifBlank { "（名前なし）" },
+                                            deleteFromRelays = ownPubkey != null && item.event.pubkey == ownPubkey,
                                         )
                                     },
                                     onFavoriteClick = { viewModel.toggleFavorite(item.event.id) },
@@ -278,9 +301,24 @@ fun ChannelListScreen(
     if (deleteDialog != null) {
         AlertDialog(
             onDismissRequest = { if (!deleteDialog.isDeleting) viewModel.dismissDeleteDialog() },
-            title = { Text("キャッシュを削除") },
+            title = { Text(if (deleteDialog.deleteFromRelays) "チャンネルを削除" else "キャッシュを削除") },
             text = {
-                Text("「${deleteDialog.channelName}」のキャッシュデータを削除します。既読情報が消えます。")
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        if (deleteDialog.deleteFromRelays) {
+                            "「${deleteDialog.channelName}」の削除要求をリレーへ送信し、この端末のキャッシュからも削除します。対応していないリレーからの削除は保証されません。"
+                        } else {
+                            "「${deleteDialog.channelName}」のキャッシュデータを削除します。既読情報が消えます。"
+                        },
+                    )
+                    deleteDialog.error?.let {
+                        Text(
+                            text = it,
+                            color = MaterialTheme.colorScheme.error,
+                            style = MaterialTheme.typography.labelSmall,
+                        )
+                    }
+                }
             },
             confirmButton = {
                 Button(
@@ -345,6 +383,7 @@ fun ChannelListScreen(
             onDismiss = viewModel::dismissCreateDialog,
             onNameChange = viewModel::onCreateNameChange,
             onAboutChange = viewModel::onCreateAboutChange,
+            onBodyChange = viewModel::onCreateBodyChange,
             onCreate = viewModel::createChannel,
         )
     }
@@ -356,10 +395,12 @@ private fun CreateChannelDialog(
     onDismiss: () -> Unit,
     onNameChange: (String) -> Unit,
     onAboutChange: (String) -> Unit,
+    onBodyChange: (String) -> Unit,
     onCreate: () -> Unit,
 ) {
     var nameValue by remember { mutableStateOf(TextFieldValue(dialog.name)) }
     var aboutValue by remember { mutableStateOf(TextFieldValue(dialog.about)) }
+    var bodyValue by remember { mutableStateOf(TextFieldValue(dialog.body)) }
 
     AlertDialog(
         onDismissRequest = { if (!dialog.isCreating) onDismiss() },
@@ -387,6 +428,19 @@ private fun CreateChannelDialog(
                     maxLines = 3,
                     enabled = !dialog.isCreating,
                     modifier = Modifier.fillMaxWidth(),
+                )
+                OutlinedTextField(
+                    value = bodyValue,
+                    onValueChange = {
+                        bodyValue = it
+                        onBodyChange(it.text)
+                    },
+                    label = { Text("本文") },
+                    maxLines = 6,
+                    enabled = !dialog.isCreating,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .defaultMinSize(minHeight = 120.dp),
                 )
                 if (dialog.error != null) {
                     Text(

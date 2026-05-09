@@ -1,18 +1,22 @@
 package com.nostr.torinos.ui.feed
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyListState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.Search
-import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -36,8 +40,10 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
 import androidx.compose.runtime.collectAsState
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.nostr.torinos.model.NostrProfile
@@ -50,6 +56,7 @@ import com.nostr.torinos.ui.profile.AvatarCircle
 @Composable
 fun FeedScreen(
     onOpenSettings: () -> Unit = {},
+    onOpenNotifications: () -> Unit = {},
     onUserClick: (pubkey: String) -> Unit = {},
     onOpenProfile: () -> Unit = {},
     onReply: ((eventId: String, authorPubkey: String, preview: String) -> Unit)? = null,
@@ -59,6 +66,7 @@ fun FeedScreen(
     onOpenSearch: (query: String) -> Unit = {},
     ownPubkey: String? = null,
     ownProfile: NostrProfile? = null,
+    isAccountLoaded: Boolean = true,
     scrollToTopRequest: Int = 0,
     scrollToTopTargetTab: FeedTab = FeedTab.Following,
     onCurrentFeedTabChanged: (FeedTab) -> Unit = {},
@@ -66,6 +74,7 @@ fun FeedScreen(
     feedTabChangeRequest: Int = 0,
     followingListState: LazyListState? = null,
     globalListState: LazyListState? = null,
+    hasNotifications: Boolean = false,
     /** null = グローバルフィード、非null = 特定ユーザーのポスト */
     authorPubkey: String? = null,
 ) {
@@ -76,14 +85,24 @@ fun FeedScreen(
     var showRelayMenu by remember { mutableStateOf(false) }
     var feedTab by rememberSaveable { mutableStateOf(FeedTab.Following) }
     var handledScrollToTopRequest by remember { mutableStateOf(scrollToTopRequest) }
+    val isLoggedOutMainFeed = authorPubkey == null && isAccountLoaded && ownPubkey == null
+    val visibleFeedTabs = if (isLoggedOutMainFeed) listOf(FeedTab.Global) else FeedTab.entries
+    val visibleFeedTab = if (feedTab in visibleFeedTabs) feedTab else FeedTab.Global
 
     fun setFeedTab(tab: FeedTab) {
-        feedTab = tab
-        onCurrentFeedTabChanged(tab)
+        val nextTab = if (isLoggedOutMainFeed && tab == FeedTab.Following) FeedTab.Global else tab
+        feedTab = nextTab
+        onCurrentFeedTabChanged(nextTab)
     }
 
     LaunchedEffect(Unit) {
-        onCurrentFeedTabChanged(feedTab)
+        onCurrentFeedTabChanged(visibleFeedTab)
+    }
+
+    LaunchedEffect(isLoggedOutMainFeed) {
+        if (isLoggedOutMainFeed && feedTab == FeedTab.Following) {
+            setFeedTab(FeedTab.Global)
+        }
     }
 
     LaunchedEffect(feedTabChangeRequest) {
@@ -114,10 +133,10 @@ fun FeedScreen(
 
     val selectedFeedRelayUrl = when {
         authorPubkey != null -> selectedGlobalRelayUrl
-        feedTab == FeedTab.Following -> selectedFollowingRelayUrl
+        visibleFeedTab == FeedTab.Following -> selectedFollowingRelayUrl
         else -> selectedGlobalRelayUrl
     }
-    val canSelectAllRelays = authorPubkey == null && feedTab == FeedTab.Following
+    val canSelectAllRelays = authorPubkey == null && visibleFeedTab == FeedTab.Following
     val activeRelayUrl = selectedFeedRelayUrl
 
     Scaffold(
@@ -166,6 +185,13 @@ fun FeedScreen(
                                         } else null,
                                     )
                                 }
+                                DropdownMenuItem(
+                                    text = { Text("リレー設定") },
+                                    onClick = {
+                                        showRelayMenu = false
+                                        onOpenSettings()
+                                    },
+                                )
                                 relays.forEach { url ->
                                     DropdownMenuItem(
                                         text = { Text(url.relayDisplayName()) },
@@ -211,12 +237,24 @@ fun FeedScreen(
                                     tint = MaterialTheme.colorScheme.onPrimary,
                                 )
                             }
-                            IconButton(onClick = onOpenSettings) {
-                                Icon(
-                                    Icons.Default.Settings,
-                                    contentDescription = "リレー設定",
-                                    tint = MaterialTheme.colorScheme.onPrimary,
-                                )
+                            if (ownPubkey != null) {
+                                IconButton(onClick = onOpenNotifications) {
+                                    Box(modifier = Modifier.size(24.dp)) {
+                                        Icon(
+                                            Icons.Default.Notifications,
+                                            contentDescription = "通知",
+                                            tint = MaterialTheme.colorScheme.onPrimary,
+                                        )
+                                        if (hasNotifications) {
+                                            Box(
+                                                modifier = Modifier
+                                                    .align(Alignment.TopEnd)
+                                                    .size(8.dp)
+                                                    .background(Color.White, CircleShape)
+                                            )
+                                        }
+                                    }
+                                }
                             }
                         }
                     },
@@ -226,10 +264,10 @@ fun FeedScreen(
                     ),
                 )
                 if (authorPubkey == null) {
-                    PrimaryTabRow(selectedTabIndex = feedTab.ordinal) {
-                        FeedTab.entries.forEach { tab ->
+                    PrimaryTabRow(selectedTabIndex = visibleFeedTabs.indexOf(visibleFeedTab).coerceAtLeast(0)) {
+                        visibleFeedTabs.forEach { tab ->
                             Tab(
-                                selected = feedTab == tab,
+                                selected = visibleFeedTab == tab,
                                 onClick = { setFeedTab(tab) },
                                 text = { Text(tab.label) },
                             )
@@ -242,8 +280,8 @@ fun FeedScreen(
         val timelineModifier = Modifier
             .padding(padding)
             .feedTabSwipe(
-                enabled = authorPubkey == null,
-                currentTab = feedTab,
+                enabled = authorPubkey == null && visibleFeedTabs.size > 1,
+                currentTab = visibleFeedTab,
                 onTabChange = { setFeedTab(it) },
             )
 
@@ -268,7 +306,7 @@ fun FeedScreen(
                 )
             }
 
-            feedTab == FeedTab.Following -> {
+            visibleFeedTab == FeedTab.Following -> {
                 key(FeedTab.Following) {
                     val followingAuthors = followedPubkeys.sorted()
                     val ownerKey = ownPubkey ?: "anonymous"

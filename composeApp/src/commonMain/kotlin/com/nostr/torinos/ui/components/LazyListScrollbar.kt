@@ -21,7 +21,11 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.launch
+import kotlin.math.max
+import kotlin.math.min
 import kotlin.math.roundToInt
+
+private const val MinThumbHeightPx = 40f
 
 @Composable
 fun LazyListScrollbar(
@@ -43,19 +47,27 @@ fun LazyListScrollbar(
         val totalItems = layoutInfo.totalItemsCount
         val visibleItems = layoutInfo.visibleItemsInfo
 
-        if (totalItems <= 0 || visibleItems.isEmpty() || viewportHeightPx <= 0f) return@BoxWithConstraints
+        if (totalItems <= 0 || visibleItems.isEmpty() || viewportHeightPx <= MinThumbHeightPx) {
+            return@BoxWithConstraints
+        }
 
         val avgItemSize = visibleItems.sumOf { it.size } / visibleItems.size.toFloat()
-        val totalContentHeight = totalItems * avgItemSize
+        if (avgItemSize <= 0f) return@BoxWithConstraints
 
-        val thumbHeightPx = (viewportHeightPx * viewportHeightPx / totalContentHeight)
-            .coerceIn(40f, viewportHeightPx)
+        val totalContentHeight = totalItems * avgItemSize
+        if (totalContentHeight <= viewportHeightPx) return@BoxWithConstraints
+
+        val thumbHeightPx = calculateThumbHeight(
+            viewportHeightPx = viewportHeightPx,
+            totalContentHeight = totalContentHeight,
+        )
 
         val firstItem = visibleItems.first()
         val scrolledPx = firstItem.index * avgItemSize - firstItem.offset
         val maxScroll = totalContentHeight - viewportHeightPx
+        val maxThumbTop = (viewportHeightPx - thumbHeightPx).coerceAtLeast(0f)
         val thumbTopPx = if (maxScroll > 0f) {
-            (scrolledPx / maxScroll) * (viewportHeightPx - thumbHeightPx)
+            ((scrolledPx / maxScroll) * maxThumbTop).coerceIn(0f, maxThumbTop)
         } else 0f
 
         Canvas(
@@ -73,10 +85,18 @@ fun LazyListScrollbar(
                             val items = info.visibleItemsInfo
                             if (items.isEmpty()) return@detectVerticalDragGestures
                             val avg = items.sumOf { it.size } / items.size.toFloat()
+                            if (avg <= 0f || viewportHeightPx <= MinThumbHeightPx) {
+                                return@detectVerticalDragGestures
+                            }
                             val total = info.totalItemsCount
                             val totalHeight = total * avg
-                            val thumbH = (viewportHeightPx * viewportHeightPx / totalHeight)
-                                .coerceIn(40f, viewportHeightPx)
+                            if (total <= 0 || totalHeight <= viewportHeightPx) {
+                                return@detectVerticalDragGestures
+                            }
+                            val thumbH = calculateThumbHeight(
+                                viewportHeightPx = viewportHeightPx,
+                                totalContentHeight = totalHeight,
+                            )
                             val trackRange = viewportHeightPx - thumbH
                             if (trackRange <= 0f) return@detectVerticalDragGestures
                             val first = items.first()
@@ -110,4 +130,12 @@ fun LazyListScrollbar(
             )
         }
     }
+}
+
+private fun calculateThumbHeight(
+    viewportHeightPx: Float,
+    totalContentHeight: Float,
+): Float {
+    val rawHeight = viewportHeightPx * viewportHeightPx / totalContentHeight
+    return min(max(rawHeight, MinThumbHeightPx), viewportHeightPx)
 }

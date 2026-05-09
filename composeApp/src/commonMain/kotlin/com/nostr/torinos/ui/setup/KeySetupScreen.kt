@@ -9,6 +9,8 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
@@ -58,6 +60,8 @@ import com.nostr.torinos.crypto.normalizePrivateKey
 import com.nostr.torinos.crypto.rememberPasswordManagerSaver
 import com.nostr.torinos.crypto.toHex
 import com.nostr.torinos.model.NostrProfile
+import com.nostr.torinos.ui.components.EditableImage
+import com.nostr.torinos.ui.components.ImageCropperDialog
 import com.nostr.torinos.ui.components.rememberImagePickerLauncher
 import com.nostr.torinos.ui.profile.AvatarCircle
 import com.nostr.torinos.ui.profile.EditProfileViewModel
@@ -86,6 +90,8 @@ fun KeySetupScreen(onSetupComplete: (pubkeyHex: String) -> Unit, onDismiss: (() 
             modifier = Modifier
                 .fillMaxSize()
                 .verticalScroll(rememberScrollState())
+                .imePadding()
+                .navigationBarsPadding()
                 .padding(24.dp),
             verticalArrangement = Arrangement.Center,
             horizontalAlignment = Alignment.CenterHorizontally,
@@ -235,8 +241,9 @@ private fun InitialProfileDialog(
     ),
 ) {
     val state by viewModel.state.collectAsState()
+    var imageToCrop by remember { mutableStateOf<EditableImage?>(null) }
     val pickImage = rememberImagePickerLauncher { bytes, mime ->
-        if (bytes != null && mime != null) viewModel.uploadProfileImage(bytes, mime)
+        if (bytes != null && mime != null) imageToCrop = EditableImage(bytes, mime)
     }
 
     LaunchedEffect(state.saved) {
@@ -332,6 +339,20 @@ private fun InitialProfileDialog(
                 }
             }
         }
+    }
+
+    imageToCrop?.let { image ->
+        ImageCropperDialog(
+            image = image,
+            title = "プロフィール画像を調整",
+            aspectRatio = 1f,
+            circularMask = true,
+            onDismiss = { imageToCrop = null },
+            onCropped = { bytes, mime ->
+                imageToCrop = null
+                viewModel.uploadProfileImage(bytes, mime)
+            },
+        )
     }
 }
 

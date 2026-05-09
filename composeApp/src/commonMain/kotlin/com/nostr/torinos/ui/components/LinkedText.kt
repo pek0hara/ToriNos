@@ -1,5 +1,6 @@
 package com.nostr.torinos.ui.components
 
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.text.InlineTextContent
 import androidx.compose.foundation.text.appendInlineContent
@@ -10,11 +11,13 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.LinkAnnotation
 import androidx.compose.ui.text.Placeholder
 import androidx.compose.ui.text.PlaceholderVerticalAlign
 import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.text.TextLinkStyles
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.buildAnnotatedString
@@ -37,6 +40,9 @@ fun LinkedText(
     onProfileClick: ((pubkey: String) -> Unit)? = null,
     profiles: Map<String, NostrProfile> = emptyMap(),
     onHashtagClick: ((tag: String) -> Unit)? = null,
+    maxLines: Int = Int.MAX_VALUE,
+    overflow: androidx.compose.ui.text.style.TextOverflow = androidx.compose.ui.text.style.TextOverflow.Clip,
+    onTextLayout: ((TextLayoutResult) -> Unit)? = null,
 ) {
     val emojis by CustomEmojiStore.emojis.collectAsState()
     val emojiMap = remember(emojis) { emojis.associate { it.shortcode to it.imageUrl } }
@@ -144,19 +150,10 @@ fun LinkedText(
                         id = ":${segment.data.shortcode}:",
                         alternateText = ":${segment.data.shortcode}:",
                     )
-                    is Segment.UnregisteredEmoji -> {
-                        pushLink(
-                            LinkAnnotation.Clickable(
-                                tag = "emoji:${segment.data.shortcode}",
-                                styles = linkStyle,
-                                linkInteractionListener = {
-                                    CustomEmojiStore.requestOpenSearch(segment.data.shortcode)
-                                },
-                            ),
-                        )
-                        append(":${segment.data.shortcode}:")
-                        pop()
-                    }
+                    is Segment.UnregisteredEmoji -> appendInlineContent(
+                        id = unregisteredEmojiInlineContentId(segment.data.shortcode),
+                        alternateText = ":${segment.data.shortcode}:",
+                    )
                 }
                 cursor = segment.end
             }
@@ -166,24 +163,66 @@ fun LinkedText(
         }
     }
 
-    val inlineContent = emojiSegments.distinctBy { it.shortcode }.associate { emoji ->
-        ":${emoji.shortcode}:" to InlineTextContent(
-            Placeholder(
-                width = 1.2f.em,
-                height = 1.2f.em,
-                placeholderVerticalAlign = PlaceholderVerticalAlign.Center,
-            ),
-        ) {
-            NetworkImage(
-                url = emoji.imageUrl,
-                contentDescription = ":${emoji.shortcode}:",
-                contentScale = ContentScale.Fit,
-                modifier = Modifier.fillMaxSize(),
-            )
+    val inlineContent = remember(emojiSegments, unregisteredEmojiSegments, linkColor, style) {
+        buildMap {
+            emojiSegments.distinctBy { it.shortcode }.forEach { emoji ->
+                put(
+                    ":${emoji.shortcode}:",
+                    InlineTextContent(
+                        Placeholder(
+                            width = 1.2f.em,
+                            height = 1.2f.em,
+                            placeholderVerticalAlign = PlaceholderVerticalAlign.Center,
+                        ),
+                    ) {
+                        NetworkImage(
+                            url = emoji.imageUrl,
+                            contentDescription = ":${emoji.shortcode}:",
+                            contentScale = ContentScale.Fit,
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .clipToBounds(),
+                        )
+                    },
+                )
+            }
+            unregisteredEmojiSegments.distinctBy { it.shortcode }.forEach { emoji ->
+                val label = ":${emoji.shortcode}:"
+                put(
+                    unregisteredEmojiInlineContentId(emoji.shortcode),
+                    InlineTextContent(
+                        Placeholder(
+                            width = (label.length * 0.58f).em,
+                            height = 1.6f.em,
+                            placeholderVerticalAlign = PlaceholderVerticalAlign.Center,
+                        ),
+                    ) {
+                        Text(
+                            text = label,
+                            style = style.copy(
+                                color = linkColor,
+                                textDecoration = TextDecoration.Underline,
+                            ),
+                            modifier = Modifier.clickable {
+                                CustomEmojiStore.requestOpenSearch(emoji.shortcode)
+                            },
+                        )
+                    },
+                )
+            }
         }
     }
 
-    Text(text = annotated, modifier = modifier, style = style, color = color, inlineContent = inlineContent)
+    Text(
+        text = annotated,
+        modifier = modifier,
+        style = style,
+        color = color,
+        inlineContent = inlineContent,
+        maxLines = maxLines,
+        overflow = overflow,
+        onTextLayout = { result -> onTextLayout?.invoke(result) },
+    )
 }
 
 private data class EmojiSegment(
@@ -227,3 +266,5 @@ private sealed class TextLink(
 }
 
 private fun String.shortPubkey(): String = take(8) + "…" + takeLast(8)
+
+private fun unregisteredEmojiInlineContentId(shortcode: String): String = "unregistered-emoji:$shortcode"

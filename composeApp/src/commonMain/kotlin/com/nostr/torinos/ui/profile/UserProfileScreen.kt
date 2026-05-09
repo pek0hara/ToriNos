@@ -3,10 +3,14 @@ package com.nostr.torinos.ui.profile
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.PrimaryTabRow
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.Tab
+import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -46,7 +50,17 @@ fun UserProfileScreen(
     val viewModel: UserProfileViewModel = viewModel(key = "profile-$pubkey-${contentRelayUrl ?: "all"}-$ownerKey") {
         UserProfileViewModel(pubkey, deferredRelayUrl = contentRelayUrl)
     }
-    val feedViewModel: FeedViewModel = viewModel(key = "user-feed-$pubkey-${contentRelayUrl ?: "all"}-$ownerKey") {
+    val postsViewModel: FeedViewModel = viewModel(key = "user-feed-$pubkey-${contentRelayUrl ?: "all"}-$ownerKey-posts") {
+        FeedViewModel(
+            authorPubkey = pubkey,
+            relayUrl = contentRelayUrl,
+            autoStart = false,
+            includeRepostsInFeed = true,
+            includeRepliesInFeed = false,
+            filterMutedUsers = false,
+        )
+    }
+    val postsAndRepliesViewModel: FeedViewModel = viewModel(key = "user-feed-$pubkey-${contentRelayUrl ?: "all"}-$ownerKey-posts-replies") {
         FeedViewModel(
             authorPubkey = pubkey,
             relayUrl = contentRelayUrl,
@@ -57,20 +71,24 @@ fun UserProfileScreen(
         )
     }
     val state by viewModel.state.collectAsState()
-    val feedState by feedViewModel.state.collectAsState()
+    val postsState by postsViewModel.state.collectAsState()
+    val postsAndRepliesState by postsAndRepliesViewModel.state.collectAsState()
     val mutedPubkeys by MuteStore.mutedPubkeys.collectAsState()
     val isMuted = mutedPubkeys.contains(pubkey)
     val snackbarHostState = remember { SnackbarHostState() }
     var deferredContentStarted by remember(pubkey) { mutableStateOf(false) }
     var showRelayList by remember(pubkey) { mutableStateOf(false) }
+    var selectedTab by remember(pubkey) { mutableStateOf(ProfileTimelineTab.Posts) }
 
     LaunchedEffect(state.profile) {
         val profile = state.profile ?: return@LaunchedEffect
-        feedViewModel.injectProfile(pubkey, profile)
+        postsViewModel.injectProfile(pubkey, profile)
+        postsAndRepliesViewModel.injectProfile(pubkey, profile)
         if (!deferredContentStarted) {
             deferredContentStarted = true
             viewModel.loadFollowingCount()
-            feedViewModel.startSubscriptions()
+            postsViewModel.startSubscriptions()
+            postsAndRepliesViewModel.startSubscriptions()
         }
     }
 
@@ -79,7 +97,8 @@ fun UserProfileScreen(
         if (!deferredContentStarted) {
             deferredContentStarted = true
             viewModel.loadFollowingCount()
-            feedViewModel.startSubscriptions()
+            postsViewModel.startSubscriptions()
+            postsAndRepliesViewModel.startSubscriptions()
         }
     }
 
@@ -101,63 +120,109 @@ fun UserProfileScreen(
                 onDismiss = { showRelayList = false },
             )
         }
-        NoteTimeline(
-            state = feedState,
-            ownPubkey = ownPubkey,
-            onUserClick = onUserClick,
-            onLoadMore = feedViewModel::loadMore,
-            onLike = feedViewModel::react,
-            onUnlike = feedViewModel::unreact,
-            onDelete = feedViewModel::deleteEvent,
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(padding),
-            onReply = onReply,
-            onOpenReplies = onOpenReplies,
-            onOpenLikes = onOpenLikes,
-            onOpenReposts = onOpenReposts,
-            onRepost = feedViewModel::repost,
-            onUnrepost = feedViewModel::unrepost,
-            emptyText = "このユーザーのポストはありません",
-            header = {
-                item {
-                    ProfileHeader(
-                        pubkey = pubkey,
-                        profile = state.profile,
-                        linkedProfiles = state.linkedProfiles,
-                        isOwnProfile = isOwnProfile,
-                        isFollowing = state.isFollowing,
-                        isFollowLoading = state.isFollowLoading,
-                        canFollow = state.canFollow,
-                        isMuted = isMuted,
-                        relayUrls = state.relayUrls,
-                        onFollow = viewModel::follow,
-                        onUnfollow = viewModel::unfollow,
-                        onMuteToggle = {
-                            if (isMuted) MuteStore.unmute(pubkey) else MuteStore.mute(pubkey)
-                        },
-                        onUserClick = onUserClick,
-                        onBack = onBack,
-                    )
-                    HorizontalDivider()
-                }
 
-                item {
-                    ProfileStatsRow(
-                        followingCount = state.followingCount,
-                        followersCount = state.followersCount,
-                        followersCountSuffix = if (state.isFollowersCountLimited) "+" else "",
-                        isFollowersLoading = state.isFollowersLoading,
-                        onFetchFollowers = viewModel::loadFollowersCount,
-                        followersFetched = state.followersLoaded,
-                        relayCount = state.relayUrls.size,
-                        onOpenFollowing = onOpenFollowing,
-                        onOpenFollowers = onOpenFollowers,
-                        onOpenRelays = { showRelayList = true },
-                    )
-                    HorizontalDivider()
+        val profileHeader: LazyListScope.() -> Unit = {
+            item {
+                ProfileHeader(
+                    pubkey = pubkey,
+                    profile = state.profile,
+                    linkedProfiles = state.linkedProfiles,
+                    isOwnProfile = isOwnProfile,
+                    isFollowing = state.isFollowing,
+                    isFollowLoading = state.isFollowLoading,
+                    canFollow = state.canFollow,
+                    isMuted = isMuted,
+                    relayUrls = state.relayUrls,
+                    onFollow = viewModel::follow,
+                    onUnfollow = viewModel::unfollow,
+                    onMuteToggle = {
+                        if (isMuted) MuteStore.unmute(pubkey) else MuteStore.mute(pubkey)
+                    },
+                    onUserClick = onUserClick,
+                    onBack = onBack,
+                )
+                HorizontalDivider()
+            }
+
+            item {
+                ProfileStatsRow(
+                    followingCount = state.followingCount,
+                    followersCount = state.followersCount,
+                    followersCountSuffix = if (state.isFollowersCountLimited) "+" else "",
+                    isFollowersLoading = state.isFollowersLoading,
+                    onFetchFollowers = viewModel::loadFollowersCount,
+                    followersFetched = state.followersLoaded,
+                    relayCount = state.relayUrls.size,
+                    onOpenFollowing = onOpenFollowing,
+                    onOpenFollowers = onOpenFollowers,
+                    onOpenRelays = { showRelayList = true },
+                )
+                HorizontalDivider()
+            }
+
+            item {
+                PrimaryTabRow(selectedTabIndex = selectedTab.ordinal) {
+                    ProfileTimelineTab.entries.forEach { tab ->
+                        Tab(
+                            selected = selectedTab == tab,
+                            onClick = { selectedTab = tab },
+                            text = { Text(tab.label) },
+                        )
+                    }
                 }
-            },
-        )
+                HorizontalDivider()
+            }
+        }
+
+        when (selectedTab) {
+            ProfileTimelineTab.Posts -> NoteTimeline(
+                state = postsState,
+                ownPubkey = ownPubkey,
+                onUserClick = onUserClick,
+                onLoadMore = postsViewModel::loadMore,
+                onLike = postsViewModel::react,
+                onUnlike = postsViewModel::unreact,
+                onDelete = postsViewModel::deleteEvent,
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(padding)
+                    .profileTimelineTabSwipe(
+                        currentTab = selectedTab,
+                        onTabChange = { selectedTab = it },
+                    ),
+                onReply = onReply,
+                onOpenReplies = onOpenReplies,
+                onOpenLikes = onOpenLikes,
+                onOpenReposts = onOpenReposts,
+                onRepost = postsViewModel::repost,
+                onUnrepost = postsViewModel::unrepost,
+                emptyText = "このユーザーのポストはありません",
+                header = profileHeader,
+            )
+            ProfileTimelineTab.PostsAndReplies -> NoteTimeline(
+                state = postsAndRepliesState,
+                ownPubkey = ownPubkey,
+                onUserClick = onUserClick,
+                onLoadMore = postsAndRepliesViewModel::loadMore,
+                onLike = postsAndRepliesViewModel::react,
+                onUnlike = postsAndRepliesViewModel::unreact,
+                onDelete = postsAndRepliesViewModel::deleteEvent,
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(padding)
+                    .profileTimelineTabSwipe(
+                        currentTab = selectedTab,
+                        onTabChange = { selectedTab = it },
+                    ),
+                onReply = onReply,
+                onOpenReplies = onOpenReplies,
+                onOpenLikes = onOpenLikes,
+                onOpenReposts = onOpenReposts,
+                onRepost = postsAndRepliesViewModel::repost,
+                onUnrepost = postsAndRepliesViewModel::unrepost,
+                emptyText = "このユーザーのポストと返信はありません",
+                header = profileHeader,
+            )
+        }
     }
 }

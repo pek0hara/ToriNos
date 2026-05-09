@@ -3,6 +3,7 @@ package com.nostr.torinos.ui.components
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -33,6 +34,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -42,7 +44,10 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalClipboard
 import androidx.compose.ui.text.font.FontWeight
@@ -60,6 +65,7 @@ import com.nostr.torinos.ui.settings.setPlainText
 import kotlinx.coroutines.launch
 import kotlinx.datetime.TimeZone
 import kotlinx.datetime.toLocalDateTime
+import kotlin.math.max
 import kotlin.time.Instant
 
 @Composable
@@ -282,7 +288,7 @@ fun NoteCard(
                 Spacer(modifier = Modifier.height(4.dp))
             }
             if (parsedContent.textContent.isNotBlank()) {
-                LinkedText(
+                CollapsibleNoteText(
                     text = parsedContent.textContent,
                     style = MaterialTheme.typography.bodyMedium,
                     onProfileClick = onUserClick,
@@ -444,7 +450,7 @@ private fun QuotePreview(
             }
         }
         if (parsedContent.textContent.isNotBlank()) {
-            LinkedText(
+            CollapsibleNoteText(
                 text = parsedContent.textContent,
                 style = MaterialTheme.typography.bodySmall,
                 onProfileClick = onUserClick,
@@ -461,6 +467,48 @@ private fun QuotePreview(
         }
     }
 }
+
+@Composable
+private fun CollapsibleNoteText(
+    text: String,
+    style: androidx.compose.ui.text.TextStyle,
+    onProfileClick: (pubkey: String) -> Unit,
+    profiles: Map<String, NostrProfile>,
+    onHashtagClick: ((tag: String) -> Unit)?,
+) {
+    var expanded by remember(text) { mutableStateOf(false) }
+    var hasHiddenLines by remember(text) { mutableStateOf(false) }
+    val exceedsCharacterLimit = text.length >= CollapsedTextCharacterLimit
+    val displayedText = if (!expanded && exceedsCharacterLimit) {
+        text.take(CollapsedTextCharacterLimit).trimEnd() + "…"
+    } else {
+        text
+    }
+    val shouldShowToggle = expanded || exceedsCharacterLimit || hasHiddenLines
+
+    LinkedText(
+        text = displayedText,
+        style = style,
+        onProfileClick = onProfileClick,
+        profiles = profiles,
+        onHashtagClick = onHashtagClick,
+        maxLines = if (expanded) Int.MAX_VALUE else CollapsedTextMaxVisibleLines,
+        overflow = TextOverflow.Ellipsis,
+        onTextLayout = { result ->
+            if (!expanded) {
+                hasHiddenLines = result.hasVisualOverflow
+            }
+        },
+    )
+    if (shouldShowToggle) {
+        TextButton(onClick = { expanded = !expanded }) {
+            Text(if (expanded) "閉じる" else "もっと見る")
+        }
+    }
+}
+
+private const val CollapsedTextCharacterLimit = 140
+private const val CollapsedTextMaxVisibleLines = 9
 
 @Composable
 private fun ImagePreviewGrid(
@@ -610,6 +658,7 @@ private fun ExpandedImageDialog(
         initialPage = initialIndex,
         pageCount = { imageUrls.size },
     )
+    var zoomedPage by remember { mutableStateOf<Int?>(null) }
     Dialog(
         onDismissRequest = onDismiss,
         properties = DialogProperties(usePlatformDefaultWidth = false),
@@ -622,7 +671,10 @@ private fun ExpandedImageDialog(
             HorizontalPager(
                 state = pagerState,
                 modifier = Modifier.fillMaxSize(),
+                userScrollEnabled = zoomedPage == null,
             ) { page ->
+                var scale by remember(imageUrls[page]) { mutableStateOf(1f) }
+                var offset by remember(imageUrls[page]) { mutableStateOf(Offset.Zero) }
                 Box(
                     modifier = Modifier
                         .fillMaxSize()
@@ -635,7 +687,29 @@ private fun ExpandedImageDialog(
                         contentScale = ContentScale.Fit,
                         modifier = Modifier
                             .fillMaxSize()
-                            .padding(16.dp),
+                            .padding(16.dp)
+                            .pointerInput(imageUrls[page]) {
+                                detectTransformGestures { _, pan, zoom, _ ->
+                                    val nextScale = (scale * zoom).coerceIn(1f, 5f)
+                                    scale = nextScale
+                                    zoomedPage = if (nextScale > 1f) page else null
+                                    offset = if (nextScale == 1f) {
+                                        Offset.Zero
+                                    } else {
+                                        val maxOffset = 2400f * max(1f, nextScale - 1f)
+                                        Offset(
+                                            x = (offset.x + pan.x).coerceIn(-maxOffset, maxOffset),
+                                            y = (offset.y + pan.y).coerceIn(-maxOffset, maxOffset),
+                                        )
+                                    }
+                                }
+                            }
+                            .graphicsLayer {
+                                scaleX = scale
+                                scaleY = scale
+                                translationX = offset.x
+                                translationY = offset.y
+                            },
                     )
                 }
             }
