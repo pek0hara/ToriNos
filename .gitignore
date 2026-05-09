@@ -30,3 +30,10 @@ local.properties
 
 # local captures
 screenshot.png
+
+# Ruby/Bundler
+vendor/bundle/
+.bundle/cache/
+.fastlane/
+fastlane/report.xml
+fastlane/README.md

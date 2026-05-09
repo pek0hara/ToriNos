@@ -1,28 +1,97 @@
 default_platform(:ios)
+opt_out_usage
 
 platform :ios do
+  testflight_description = <<~TEXT.strip
+    ToriNos は Nostr の投稿閲覧、投稿、プロフィール表示、チャンネル閲覧を行うためのクライアントアプリです。
+    このベータ版では、タイムライン表示、投稿作成、返信、プロフィール確認、リレー設定、ミュート・NG ワード設定などの基本動作を確認します。
+  TEXT
+
+  what_to_test = <<~TEXT.strip
+    次の操作を中心に確認してください。
+    - タイムラインの表示と更新
+    - 投稿、返信、スレッド表示
+    - プロフィール表示とフォロー一覧
+    - チャンネル一覧とチャンネル内投稿
+    - リレー設定、ミュート、NG ワード、カスタム絵文字設定
+    - アカウント追加、切り替え、ログアウト
+
+    不具合を見つけた場合は、発生した画面、操作手順、スクリーンショットを TestFlight のフィードバックから送信してください。
+  TEXT
+
+  review_notes = <<~TEXT.strip
+    このアプリは Nostr クライアントです。
+    ログインしなくても公開タイムラインなど一部機能を確認できます。
+    投稿、返信、プロフィール編集などの書き込み機能を確認する場合は、アプリ内の鍵作成または既存の Nostr 秘密鍵のインポートを使用してください。
+    審査用の固定デモアカウントは不要です。
+  TEXT
+
   desc "Upload TestFlight metadata and optionally distribute to external testers"
   lane :testflight_info do |options|
-    feedback_email = ENV.fetch("TESTFLIGHT_FEEDBACK_EMAIL")
-    contact_first_name = ENV.fetch("TESTFLIGHT_CONTACT_FIRST_NAME")
-    contact_last_name = ENV.fetch("TESTFLIGHT_CONTACT_LAST_NAME")
-    contact_phone = ENV.fetch("TESTFLIGHT_CONTACT_PHONE")
+    feedback_email = ENV["TESTFLIGHT_FEEDBACK_EMAIL"]
+    contact_first_name = ENV["TESTFLIGHT_CONTACT_FIRST_NAME"]
+    contact_last_name = ENV["TESTFLIGHT_CONTACT_LAST_NAME"]
+    contact_phone = ENV["TESTFLIGHT_CONTACT_PHONE"]
 
-    upload_to_testflight(
+    upload_options = {
       app_identifier: "com.nostr.torinos.app",
+      username: ENV["APP_STORE_CONNECT_USERNAME"] || ENV["FASTLANE_USER"],
       skip_waiting_for_build_processing: false,
       skip_submission: options[:skip_submission] != false,
-      beta_app_description: options[:description] || "ToriNos beta version.",
-      beta_app_feedback_email: feedback_email,
-      changelog: options[:what_to_test] || "Please test the main app flows.",
-      beta_app_review_info: {
+      beta_app_description: options[:description] || testflight_description,
+      changelog: options[:what_to_test] || what_to_test
+    }
+
+    upload_options.delete(:username) unless upload_options[:username]
+
+    upload_options[:beta_app_feedback_email] = feedback_email if feedback_email
+
+    if feedback_email && contact_first_name && contact_last_name && contact_phone
+      upload_options[:beta_app_review_info] = {
         contact_first_name: contact_first_name,
         contact_last_name: contact_last_name,
         contact_email: feedback_email,
         contact_phone: contact_phone,
         demo_account_required: false,
-        notes: options[:review_notes] || "No demo account is required."
+        notes: options[:review_notes] || review_notes
       }
-    )
+    end
+
+    upload_to_testflight(upload_options)
+  end
+
+  desc "Update TestFlight metadata for an already uploaded build"
+  lane :testflight_metadata do |options|
+    feedback_email = ENV["TESTFLIGHT_FEEDBACK_EMAIL"]
+    contact_first_name = ENV["TESTFLIGHT_CONTACT_FIRST_NAME"]
+    contact_last_name = ENV["TESTFLIGHT_CONTACT_LAST_NAME"]
+    contact_phone = ENV["TESTFLIGHT_CONTACT_PHONE"]
+
+    metadata_options = {
+      app_identifier: "com.nostr.torinos.app",
+      username: ENV["APP_STORE_CONNECT_USERNAME"] || ENV["FASTLANE_USER"],
+      distribute_only: true,
+      skip_submission: true,
+      app_version: options[:app_version] || "1.0",
+      build_number: options[:build_number] || "1",
+      beta_app_description: options[:description] || testflight_description,
+      changelog: options[:what_to_test] || what_to_test
+    }
+
+    metadata_options.delete(:username) unless metadata_options[:username]
+    metadata_options[:beta_app_feedback_email] = feedback_email if feedback_email
+
+    if feedback_email && contact_first_name && contact_last_name && contact_phone
+      metadata_options[:beta_app_review_info] = {
+        contact_first_name: contact_first_name,
+        contact_last_name: contact_last_name,
+        contact_email: feedback_email,
+        contact_phone: contact_phone,
+        demo_account_required: false,
+        notes: options[:review_notes] || review_notes
+      }
+    end
+
+    upload_to_testflight(metadata_options)
   end
 end
