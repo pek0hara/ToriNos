@@ -3,7 +3,8 @@ package com.nostr.torinos.ui.components
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.gestures.detectTransformGestures
+import androidx.compose.foundation.gestures.rememberTransformableState
+import androidx.compose.foundation.gestures.transformable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -675,6 +676,23 @@ private fun ExpandedImageDialog(
             ) { page ->
                 var scale by remember(imageUrls[page]) { mutableStateOf(1f) }
                 var offset by remember(imageUrls[page]) { mutableStateOf(Offset.Zero) }
+                val transformableState = rememberTransformableState { zoomChange, panChange, _ ->
+                    val wasZoomed = scale > 1f
+                    val nextScale = (scale * zoomChange).coerceIn(1f, 5f)
+                    scale = nextScale
+                    zoomedPage = if (nextScale > 1f) page else null
+                    offset = if (nextScale == 1f) {
+                        Offset.Zero
+                    } else if (!wasZoomed) {
+                        offset
+                    } else {
+                        val maxOffset = 2400f * max(1f, nextScale - 1f)
+                        Offset(
+                            x = (offset.x + panChange.x).coerceIn(-maxOffset, maxOffset),
+                            y = (offset.y + panChange.y).coerceIn(-maxOffset, maxOffset),
+                        )
+                    }
+                }
                 Box(
                     modifier = Modifier
                         .fillMaxSize()
@@ -688,22 +706,10 @@ private fun ExpandedImageDialog(
                         modifier = Modifier
                             .fillMaxSize()
                             .padding(16.dp)
-                            .pointerInput(imageUrls[page]) {
-                                detectTransformGestures { _, pan, zoom, _ ->
-                                    val nextScale = (scale * zoom).coerceIn(1f, 5f)
-                                    scale = nextScale
-                                    zoomedPage = if (nextScale > 1f) page else null
-                                    offset = if (nextScale == 1f) {
-                                        Offset.Zero
-                                    } else {
-                                        val maxOffset = 2400f * max(1f, nextScale - 1f)
-                                        Offset(
-                                            x = (offset.x + pan.x).coerceIn(-maxOffset, maxOffset),
-                                            y = (offset.y + pan.y).coerceIn(-maxOffset, maxOffset),
-                                        )
-                                    }
-                                }
-                            }
+                            .transformable(
+                                state = transformableState,
+                                canPan = { scale > 1f },
+                            )
                             .graphicsLayer {
                                 scaleX = scale
                                 scaleY = scale
