@@ -49,6 +49,7 @@ class SearchViewModel : SafeViewModel() {
     private var receivedEoseCount = 0
     private var expectedEoseCount = 1
     private val subscriptionJobs = mutableListOf<Job>()
+    private var pageTimeoutJob: Job? = null
     private var currentEvents = emptyList<NostrEvent>()
     private var currentProfiles = emptyMap<String, NostrProfile>()
     private var currentReactionCounts = emptyMap<String, Int>()
@@ -226,6 +227,9 @@ class SearchViewModel : SafeViewModel() {
         subscriptionJobs.clear()
         profileBatchJob?.cancel()
         engagementBatchJob?.cancel()
+        pageTimeoutJob?.cancel()
+        pageTimeoutJob = null
+        loadingMore = false
         NostrRepository.closeTemporaryRelay(activeSearchSubId)
         NostrRepository.closeTemporaryRelay(activeUserSubId)
         NostrRepository.close(profileSubId)
@@ -251,6 +255,7 @@ class SearchViewModel : SafeViewModel() {
 
         val filter = buildFilter(until)
         val searchSubId = activeSearchSubId
+        schedulePageTimeout(searchSubId)
         appLog("[Search] requestPage() until=$until expectedEoseCount=$expectedEoseCount filter=$filter")
         NostrRepository.subscribeTemporaryRelay(searchSubId, filter, SEARCH_RELAY_URL)
 
@@ -272,11 +277,28 @@ class SearchViewModel : SafeViewModel() {
     }
 
     private fun onPageCompleted() {
+        if (!loadingMore) return
         loadingMore = false
+        pageTimeoutJob?.cancel()
+        pageTimeoutJob = null
         val hasMore = lastBatchCount >= PAGE_SIZE
         appLog("[Search] onPageCompleted() lastBatchCount=$lastBatchCount hasMore=$hasMore totalEvents=${currentEvents.size}")
         _state.value = readyState(canLoadMore = hasMore)
         if (!hasMore) NostrRepository.closeTemporaryRelay(activeSearchSubId)
+    }
+
+    private fun schedulePageTimeout(searchSubId: String) {
+        pageTimeoutJob?.cancel()
+        pageTimeoutJob = launch {
+            delay(10_000)
+            if (!loadingMore || searchSubId != activeSearchSubId) return@launch
+
+            loadingMore = false
+            val hasMore = lastBatchCount >= PAGE_SIZE
+            appLog("[Search] page timeout: forcing Ready state hasMore=$hasMore")
+            _state.value = readyState(canLoadMore = hasMore)
+            if (!hasMore) NostrRepository.closeTemporaryRelay(searchSubId)
+        }
     }
 
     private fun appendEvent(event: NostrEvent): Int {

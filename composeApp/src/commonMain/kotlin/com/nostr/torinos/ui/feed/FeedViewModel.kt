@@ -57,6 +57,7 @@ class FeedViewModel(
     private val _state = MutableStateFlow(UiState())
     val state: StateFlow<UiState> = _state.asStateFlow()
 
+    private val instanceKey = nextInstanceKey()
     private val shortKey = authorPubkey?.take(16) ?: authorPubkeys?.hashCode()?.toString() ?: "global"
     private val subscriptionJobs = mutableListOf<Job>()
     private var subscriptionIds: SubscriptionIds? = null
@@ -792,7 +793,7 @@ class FeedViewModel(
 
     private fun newSubscriptionIds(): SubscriptionIds {
         subscriptionGeneration++
-        val suffix = "$shortKey-$subscriptionGeneration"
+        val suffix = "$shortKey-$instanceKey-$subscriptionGeneration"
         return SubscriptionIds(
             feed = "feed-$suffix",
             history = "hist-$suffix",
@@ -811,6 +812,9 @@ class FeedViewModel(
         private const val MAX_SEEN_IDS = 2000
         private const val LIVE_SUBSCRIPTION_REFRESH_INTERVAL_MS = 60_000L
         private const val LIVE_SUBSCRIPTION_SINCE_OVERLAP_SECONDS = 300L
+        private val nextInstanceKeyValue = kotlin.concurrent.AtomicInt(0)
+
+        private fun nextInstanceKey(): Int = nextInstanceKeyValue.incrementAndGet()
     }
 }
 

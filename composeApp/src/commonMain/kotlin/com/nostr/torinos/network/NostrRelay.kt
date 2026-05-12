@@ -63,6 +63,7 @@ class NostrRelay(
                                     throw e
                                 } catch (e: Throwable) {
                                     logException("Relay", e, "sender error for $url")
+                                    throw e
                                 }
                             }
                             for (frame in incoming) {

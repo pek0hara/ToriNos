@@ -8,13 +8,16 @@ import com.nostr.torinos.util.logException
 import com.nostr.torinos.util.loggingExceptionHandler
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 
 /**
@@ -71,11 +74,6 @@ object FollowRepository {
         ownPubkey = loadPublicKey()
         val pk = ownPubkey ?: return
 
-        NostrRepository.subscribe(
-            subId,
-            NostrFilter(kinds = listOf(3), authors = listOf(pk), limit = 1),
-        )
-
         // EOSE を待ってから最新の kind:3 を採用する
         var latestCreatedAt = 0L
         var latestFollows = emptySet<String>()
@@ -83,7 +81,7 @@ object FollowRepository {
         // coroutineScope を使い eventJob を子コルーチンとして管理する。
         // reload() で loadJob がキャンセルされると eventJob も連動してキャンセルされる。
         coroutineScope {
-            val eventJob = launch {
+            val eventJob = launch(start = CoroutineStart.UNDISPATCHED) {
                 try {
                     NostrRepository.events(subId).collect { event ->
                         if (event.kind == 3 && event.createdAt > latestCreatedAt) {
@@ -102,12 +100,18 @@ object FollowRepository {
             }
 
             try {
-                NostrRepository.eose(subId).collect {
-                    _followedPubkeys.value = latestFollows
-                    _loaded.value = true
-                    eventJob.cancel()
-                    NostrRepository.close(subId)
+                val eose = async(start = CoroutineStart.UNDISPATCHED) {
+                    NostrRepository.eose(subId).first()
                 }
+                NostrRepository.subscribe(
+                    subId,
+                    NostrFilter(kinds = listOf(3), authors = listOf(pk), limit = 1),
+                )
+                eose.await()
+                _followedPubkeys.value = latestFollows
+                _loaded.value = true
+                eventJob.cancel()
+                NostrRepository.close(subId)
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Throwable) {
