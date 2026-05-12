@@ -26,6 +26,10 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import androidx.compose.foundation.layout.padding
 import androidx.compose.ui.Modifier
@@ -40,8 +44,10 @@ import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
 import com.nostr.torinos.crypto.isWriteSupported
 import com.nostr.torinos.crypto.loadPublicKey
+import com.nostr.torinos.model.NoteContext
 import com.nostr.torinos.model.NostrFilter
 import com.nostr.torinos.model.NostrProfile
+import com.nostr.torinos.model.noteContextForChannel
 import com.nostr.torinos.model.toProfile
 import com.nostr.torinos.network.ChannelCacheStore
 import com.nostr.torinos.network.CustomEmojiStore
@@ -84,6 +90,7 @@ import kotlinx.serialization.Serializable
     val eventId: String,
     val initialTab: String = "replies",
     val source: String = "",
+    val channelId: String = "",
 )
 
 private const val ThreadSourceChannel = "channel"
@@ -104,6 +111,7 @@ fun App() {
         var replyToId by remember { mutableStateOf<String?>(null) }
         var replyToPubkey by remember { mutableStateOf<String?>(null) }
         var replyToPreview by remember { mutableStateOf<String?>(null) }
+        var replyNoteContext by remember { mutableStateOf<NoteContext>(NoteContext.Timeline) }
         var showKeySetup by remember { mutableStateOf(false) }
         var pendingKeyAction by remember { mutableStateOf<PendingKeyAction?>(null) }
         val scope = rememberCoroutineScope()
@@ -125,6 +133,7 @@ fun App() {
         var currentFeedTab by remember { mutableStateOf(FeedTab.Following) }
         var feedScrollToTopTargetTab by remember { mutableStateOf(FeedTab.Following) }
         var feedTabChangeRequest by remember { mutableStateOf(0) }
+        var notificationsScrollToTopRequest by remember { mutableStateOf(0) }
         var showQuickSettings by remember { mutableStateOf(false) }
         val notificationsDrawerState = rememberDrawerState(DrawerValue.Closed)
         val followingFeedListState = remember { LazyListState() }
@@ -163,15 +172,16 @@ fun App() {
             val pk = ownPubkey ?: return@LaunchedEffect
             ownProfile = null
             try {
-                NostrRepository.subscribe(
-                    "app-self-profile",
-                    NostrFilter(kinds = listOf(0), authors = listOf(pk), limit = 1),
-                )
-                NostrRepository.events("app-self-profile").collect { event ->
-                    if (event.kind == 0) {
-                        ownProfile = event.toProfile()
-                        NostrRepository.close("app-self-profile")
+                coroutineScope {
+                    val profileEvent = async(start = CoroutineStart.UNDISPATCHED) {
+                        NostrRepository.events("app-self-profile").first { it.kind == 0 }
                     }
+                    NostrRepository.subscribe(
+                        "app-self-profile",
+                        NostrFilter(kinds = listOf(0), authors = listOf(pk), limit = 1),
+                    )
+                    ownProfile = profileEvent.await().toProfile()
+                    NostrRepository.close("app-self-profile")
                 }
             } catch (e: CancellationException) {
                 throw e
@@ -214,6 +224,7 @@ fun App() {
             replyToId = null
             replyToPubkey = null
             replyToPreview = null
+            replyNoteContext = NoteContext.Timeline
             FollowRepository.reload()
             currentFeedTab = FeedTab.Global
             feedScrollToTopTargetTab = FeedTab.Global
@@ -238,6 +249,7 @@ fun App() {
             replyToId = null
             replyToPubkey = null
             replyToPreview = null
+            replyNoteContext = NoteContext.Timeline
             FollowRepository.reload()
             currentFeedTab = FeedTab.Global
             feedScrollToTopTargetTab = FeedTab.Global
@@ -266,6 +278,7 @@ fun App() {
             drawerContent = {
                 NotificationsDrawer(
                     ownPubkey = ownPubkey,
+                    scrollToTopRequest = notificationsScrollToTopRequest,
                     onUserClick = { pubkey ->
                         scope.launch { notificationsDrawerState.close() }
                         nav.navigate(ProfileRoute(pubkey))
@@ -286,6 +299,7 @@ fun App() {
                                 replyToId = null
                                 replyToPubkey = null
                                 replyToPreview = null
+                                replyNoteContext = NoteContext.Timeline
                                 showPostSheet = true
                             }
                         }) {
@@ -344,6 +358,7 @@ fun App() {
                             onOpenSettings = { showQuickSettings = true },
                             onOpenNotifications = {
                                 notificationsViewModel?.markAllRead()
+                                notificationsScrollToTopRequest++
                                 scope.launch { notificationsDrawerState.open() }
                             },
                             onUserClick = { pubkey -> nav.navigate(ProfileRoute(pubkey)) },
@@ -356,6 +371,7 @@ fun App() {
                                 replyToId = eventId
                                 replyToPubkey = authorPk
                                 replyToPreview = preview
+                                replyNoteContext = NoteContext.Timeline
                                 runWithPrivateKey(PendingKeyAction.Reply) {
                                     showPostSheet = true
                                 }
@@ -395,12 +411,23 @@ fun App() {
                             channelId = route.channelId,
                             onBack = { nav.popBackStack() },
                             onUserClick = { pubkey -> nav.navigate(ProfileRoute(pubkey)) },
-                            onOpenThread = { eventId -> nav.navigate(ThreadRoute(eventId, source = ThreadSourceChannel)) },
+                            onReply = { eventId, authorPk, preview, chId ->
+                                replyToId = eventId
+                                replyToPubkey = authorPk
+                                replyToPreview = preview
+                                replyNoteContext = noteContextForChannel(chId)
+                                runWithPrivateKey(PendingKeyAction.Reply) {
+                                    showPostSheet = true
+                                }
+                            },
+                            onOpenThread = { eventId ->
+                                nav.navigate(ThreadRoute(eventId, source = ThreadSourceChannel, channelId = route.channelId))
+                            },
                             onOpenLikes = { eventId ->
-                                nav.navigate(ThreadRoute(eventId, "likes", ThreadSourceChannel))
+                                nav.navigate(ThreadRoute(eventId, "likes", ThreadSourceChannel, route.channelId))
                             },
                             onOpenReposts = { eventId ->
-                                nav.navigate(ThreadRoute(eventId, "reposts", ThreadSourceChannel))
+                                nav.navigate(ThreadRoute(eventId, "reposts", ThreadSourceChannel, route.channelId))
                             },
                             ownPubkey = ownPubkey,
                         )
@@ -410,19 +437,29 @@ fun App() {
                         ThreadScreen(
                             eventId = route.eventId,
                             initialTab = route.initialTab,
+                            channelId = route.channelId.takeIf { it.isNotBlank() },
                             onBack = { nav.popBackStack() },
                             onUserClick = { pubkey -> nav.navigate(ProfileRoute(pubkey)) },
-                            onReply = { eventId, authorPk, preview ->
+                            onReply = { eventId, authorPk, preview, chId ->
                                 replyToId = eventId
                                 replyToPubkey = authorPk
                                 replyToPreview = preview
+                                replyNoteContext = noteContextForChannel(chId)
                                 runWithPrivateKey(PendingKeyAction.Reply) {
                                     showPostSheet = true
                                 }
                             },
-                            onOpenThread = { eventId -> nav.navigate(ThreadRoute(eventId)) },
-                            onOpenLikes = { eventId -> nav.navigate(ThreadRoute(eventId, "likes")) },
-                            onOpenReposts = { eventId -> nav.navigate(ThreadRoute(eventId, "reposts")) },
+                            onOpenThread = { eventId ->
+                                nav.navigate(
+                                    ThreadRoute(
+                                        eventId = eventId,
+                                        source = route.source,
+                                        channelId = route.channelId,
+                                    ),
+                                )
+                            },
+                            onOpenLikes = { eventId -> nav.navigate(ThreadRoute(eventId, "likes", route.source, route.channelId)) },
+                            onOpenReposts = { eventId -> nav.navigate(ThreadRoute(eventId, "reposts", route.source, route.channelId)) },
                             ownPubkey = ownPubkey,
                         )
                     }
@@ -439,6 +476,7 @@ fun App() {
                                 replyToId = eventId
                                 replyToPubkey = authorPk
                                 replyToPreview = preview
+                                replyNoteContext = NoteContext.Timeline
                                 runWithPrivateKey(PendingKeyAction.Reply) {
                                     showPostSheet = true
                                 }
@@ -524,6 +562,7 @@ fun App() {
                                 replyToId = eventId
                                 replyToPubkey = authorPk
                                 replyToPreview = preview
+                                replyNoteContext = NoteContext.Timeline
                                 runWithPrivateKey(PendingKeyAction.Reply) {
                                     showPostSheet = true
                                 }
@@ -560,10 +599,12 @@ fun App() {
                     replyToId = null
                     replyToPubkey = null
                     replyToPreview = null
+                    replyNoteContext = NoteContext.Timeline
                 },
                 replyToId = replyToId,
                 replyToPubkey = replyToPubkey,
                 replyToPreview = replyToPreview,
+                noteContext = replyNoteContext,
             )
         }
 
@@ -582,6 +623,7 @@ fun App() {
                             replyToId = null
                             replyToPubkey = null
                             replyToPreview = null
+                            replyNoteContext = NoteContext.Timeline
                             currentFeedTab = FeedTab.Global
                             feedScrollToTopTargetTab = FeedTab.Global
                             feedTabChangeRequest++
@@ -617,6 +659,7 @@ fun App() {
                     replyToId = null
                     replyToPubkey = null
                     replyToPreview = null
+                    replyNoteContext = NoteContext.Timeline
                     showKeySetup = false
                 },
             )

@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -28,9 +29,11 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -40,7 +43,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.runtime.collectAsState
 import androidx.lifecycle.viewmodel.compose.viewModel
-import com.nostr.torinos.model.replyTargetId
+import com.nostr.torinos.model.noteContextForChannel
 import com.nostr.torinos.model.stripNostrEventUris
 import com.nostr.torinos.ui.components.NoteCard
 import com.nostr.torinos.ui.components.QuotedEvent
@@ -52,21 +55,48 @@ import com.nostr.torinos.ui.profile.AvatarCircle
 fun ThreadScreen(
     eventId: String,
     initialTab: String = "replies",
+    channelId: String? = null,
     onBack: () -> Unit = {},
     onUserClick: (pubkey: String) -> Unit = {},
-    onReply: ((eventId: String, authorPubkey: String, preview: String) -> Unit)? = null,
+    onReply: ((eventId: String, authorPubkey: String, preview: String, channelId: String?) -> Unit)? = null,
     onOpenThread: (eventId: String) -> Unit = {},
     onOpenLikes: (eventId: String) -> Unit = {},
     onOpenReposts: (eventId: String) -> Unit = {},
     ownPubkey: String? = null,
-    viewModel: ThreadViewModel = viewModel(key = "thread-$eventId") { ThreadViewModel(eventId) },
+    viewModel: ThreadViewModel = viewModel(key = "thread-$eventId-${channelId ?: "note"}") {
+        ThreadViewModel(eventId, noteContextForChannel(channelId))
+    },
 ) {
+    val noteContext = remember(channelId) { noteContextForChannel(channelId) }
     val state by viewModel.state.collectAsState()
     var selectedTab by remember(initialTab) { mutableStateOf(ThreadTab.fromRouteValue(initialTab)) }
+    val listState = rememberSaveable(eventId, saver = LazyListState.Saver) { LazyListState() }
+    var didApplyInitialBottomScroll by remember(eventId) { mutableStateOf(false) }
+    var previousRepliesBottomIndex by remember(eventId) { mutableStateOf<Int?>(null) }
 
     DisposableEffect(viewModel) {
         viewModel.startSubscriptions()
         onDispose { viewModel.stopSubscriptions() }
+    }
+
+    LaunchedEffect(eventId, selectedTab, state.root?.id, state.replies.size) {
+        if (selectedTab != ThreadTab.Replies) {
+            previousRepliesBottomIndex = null
+            return@LaunchedEffect
+        }
+        state.root ?: return@LaunchedEffect
+
+        val bottomIndex = RootItemCount + TabRowItemCount + maxOf(state.replies.size, 1) - 1
+        val visibleLastIndex = listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index
+        val wasFollowingBottom = previousRepliesBottomIndex == null ||
+            visibleLastIndex == previousRepliesBottomIndex ||
+            !listState.canScrollForward
+
+        if (!didApplyInitialBottomScroll || wasFollowingBottom) {
+            listState.scrollToItem(bottomIndex)
+            didApplyInitialBottomScroll = true
+        }
+        previousRepliesBottomIndex = bottomIndex
     }
 
     Scaffold(
@@ -125,6 +155,7 @@ fun ThreadScreen(
 
                 else -> {
                     LazyColumn(
+                        state = listState,
                         modifier = Modifier
                             .fillMaxSize()
                             .threadTabSwipe(
@@ -134,7 +165,7 @@ fun ThreadScreen(
                     ) {
                         item {
                             val root = state.root ?: return@item
-                            val replyParentId = root.replyTargetId()
+                            val replyParentId = noteContext.replyTargetId(root)
                             NoteCard(
                                 event = root,
                                 profile = state.profiles[root.pubkey],
@@ -163,7 +194,7 @@ fun ThreadScreen(
                                     }
                                 } else null,
                                 onReply = if (ownPubkey != null && onReply != null) {
-                                    { onReply(root.id, root.pubkey, root.content.replyPreviewText()) }
+                                    { onReply(root.id, root.pubkey, root.content.replyPreviewText(), channelId) }
                                 } else null,
                                 onOpenReplies = { selectedTab = ThreadTab.Replies },
                                 onOpenLikes = { selectedTab = ThreadTab.Likes },
@@ -219,7 +250,7 @@ fun ThreadScreen(
                                                 }
                                             } else null,
                                             onReply = if (ownPubkey != null && onReply != null) {
-                                                { onReply(reply.id, reply.pubkey, reply.content.replyPreviewText()) }
+                                                { onReply(reply.id, reply.pubkey, reply.content.replyPreviewText(), channelId) }
                                             } else null,
                                             onOpenReplies = { onOpenThread(reply.id) },
                                             onOpenLikes = { onOpenLikes(reply.id) },
@@ -313,6 +344,8 @@ private fun String.replyPreviewText(): String =
         .take(160)
 
 private const val SwipeThresholdPx = 80f
+private const val RootItemCount = 1
+private const val TabRowItemCount = 1
 
 private fun androidx.compose.foundation.lazy.LazyListScope.emptyTabItem(text: String) {
     item {

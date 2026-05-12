@@ -7,8 +7,8 @@ import com.nostr.torinos.crypto.signEvent
 import com.nostr.torinos.model.NostrEvent
 import com.nostr.torinos.model.NostrFilter
 import com.nostr.torinos.model.NostrProfile
+import com.nostr.torinos.model.NoteContext
 import com.nostr.torinos.model.extractNpubReferences
-import com.nostr.torinos.model.replyTargetId
 import com.nostr.torinos.model.toProfile
 import com.nostr.torinos.network.NostrRepository
 import com.nostr.torinos.ui.SafeViewModel
@@ -19,6 +19,7 @@ import kotlinx.serialization.json.Json
 
 class ThreadViewModel(
     private val eventId: String,
+    private val noteContext: NoteContext = NoteContext.Timeline,
 ) : SafeViewModel() {
 
     data class UiState(
@@ -186,21 +187,21 @@ class ThreadViewModel(
         scheduleReactionFetch(eventId)
 
         subscriptionJobs += launch {
-            NostrRepository.subscribe(rootSubId, NostrFilter(ids = listOf(eventId), kinds = listOf(1), limit = 1))
-            NostrRepository.subscribe(repliesSubId, NostrFilter(kinds = listOf(1), eTags = listOf(eventId), limit = 100))
+            NostrRepository.subscribe(rootSubId, NostrFilter(ids = listOf(eventId), kinds = listOf(noteContext.eventKind), limit = 1))
+            NostrRepository.subscribe(repliesSubId, NostrFilter(kinds = listOf(noteContext.eventKind), eTags = listOf(eventId), limit = 100))
             NostrRepository.subscribe(repostSubId, NostrFilter(kinds = listOf(6), eTags = listOf(eventId), limit = 500))
         }
 
         subscriptionJobs += launch {
             NostrRepository.events(rootSubId).collect { event ->
-                if (event.kind != 1 || event.id != eventId) return@collect
+                if (!noteContext.matches(event) || event.id != eventId) return@collect
                 _state.value = _state.value.copy(root = event, isLoading = false)
                 scheduleProfileFetch(event.pubkey)
                 scheduleMentionedProfileFetch(event.content)
-                event.replyTargetId()?.let { parentId ->
+                noteContext.replyTargetId(event)?.let { parentId ->
                     NostrRepository.subscribe(
                         replyParentSubId,
-                        NostrFilter(ids = listOf(parentId), kinds = listOf(1), limit = 1),
+                        NostrFilter(ids = listOf(parentId), kinds = listOf(noteContext.eventKind), limit = 1),
                     )
                 }
             }
@@ -208,7 +209,7 @@ class ThreadViewModel(
 
         subscriptionJobs += launch {
             NostrRepository.events(replyParentSubId).collect { event ->
-                if (event.kind != 1) return@collect
+                if (!noteContext.matches(event)) return@collect
                 val cur = _state.value
                 if (cur.quotedEvents.containsKey(event.id)) return@collect
                 _state.value = cur.copy(quotedEvents = cur.quotedEvents + (event.id to event))
@@ -218,9 +219,10 @@ class ThreadViewModel(
 
         subscriptionJobs += launch {
             NostrRepository.events(repliesSubId).collect { event ->
-                if (event.kind != 1 || !seenReplyIds.add(event.id)) return@collect
-                if (event.replyTargetId() != eventId) {
-                    scheduleReplyCountFetch(event.replyTargetId() ?: return@collect)
+                if (!noteContext.matches(event) || !seenReplyIds.add(event.id)) return@collect
+                val targetId = noteContext.replyTargetId(event) ?: return@collect
+                if (targetId != eventId) {
+                    scheduleReplyCountFetch(targetId)
                     return@collect
                 }
                 val cur = _state.value
@@ -248,8 +250,8 @@ class ThreadViewModel(
 
         subscriptionJobs += launch {
             NostrRepository.events(replyCountSubId).collect { event ->
-                if (event.kind != 1 || !seenReplyCountIds.add(event.id)) return@collect
-                val targetId = event.replyTargetId() ?: return@collect
+                if (!noteContext.matches(event) || !seenReplyCountIds.add(event.id)) return@collect
+                val targetId = noteContext.replyTargetId(event) ?: return@collect
                 val cur = _state.value
                 _state.value = cur.copy(
                     replyCounts = cur.replyCounts + (targetId to (cur.replyCounts[targetId] ?: 0) + 1),
@@ -364,7 +366,10 @@ class ThreadViewModel(
         replyCountBatchJob?.cancel()
         replyCountBatchJob = launch {
             delay(300)
-            NostrRepository.subscribe(replyCountSubId, NostrFilter(kinds = listOf(1), eTags = watchedEventIds.toList()))
+            NostrRepository.subscribe(
+                replyCountSubId,
+                NostrFilter(kinds = listOf(noteContext.eventKind), eTags = watchedEventIds.toList()),
+            )
         }
     }
 

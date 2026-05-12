@@ -3,8 +3,10 @@ package com.nostr.torinos.ui.channel
 import androidx.lifecycle.ViewModel
 import com.nostr.torinos.ui.SafeViewModel
 import com.nostr.torinos.crypto.KeyStorage
+import com.nostr.torinos.crypto.loadPublicKey
 import com.nostr.torinos.crypto.signEvent
 import com.nostr.torinos.model.ChannelMeta
+import com.nostr.torinos.model.NoteContext
 import com.nostr.torinos.model.NostrEvent
 import com.nostr.torinos.model.NostrFilter
 import com.nostr.torinos.model.NostrProfile
@@ -22,6 +24,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 
@@ -37,11 +40,12 @@ class ChannelViewModel(
             val channelOwnerPubkey: String? = null,
             val messages: List<NostrEvent> = emptyList(),
             val profiles: Map<String, NostrProfile> = emptyMap(),
+            val replyCounts: Map<String, Int> = emptyMap(),
+            val reactionCounts: Map<String, Int> = emptyMap(),
+            val repostCounts: Map<String, Int> = emptyMap(),
+            val likedReactions: Map<String, String> = emptyMap(),
+            val repostedEvents: Map<String, String> = emptyMap(),
             val canLoadMore: Boolean = false,
-            val keepScrolledToTop: Boolean = true,
-            val initialUnreadMessageId: String? = null,
-            val initialScrollMessageId: String? = null,
-            val scrollToBottomRequest: Boolean = false,
             val draftText: String = "",
             val isPosting: Boolean = false,
             val postError: String? = null,
@@ -66,15 +70,25 @@ class ChannelViewModel(
     private val msgSubId = "ch-msg-$shortId-$relayKey"
     private val histSubId = "ch-hist-$shortId-$relayKey"
     private val profSubId = "ch-prof-$shortId-$relayKey"
+    private val replyCountSubId = "ch-reply-count-$shortId-$relayKey"
+    private val reactionSubId = "ch-react-$shortId-$relayKey"
+    private val repostSubId = "ch-repost-$shortId-$relayKey"
 
     private val seenIds = linkedSetOf<String>()
+    private val seenReplyIds = linkedSetOf<String>()
+    private val seenReactionIds = linkedSetOf<String>()
+    private val seenRepostIds = linkedSetOf<String>()
+    private val watchedEventIds = linkedSetOf<String>()
     private val pendingPubkeys = mutableSetOf<String>()
     private var profileBatchJob: Job? = null
+    private var engagementBatchJob: Job? = null
+    private var pageTimeoutJob: Job? = null
     private val jobs = mutableListOf<Job>()
 
     private var oldestCreatedAt: Long? = null
     private var loadingMore = false
     private var isInitialDiffFetch = false
+    private var isInitialPageRequest = false
     private var lastBatchCount = 0
     private var receivedEoseCount = 0
     private var expectedEoseCount = 1
@@ -83,10 +97,16 @@ class ChannelViewModel(
     private var latestMetaUpdateCreatedAt = -1L
     private var currentMessages = emptyList<NostrEvent>()
     private var currentProfiles = emptyMap<String, NostrProfile>()
-    private var initialLastReadAt: Long? = null
-    private var initialScrollMessageId: String? = null
+    private var currentReplyCounts = emptyMap<String, Int>()
+    private var currentReactionCounts = emptyMap<String, Int>()
+    private var currentRepostCounts = emptyMap<String, Int>()
+    private var currentLikedReactions = emptyMap<String, String>()
+    private var currentRepostedEvents = emptyMap<String, String>()
+    private var ownPubkey: String? = null
+    private val noteContext = NoteContext.Channel(channelId)
 
     init {
+        launch { ownPubkey = loadPublicKey() }
         start()
     }
 
@@ -112,8 +132,9 @@ class ChannelViewModel(
                 val event = signEvent(
                     privateKeyHex = privateKeyHex,
                     content = text,
-                    kind = 42,
-                    tags = listOf(listOf("e", channelId, "", "root"), listOf("client", "ToriNos")),
+                    kind = noteContext.eventKind,
+                    tags = noteContext.replyTags(replyToId = null, replyToPubkey = null) +
+                        listOf(listOf("client", "ToriNos")),
                 )
                 NostrRepository.publish(event)
             }.onSuccess {
@@ -124,6 +145,90 @@ class ChannelViewModel(
                 (_state.value as? UiState.Ready)?.let {
                     _state.value = it.copy(isPosting = false, postError = e.message ?: "送信に失敗しました")
                 }
+            }
+        }
+    }
+
+    fun react(eventId: String, eventPubkey: String) {
+        if (currentLikedReactions.containsKey(eventId)) return
+        currentLikedReactions = currentLikedReactions + (eventId to "")
+        currentReactionCounts = currentReactionCounts + (eventId to (currentReactionCounts[eventId] ?: 0) + 1)
+        syncReadyState()
+        launch {
+            val privateKeyHex = KeyStorage.loadPrivateKey() ?: return@launch
+            runCatching {
+                val reaction = signEvent(
+                    privateKeyHex = privateKeyHex,
+                    content = "+",
+                    kind = 7,
+                    tags = listOf(listOf("e", eventId), listOf("p", eventPubkey)),
+                )
+                seenReactionIds.add(reaction.id)
+                NostrRepository.publish(reaction)
+                currentLikedReactions = currentLikedReactions + (eventId to reaction.id)
+                syncReadyState()
+            }
+        }
+    }
+
+    fun unreact(eventId: String) {
+        val reactionEventId = currentLikedReactions[eventId] ?: return
+        currentLikedReactions = currentLikedReactions - eventId
+        currentReactionCounts = currentReactionCounts + (eventId to maxOf(0, (currentReactionCounts[eventId] ?: 0) - 1))
+        syncReadyState()
+        if (reactionEventId.isEmpty()) return
+        launch {
+            val privateKeyHex = KeyStorage.loadPrivateKey() ?: return@launch
+            runCatching {
+                val deletion = signEvent(
+                    privateKeyHex = privateKeyHex,
+                    content = "",
+                    kind = 5,
+                    tags = listOf(listOf("e", reactionEventId)),
+                )
+                NostrRepository.publish(deletion)
+            }
+        }
+    }
+
+    fun repost(event: NostrEvent) {
+        if (currentRepostedEvents.containsKey(event.id)) return
+        currentRepostedEvents = currentRepostedEvents + (event.id to "")
+        currentRepostCounts = currentRepostCounts + (event.id to (currentRepostCounts[event.id] ?: 0) + 1)
+        syncReadyState()
+        launch {
+            val privateKeyHex = KeyStorage.loadPrivateKey() ?: return@launch
+            runCatching {
+                val repostEvent = signEvent(
+                    privateKeyHex = privateKeyHex,
+                    content = Json.encodeToString(NostrEvent.serializer(), event),
+                    kind = 6,
+                    tags = listOf(listOf("e", event.id), listOf("p", event.pubkey)),
+                )
+                seenRepostIds.add(repostEvent.id)
+                NostrRepository.publish(repostEvent)
+                currentRepostedEvents = currentRepostedEvents + (event.id to repostEvent.id)
+                syncReadyState()
+            }
+        }
+    }
+
+    fun unrepost(eventId: String) {
+        val repostEventId = currentRepostedEvents[eventId] ?: return
+        currentRepostedEvents = currentRepostedEvents - eventId
+        currentRepostCounts = currentRepostCounts + (eventId to maxOf(0, (currentRepostCounts[eventId] ?: 0) - 1))
+        syncReadyState()
+        if (repostEventId.isEmpty()) return
+        launch {
+            val privateKeyHex = KeyStorage.loadPrivateKey() ?: return@launch
+            runCatching {
+                val deletion = signEvent(
+                    privateKeyHex = privateKeyHex,
+                    content = "",
+                    kind = 5,
+                    tags = listOf(listOf("e", repostEventId)),
+                )
+                NostrRepository.publish(deletion)
             }
         }
     }
@@ -208,31 +313,6 @@ class ChannelViewModel(
         }
     }
 
-    fun onScrolledToLatest() {
-        markLatestRead()
-        saveLatestAsScrollPosition()
-    }
-
-    fun onScrollToBottomConsumed() {
-        val current = _state.value as? UiState.Ready ?: return
-        _state.value = current.copy(scrollToBottomRequest = false)
-    }
-
-    fun saveScrollPosition(messageId: String) {
-        val cacheRelayUrl = relayUrl ?: return
-        launch {
-            ChannelCacheStore.saveScrollPosition(cacheRelayUrl, channelId, messageId)
-        }
-    }
-
-    private fun saveLatestAsScrollPosition() {
-        val cacheRelayUrl = relayUrl ?: return
-        val latestId = currentMessages.maxByOrNull { it.createdAt }?.id ?: return
-        launch {
-            ChannelCacheStore.saveScrollPosition(cacheRelayUrl, channelId, latestId)
-        }
-    }
-
     private fun start() {
         // kind:40 でチャンネルメタ取得
         jobs += launch {
@@ -269,34 +349,76 @@ class ChannelViewModel(
         // kind:42 メッセージ受信（ライブ）
         jobs += launch {
             NostrRepository.events(msgSubId).collect { event ->
-                if (event.kind != 42) return@collect
+                if (!noteContext.matches(event)) return@collect
                 appendMessage(event)
                 relayUrl?.let { ChannelCacheStore.upsertMessage(it, event, channelId) }
+                markLatestRead()
                 scheduleProfileFetch(event.pubkey)
                 scheduleMentionedProfileFetch(event.content)
+                scheduleEngagementFetch(event.id)
             }
         }
 
-        // kind:42 メッセージ受信（過去ページ）
+        // kind:42 メッセージ受信（過去ページ）- EOSE 後に onPageCompleted でまとめて反映
         jobs += launch {
             NostrRepository.events(histSubId).collect { event ->
-                if (event.kind != 42) return@collect
-                val added = appendMessage(event)
+                if (!noteContext.matches(event)) return@collect
+                val added = appendMessage(event, notify = false)
                 lastBatchCount += added
                 relayUrl?.let { ChannelCacheStore.upsertMessage(it, event, channelId) }
                 scheduleProfileFetch(event.pubkey)
                 scheduleMentionedProfileFetch(event.content)
+                scheduleEngagementFetch(event.id)
+            }
+        }
+
+        jobs += launch {
+            NostrRepository.events(replyCountSubId).collect { event ->
+                if (!noteContext.matches(event) || !seenReplyIds.add(event.id)) return@collect
+                val targetId = noteContext.replyTargetId(event) ?: return@collect
+                if (targetId !in watchedEventIds) return@collect
+                currentReplyCounts = currentReplyCounts + (targetId to (currentReplyCounts[targetId] ?: 0) + 1)
+                syncReadyState()
+            }
+        }
+
+        jobs += launch {
+            NostrRepository.events(reactionSubId).collect { event ->
+                if (event.kind != 7 || !seenReactionIds.add(event.id)) return@collect
+                val targetId = event.tags.lastOrNull { it.firstOrNull() == "e" }?.getOrNull(1) ?: return@collect
+                if (targetId !in watchedEventIds) return@collect
+                currentReactionCounts = currentReactionCounts + (targetId to (currentReactionCounts[targetId] ?: 0) + 1)
+                if (ownPubkey != null && event.pubkey == ownPubkey && !currentLikedReactions.containsKey(targetId)) {
+                    currentLikedReactions = currentLikedReactions + (targetId to event.id)
+                }
+                syncReadyState()
+                scheduleProfileFetch(event.pubkey)
+            }
+        }
+
+        jobs += launch {
+            NostrRepository.events(repostSubId).collect { event ->
+                if (event.kind != 6 || !seenRepostIds.add(event.id)) return@collect
+                val targetId = event.tags.lastOrNull { it.firstOrNull() == "e" }?.getOrNull(1) ?: return@collect
+                if (targetId !in watchedEventIds) return@collect
+                currentRepostCounts = currentRepostCounts + (targetId to (currentRepostCounts[targetId] ?: 0) + 1)
+                if (ownPubkey != null && event.pubkey == ownPubkey && !currentRepostedEvents.containsKey(targetId)) {
+                    currentRepostedEvents = currentRepostedEvents + (targetId to event.id)
+                }
+                syncReadyState()
+                scheduleProfileFetch(event.pubkey)
             }
         }
 
         // リレーが msgSubId を CLOSED したら再購読
         jobs += launch {
             NostrRepository.closed(msgSubId).collect {
-                val sinceTs = currentMessages.maxOfOrNull { it.createdAt }
+                // 降順リストなので firstOrNull() が最新 createdAt
+                val sinceTs = currentMessages.firstOrNull()?.createdAt
                     ?: Clock.System.now().epochSeconds
                 NostrRepository.subscribe(
                     msgSubId,
-                    NostrFilter(kinds = listOf(42), eTags = listOf(channelId), since = sinceTs),
+                    NostrFilter(kinds = listOf(noteContext.eventKind), eTags = listOf(channelId), since = sinceTs),
                     relayUrl = relayUrl,
                 )
             }
@@ -316,7 +438,7 @@ class ChannelViewModel(
         jobs += launch {
             delay(10_000)
             if (_state.value is UiState.Loading) {
-                _state.value = readyState(canLoadMore = false, keepScrolledToTop = true)
+                _state.value = readyState(canLoadMore = false)
             }
         }
 
@@ -342,23 +464,28 @@ class ChannelViewModel(
         launch {
             val cacheRelayUrl = relayUrl
             if (cacheRelayUrl != null) {
-                initialLastReadAt = ChannelCacheStore.getLastReadAt(cacheRelayUrl, channelId)
-                initialScrollMessageId = ChannelCacheStore.getScrollPosition(cacheRelayUrl, channelId)
                 // DB からキャッシュ済みメッセージを先に読み込んで即時表示
                 val cached = ChannelCacheStore.getMessages(cacheRelayUrl, channelId)
                 if (cached.isNotEmpty()) {
-                    cached.forEach { appendMessage(it) }
-                    _state.value = readyState(canLoadMore = false, keepScrolledToTop = false)
+                    cached.forEach {
+                        appendMessage(it)
+                        scheduleProfileFetch(it.pubkey)
+                        scheduleMentionedProfileFetch(it.content)
+                        scheduleEngagementFetch(it.id)
+                    }
+                    _state.value = readyState(canLoadMore = false)
                 }
             }
             // チャンネルメタ取得
             NostrRepository.subscribe(metaSubId, NostrFilter(ids = listOf(channelId)), relayUrl = relayUrl)
             // 初回取得: DB に何かあれば最新以降の差分のみ、無ければ最新 PAGE_SIZE
-            startInitialFetch(cacheLatest = currentMessages.lastOrNull()?.createdAt)
+            // 降順リストなので firstOrNull() が最新 createdAt
+            startInitialFetch(cacheLatest = currentMessages.firstOrNull()?.createdAt)
         }
     }
 
     private suspend fun startInitialFetch(cacheLatest: Long?) {
+        isInitialPageRequest = true
         isInitialDiffFetch = cacheLatest != null
         loadingMore = true
         lastBatchCount = 0
@@ -368,12 +495,13 @@ class ChannelViewModel(
         if (current != null) {
             _state.value = current.copy(canLoadMore = false)
         }
+        schedulePageTimeout()
 
         // ライブ購読: 起動時刻以降の新着のみ受信（リレー default cap 分の過去履歴を流させない）
         NostrRepository.subscribe(
             msgSubId,
             NostrFilter(
-                kinds = listOf(42),
+                kinds = listOf(noteContext.eventKind),
                 eTags = listOf(channelId),
                 since = Clock.System.now().epochSeconds,
             ),
@@ -382,14 +510,15 @@ class ChannelViewModel(
 
         // 履歴ページ: キャッシュがあれば最新 createdAt 以降の差分のみ、無ければ最新 PAGE_SIZE 件
         val histFilter = if (cacheLatest != null) {
-            NostrFilter(kinds = listOf(42), eTags = listOf(channelId), since = cacheLatest + 1)
+            NostrFilter(kinds = listOf(noteContext.eventKind), eTags = listOf(channelId), since = cacheLatest + 1)
         } else {
-            NostrFilter(kinds = listOf(42), eTags = listOf(channelId), until = null, limit = PAGE_SIZE)
+            NostrFilter(kinds = listOf(noteContext.eventKind), eTags = listOf(channelId), until = null, limit = PAGE_SIZE)
         }
         NostrRepository.subscribe(histSubId, histFilter, relayUrl = relayUrl)
     }
 
     private suspend fun requestPage(until: Long?) {
+        isInitialPageRequest = false
         loadingMore = true
         lastBatchCount = 0
         receivedEoseCount = 0
@@ -398,52 +527,83 @@ class ChannelViewModel(
         if (current != null) {
             _state.value = current.copy(canLoadMore = false)
         }
+        schedulePageTimeout()
         NostrRepository.subscribe(
             histSubId,
-            NostrFilter(kinds = listOf(42), eTags = listOf(channelId), until = until, limit = PAGE_SIZE),
+            NostrFilter(kinds = listOf(noteContext.eventKind), eTags = listOf(channelId), until = until, limit = PAGE_SIZE),
             relayUrl = relayUrl,
         )
     }
 
     private fun onPageCompleted() {
+        if (!loadingMore) return
         loadingMore = false
-        // 初回差分取得時は受信件数が 0 でも古い方向にキャッシュがあるので true、それ以外は従来の閾値判定
-        val hasMore = if (isInitialDiffFetch) true else lastBatchCount >= PAGE_SIZE
+        pageTimeoutJob?.cancel()
+        pageTimeoutJob = null
+        // リレー間の重複除外で PAGE_SIZE 未満になることがあるため、
+        // 1件でも増えたページでは次の古いページ取得を許可する。
+        val hasMore = if (isInitialDiffFetch) true else lastBatchCount > 0
+        isInitialPageRequest = false
         isInitialDiffFetch = false
-        _state.value = readyState(
-            canLoadMore = hasMore,
-            keepScrolledToTop = false,
-            scrollToBottomRequest = initialUnreadMessageId() == null,
-        )
+        _state.value = readyState(canLoadMore = hasMore)
         markLatestRead()
         NostrRepository.close(histSubId)
     }
 
-    private fun appendMessage(event: NostrEvent): Int {
+    private fun schedulePageTimeout() {
+        pageTimeoutJob?.cancel()
+        pageTimeoutJob = launch {
+            delay(10_000)
+            if (!loadingMore) return@launch
+
+            loadingMore = false
+            val hasMore = if (isInitialDiffFetch) true else lastBatchCount > 0
+            isInitialPageRequest = false
+            isInitialDiffFetch = false
+            _state.value = readyState(canLoadMore = hasMore)
+            markLatestRead()
+            if (!hasMore) NostrRepository.close(histSubId)
+        }
+    }
+
+    private fun appendMessage(event: NostrEvent, notify: Boolean = true): Int {
         if (!seenIds.add(event.id)) return 0
         while (seenIds.size > MAX_SEEN_IDS) seenIds.remove(seenIds.first())
         if (currentMessages.any { it.id == event.id }) return 0
-        currentMessages = (currentMessages + event).sortedBy { it.createdAt }
-        oldestCreatedAt = currentMessages.firstOrNull()?.createdAt
-        syncReadyState()
+        currentMessages = insertSorted(currentMessages, event)
+        oldestCreatedAt = currentMessages.lastOrNull()?.createdAt
+        if (notify) syncReadyState()
         return 1
     }
 
-    private fun readyState(
-        canLoadMore: Boolean,
-        keepScrolledToTop: Boolean,
-        scrollToBottomRequest: Boolean = false,
-    ): UiState.Ready =
+    private fun insertSorted(messages: List<NostrEvent>, event: NostrEvent): List<NostrEvent> {
+        if (messages.isEmpty()) return listOf(event)
+        // 降順（新しい順）: index 0 = 最新、last = 最古
+        if (event.createdAt >= messages.first().createdAt) return listOf(event) + messages
+        if (event.createdAt <= messages.last().createdAt) return messages + event
+        val list = messages.toMutableList()
+        var lo = 0
+        var hi = list.size
+        while (lo < hi) {
+            val mid = (lo + hi) ushr 1
+            if (list[mid].createdAt >= event.createdAt) lo = mid + 1 else hi = mid
+        }
+        list.add(lo, event)
+        return list
+    }
+
+    private fun readyState(canLoadMore: Boolean): UiState.Ready =
         UiState.Ready(
             channelMeta = currentChannelMeta,
             channelOwnerPubkey = currentChannelOwnerPubkey,
             messages = filteredMessages(),
             profiles = currentProfiles,
+            replyCounts = currentReplyCounts,
+            reactionCounts = currentReactionCounts,
+            repostCounts = currentRepostCounts,
+            likedReactions = currentLikedReactions,
+            repostedEvents = currentRepostedEvents,
             canLoadMore = canLoadMore,
-            keepScrolledToTop = keepScrolledToTop,
-            initialUnreadMessageId = initialUnreadMessageId(),
-            initialScrollMessageId = initialScrollMessageId,
-            scrollToBottomRequest = scrollToBottomRequest,
         )
 
     private fun syncReadyState() {
@@ -453,19 +613,18 @@ class ChannelViewModel(
             channelOwnerPubkey = currentChannelOwnerPubkey,
             messages = filteredMessages(),
             profiles = currentProfiles,
-            initialUnreadMessageId = initialUnreadMessageId(),
-            initialScrollMessageId = initialScrollMessageId,
+            replyCounts = currentReplyCounts,
+            reactionCounts = currentReactionCounts,
+            repostCounts = currentRepostCounts,
+            likedReactions = currentLikedReactions,
+            repostedEvents = currentRepostedEvents,
         )
-    }
-
-    private fun initialUnreadMessageId(): String? {
-        val lastReadAt = initialLastReadAt ?: return null
-        return filteredMessages().firstOrNull { it.createdAt > lastReadAt }?.id
     }
 
     private fun markLatestRead() {
         val cacheRelayUrl = relayUrl ?: return
-        val latestReadAt = currentMessages.maxOfOrNull { it.createdAt } ?: return
+        // 降順リストなので firstOrNull() が最新 createdAt
+        val latestReadAt = currentMessages.firstOrNull()?.createdAt ?: return
         launch {
             ChannelCacheStore.markRead(cacheRelayUrl, channelId, latestReadAt)
         }
@@ -503,19 +662,50 @@ class ChannelViewModel(
         }
     }
 
+    private fun scheduleEngagementFetch(eventId: String) {
+        if (!watchedEventIds.add(eventId)) return
+        while (watchedEventIds.size > MAX_WATCHED_EVENTS) watchedEventIds.remove(watchedEventIds.first())
+        engagementBatchJob?.cancel()
+        engagementBatchJob = launch {
+            delay(300)
+            val ids = watchedEventIds.toList()
+            NostrRepository.subscribe(
+                replyCountSubId,
+                NostrFilter(kinds = listOf(noteContext.eventKind), eTags = ids, limit = 500),
+                relayUrl = relayUrl,
+            )
+            NostrRepository.subscribe(
+                reactionSubId,
+                NostrFilter(kinds = listOf(7), eTags = ids, limit = 500),
+                relayUrl = relayUrl,
+            )
+            NostrRepository.subscribe(
+                repostSubId,
+                NostrFilter(kinds = listOf(6), eTags = ids, limit = 500),
+                relayUrl = relayUrl,
+            )
+        }
+    }
+
     override fun onCleared() {
         super.onCleared()
         jobs.forEach { it.cancel() }
         profileBatchJob?.cancel()
+        engagementBatchJob?.cancel()
+        pageTimeoutJob?.cancel()
         NostrRepository.close(metaSubId)
         NostrRepository.close(metaUpdateSubId)
         NostrRepository.close(msgSubId)
         NostrRepository.close(histSubId)
         NostrRepository.close(profSubId)
+        NostrRepository.close(replyCountSubId)
+        NostrRepository.close(reactionSubId)
+        NostrRepository.close(repostSubId)
     }
 
     companion object {
         private const val PAGE_SIZE = 30
         private const val MAX_SEEN_IDS = 1000
+        private const val MAX_WATCHED_EVENTS = 100
     }
 }

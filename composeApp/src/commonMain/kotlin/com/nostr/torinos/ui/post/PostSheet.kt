@@ -54,6 +54,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.nostr.torinos.model.NoteContext
 import com.nostr.torinos.network.RelayEntry
 import com.nostr.torinos.ui.components.rememberImagePickerLauncher
 import com.nostr.torinos.ui.components.PreviewImage
@@ -67,6 +68,7 @@ fun PostSheet(
     replyToId: String? = null,
     replyToPubkey: String? = null,
     replyToPreview: String? = null,
+    noteContext: NoteContext = NoteContext.Timeline,
     viewModel: PostViewModel? = null,
 ) {
     val postViewModel = viewModel ?: remember { PostViewModel() }
@@ -109,7 +111,7 @@ fun PostSheet(
                     onOpenRelaySettings = { showRelaySettingsDialog = true },
                     onTextChange = postViewModel::onTextChange,
                     onRemoveImage = postViewModel::removeImage,
-                    onPost = { postViewModel.post(replyToId, replyToPubkey) },
+                    onPost = { postViewModel.post(replyToId, replyToPubkey, noteContext) },
                 )
             }
         }

@@ -42,33 +42,29 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.runtime.collectAsState
-import androidx.compose.runtime.snapshotFlow
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.nostr.torinos.model.ChannelMeta
 import com.nostr.torinos.network.MuteStore
 import com.nostr.torinos.network.RelayStore
 import com.nostr.torinos.ui.components.LazyListScrollbar
 import com.nostr.torinos.ui.components.NoteCard
+import com.nostr.torinos.model.stripNostrEventUris
+import com.nostr.torinos.ui.components.stripImageUrls
 import com.nostr.torinos.ui.profile.AvatarCircle
-import kotlinx.coroutines.FlowPreview
-import kotlinx.coroutines.flow.debounce
-import kotlinx.coroutines.flow.distinctUntilChanged
-import kotlinx.coroutines.flow.filter
-import kotlinx.coroutines.flow.map
 
-@OptIn(ExperimentalMaterial3Api::class, FlowPreview::class)
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ChannelScreen(
     channelId: String,
     onBack: () -> Unit = {},
     onUserClick: (pubkey: String) -> Unit = {},
+    onReply: ((eventId: String, authorPubkey: String, preview: String, channelId: String) -> Unit)? = null,
     onOpenThread: (eventId: String) -> Unit = {},
     onOpenLikes: (eventId: String) -> Unit = {},
     onOpenReposts: (eventId: String) -> Unit = {},
@@ -80,8 +76,7 @@ fun ChannelScreen(
     }
     val state by viewModel.state.collectAsState()
     val mutedPubkeys by MuteStore.mutedPubkeys.collectAsState()
-    val listState = rememberSaveable(channelId, selectedRelayUrl, saver = LazyListState.Saver) { LazyListState() }
-    var didApplyInitialScroll by remember(channelId, selectedRelayUrl) { mutableStateOf(false) }
+    val listState = remember(channelId, selectedRelayUrl) { LazyListState() }
     var showThreadInfoDialog by remember(channelId, selectedRelayUrl) { mutableStateOf(false) }
 
     Scaffold(
@@ -165,52 +160,18 @@ fun ChannelScreen(
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     } else {
-                        LaunchedEffect(listState) {
-                            snapshotFlow { !listState.canScrollForward && listState.layoutInfo.totalItemsCount > 0 }
-                                .distinctUntilChanged()
-                                .filter { it }
-                                .collect { viewModel.onScrolledToLatest() }
-                        }
-
-                        LaunchedEffect(channelId, selectedRelayUrl, s.initialUnreadMessageId, s.messages.size) {
-                            val isAtTop = listState.firstVisibleItemIndex == 0 &&
-                                listState.firstVisibleItemScrollOffset == 0
-                            if (!didApplyInitialScroll) {
-                                val unreadIndex = s.initialUnreadMessageId
-                                    ?.let { id -> s.messages.indexOfFirst { it.id == id } }
-                                    ?.takeIf { it >= 0 }
-                                if (unreadIndex != null) {
-                                    listState.scrollToItem(unreadIndex)
-                                }
-                                didApplyInitialScroll = true
-                            } else if (s.keepScrolledToTop && isAtTop) {
+                        // 最新メッセージが届いた時、最下部付近にいれば自動スクロール
+                        val newestMessageId = s.messages.firstOrNull()?.id
+                        LaunchedEffect(newestMessageId) {
+                            if (newestMessageId != null && listState.firstVisibleItemIndex <= 1) {
                                 listState.scrollToItem(0)
                             }
-                        }
-
-                        LaunchedEffect(s.scrollToBottomRequest) {
-                            if (s.scrollToBottomRequest && s.messages.isNotEmpty()) {
-                                listState.scrollToItem(s.messages.lastIndex)
-                                viewModel.onScrollToBottomConsumed()
-                            }
-                        }
-
-                        LaunchedEffect(listState) {
-                            snapshotFlow { listState.firstVisibleItemIndex to didApplyInitialScroll }
-                                .filter { (_, applied) -> applied }
-                                .map { (index, _) -> index }
-                                .distinctUntilChanged()
-                                .debounce(500)
-                                .collect { index ->
-                                    val messages = (viewModel.state.value as? ChannelViewModel.UiState.Ready)?.messages ?: return@collect
-                                    val messageId = messages.getOrNull(index)?.id ?: return@collect
-                                    viewModel.saveScrollPosition(messageId)
-                                }
                         }
 
                         Box(modifier = Modifier.fillMaxSize()) {
                             LazyColumn(
                                 state = listState,
+                                reverseLayout = true,
                                 modifier = Modifier.fillMaxSize(),
                             ) {
                                 items(s.messages, key = { it.id }) { message ->
@@ -218,19 +179,45 @@ fun ChannelScreen(
                                         event = message,
                                         profile = s.profiles[message.pubkey],
                                         profiles = s.profiles,
-                                        replyCount = 0,
-                                        reactionCount = 0,
+                                        replyCount = s.replyCounts[message.id] ?: 0,
+                                        reactionCount = s.reactionCounts[message.id] ?: 0,
+                                        repostCount = s.repostCounts[message.id] ?: 0,
+                                        isLiked = s.likedReactions.containsKey(message.id),
+                                        isReposted = s.repostedEvents.containsKey(message.id),
                                         onUserClick = onUserClick,
+                                        onLike = if (ownPubkey != null) {
+                                            {
+                                                if (s.likedReactions.containsKey(message.id)) {
+                                                    viewModel.unreact(message.id)
+                                                } else {
+                                                    viewModel.react(message.id, message.pubkey)
+                                                }
+                                            }
+                                        } else null,
+                                        onReply = if (ownPubkey != null && onReply != null) {
+                                            { onReply(message.id, message.pubkey, message.content.replyPreviewText(), channelId) }
+                                        } else null,
                                         onOpenReplies = { onOpenThread(message.id) },
                                         onOpenLikes = { onOpenLikes(message.id) },
                                         onOpenReposts = { onOpenReposts(message.id) },
+                                        onRepost = if (ownPubkey != null) {
+                                            {
+                                                if (s.repostedEvents.containsKey(message.id)) {
+                                                    viewModel.unrepost(message.id)
+                                                } else {
+                                                    viewModel.repost(message)
+                                                }
+                                            }
+                                        } else null,
                                         ownPubkey = ownPubkey,
                                         isMuted = mutedPubkeys.contains(message.pubkey),
+                                        onNoteClick = onOpenThread,
                                     )
                                     HorizontalDivider()
                                 }
+                                // reverseLayout により、末尾アイテムは画面上部に表示される
                                 if (s.canLoadMore) {
-                                    item {
+                                    item(key = "load-more-older") {
                                         Box(
                                             modifier = Modifier
                                                 .fillMaxWidth()
@@ -246,6 +233,7 @@ fun ChannelScreen(
                             }
                             LazyListScrollbar(
                                 state = listState,
+                                reverseLayout = true,
                                 modifier = Modifier
                                     .align(Alignment.CenterEnd)
                                     .fillMaxHeight()
@@ -330,6 +318,7 @@ fun ChannelScreen(
         )
     }
 }
+
 
 @Composable
 private fun ChannelMessageInputBar(
@@ -477,3 +466,11 @@ private fun ThreadInfoContent(
         }
     }
 }
+
+private fun String.replyPreviewText(): String =
+    stripImageUrls(stripNostrEventUris(this))
+        .lineSequence()
+        .map { it.trim() }
+        .filter { it.isNotEmpty() }
+        .joinToString(" ")
+        .take(160)

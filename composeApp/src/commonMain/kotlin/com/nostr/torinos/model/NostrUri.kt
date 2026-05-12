@@ -60,6 +60,12 @@ fun NostrEvent.replyTargetId(): String? {
         ?: eTags.lastOrNull()?.getOrNull(1)
 }
 
+fun NostrEvent.channelRootId(): String? {
+    val eTags = tags.filter { it.firstOrNull() == "e" }
+    return eTags.firstOrNull { it.getOrNull(3) == "root" }?.getOrNull(1)
+        ?: eTags.firstOrNull()?.getOrNull(1)
+}
+
 fun quotedEventIds(event: NostrEvent): List<String> {
     val qTagIds = event.tags
         .filter { it.firstOrNull() == "q" }

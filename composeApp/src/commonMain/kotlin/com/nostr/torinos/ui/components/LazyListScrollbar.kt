@@ -31,6 +31,7 @@ private const val MinThumbHeightPx = 40f
 fun LazyListScrollbar(
     state: LazyListState,
     modifier: Modifier = Modifier,
+    reverseLayout: Boolean = false,
 ) {
     val coroutineScope = rememberCoroutineScope()
     var isDragging by remember { mutableStateOf(false) }
@@ -66,9 +67,8 @@ fun LazyListScrollbar(
         val scrolledPx = firstItem.index * avgItemSize - firstItem.offset
         val maxScroll = totalContentHeight - viewportHeightPx
         val maxThumbTop = (viewportHeightPx - thumbHeightPx).coerceAtLeast(0f)
-        val thumbTopPx = if (maxScroll > 0f) {
-            ((scrolledPx / maxScroll) * maxThumbTop).coerceIn(0f, maxThumbTop)
-        } else 0f
+        val scrollFraction = if (maxScroll > 0f) (scrolledPx / maxScroll).coerceIn(0f, 1f) else 0f
+        val thumbTopPx = (if (reverseLayout) 1f - scrollFraction else scrollFraction) * maxThumbTop
 
         Canvas(
             modifier = Modifier
@@ -103,7 +103,8 @@ fun LazyListScrollbar(
                             val currentScrolled = first.index * avg - first.offset
                             val currentMax = totalHeight - viewportHeightPx
                             val currentFraction = if (currentMax > 0f) currentScrolled / currentMax else 0f
-                            val newFraction = (currentFraction + dragAmount / trackRange).coerceIn(0f, 1f)
+                            val delta = if (reverseLayout) -dragAmount else dragAmount
+                            val newFraction = (currentFraction + delta / trackRange).coerceIn(0f, 1f)
                             val targetItem = (newFraction * (total - 1)).roundToInt()
                             coroutineScope.launch { state.scrollToItem(targetItem) }
                         },

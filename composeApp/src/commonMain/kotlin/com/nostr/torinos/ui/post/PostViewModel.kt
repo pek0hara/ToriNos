@@ -3,6 +3,7 @@ package com.nostr.torinos.ui.post
 import com.nostr.torinos.ui.SafeViewModel
 import com.nostr.torinos.crypto.KeyStorage
 import com.nostr.torinos.crypto.signEvent
+import com.nostr.torinos.model.NoteContext
 import com.nostr.torinos.model.extractNostrEventReferences
 import com.nostr.torinos.network.ImageUploader
 import com.nostr.torinos.network.NostrRepository
@@ -73,7 +74,11 @@ class PostViewModel : SafeViewModel() {
         _state.update { s -> s.copy(images = s.images.filter { it.id != id }) }
     }
 
-    fun post(replyToId: String? = null, replyToPubkey: String? = null) {
+    fun post(
+        replyToId: String? = null,
+        replyToPubkey: String? = null,
+        noteContext: NoteContext = NoteContext.Timeline,
+    ) {
         val current = _state.value
         val uploadedUrls = current.images.mapNotNull { it.uploadedUrl }
         val text = buildPostContent(current.text, uploadedUrls)
@@ -87,8 +92,7 @@ class PostViewModel : SafeViewModel() {
             }
 
             val tags = buildList {
-                if (replyToId != null) add(listOf("e", replyToId))
-                if (replyToPubkey != null) add(listOf("p", replyToPubkey))
+                addAll(noteContext.replyTags(replyToId, replyToPubkey))
                 extractNostrEventReferences(text).forEach { reference ->
                     add(
                         buildList {
@@ -103,7 +107,7 @@ class PostViewModel : SafeViewModel() {
             }
 
             runCatching {
-                val event = signEvent(privateKeyHex, text, tags = tags)
+                val event = signEvent(privateKeyHex, text, kind = noteContext.eventKind, tags = tags)
                 NostrRepository.publish(event)
             }.onSuccess {
                 _state.value = PostState(posted = true)

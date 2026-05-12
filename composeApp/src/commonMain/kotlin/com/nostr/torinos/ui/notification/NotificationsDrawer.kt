@@ -13,7 +13,9 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.MailOutline
@@ -26,6 +28,8 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalDrawerSheet
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -42,11 +46,11 @@ import com.nostr.torinos.model.stripNostrEventUris
 import com.nostr.torinos.ui.components.formatTimestamp
 import com.nostr.torinos.ui.components.stripImageUrls
 import com.nostr.torinos.ui.profile.AvatarCircle
-import androidx.compose.runtime.collectAsState
 
 @Composable
 fun NotificationsDrawer(
     ownPubkey: String?,
+    scrollToTopRequest: Int = 0,
     onUserClick: (String) -> Unit,
     onOpenThread: (String) -> Unit,
     modifier: Modifier = Modifier,
@@ -66,6 +70,13 @@ fun NotificationsDrawer(
             factory = viewModelFactory { initializer { NotificationsViewModel(ownPubkey) } },
         )
         val state by viewModel.state.collectAsState()
+        val listState = rememberLazyListState()
+
+        LaunchedEffect(scrollToTopRequest) {
+            if (scrollToTopRequest > 0) {
+                listState.scrollToItem(0)
+            }
+        }
 
         Column(modifier = Modifier.fillMaxHeight()) {
             Text(
@@ -77,6 +88,7 @@ fun NotificationsDrawer(
             HorizontalDivider()
             NotificationsList(
                 state = state,
+                listState = listState,
                 onUserClick = onUserClick,
                 onOpenThread = onOpenThread,
                 modifier = Modifier.fillMaxHeight(),
@@ -88,11 +100,15 @@ fun NotificationsDrawer(
 @Composable
 private fun NotificationsList(
     state: NotificationsState,
+    listState: LazyListState,
     onUserClick: (String) -> Unit,
     onOpenThread: (String) -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    LazyColumn(modifier = modifier) {
+    LazyColumn(
+        state = listState,
+        modifier = modifier,
+    ) {
         when {
             state.isInitialLoad && state.items.isEmpty() -> item {
                 Box(
