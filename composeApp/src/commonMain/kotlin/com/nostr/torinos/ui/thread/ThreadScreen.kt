@@ -9,7 +9,10 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
@@ -21,6 +24,8 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material.icons.automirrored.filled.Send
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.PrimaryTabRow
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Tab
@@ -118,6 +123,16 @@ fun ThreadScreen(
                     titleContentColor = MaterialTheme.colorScheme.onPrimary,
                 ),
             )
+        },
+        bottomBar = {
+            if (state.root != null && ownPubkey != null) {
+                ThreadReplyInputBar(
+                    text = state.replyText,
+                    isPosting = state.isReplying,
+                    onTextChange = viewModel::onReplyTextChange,
+                    onSend = viewModel::submitReply,
+                )
+            }
         },
     ) { padding ->
         Box(
@@ -358,6 +373,49 @@ private fun androidx.compose.foundation.lazy.LazyListScope.emptyTabItem(text: St
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             textAlign = TextAlign.Center,
         )
+    }
+}
+
+@Composable
+private fun ThreadReplyInputBar(
+    text: String,
+    isPosting: Boolean,
+    onTextChange: (String) -> Unit,
+    onSend: () -> Unit,
+) {
+    HorizontalDivider()
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .imePadding()
+            .navigationBarsPadding(),
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 8.dp, vertical = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            OutlinedTextField(
+                value = text,
+                onValueChange = onTextChange,
+                modifier = Modifier.weight(1f),
+                placeholder = { Text("返信を追加...") },
+                maxLines = 4,
+                enabled = !isPosting,
+            )
+            IconButton(
+                onClick = onSend,
+                enabled = text.isNotBlank() && !isPosting,
+            ) {
+                if (isPosting) {
+                    CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
+                } else {
+                    Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "返信を送信")
+                }
+            }
+        }
     }
 }
 

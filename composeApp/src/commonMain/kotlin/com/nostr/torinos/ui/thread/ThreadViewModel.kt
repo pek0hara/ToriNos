@@ -34,6 +34,9 @@ class ThreadViewModel(
         val ownRepostEventId: String? = null,
         val isLoading: Boolean = true,
         val quotedEvents: Map<String, NostrEvent> = emptyMap(),
+        val replyText: String = "",
+        val isReplying: Boolean = false,
+        val replyError: String? = null,
     )
 
     private val _state = kotlinx.coroutines.flow.MutableStateFlow(UiState())
@@ -65,6 +68,36 @@ class ThreadViewModel(
     init {
         if (isWriteSupported) launch { ownPubkey = loadPublicKey() }
         startSubscriptions()
+    }
+
+    fun onReplyTextChange(text: String) {
+        _state.value = _state.value.copy(replyText = text, replyError = null)
+    }
+
+    fun submitReply() {
+        val root = _state.value.root ?: return
+        val text = _state.value.replyText.trim()
+        if (text.isBlank()) return
+        _state.value = _state.value.copy(isReplying = true, replyError = null)
+        launch {
+            val privateKeyHex = KeyStorage.loadPrivateKey() ?: run {
+                _state.value = _state.value.copy(isReplying = false, replyError = "秘密鍵が設定されていません")
+                return@launch
+            }
+            runCatching {
+                val tags = noteContext.replyTags(root.id, root.pubkey) + listOf(listOf("client", "ToriNos"))
+                val event = signEvent(privateKeyHex, text, kind = noteContext.eventKind, tags = tags)
+                seenReplyIds.add(event.id)
+                NostrRepository.publish(event)
+            }.onSuccess {
+                _state.value = _state.value.copy(isReplying = false, replyText = "")
+            }.onFailure { e ->
+                _state.value = _state.value.copy(
+                    isReplying = false,
+                    replyError = e.message ?: "返信に失敗しました",
+                )
+            }
+        }
     }
 
     fun react(eventId: String, eventPubkey: String) {
