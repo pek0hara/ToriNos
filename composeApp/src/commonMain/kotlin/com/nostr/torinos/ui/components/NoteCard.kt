@@ -47,6 +47,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.FilterQuality
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
@@ -119,6 +120,10 @@ fun NoteCard(
     Row(
         modifier = Modifier
             .fillMaxWidth()
+            .then(
+                if (onNoteClick != null) Modifier.clickable { onNoteClick(event.id) }
+                else Modifier
+            )
             .padding(horizontal = 16.dp, vertical = 12.dp),
         horizontalArrangement = Arrangement.spacedBy(12.dp),
     ) {
@@ -510,6 +515,7 @@ private fun CollapsibleNoteText(
 
 private const val CollapsedTextCharacterLimit = 140
 private const val CollapsedTextMaxVisibleLines = 9
+private const val TimelineImageMaxDecodeSizePx = 720
 
 @Composable
 private fun ImagePreviewGrid(
@@ -524,6 +530,8 @@ private fun ImagePreviewGrid(
                 url = imageUrls.first(),
                 contentDescription = null,
                 contentScale = ContentScale.Crop,
+                maxDecodeSizePx = TimelineImageMaxDecodeSizePx,
+                filterQuality = FilterQuality.Low,
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(imageHeight)
@@ -643,6 +651,8 @@ private fun GridImage(
         url = url,
         contentDescription = null,
         contentScale = ContentScale.Crop,
+        maxDecodeSizePx = TimelineImageMaxDecodeSizePx,
+        filterQuality = FilterQuality.Low,
         modifier = modifier
             .fillMaxSize()
             .clickable { onClick() },
@@ -703,6 +713,7 @@ private fun ExpandedImageDialog(
                         url = imageUrls[page],
                         contentDescription = null,
                         contentScale = ContentScale.Fit,
+                        filterQuality = FilterQuality.High,
                         modifier = Modifier
                             .fillMaxSize()
                             .padding(16.dp)

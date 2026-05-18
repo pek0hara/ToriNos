@@ -16,6 +16,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.produceState
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.FilterQuality
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.text.font.FontWeight
@@ -67,6 +68,8 @@ private fun PreviewCard(
                 url = imageUrl,
                 contentDescription = null,
                 contentScale = ContentScale.Crop,
+                maxDecodeSizePx = LinkPreviewImageMaxDecodeSizePx,
+                filterQuality = FilterQuality.Low,
                 modifier = Modifier
                     .size(width = 88.dp, height = 66.dp),
             )
@@ -110,3 +113,5 @@ private sealed interface LinkPreviewState {
     data object Unavailable : LinkPreviewState
     data class Loaded(val preview: LinkPreview) : LinkPreviewState
 }
+
+private const val LinkPreviewImageMaxDecodeSizePx = 256

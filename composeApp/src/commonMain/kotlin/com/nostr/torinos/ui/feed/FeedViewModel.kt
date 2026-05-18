@@ -76,6 +76,7 @@ class FeedViewModel(
     private val eventSortTimes = mutableMapOf<String, Long>()
     private val pendingQuoteIds = linkedSetOf<String>()
     private val pendingRepostTargets = mutableMapOf<String, PendingRepostTarget>()
+    private val pendingHistoryBatch = mutableListOf<NostrEvent>()
     private var subscriptionsStarted = false
     private var ownPubkey: String? = null
 
@@ -433,6 +434,7 @@ class FeedViewModel(
         historyPageTimeoutJob = null
         if (loadingMore) {
             loadingMore = false
+            pendingHistoryBatch.clear()
             val current = _state.value
             _state.value = current.copy(
                 isInitialLoad = current.isInitialLoad && current.events.isEmpty(),
@@ -479,6 +481,7 @@ class FeedViewModel(
         lastHistoryBatchReceivedCount = 0
         lastHistoryBatchUniqueCount = 0
         receivedEoseCount = 0
+        pendingHistoryBatch.clear()
         expectedEoseCount = if (relayUrl != null) 1 else NostrRepository.relayCount.coerceAtLeast(1)
         _state.value = _state.value.copy(canLoadMore = false, isLoadingMore = true)
         scheduleHistoryPageTimeout()
@@ -510,6 +513,7 @@ class FeedViewModel(
         lastHistoryBatchReceivedCount = 0
         lastHistoryBatchUniqueCount = 0
         receivedEoseCount = 0
+        pendingHistoryBatch.clear()
         expectedEoseCount = if (relayUrl != null) 1 else NostrRepository.relayCount.coerceAtLeast(1)
         scheduleHistoryPageTimeout()
         NostrRepository.subscribe(
@@ -531,6 +535,7 @@ class FeedViewModel(
         loadingMore = false
         historyPageTimeoutJob?.cancel()
         historyPageTimeoutJob = null
+        flushHistoryBatch()
         // リプライ等がフィルタされても受信件数が上限に達していれば次ページがある
         val hasMore = lastHistoryBatchReceivedCount >= FEED_PAGE_SIZE
         val cur = _state.value
@@ -552,6 +557,7 @@ class FeedViewModel(
             if (!loadingMore) return@launch
 
             loadingMore = false
+            flushHistoryBatch()
             val hasMore = lastHistoryBatchReceivedCount >= FEED_PAGE_SIZE
             val current = _state.value
             _state.value = current.copy(
@@ -632,8 +638,11 @@ class FeedViewModel(
         if (isFiltered(event)) return 0
         val cur = _state.value
         if (cur.events.any { it.id == event.id }) return 0
-        val updated = sortTimelineEvents(cur.events + event)
-        _state.value = cur.copy(events = updated)
+        if (loadingMore) {
+            pendingHistoryBatch.add(event)
+        } else {
+            _state.value = cur.copy(events = insertSorted(cur.events, event))
+        }
         val quoteIds = quotedEventIds(event)
         scheduleQuoteFetch(quoteIds)
         event.replyTargetId()?.takeIf { it !in quoteIds }?.let { scheduleQuoteFetch(listOf(it)) }
@@ -722,6 +731,39 @@ class FeedViewModel(
 
     private fun sortTimelineEvents(events: List<NostrEvent>): List<NostrEvent> =
         events.sortedByDescending { eventSortTimes[it.id] ?: it.createdAt }
+
+    private fun flushHistoryBatch() {
+        if (pendingHistoryBatch.isEmpty()) return
+        val sorted = pendingHistoryBatch.sortedByDescending { eventSortTimes[it.id] ?: it.createdAt }
+        pendingHistoryBatch.clear()
+        val cur = _state.value
+        _state.value = cur.copy(events = mergeSorted(cur.events, sorted))
+    }
+
+    private fun insertSorted(events: List<NostrEvent>, event: NostrEvent): List<NostrEvent> {
+        val sortTime = eventSortTimes[event.id] ?: event.createdAt
+        var lo = 0
+        var hi = events.size
+        while (lo < hi) {
+            val mid = (lo + hi) / 2
+            if ((eventSortTimes[events[mid].id] ?: events[mid].createdAt) > sortTime) lo = mid + 1
+            else hi = mid
+        }
+        return events.take(lo) + event + events.drop(lo)
+    }
+
+    private fun mergeSorted(existing: List<NostrEvent>, batch: List<NostrEvent>): List<NostrEvent> {
+        val result = ArrayList<NostrEvent>(existing.size + batch.size)
+        var ei = 0; var bi = 0
+        while (ei < existing.size && bi < batch.size) {
+            val eTime = eventSortTimes[existing[ei].id] ?: existing[ei].createdAt
+            val bTime = eventSortTimes[batch[bi].id] ?: batch[bi].createdAt
+            if (eTime >= bTime) result.add(existing[ei++]) else result.add(batch[bi++])
+        }
+        while (ei < existing.size) result.add(existing[ei++])
+        while (bi < batch.size) result.add(batch[bi++])
+        return result
+    }
 
     private fun rememberSeenId(seenIds: LinkedHashSet<String>, eventId: String): Boolean {
         if (!seenIds.add(eventId)) return false
@@ -812,9 +854,9 @@ class FeedViewModel(
         private const val MAX_SEEN_IDS = 2000
         private const val LIVE_SUBSCRIPTION_REFRESH_INTERVAL_MS = 60_000L
         private const val LIVE_SUBSCRIPTION_SINCE_OVERLAP_SECONDS = 300L
-        private val nextInstanceKeyValue = kotlin.concurrent.AtomicInt(0)
+        private var nextInstanceKeyValue = 0
 
-        private fun nextInstanceKey(): Int = nextInstanceKeyValue.incrementAndGet()
+        private fun nextInstanceKey(): Int = ++nextInstanceKeyValue
     }
 }
 

@@ -6,12 +6,15 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.FilterQuality
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.unit.Dp
 import coil3.compose.AsyncImage
 import coil3.compose.LocalPlatformContext
 import coil3.request.ImageRequest
 import coil3.request.crossfade
+import coil3.size.Precision
+import coil3.size.Scale
 
 @Composable
 fun NetworkImage(
@@ -19,18 +22,28 @@ fun NetworkImage(
     contentDescription: String?,
     modifier: Modifier = Modifier,
     contentScale: ContentScale = ContentScale.Fit,
+    maxDecodeSizePx: Int? = null,
+    filterQuality: FilterQuality = FilterQuality.Medium,
 ) {
     val context = LocalPlatformContext.current
-    val model = remember(context, url) {
+    val model = remember(context, url, contentScale, maxDecodeSizePx) {
         ImageRequest.Builder(context)
             .data(url)
             .crossfade(false)
+            .apply {
+                if (maxDecodeSizePx != null) {
+                    size(maxDecodeSizePx)
+                    precision(Precision.INEXACT)
+                    scale(contentScale.toCoilScale())
+                }
+            }
             .build()
     }
     AsyncImage(
         model = model,
         contentDescription = contentDescription,
         contentScale = contentScale,
+        filterQuality = filterQuality,
         modifier = modifier,
     )
 }
@@ -79,6 +92,12 @@ fun AvatarImage(
             .clip(CircleShape),
     )
 }
+
+private fun ContentScale.toCoilScale(): Scale =
+    when (this) {
+        ContentScale.Fit, ContentScale.Inside -> Scale.FIT
+        else -> Scale.FILL
+    }
 
 /** ノート本文から画像URLを抽出する */
 private val imageUrlRegex = Regex(
