@@ -65,10 +65,13 @@ private const val MAX_CHARS = 800
 @Composable
 fun PostSheet(
     onDismiss: () -> Unit,
+    onCancel: (PostMemoData?) -> Unit,
+    onMemoSaved: () -> Unit,
     replyToId: String? = null,
     replyToPubkey: String? = null,
     replyToPreview: String? = null,
     noteContext: NoteContext = NoteContext.Timeline,
+    initialMemo: PostMemoData? = null,
     viewModel: PostViewModel? = null,
 ) {
     val postViewModel = viewModel ?: remember { PostViewModel() }
@@ -79,6 +82,10 @@ fun PostSheet(
         if (bytes != null && mime != null) postViewModel.uploadAndAppendImage(bytes, mime)
     }
 
+    fun cancelWithLocalDraft() {
+        onCancel(postViewModel.currentMemoSnapshot(replyToId, replyToPubkey, noteContext))
+    }
+
     LaunchedEffect(state.posted) {
         if (state.posted) {
             postViewModel.clearPosted()
@@ -86,8 +93,14 @@ fun PostSheet(
         }
     }
 
+    LaunchedEffect(initialMemo, replyToId, replyToPubkey, noteContext) {
+        if (initialMemo != null) {
+            postViewModel.restoreMemo(initialMemo)
+        }
+    }
+
     Dialog(
-        onDismissRequest = onDismiss,
+        onDismissRequest = ::cancelWithLocalDraft,
         properties = DialogProperties(usePlatformDefaultWidth = false),
     ) {
         Box(
@@ -106,11 +119,17 @@ fun PostSheet(
                     state = state,
                     title = if (replyToId != null) "返信" else "新しいポスト",
                     replyToPreview = replyToPreview,
-                    onDismiss = onDismiss,
+                    onDismiss = ::cancelWithLocalDraft,
                     onPickImage = pickImage,
                     onOpenRelaySettings = { showRelaySettingsDialog = true },
                     onTextChange = postViewModel::onTextChange,
                     onRemoveImage = postViewModel::removeImage,
+                    onSaveMemo = {
+                        postViewModel.saveMemo(replyToId, replyToPubkey, noteContext) {
+                            onDismiss()
+                            onMemoSaved()
+                        }
+                    },
                     onPost = { postViewModel.post(replyToId, replyToPubkey, noteContext) },
                 )
             }
@@ -134,6 +153,7 @@ private fun PostSheetContent(
     onOpenRelaySettings: () -> Unit,
     onTextChange: (String) -> Unit,
     onRemoveImage: (Int) -> Unit,
+    onSaveMemo: () -> Unit,
     onPost: () -> Unit,
 ) {
     Column(
@@ -210,6 +230,14 @@ private fun PostSheetContent(
                     style = MaterialTheme.typography.labelSmall,
                 )
             }
+            state.memoMessage?.let { message ->
+                Spacer(modifier = Modifier.height(8.dp))
+                Text(
+                    text = message,
+                    color = MaterialTheme.colorScheme.primary,
+                    style = MaterialTheme.typography.labelSmall,
+                )
+            }
         }
 
         Column(
@@ -268,6 +296,16 @@ private fun PostSheetContent(
                 horizontalArrangement = Arrangement.End,
                 verticalAlignment = Alignment.CenterVertically,
             ) {
+                TextButton(
+                    onClick = onSaveMemo,
+                    enabled = state.canSaveMemo,
+                ) {
+                    if (state.isSavingMemo) {
+                        CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+                    } else {
+                        Text("メモ保存", maxLines = 1)
+                    }
+                }
                 TextButton(onClick = onDismiss) {
                     Text("キャンセル", maxLines = 1)
                 }

@@ -1,13 +1,16 @@
 package com.nostr.torinos
 
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.List
-import androidx.compose.material.icons.filled.Create
+import androidx.compose.material.icons.automirrored.filled.StickyNote2
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Home
+import androidx.compose.material.icons.filled.Info
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.DrawerValue
@@ -32,6 +35,8 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.navigation.compose.NavHost
@@ -53,6 +58,7 @@ import com.nostr.torinos.network.ChannelCacheStore
 import com.nostr.torinos.network.CustomEmojiStore
 import com.nostr.torinos.network.FollowRepository
 import com.nostr.torinos.network.NostrRepository
+import com.nostr.torinos.network.StatusStore
 import com.nostr.torinos.ui.channel.ChannelListScreen
 import com.nostr.torinos.ui.channel.ChannelScreen
 import com.nostr.torinos.ui.feed.FeedTab
@@ -61,6 +67,8 @@ import com.nostr.torinos.ui.notification.NotificationsDrawer
 import com.nostr.torinos.ui.notification.NotificationsViewModel
 import com.nostr.torinos.ui.settings.MuteListScreen
 import com.nostr.torinos.ui.settings.NgWordScreen
+import com.nostr.torinos.ui.post.MemoListScreen
+import com.nostr.torinos.ui.post.PostMemoData
 import com.nostr.torinos.ui.post.PostSheet
 import com.nostr.torinos.ui.profile.FollowListMode
 import com.nostr.torinos.ui.profile.FollowListScreen
@@ -72,6 +80,7 @@ import com.nostr.torinos.ui.settings.QuickSettingsDialogs
 import com.nostr.torinos.ui.settings.CustomEmojiSettingsScreen
 import com.nostr.torinos.ui.settings.SettingsScreen
 import com.nostr.torinos.ui.setup.KeySetupScreen
+import com.nostr.torinos.ui.status.StatusScreen
 import com.nostr.torinos.ui.theme.NostrTheme
 import com.nostr.torinos.ui.thread.ThreadScreen
 import com.nostr.torinos.util.appLog
@@ -99,6 +108,8 @@ private enum class PendingKeyAction {
     NewPost,
     Reply,
     Profile,
+    Status,
+    Memos,
 }
 
 @Composable
@@ -108,10 +119,14 @@ fun App() {
         val backStackEntry by nav.currentBackStackEntryAsState()
         val currentRoute = backStackEntry?.destination?.route
         var showPostSheet by remember { mutableStateOf(false) }
+        var showStatusComposer by remember { mutableStateOf(false) }
         var replyToId by remember { mutableStateOf<String?>(null) }
         var replyToPubkey by remember { mutableStateOf<String?>(null) }
         var replyToPreview by remember { mutableStateOf<String?>(null) }
         var replyNoteContext by remember { mutableStateOf<NoteContext>(NoteContext.Timeline) }
+        var selectedMemo by remember { mutableStateOf<PostMemoData?>(null) }
+        var localDraft by remember { mutableStateOf<PostMemoData?>(null) }
+        var memoRefreshTodayRequest by remember { mutableStateOf(0) }
         var showKeySetup by remember { mutableStateOf(false) }
         var pendingKeyAction by remember { mutableStateOf<PendingKeyAction?>(null) }
         val scope = rememberCoroutineScope()
@@ -219,12 +234,15 @@ fun App() {
             ownProfile = null
             isAccountLoaded = true
             showPostSheet = false
+            showStatusComposer = false
             showKeySetup = false
             pendingKeyAction = null
             replyToId = null
             replyToPubkey = null
             replyToPreview = null
             replyNoteContext = NoteContext.Timeline
+            selectedMemo = null
+            localDraft = null
             FollowRepository.reload()
             currentFeedTab = FeedTab.Global
             feedScrollToTopTargetTab = FeedTab.Global
@@ -244,12 +262,15 @@ fun App() {
             ownProfile = null
             isAccountLoaded = true
             showPostSheet = false
+            showStatusComposer = false
             showKeySetup = false
             pendingKeyAction = null
             replyToId = null
             replyToPubkey = null
             replyToPreview = null
             replyNoteContext = NoteContext.Timeline
+            selectedMemo = null
+            localDraft = null
             FollowRepository.reload()
             currentFeedTab = FeedTab.Global
             feedScrollToTopTargetTab = FeedTab.Global
@@ -260,7 +281,7 @@ fun App() {
             }
         }
 
-        val bottomBarRoutes = setOf("feed", "channels")
+        val bottomBarRoutes = setOf("feed", "channels", "status")
         val routeName = currentRoute?.substringBefore("/")
         val isChannelRoute = routeName?.endsWith("ChannelRoute") == true
         val threadRoute = if (routeName?.endsWith("ThreadRoute") == true) {
@@ -272,6 +293,8 @@ fun App() {
         val isProfileRoute = currentRoute == "myprofile" ||
             routeName?.endsWith("ProfileRoute") == true
         val hasBottomBar = currentRoute in bottomBarRoutes || isChannelThreadRoute || isProfileRoute
+        // DataStoreから取得
+        val statusVisible = StatusStore.statusVisible.collectAsState().value
 
         ModalNavigationDrawer(
             drawerState = notificationsDrawerState,
@@ -293,17 +316,33 @@ fun App() {
             Scaffold(
                 contentWindowInsets = WindowInsets(0),
                 floatingActionButton = {
-                    if (isWriteSupported && currentRoute == "feed") {
-                        FloatingActionButton(onClick = {
-                            runWithPrivateKey(PendingKeyAction.NewPost) {
-                                replyToId = null
-                                replyToPubkey = null
-                                replyToPreview = null
-                                replyNoteContext = NoteContext.Timeline
-                                showPostSheet = true
+                    if (isWriteSupported) {
+                        when (currentRoute) {
+                            "feed" -> PostMemoFloatingActionButton(
+                                onMemosClick = {
+                                    runWithPrivateKey(PendingKeyAction.Memos) {
+                                        nav.navigate("memos") { launchSingleTop = true }
+                                    }
+                                },
+                                onPostClick = {
+                                    runWithPrivateKey(PendingKeyAction.NewPost) {
+                                        selectedMemo = null
+                                        replyToId = null
+                                        replyToPubkey = null
+                                        replyToPreview = null
+                                        replyNoteContext = NoteContext.Timeline
+                                        showPostSheet = true
+                                    }
+                                },
+                            )
+                            "status" -> FloatingActionButton(onClick = {
+                                runWithPrivateKey(PendingKeyAction.Status) {
+                                    showStatusComposer = true
+                                }
+                            }) {
+                                Icon(Icons.Default.Add, contentDescription = "ステータス追加")
                             }
-                        }) {
-                            Icon(Icons.Default.Create, contentDescription = "ポスト")
+                            else -> Unit
                         }
                     }
                 },
@@ -333,6 +372,18 @@ fun App() {
                                 selected = currentRoute == "channels" || isChannelRoute || isChannelThreadRoute,
                                 onClick = {
                                     nav.navigate("channels") {
+                                        popUpTo("feed") { saveState = true; inclusive = false }
+                                        launchSingleTop = true
+                                        restoreState = true
+                                    }
+                                },
+                            )
+                            NavigationBarItem(
+                                icon = { Icon(Icons.Default.Info, contentDescription = null) },
+                                label = { Text("ステータス") },
+                                selected = currentRoute == "status",
+                                onClick = {
+                                    nav.navigate("status") {
                                         popUpTo("feed") { saveState = true; inclusive = false }
                                         launchSingleTop = true
                                         restoreState = true
@@ -403,6 +454,56 @@ fun App() {
                                     nav.navigate("myprofile") { launchSingleTop = true }
                                 }
                             },
+                        )
+                    }
+                    composable("status") {
+                        StatusScreen(
+                            ownPubkey = ownPubkey,
+                            ownProfile = ownProfile,
+                            showComposer = showStatusComposer,
+                            onComposerShown = { showStatusComposer = false },
+                            onUserClick = { pk -> nav.navigate(ProfileRoute(pk)) },
+                            onOpenProfile = {
+                                runWithPrivateKey(PendingKeyAction.Profile) {
+                                    nav.navigate("myprofile") { launchSingleTop = true }
+                                }
+                            },
+                        )
+                    }
+                    composable("memos") {
+                        MemoListScreen(
+                            onBack = { nav.popBackStack() },
+                            refreshTodayRequest = memoRefreshTodayRequest,
+                            onNewPost = {
+                                selectedMemo = null
+                                replyToId = null
+                                replyToPubkey = null
+                                replyToPreview = null
+                                replyNoteContext = NoteContext.Timeline
+                                showPostSheet = true
+                            },
+                            onOpenMemo = { memo ->
+                                selectedMemo = memo
+                                replyToId = memo.replyToId
+                                replyToPubkey = memo.replyToPubkey
+                                replyToPreview = null
+                                replyNoteContext = memo.channelId
+                                    ?.let { NoteContext.Channel(it) }
+                                    ?: NoteContext.Timeline
+                                showPostSheet = true
+                            },
+                            onOpenThread = { eventId -> nav.navigate(ThreadRoute(eventId)) },
+                            onReply = { eventId, authorPk, preview ->
+                                replyToId = eventId
+                                replyToPubkey = authorPk
+                                replyToPreview = preview
+                                replyNoteContext = NoteContext.Timeline
+                                runWithPrivateKey(PendingKeyAction.Reply) {
+                                    showPostSheet = true
+                                }
+                            },
+                            onUserClick = { pubkey -> nav.navigate(ProfileRoute(pubkey)) },
+                            ownPubkey = ownPubkey,
                         )
                     }
                     composable<ChannelRoute> { backStack ->
@@ -595,16 +696,32 @@ fun App() {
         if (showPostSheet) {
             PostSheet(
                 onDismiss = {
+                    localDraft = null
                     showPostSheet = false
                     replyToId = null
                     replyToPubkey = null
                     replyToPreview = null
                     replyNoteContext = NoteContext.Timeline
+                    selectedMemo = null
+                },
+                onCancel = { draft ->
+                    localDraft = draft
+                    showPostSheet = false
+                    replyToId = null
+                    replyToPubkey = null
+                    replyToPreview = null
+                    replyNoteContext = NoteContext.Timeline
+                    selectedMemo = null
+                },
+                onMemoSaved = {
+                    memoRefreshTodayRequest++
+                    nav.navigate("memos") { launchSingleTop = true }
                 },
                 replyToId = replyToId,
                 replyToPubkey = replyToPubkey,
                 replyToPreview = replyToPreview,
                 noteContext = replyNoteContext,
+                initialMemo = selectedMemo ?: localDraft,
             )
         }
 
@@ -620,6 +737,7 @@ fun App() {
                     FollowRepository.reload()
                     when (action) {
                         PendingKeyAction.NewPost -> {
+                            selectedMemo = null
                             replyToId = null
                             replyToPubkey = null
                             replyToPreview = null
@@ -634,6 +752,9 @@ fun App() {
                             showPostSheet = true
                         }
                         PendingKeyAction.Reply -> showPostSheet = true
+                        PendingKeyAction.Memos -> {
+                            nav.navigate("memos") { launchSingleTop = true }
+                        }
                         PendingKeyAction.Profile -> {
                             currentFeedTab = FeedTab.Global
                             feedScrollToTopTargetTab = FeedTab.Global
@@ -642,6 +763,14 @@ fun App() {
                                 popUpTo("feed") { inclusive = true }
                                 launchSingleTop = true
                             }
+                        }
+                        PendingKeyAction.Status -> {
+                            nav.navigate("status") {
+                                popUpTo("feed") { saveState = true; inclusive = false }
+                                launchSingleTop = true
+                                restoreState = true
+                            }
+                            showStatusComposer = true
                         }
                         null -> {
                             currentFeedTab = FeedTab.Global
@@ -660,8 +789,35 @@ fun App() {
                     replyToPubkey = null
                     replyToPreview = null
                     replyNoteContext = NoteContext.Timeline
+                    selectedMemo = null
                     showKeySetup = false
                 },
+            )
+        }
+    }
+}
+
+@Composable
+private fun PostMemoFloatingActionButton(
+    onMemosClick: () -> Unit,
+    onPostClick: () -> Unit,
+) {
+    Column(
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        FloatingActionButton(onClick = onMemosClick) {
+            Icon(
+                imageVector = Icons.AutoMirrored.Filled.StickyNote2,
+                contentDescription = "ポストメモ",
+                modifier = Modifier.size(24.dp),
+            )
+        }
+        FloatingActionButton(onClick = onPostClick) {
+            Icon(
+                imageVector = Icons.Default.Add,
+                contentDescription = "ポスト",
+                modifier = Modifier.size(24.dp),
             )
         }
     }

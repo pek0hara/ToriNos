@@ -22,6 +22,8 @@ object RelayStore {
     private const val SELECTED_FOLLOWING_RELAY_KEY = "selected_following_relay_url"
     private const val SELECTED_GLOBAL_RELAY_KEY = "selected_global_relay_url"
     private const val SELECTED_CHANNEL_RELAY_KEY = "selected_channel_relay_url"
+    private const val SELECTED_STATUS_RELAY_KEY = "selected_status_relay_url"
+    private const val SELECTED_MEMO_RELAY_KEY = "selected_memo_relay_url"
     private const val ALL_RELAYS_VALUE = "__all_relays__"
 
     private val json = Json { ignoreUnknownKeys = true }
@@ -43,6 +45,8 @@ object RelayStore {
     private val _selectedFollowingRelayUrl = MutableStateFlow<String?>(null)
     private val _selectedGlobalRelayUrl = MutableStateFlow<String?>(null)
     private val _selectedChannelRelayUrl = MutableStateFlow<String?>(null)
+    private val _selectedStatusRelayUrl = MutableStateFlow<String?>(null)
+    private val _selectedMemoRelayUrl = MutableStateFlow<String?>(null)
 
     /** 全リレー一覧（UI 用） */
     val entries: StateFlow<List<RelayEntry>> = _entries.asStateFlow()
@@ -58,6 +62,12 @@ object RelayStore {
 
     /** チャンネル一覧・チャンネル画面で選択中のリレー URL */
     val selectedChannelRelayUrl: StateFlow<String?> = _selectedChannelRelayUrl.asStateFlow()
+
+    /** ステータス画面で選択中のリレー URL */
+    val selectedStatusRelayUrl: StateFlow<String?> = _selectedStatusRelayUrl.asStateFlow()
+
+    /** ポストメモ画面で選択中のリレー URL */
+    val selectedMemoRelayUrl: StateFlow<String?> = _selectedMemoRelayUrl.asStateFlow()
 
     init {
         scope.launch {
@@ -112,6 +122,24 @@ object RelayStore {
         )
     }
 
+    fun setSelectedStatusRelayUrl(url: String?) {
+        setSelectedRelayUrl(
+            state = _selectedStatusRelayUrl,
+            url = url,
+            allowAll = false,
+            save = ::saveSelectedStatusRelay,
+        )
+    }
+
+    fun setSelectedMemoRelayUrl(url: String?) {
+        setSelectedRelayUrl(
+            state = _selectedMemoRelayUrl,
+            url = url,
+            allowAll = false,
+            save = ::saveSelectedMemoRelay,
+        )
+    }
+
     private suspend fun loadSavedState() {
         LocalSettingsStorage.getString(ENTRIES_KEY)
             ?.let { saved ->
@@ -141,6 +169,16 @@ object RelayStore {
             ?.takeIf { it in enabledRelayUrls() }
             ?: legacySelectedRelayUrl
             ?: enabledRelayUrls().firstOrNull()
+
+        _selectedStatusRelayUrl.value = LocalSettingsStorage.getString(SELECTED_STATUS_RELAY_KEY)
+            ?.takeIf { it in enabledRelayUrls() }
+            ?: legacySelectedRelayUrl
+            ?: enabledRelayUrls().firstOrNull()
+
+        _selectedMemoRelayUrl.value = LocalSettingsStorage.getString(SELECTED_MEMO_RELAY_KEY)
+            ?.takeIf { it in enabledRelayUrls() }
+            ?: legacySelectedRelayUrl
+            ?: enabledRelayUrls().firstOrNull()
     }
 
     private fun ensureSelectedRelay() {
@@ -156,6 +194,14 @@ object RelayStore {
         if (_selectedChannelRelayUrl.value !in enabledUrls) {
             _selectedChannelRelayUrl.value = enabledUrls.firstOrNull()
             saveSelectedChannelRelay()
+        }
+        if (_selectedStatusRelayUrl.value !in enabledUrls) {
+            _selectedStatusRelayUrl.value = enabledUrls.firstOrNull()
+            saveSelectedStatusRelay()
+        }
+        if (_selectedMemoRelayUrl.value !in enabledUrls) {
+            _selectedMemoRelayUrl.value = enabledUrls.firstOrNull()
+            saveSelectedMemoRelay()
         }
     }
 
@@ -205,6 +251,20 @@ object RelayStore {
         val value = _selectedChannelRelayUrl.value
         scope.launch {
             LocalSettingsStorage.putString(SELECTED_CHANNEL_RELAY_KEY, value)
+        }
+    }
+
+    private fun saveSelectedStatusRelay() {
+        val value = _selectedStatusRelayUrl.value
+        scope.launch {
+            LocalSettingsStorage.putString(SELECTED_STATUS_RELAY_KEY, value)
+        }
+    }
+
+    private fun saveSelectedMemoRelay() {
+        val value = _selectedMemoRelayUrl.value
+        scope.launch {
+            LocalSettingsStorage.putString(SELECTED_MEMO_RELAY_KEY, value)
         }
     }
 }
