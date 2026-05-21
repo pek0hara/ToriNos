@@ -10,9 +10,9 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.WindowInsets
-import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
@@ -364,8 +364,8 @@ private fun MemoCalendar(
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 8.dp, vertical = 8.dp),
-        verticalArrangement = Arrangement.spacedBy(4.dp),
+            .padding(horizontal = 8.dp, vertical = 4.dp),
+        verticalArrangement = Arrangement.spacedBy(2.dp),
     ) {
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -409,11 +409,11 @@ private fun MemoCalendar(
         weekRows.forEach { week ->
             Row(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                horizontalArrangement = Arrangement.spacedBy(2.dp),
             ) {
                 week.forEach { date ->
                     if (date == null) {
-                        Box(modifier = Modifier.weight(1f).aspectRatio(1f))
+                        Box(modifier = Modifier.weight(1f).height(32.dp))
                     } else {
                         MemoCalendarDay(
                             date = date,
@@ -425,7 +425,7 @@ private fun MemoCalendar(
                     }
                 }
                 repeat(7 - week.size) {
-                    Box(modifier = Modifier.weight(1f).aspectRatio(1f))
+                    Box(modifier = Modifier.weight(1f).height(32.dp))
                 }
             }
         }
@@ -450,10 +450,12 @@ private fun MemoCalendarDay(
     modifier: Modifier = Modifier,
 ) {
     val shape = MaterialTheme.shapes.small
-    val backgroundColor = if (selected) {
-        MaterialTheme.colorScheme.primaryContainer
-    } else {
-        MaterialTheme.colorScheme.surface
+    val backgroundColor = when {
+        selected -> MaterialTheme.colorScheme.primaryContainer
+        memoCount == 0 -> MaterialTheme.colorScheme.surface
+        memoCount == 1 -> MaterialTheme.colorScheme.primary.copy(alpha = 0.15f)
+        memoCount == 2 -> MaterialTheme.colorScheme.primary.copy(alpha = 0.35f)
+        else -> MaterialTheme.colorScheme.primary.copy(alpha = 0.55f)
     }
     val borderColor = if (date == currentDate()) {
         MaterialTheme.colorScheme.primary
@@ -463,25 +465,19 @@ private fun MemoCalendarDay(
 
     Column(
         modifier = modifier
-            .aspectRatio(1f)
+            .height(32.dp)
             .clip(shape)
             .background(backgroundColor)
             .border(1.dp, borderColor, shape)
             .clickable(onClick = onClick)
-            .padding(4.dp),
+            .padding(horizontal = 2.dp, vertical = 2.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center,
     ) {
         Text(
-            text = if (date.day == 1) "${date.month.ordinal + 1}/1" else date.day.toString(),
+            text = date.day.toString(),
             style = MaterialTheme.typography.bodySmall,
             color = if (selected) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurface,
-        )
-        Text(
-            text = if (memoCount > 0) memoCount.toString() else "",
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.primary,
-            minLines = 1,
         )
     }
 }
