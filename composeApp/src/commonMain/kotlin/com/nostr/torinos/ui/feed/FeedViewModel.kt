@@ -482,7 +482,7 @@ class FeedViewModel(
         lastHistoryBatchUniqueCount = 0
         receivedEoseCount = 0
         pendingHistoryBatch.clear()
-        expectedEoseCount = if (relayUrl != null) 1 else NostrRepository.relayCount.coerceAtLeast(1)
+        expectedEoseCount = 1
         _state.value = _state.value.copy(canLoadMore = false, isLoadingMore = true)
         scheduleHistoryPageTimeout()
 
@@ -514,7 +514,7 @@ class FeedViewModel(
         lastHistoryBatchUniqueCount = 0
         receivedEoseCount = 0
         pendingHistoryBatch.clear()
-        expectedEoseCount = if (relayUrl != null) 1 else NostrRepository.relayCount.coerceAtLeast(1)
+        expectedEoseCount = 1
         scheduleHistoryPageTimeout()
         NostrRepository.subscribe(
             ids.history,

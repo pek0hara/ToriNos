@@ -39,21 +39,24 @@ fun MyProfileScreen(
         key = "my-profile-$ownPubkey",
         factory = viewModelFactory { initializer { MyProfileViewModel(ownPubkey) } },
     ),
-    postsViewModel: FeedViewModel = viewModel(key = "my-feed-$ownPubkey-posts") {
+) {
+    val postsViewModel: FeedViewModel = viewModel(key = "my-feed-$ownPubkey-posts") {
         FeedViewModel(
             authorPubkey = ownPubkey,
+            autoStart = false,
             includeRepostsInFeed = true,
             includeRepliesInFeed = false,
         )
-    },
-    postsAndRepliesViewModel: FeedViewModel = viewModel(key = "my-feed-$ownPubkey-posts-replies") {
+    }
+    val postsAndRepliesViewModel: FeedViewModel = viewModel(key = "my-feed-$ownPubkey-posts-replies") {
         FeedViewModel(
             authorPubkey = ownPubkey,
+            autoStart = false,
             includeRepostsInFeed = true,
             includeRepliesInFeed = true,
         )
-    },
-) {
+    }
+
     val state by viewModel.state.collectAsState()
     val postsState by postsViewModel.state.collectAsState()
     val postsAndRepliesState by postsAndRepliesViewModel.state.collectAsState()
@@ -72,6 +75,13 @@ fun MyProfileScreen(
         val profile = state.profile ?: return@LaunchedEffect
         postsViewModel.injectProfile(ownPubkey, profile)
         postsAndRepliesViewModel.injectProfile(ownPubkey, profile)
+        postsViewModel.startSubscriptions()
+    }
+
+    LaunchedEffect(selectedTab) {
+        if (selectedTab == ProfileTimelineTab.PostsAndReplies) {
+            postsAndRepliesViewModel.startSubscriptions()
+        }
     }
 
     Scaffold(
