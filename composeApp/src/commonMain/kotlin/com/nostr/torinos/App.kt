@@ -67,7 +67,7 @@ import com.nostr.torinos.ui.notification.NotificationsDrawer
 import com.nostr.torinos.ui.notification.NotificationsViewModel
 import com.nostr.torinos.ui.settings.MuteListScreen
 import com.nostr.torinos.ui.settings.NgWordScreen
-import com.nostr.torinos.ui.post.MemoListScreen
+import com.nostr.torinos.ui.post.DiaryScreen
 import com.nostr.torinos.ui.post.PostMemoData
 import com.nostr.torinos.ui.post.PostSheet
 import com.nostr.torinos.ui.profile.FollowListMode
@@ -110,7 +110,7 @@ private enum class PendingKeyAction {
     Reply,
     Profile,
     Status,
-    Memos,
+    Diary,
 }
 
 @Composable
@@ -292,7 +292,7 @@ fun App() {
             }
         }
 
-        val bottomBarRoutes = setOf("feed", "services", "channels", "status", "memos")
+        val bottomBarRoutes = setOf("feed", "services", "channels", "status", "diary")
         val routeName = currentRoute?.substringBefore("/")
         val isChannelRoute = routeName?.endsWith("ChannelRoute") == true
         val threadRoute = if (routeName?.endsWith("ThreadRoute") == true) {
@@ -381,11 +381,11 @@ fun App() {
                             )
                             NavigationBarItem(
                                 icon = { Icon(Icons.Default.Today, contentDescription = null) },
-                                label = { Text("カレンダー") },
-                                selected = currentRoute == "memos",
+                                label = { Text("ダイアリー") },
+                                selected = currentRoute == "diary",
                                 onClick = {
-                                    runWithPrivateKey(PendingKeyAction.Memos) {
-                                        nav.navigate("memos") {
+                                    runWithPrivateKey(PendingKeyAction.Diary) {
+                                        nav.navigate("diary") {
                                             popUpTo("feed") { saveState = true; inclusive = false }
                                             launchSingleTop = true
                                             restoreState = true
@@ -509,8 +509,8 @@ fun App() {
                             }
                         }
                     }
-                    composable("memos") {
-                        MemoListScreen(
+                    composable("diary") {
+                        DiaryScreen(
                             onBack = { nav.popBackStack() },
                             refreshTodayRequest = memoRefreshTodayRequest,
                             onNewPost = {
@@ -754,7 +754,7 @@ fun App() {
                 },
                 onMemoSaved = {
                     memoRefreshTodayRequest++
-                    nav.navigate("memos") { launchSingleTop = true }
+                    nav.navigate("diary") { launchSingleTop = true }
                 },
                 replyToId = replyToId,
                 replyToPubkey = replyToPubkey,
@@ -791,8 +791,8 @@ fun App() {
                             showPostSheet = true
                         }
                         PendingKeyAction.Reply -> showPostSheet = true
-                        PendingKeyAction.Memos -> {
-                            nav.navigate("memos") { launchSingleTop = true }
+                        PendingKeyAction.Diary -> {
+                            nav.navigate("diary") { launchSingleTop = true }
                         }
                         PendingKeyAction.Profile -> {
                             currentFeedTab = FeedTab.Global

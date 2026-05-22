@@ -67,7 +67,7 @@ import kotlinx.datetime.LocalDate
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
-fun MemoListScreen(
+fun DiaryScreen(
     onBack: () -> Unit,
     onOpenMemo: (PostMemoData) -> Unit,
     onNewPost: () -> Unit,
@@ -76,13 +76,14 @@ fun MemoListScreen(
     onReply: ((eventId: String, authorPubkey: String, preview: String) -> Unit)? = null,
     onUserClick: (pubkey: String) -> Unit = {},
     ownPubkey: String? = null,
-    viewModel: MemoListViewModel = viewModel(key = "memo-list") { MemoListViewModel() },
+    viewModel: DiaryViewModel = viewModel(key = "diary") { DiaryViewModel() },
 ) {
     val state by viewModel.state.collectAsState()
     val relays by RelayStore.relays.collectAsState(initial = emptyList())
     val selectedRelayUrl by RelayStore.selectedMemoRelayUrl.collectAsState()
     var showCalendar by remember { mutableStateOf(true) }
     var showRelayMenu by remember { mutableStateOf(false) }
+    val visibleEntries = if (showCalendar) state.selectedEntries else state.monthEntries
 
     LaunchedEffect(refreshTodayRequest) {
         if (refreshTodayRequest > 0) viewModel.refreshToday()
@@ -181,15 +182,18 @@ fun MemoListScreen(
                 .fillMaxSize()
                 .padding(padding),
         ) {
+            MemoCalendarHeader(
+                state = state,
+                onPreviousMonth = viewModel::previousMonth,
+                onNextMonth = viewModel::nextMonth,
+            )
             if (showCalendar) {
-                MemoCalendar(
+                MemoCalendarGrid(
                     state = state,
-                    onPreviousMonth = viewModel::previousMonth,
-                    onNextMonth = viewModel::nextMonth,
                     onSelectDate = viewModel::selectDate,
                 )
-                HorizontalDivider()
             }
+            HorizontalDivider()
             Box(modifier = Modifier.fillMaxSize()) {
                 when {
                     state.isLoading && state.memos.isEmpty() && state.notes.isEmpty() -> {
@@ -205,9 +209,9 @@ fun MemoListScreen(
                             textAlign = TextAlign.Center,
                         )
                     }
-                    state.selectedEntries.isEmpty() -> {
+                    visibleEntries.isEmpty() -> {
                         Text(
-                            text = "この日の投稿はありません",
+                            text = if (showCalendar) "この日の投稿はありません" else "この月の投稿はありません",
                             modifier = Modifier
                                 .align(Alignment.Center)
                                 .padding(horizontal = 32.dp),
@@ -218,28 +222,28 @@ fun MemoListScreen(
                     else -> {
                         LazyColumn(modifier = Modifier.fillMaxSize()) {
                             items(
-                                items = state.selectedEntries,
+                                items = visibleEntries,
                                 key = { entry ->
                                     when (entry) {
-                                        is MemoListEntry.Memo -> "memo-${entry.item.eventId}"
-                                        is MemoListEntry.Note -> "note-${entry.event.id}"
+                                        is DiaryEntry.Memo -> "memo-${entry.item.eventId}"
+                                        is DiaryEntry.Note -> "note-${entry.event.id}"
                                     }
                                 },
                                 contentType = { entry ->
                                     when (entry) {
-                                        is MemoListEntry.Memo -> "memo"
-                                        is MemoListEntry.Note -> "note"
+                                        is DiaryEntry.Memo -> "memo"
+                                        is DiaryEntry.Note -> "note"
                                     }
                                 },
                             ) { entry ->
                                 when (entry) {
-                                    is MemoListEntry.Memo -> MemoRow(
+                                    is DiaryEntry.Memo -> MemoRow(
                                         item = entry.item,
                                         replyToProfile = entry.item.memo.replyToPubkey?.let { state.profiles[it] },
                                         onClick = { onOpenMemo(entry.item.memo) },
                                         onLongClick = { viewModel.showDeleteDialog(entry.item) },
                                     )
-                                    is MemoListEntry.Note -> NoteCard(
+                                    is DiaryEntry.Note -> NoteCard(
                                         event = entry.event,
                                         profile = entry.profile,
                                         profiles = state.profiles,
@@ -353,10 +357,44 @@ fun MemoListScreen(
 }
 
 @Composable
-private fun MemoCalendar(
-    state: MemoListState,
+private fun MemoCalendarHeader(
+    state: DiaryState,
     onPreviousMonth: () -> Unit,
     onNextMonth: () -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 8.dp, vertical = 4.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        IconButton(onClick = onPreviousMonth) {
+            Icon(
+                Icons.AutoMirrored.Filled.ArrowBack,
+                contentDescription = "前月",
+            )
+        }
+        Text(
+            text = "${state.selectedMonth.year}年${state.selectedMonth.month.ordinal + 1}月",
+            style = MaterialTheme.typography.titleMedium,
+            fontWeight = FontWeight.SemiBold,
+        )
+        IconButton(
+            onClick = onNextMonth,
+            enabled = state.canGoNextMonth,
+        ) {
+            Icon(
+                Icons.AutoMirrored.Filled.ArrowForward,
+                contentDescription = "翌月",
+            )
+        }
+    }
+}
+
+@Composable
+private fun MemoCalendarGrid(
+    state: DiaryState,
     onSelectDate: (LocalDate) -> Unit,
 ) {
     val weekRows = remember(state.selectedMonth) { calendarWeeks(state.selectedMonth) }
@@ -367,33 +405,6 @@ private fun MemoCalendar(
             .padding(horizontal = 8.dp, vertical = 4.dp),
         verticalArrangement = Arrangement.spacedBy(2.dp),
     ) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            IconButton(onClick = onPreviousMonth) {
-                Icon(
-                    Icons.AutoMirrored.Filled.ArrowBack,
-                    contentDescription = "前月",
-                )
-            }
-            Text(
-                text = "${state.selectedMonth.year}年${state.selectedMonth.month.ordinal + 1}月",
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.SemiBold,
-            )
-            IconButton(
-                onClick = onNextMonth,
-                enabled = state.canGoNextMonth,
-            ) {
-                Icon(
-                    Icons.AutoMirrored.Filled.ArrowForward,
-                    contentDescription = "翌月",
-                )
-            }
-        }
-
         Row(modifier = Modifier.fillMaxWidth()) {
             listOf("日", "月", "火", "水", "木", "金", "土").forEach { label ->
                 Text(
@@ -484,7 +495,7 @@ private fun MemoCalendarDay(
 
 @Composable
 private fun MemoRow(
-    item: MemoListItem,
+    item: DiaryItem,
     onClick: () -> Unit,
     onLongClick: () -> Unit,
     replyToProfile: NostrProfile? = null,

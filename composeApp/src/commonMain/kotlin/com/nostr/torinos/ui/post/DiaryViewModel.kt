@@ -33,7 +33,7 @@ import kotlinx.datetime.TimeZone
 import kotlinx.datetime.atStartOfDayIn
 import kotlinx.datetime.toLocalDateTime
 
-data class MemoListItem(
+data class DiaryItem(
     val eventId: String,
     val pubkey: String,
     val tags: List<List<String>>,
@@ -43,9 +43,9 @@ data class MemoListItem(
     val displayTime: Long get() = memo.updatedAt.takeIf { it > 0 } ?: createdAt
 }
 
-sealed class MemoListEntry {
-    data class Memo(val item: MemoListItem) : MemoListEntry()
-    data class Note(val event: NostrEvent, val profile: NostrProfile?) : MemoListEntry()
+sealed class DiaryEntry {
+    data class Memo(val item: DiaryItem) : DiaryEntry()
+    data class Note(val event: NostrEvent, val profile: NostrProfile?) : DiaryEntry()
 
     val displayTime: Long get() = when (this) {
         is Memo -> item.displayTime
@@ -53,16 +53,16 @@ sealed class MemoListEntry {
     }
 }
 
-data class MemoDeleteDialogState(
-    val item: MemoListItem,
+data class DiaryDeleteDialogState(
+    val item: DiaryItem,
     val isDeleting: Boolean = false,
     val error: String? = null,
 )
 
-data class MemoListState(
+data class DiaryState(
     val selectedMonth: LocalDate = currentMonth(),
     val selectedDate: LocalDate = currentDate(),
-    val memos: List<MemoListItem> = emptyList(),
+    val memos: List<DiaryItem> = emptyList(),
     val notes: List<NostrEvent> = emptyList(),
     val profiles: Map<String, NostrProfile> = emptyMap(),
     val quotedEvents: Map<String, NostrEvent> = emptyMap(),
@@ -71,10 +71,10 @@ data class MemoListState(
     val repostCounts: Map<String, Int> = emptyMap(),
     val likedReactions: Map<String, String> = emptyMap(),
     val isLoading: Boolean = false,
-    val deleteDialog: MemoDeleteDialogState? = null,
+    val deleteDialog: DiaryDeleteDialogState? = null,
     val error: String? = null,
 ) {
-    private val memosByDate: Map<LocalDate, List<MemoListItem>> =
+    private val memosByDate: Map<LocalDate, List<DiaryItem>> =
         memos.groupBy { dateOfEpochSeconds(it.displayTime) }
 
     private val notesByDate: Map<LocalDate, List<NostrEvent>> =
@@ -86,17 +86,22 @@ data class MemoListState(
         }
     }
 
-    val selectedEntries: List<MemoListEntry> = buildList {
-        memosByDate[selectedDate].orEmpty().forEach { add(MemoListEntry.Memo(it)) }
-        notesByDate[selectedDate].orEmpty().forEach { add(MemoListEntry.Note(it, profiles[it.pubkey])) }
+    val selectedEntries: List<DiaryEntry> = buildList {
+        memosByDate[selectedDate].orEmpty().forEach { add(DiaryEntry.Memo(it)) }
+        notesByDate[selectedDate].orEmpty().forEach { add(DiaryEntry.Note(it, profiles[it.pubkey])) }
+    }.sortedByDescending { it.displayTime }
+
+    val monthEntries: List<DiaryEntry> = buildList {
+        memos.forEach { add(DiaryEntry.Memo(it)) }
+        notes.forEach { add(DiaryEntry.Note(it, profiles[it.pubkey])) }
     }.sortedByDescending { it.displayTime }
 
     val canGoNextMonth: Boolean get() = selectedMonth < currentMonth()
 }
 
-class MemoListViewModel : SafeViewModel() {
-    private val _state = MutableStateFlow(MemoListState())
-    val state: StateFlow<MemoListState> = _state.asStateFlow()
+class DiaryViewModel : SafeViewModel() {
+    private val _state = MutableStateFlow(DiaryState())
+    val state: StateFlow<DiaryState> = _state.asStateFlow()
     private var loadJob: Job? = null
     private var engagementJob: Job? = null
     private var referencedContentJob: Job? = null
@@ -189,9 +194,9 @@ class MemoListViewModel : SafeViewModel() {
         }
     }
 
-    fun showDeleteDialog(item: MemoListItem) {
+    fun showDeleteDialog(item: DiaryItem) {
         _state.value = _state.value.copy(
-            deleteDialog = MemoDeleteDialogState(item = item),
+            deleteDialog = DiaryDeleteDialogState(item = item),
         )
     }
 
@@ -302,7 +307,7 @@ class MemoListViewModel : SafeViewModel() {
 
                 val memos = memoEvents.mapNotNull { event ->
                     decodeMemo(event, privateKeyHex, publicKeyHex)?.let { memo ->
-                        MemoListItem(
+                        DiaryItem(
                             eventId = event.id,
                             pubkey = event.pubkey,
                             tags = event.tags,
@@ -355,7 +360,7 @@ class MemoListViewModel : SafeViewModel() {
         until: Long,
         relayUrl: String? = null,
     ): Pair<List<NostrEvent>, List<NostrEvent>> = coroutineScope {
-        val subId = "memo-list-${Clock.System.now().epochSeconds}-${since}"
+        val subId = "diary-${Clock.System.now().epochSeconds}-${since}"
         val mutex = Mutex()
         val memoEvents = mutableListOf<NostrEvent>()
         val noteEvents = mutableListOf<NostrEvent>()
@@ -480,7 +485,7 @@ class MemoListViewModel : SafeViewModel() {
         }
     }
 
-    private fun fetchReferencedContent(notes: List<NostrEvent>, memos: List<MemoListItem>, relayUrl: String?) {
+    private fun fetchReferencedContent(notes: List<NostrEvent>, memos: List<DiaryItem>, relayUrl: String?) {
         referencedContentJob?.cancel()
         referencedContentJob = launch {
             try {
@@ -583,7 +588,7 @@ class MemoListViewModel : SafeViewModel() {
 private fun NostrEvent.memoIdentifier(): String? =
     tags.firstOrNull { it.firstOrNull() == "d" }?.getOrNull(1)
 
-private fun MemoListItem.addressTagValue(): String? {
+private fun DiaryItem.addressTagValue(): String? {
     val d = memo.identifier
         ?: return null
     return "$MEMO_EVENT_KIND:$pubkey:$d"
