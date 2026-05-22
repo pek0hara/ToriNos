@@ -1,16 +1,16 @@
 package com.nostr.torinos
 
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.List
-import androidx.compose.material.icons.automirrored.filled.StickyNote2
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Apps
 import androidx.compose.material.icons.filled.Home
-import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.Today
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.DrawerValue
@@ -79,6 +79,7 @@ import com.nostr.torinos.ui.search.SearchScreen
 import com.nostr.torinos.ui.settings.QuickSettingsDialogs
 import com.nostr.torinos.ui.settings.CustomEmojiSettingsScreen
 import com.nostr.torinos.ui.settings.SettingsScreen
+import com.nostr.torinos.ui.service.ServiceTab
 import com.nostr.torinos.ui.setup.KeySetupScreen
 import com.nostr.torinos.ui.status.StatusScreen
 import com.nostr.torinos.ui.theme.NostrTheme
@@ -153,6 +154,16 @@ fun App() {
         val notificationsDrawerState = rememberDrawerState(DrawerValue.Closed)
         val followingFeedListState = remember { LazyListState() }
         val globalFeedListState = remember { LazyListState() }
+        var currentServiceTab by remember { mutableStateOf(ServiceTab.Channels) }
+
+        fun navigateServiceTab(tab: ServiceTab) {
+            currentServiceTab = tab
+            nav.navigate("services") {
+                popUpTo("feed") { saveState = true; inclusive = false }
+                launchSingleTop = true
+                restoreState = true
+            }
+        }
 
         // 未登録カスタム絵文字タップ → 絵文字設定画面（検索クエリ付き）へ遷移
         LaunchedEffect(Unit) {
@@ -281,7 +292,7 @@ fun App() {
             }
         }
 
-        val bottomBarRoutes = setOf("feed", "channels", "status")
+        val bottomBarRoutes = setOf("feed", "services", "channels", "status", "memos")
         val routeName = currentRoute?.substringBefore("/")
         val isChannelRoute = routeName?.endsWith("ChannelRoute") == true
         val threadRoute = if (routeName?.endsWith("ThreadRoute") == true) {
@@ -318,12 +329,7 @@ fun App() {
                 floatingActionButton = {
                     if (isWriteSupported) {
                         when (currentRoute) {
-                            "feed" -> PostMemoFloatingActionButton(
-                                onMemosClick = {
-                                    runWithPrivateKey(PendingKeyAction.Memos) {
-                                        nav.navigate("memos") { launchSingleTop = true }
-                                    }
-                                },
+                            "feed" -> PostFloatingActionButton(
                                 onPostClick = {
                                     runWithPrivateKey(PendingKeyAction.NewPost) {
                                         selectedMemo = null
@@ -335,6 +341,13 @@ fun App() {
                                     }
                                 },
                             )
+                            "services" -> if (currentServiceTab == ServiceTab.Status) FloatingActionButton(onClick = {
+                                runWithPrivateKey(PendingKeyAction.Status) {
+                                    showStatusComposer = true
+                                }
+                            }) {
+                                Icon(Icons.Default.Add, contentDescription = "ステータス追加")
+                            } else Unit
                             "status" -> FloatingActionButton(onClick = {
                                 runWithPrivateKey(PendingKeyAction.Status) {
                                     showStatusComposer = true
@@ -367,28 +380,28 @@ fun App() {
                                 },
                             )
                             NavigationBarItem(
-                                icon = { Icon(Icons.AutoMirrored.Filled.List, contentDescription = null) },
-                                label = { Text("チャンネル") },
-                                selected = currentRoute == "channels" || isChannelRoute || isChannelThreadRoute,
+                                icon = { Icon(Icons.Default.Today, contentDescription = null) },
+                                label = { Text("カレンダー") },
+                                selected = currentRoute == "memos",
                                 onClick = {
-                                    nav.navigate("channels") {
-                                        popUpTo("feed") { saveState = true; inclusive = false }
-                                        launchSingleTop = true
-                                        restoreState = true
+                                    runWithPrivateKey(PendingKeyAction.Memos) {
+                                        nav.navigate("memos") {
+                                            popUpTo("feed") { saveState = true; inclusive = false }
+                                            launchSingleTop = true
+                                            restoreState = true
+                                        }
                                     }
                                 },
                             )
                             NavigationBarItem(
-                                icon = { Icon(Icons.Default.Info, contentDescription = null) },
-                                label = { Text("ステータス") },
-                                selected = currentRoute == "status",
-                                onClick = {
-                                    nav.navigate("status") {
-                                        popUpTo("feed") { saveState = true; inclusive = false }
-                                        launchSingleTop = true
-                                        restoreState = true
-                                    }
-                                },
+                                icon = { Icon(Icons.Default.Apps, contentDescription = null) },
+                                label = { Text("サービス") },
+                                selected = currentRoute == "services" ||
+                                    currentRoute == "channels" ||
+                                    isChannelRoute ||
+                                    isChannelThreadRoute ||
+                                    currentRoute == "status",
+                                onClick = { navigateServiceTab(currentServiceTab) },
                             )
                         }
                     }
@@ -444,31 +457,57 @@ fun App() {
                             hasNotifications = notificationsState?.hasUnread == true,
                         )
                     }
+                    composable("services") {
+                        when (currentServiceTab) {
+                            ServiceTab.Channels -> {
+                                ChannelListScreen(
+                                    onChannelClick = { id -> nav.navigate(ChannelRoute(id)) },
+                                    ownPubkey = ownPubkey,
+                                    ownProfile = ownProfile,
+                                    onOpenProfile = {
+                                        runWithPrivateKey(PendingKeyAction.Profile) {
+                                            nav.navigate("myprofile") { launchSingleTop = true }
+                                        }
+                                    },
+                                    selectedServiceTab = currentServiceTab,
+                                    onServiceTabSelected = { currentServiceTab = it },
+                                )
+                            }
+                            ServiceTab.Status -> {
+                                StatusScreen(
+                                    ownPubkey = ownPubkey,
+                                    ownProfile = ownProfile,
+                                    showComposer = showStatusComposer,
+                                    onComposerShown = { showStatusComposer = false },
+                                    onUserClick = { pk -> nav.navigate(ProfileRoute(pk)) },
+                                    onOpenProfile = {
+                                        runWithPrivateKey(PendingKeyAction.Profile) {
+                                            nav.navigate("myprofile") { launchSingleTop = true }
+                                        }
+                                    },
+                                    selectedServiceTab = currentServiceTab,
+                                    onServiceTabSelected = { currentServiceTab = it },
+                                )
+                            }
+                        }
+                    }
                     composable("channels") {
-                        ChannelListScreen(
-                            onChannelClick = { id -> nav.navigate(ChannelRoute(id)) },
-                            ownPubkey = ownPubkey,
-                            ownProfile = ownProfile,
-                            onOpenProfile = {
-                                runWithPrivateKey(PendingKeyAction.Profile) {
-                                    nav.navigate("myprofile") { launchSingleTop = true }
-                                }
-                            },
-                        )
+                        LaunchedEffect(Unit) {
+                            currentServiceTab = ServiceTab.Channels
+                            nav.navigate("services") {
+                                popUpTo("channels") { inclusive = true }
+                                launchSingleTop = true
+                            }
+                        }
                     }
                     composable("status") {
-                        StatusScreen(
-                            ownPubkey = ownPubkey,
-                            ownProfile = ownProfile,
-                            showComposer = showStatusComposer,
-                            onComposerShown = { showStatusComposer = false },
-                            onUserClick = { pk -> nav.navigate(ProfileRoute(pk)) },
-                            onOpenProfile = {
-                                runWithPrivateKey(PendingKeyAction.Profile) {
-                                    nav.navigate("myprofile") { launchSingleTop = true }
-                                }
-                            },
-                        )
+                        LaunchedEffect(Unit) {
+                            currentServiceTab = ServiceTab.Status
+                            nav.navigate("services") {
+                                popUpTo("status") { inclusive = true }
+                                launchSingleTop = true
+                            }
+                        }
                     }
                     composable("memos") {
                         MemoListScreen(
@@ -765,11 +804,7 @@ fun App() {
                             }
                         }
                         PendingKeyAction.Status -> {
-                            nav.navigate("status") {
-                                popUpTo("feed") { saveState = true; inclusive = false }
-                                launchSingleTop = true
-                                restoreState = true
-                            }
+                            navigateServiceTab(ServiceTab.Status)
                             showStatusComposer = true
                         }
                         null -> {
@@ -798,27 +833,14 @@ fun App() {
 }
 
 @Composable
-private fun PostMemoFloatingActionButton(
-    onMemosClick: () -> Unit,
+private fun PostFloatingActionButton(
     onPostClick: () -> Unit,
 ) {
-    Column(
-        verticalArrangement = Arrangement.spacedBy(8.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
-    ) {
-        FloatingActionButton(onClick = onMemosClick) {
-            Icon(
-                imageVector = Icons.AutoMirrored.Filled.StickyNote2,
-                contentDescription = "ポストメモ",
-                modifier = Modifier.size(24.dp),
-            )
-        }
-        FloatingActionButton(onClick = onPostClick) {
-            Icon(
-                imageVector = Icons.Default.Add,
-                contentDescription = "ポスト",
-                modifier = Modifier.size(24.dp),
-            )
-        }
+    FloatingActionButton(onClick = onPostClick) {
+        Icon(
+            imageVector = Icons.Default.Add,
+            contentDescription = "ポスト",
+            modifier = Modifier.size(24.dp),
+        )
     }
 }

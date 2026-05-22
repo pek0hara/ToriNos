@@ -5,6 +5,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
@@ -12,6 +13,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
@@ -23,6 +25,7 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -54,6 +57,9 @@ import com.nostr.torinos.ui.components.AvatarImage
 import com.nostr.torinos.ui.components.LinkedText
 import com.nostr.torinos.ui.components.formatTimestamp
 import com.nostr.torinos.ui.profile.AvatarCircle
+import com.nostr.torinos.ui.service.ServiceTab
+import com.nostr.torinos.ui.service.ServiceTabRow
+import com.nostr.torinos.ui.service.serviceTabSwipe
 import kotlin.time.Clock
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -66,6 +72,8 @@ fun StatusScreen(
     onUserClick: (String) -> Unit,
     onOpenProfile: () -> Unit = {},
     modifier: Modifier = Modifier,
+    selectedServiceTab: ServiceTab = ServiceTab.Status,
+    onServiceTabSelected: (ServiceTab) -> Unit = {},
 ) {
     val relays by RelayStore.relays.collectAsState(initial = emptyList())
     val selectedRelayUrl by RelayStore.selectedStatusRelayUrl.collectAsState()
@@ -101,99 +109,117 @@ fun StatusScreen(
         modifier = modifier,
         contentWindowInsets = WindowInsets(0),
         topBar = {
-            TopAppBar(
-                navigationIcon = {
-                    if (ownPubkey != null) {
-                        IconButton(onClick = onOpenProfile) {
-                            AvatarCircle(
-                                pubkey = ownPubkey,
-                                name = ownProfile?.bestName,
-                                pictureUrl = ownProfile?.picture,
-                                size = 32,
-                            )
-                        }
-                    }
-                },
-                title = {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.Start,
-                    ) {
-                        Text(
-                            text = selectedRelayUrl?.relayDisplayName() ?: "—",
-                            modifier = Modifier.weight(1f, fill = false),
-                            color = MaterialTheme.colorScheme.onPrimary,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                        IconButton(onClick = { showRelayMenu = true }) {
-                            Icon(
-                                Icons.Default.ArrowDropDown,
-                                contentDescription = "リレー切り替え",
-                                tint = MaterialTheme.colorScheme.onPrimary,
-                            )
-                        }
-                        DropdownMenu(
-                            expanded = showRelayMenu,
-                            onDismissRequest = { showRelayMenu = false },
-                        ) {
-                            relays.forEach { url ->
-                                DropdownMenuItem(
-                                    text = { Text(url.relayDisplayName()) },
-                                    onClick = {
-                                        RelayStore.setSelectedStatusRelayUrl(url)
-                                        showRelayMenu = false
-                                    },
-                                    trailingIcon = if (url == selectedRelayUrl) {
-                                        {
-                                            Icon(
-                                                Icons.Default.Check,
-                                                contentDescription = null,
-                                            )
-                                        }
-                                    } else null,
+            Column {
+                TopAppBar(
+                    navigationIcon = {
+                        if (ownPubkey != null) {
+                            IconButton(onClick = onOpenProfile) {
+                                AvatarCircle(
+                                    pubkey = ownPubkey,
+                                    name = ownProfile?.bestName,
+                                    pictureUrl = ownProfile?.picture,
+                                    size = 32,
                                 )
                             }
                         }
-                    }
-                },
-                colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = MaterialTheme.colorScheme.primary,
-                    titleContentColor = MaterialTheme.colorScheme.onPrimary,
-                ),
-            )
+                    },
+                    title = {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.Start,
+                        ) {
+                            Text(
+                                text = selectedRelayUrl?.relayDisplayName() ?: "—",
+                                modifier = Modifier.weight(1f, fill = false),
+                                color = MaterialTheme.colorScheme.onPrimary,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                            IconButton(onClick = { showRelayMenu = true }) {
+                                Icon(
+                                    Icons.Default.ArrowDropDown,
+                                    contentDescription = "リレー切り替え",
+                                    tint = MaterialTheme.colorScheme.onPrimary,
+                                )
+                            }
+                            DropdownMenu(
+                                expanded = showRelayMenu,
+                                onDismissRequest = { showRelayMenu = false },
+                            ) {
+                                relays.forEach { url ->
+                                    DropdownMenuItem(
+                                        text = { Text(url.relayDisplayName()) },
+                                        onClick = {
+                                            RelayStore.setSelectedStatusRelayUrl(url)
+                                            showRelayMenu = false
+                                        },
+                                        trailingIcon = if (url == selectedRelayUrl) {
+                                            {
+                                                Icon(
+                                                    Icons.Default.Check,
+                                                    contentDescription = null,
+                                                )
+                                            }
+                                        } else null,
+                                    )
+                                }
+                            }
+                        }
+                    },
+                    colors = TopAppBarDefaults.topAppBarColors(
+                        containerColor = MaterialTheme.colorScheme.primary,
+                        titleContentColor = MaterialTheme.colorScheme.onPrimary,
+                    ),
+                )
+                ServiceTabRow(
+                    selectedTab = selectedServiceTab,
+                    onTabSelected = onServiceTabSelected,
+                )
+            }
         },
     ) { padding ->
-        Box(
+        Column(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(padding),
+                .padding(padding)
+                .serviceTabSwipe(
+                    selectedTab = selectedServiceTab,
+                    onTabSelected = onServiceTabSelected,
+                ),
         ) {
-            when {
-                state.isInitialLoad && state.statuses.isEmpty() -> {
-                    CircularProgressIndicator(modifier = Modifier.align(Alignment.Center))
-                }
-                state.statuses.isEmpty() -> {
-                    Text(
-                        text = "ステータスがありません",
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.align(Alignment.Center),
-                    )
-                }
-                else -> {
-                    LazyColumn(modifier = Modifier.fillMaxSize()) {
-                        items(
-                            items = state.statuses,
-                            key = { it.key },
-                            contentType = { "status" },
-                        ) { status ->
-                            StatusRow(
-                                status = status,
-                                profile = state.profiles[status.event.pubkey],
-                                isOwn = status.event.pubkey == ownPubkey,
-                                onUserClick = { onUserClick(status.event.pubkey) },
-                            )
-                            HorizontalDivider()
+            CategoryFilterRow(
+                availableCategories = state.availableCategories,
+                selectedCategories = state.selectedCategories,
+                onToggle = viewModel::toggleCategory,
+            )
+            HorizontalDivider()
+            Box(modifier = Modifier.fillMaxSize()) {
+                when {
+                    state.isInitialLoad && state.statuses.isEmpty() -> {
+                        CircularProgressIndicator(modifier = Modifier.align(Alignment.Center))
+                    }
+                    state.statuses.isEmpty() -> {
+                        Text(
+                            text = "ステータスがありません",
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.align(Alignment.Center),
+                        )
+                    }
+                    else -> {
+                        LazyColumn(modifier = Modifier.fillMaxSize()) {
+                            items(
+                                items = state.statuses,
+                                key = { it.key },
+                                contentType = { "status" },
+                            ) { status ->
+                                StatusRow(
+                                    status = status,
+                                    profile = state.profiles[status.event.pubkey],
+                                    isOwn = status.event.pubkey == ownPubkey,
+                                    onUserClick = { onUserClick(status.event.pubkey) },
+                                )
+                                HorizontalDivider()
+                            }
                         }
                     }
                 }
@@ -213,6 +239,26 @@ fun StatusScreen(
                 viewModel.publishStatus(tag, content, expiration, referenceUrl)
             },
         )
+    }
+}
+
+@Composable
+private fun CategoryFilterRow(
+    availableCategories: List<String>,
+    selectedCategories: Set<String>,
+    onToggle: (String) -> Unit,
+) {
+    LazyRow(
+        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        items(availableCategories) { category ->
+            FilterChip(
+                selected = category in selectedCategories,
+                onClick = { onToggle(category) },
+                label = { Text(category) },
+            )
+        }
     }
 }
 

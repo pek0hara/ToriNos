@@ -27,7 +27,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Check
-import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.CleaningServices
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.outlined.StarBorder
 import androidx.compose.material3.AlertDialog
@@ -66,6 +66,9 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.nostr.torinos.model.NostrProfile
 import com.nostr.torinos.network.RelayStore
 import com.nostr.torinos.ui.profile.AvatarCircle
+import com.nostr.torinos.ui.service.ServiceTab
+import com.nostr.torinos.ui.service.ServiceTabRow
+import com.nostr.torinos.ui.service.serviceTabSwipe
 import kotlin.time.Clock
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.filter
@@ -77,6 +80,8 @@ fun ChannelListScreen(
     ownPubkey: String? = null,
     ownProfile: NostrProfile? = null,
     onOpenProfile: () -> Unit = {},
+    selectedServiceTab: ServiceTab = ServiceTab.Channels,
+    onServiceTabSelected: (ServiceTab) -> Unit = {},
 ) {
     val relays by RelayStore.relays.collectAsState(initial = emptyList())
     val selectedRelayUrl by RelayStore.selectedChannelRelayUrl.collectAsState()
@@ -134,78 +139,84 @@ fun ChannelListScreen(
     Scaffold(
         contentWindowInsets = WindowInsets(0),
         topBar = {
-            TopAppBar(
-                navigationIcon = {
-                    if (ownPubkey != null) {
-                        IconButton(onClick = onOpenProfile) {
-                            AvatarCircle(
-                                pubkey = ownPubkey,
-                                name = ownProfile?.bestName,
-                                pictureUrl = ownProfile?.picture,
-                                size = 32,
-                            )
-                        }
-                    }
-                },
-                title = {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.Start,
-                    ) {
-                        Text(
-                            text = selectedRelayUrl?.relayDisplayName() ?: "—",
-                            modifier = Modifier.weight(1f, fill = false),
-                            color = MaterialTheme.colorScheme.onPrimary,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                        IconButton(onClick = { showRelayMenu = true }) {
-                            Icon(
-                                Icons.Default.ArrowDropDown,
-                                contentDescription = "リレー切り替え",
-                                tint = MaterialTheme.colorScheme.onPrimary,
-                            )
-                        }
-                        DropdownMenu(
-                            expanded = showRelayMenu,
-                            onDismissRequest = { showRelayMenu = false },
-                        ) {
-                            relays.forEach { url ->
-                                DropdownMenuItem(
-                                    text = { Text(url.relayDisplayName()) },
-                                    onClick = {
-                                        RelayStore.setSelectedChannelRelayUrl(url)
-                                        showRelayMenu = false
-                                    },
-                                    trailingIcon = if (url == selectedRelayUrl) {
-                                        {
-                                            Icon(
-                                                Icons.Default.Check,
-                                                contentDescription = null,
-                                            )
-                                        }
-                                    } else null,
+            Column {
+                TopAppBar(
+                    navigationIcon = {
+                        if (ownPubkey != null) {
+                            IconButton(onClick = onOpenProfile) {
+                                AvatarCircle(
+                                    pubkey = ownPubkey,
+                                    name = ownProfile?.bestName,
+                                    pictureUrl = ownProfile?.picture,
+                                    size = 32,
                                 )
                             }
                         }
-                    }
-                },
-                actions = {
-                    if (state is ChannelListViewModel.UiState.Ready) {
-                        IconButton(onClick = viewModel::showBulkDeleteDialog) {
-                            Icon(
-                                Icons.Default.Delete,
-                                contentDescription = "お気に入り以外のキャッシュを削除",
-                                tint = MaterialTheme.colorScheme.onPrimary,
+                    },
+                    title = {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.Start,
+                        ) {
+                            Text(
+                                text = selectedRelayUrl?.relayDisplayName() ?: "—",
+                                modifier = Modifier.weight(1f, fill = false),
+                                color = MaterialTheme.colorScheme.onPrimary,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
                             )
+                            IconButton(onClick = { showRelayMenu = true }) {
+                                Icon(
+                                    Icons.Default.ArrowDropDown,
+                                    contentDescription = "リレー切り替え",
+                                    tint = MaterialTheme.colorScheme.onPrimary,
+                                )
+                            }
+                            DropdownMenu(
+                                expanded = showRelayMenu,
+                                onDismissRequest = { showRelayMenu = false },
+                            ) {
+                                relays.forEach { url ->
+                                    DropdownMenuItem(
+                                        text = { Text(url.relayDisplayName()) },
+                                        onClick = {
+                                            RelayStore.setSelectedChannelRelayUrl(url)
+                                            showRelayMenu = false
+                                        },
+                                        trailingIcon = if (url == selectedRelayUrl) {
+                                            {
+                                                Icon(
+                                                    Icons.Default.Check,
+                                                    contentDescription = null,
+                                                )
+                                            }
+                                        } else null,
+                                    )
+                                }
+                            }
                         }
-                    }
-                },
-                colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = MaterialTheme.colorScheme.primary,
-                    titleContentColor = MaterialTheme.colorScheme.onPrimary,
-                ),
-            )
+                    },
+                    actions = {
+                        if (state is ChannelListViewModel.UiState.Ready) {
+                            IconButton(onClick = viewModel::showBulkDeleteDialog) {
+                                Icon(
+                                    Icons.Default.CleaningServices,
+                                    contentDescription = "お気に入り以外のキャッシュを削除",
+                                    tint = MaterialTheme.colorScheme.onPrimary,
+                                )
+                            }
+                        }
+                    },
+                    colors = TopAppBarDefaults.topAppBarColors(
+                        containerColor = MaterialTheme.colorScheme.primary,
+                        titleContentColor = MaterialTheme.colorScheme.onPrimary,
+                    ),
+                )
+                ServiceTabRow(
+                    selectedTab = selectedServiceTab,
+                    onTabSelected = onServiceTabSelected,
+                )
+            }
         },
         floatingActionButton = {
             if (state is ChannelListViewModel.UiState.Ready) {
@@ -218,7 +229,11 @@ fun ChannelListScreen(
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(padding),
+                .padding(padding)
+                .serviceTabSwipe(
+                    selectedTab = selectedServiceTab,
+                    onTabSelected = onServiceTabSelected,
+                ),
         ) {
             when (val s = state) {
                 is ChannelListViewModel.UiState.Loading -> {

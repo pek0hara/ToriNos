@@ -24,8 +24,12 @@ data class UserStatus(
     val key: String = "${event.pubkey}:$statusTag"
 }
 
+private val DEFAULT_CATEGORIES = listOf("general", "music")
+
 data class StatusState(
     val statuses: List<UserStatus> = emptyList(),
+    val availableCategories: List<String> = DEFAULT_CATEGORIES,
+    val selectedCategories: Set<String> = DEFAULT_CATEGORIES.toSet(),
     val profiles: Map<String, NostrProfile> = emptyMap(),
     val isInitialLoad: Boolean = true,
     val isPublishing: Boolean = false,
@@ -49,6 +53,13 @@ class StatusViewModel(private val relayUrl: String? = null) : SafeViewModel() {
 
     init {
         start()
+    }
+
+    fun toggleCategory(category: String) {
+        val current = _state.value.selectedCategories
+        val updated = if (category in current) current - category else current + category
+        _state.value = _state.value.copy(selectedCategories = updated)
+        rebuildStatuses()
     }
 
     fun clearError() {
@@ -178,10 +189,17 @@ class StatusViewModel(private val relayUrl: String? = null) : SafeViewModel() {
 
     private fun rebuildStatuses() {
         val now = Clock.System.now().epochSeconds
+        val selected = _state.value.selectedCategories
+        val extraCategories = rawStatuses.values
+            .map { it.statusTag }
+            .distinct()
+            .filter { it !in DEFAULT_CATEGORIES }
+        val allCategories = DEFAULT_CATEGORIES + extraCategories
         val active = rawStatuses.values
             .filter { it.expiration == null || it.expiration > now }
+            .filter { selected.isEmpty() || it.statusTag in selected }
             .sortedByDescending { it.event.createdAt }
-        _state.value = _state.value.copy(statuses = active)
+        _state.value = _state.value.copy(statuses = active, availableCategories = allCategories)
     }
 
     private fun scheduleProfileFetch(pubkey: String) {
