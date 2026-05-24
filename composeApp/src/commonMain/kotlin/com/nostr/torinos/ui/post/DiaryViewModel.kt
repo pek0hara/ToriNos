@@ -28,6 +28,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.serialization.json.Json
 import kotlinx.datetime.LocalDate
 import kotlinx.datetime.TimeZone
 import kotlinx.datetime.atStartOfDayIn
@@ -371,7 +372,7 @@ class DiaryViewModel : SafeViewModel() {
                     when {
                         event.kind == MEMO_EVENT_KIND && event.pubkey == pubkey ->
                             mutex.withLock { memoEvents += event }
-                        event.kind == 1 && event.pubkey == pubkey ->
+                        event.kind in listOf(1, 6, 7) && event.pubkey == pubkey ->
                             mutex.withLock { noteEvents += event }
                     }
                 }
@@ -379,7 +380,7 @@ class DiaryViewModel : SafeViewModel() {
             NostrRepository.subscribe(
                 subId,
                 NostrFilter(
-                    kinds = listOf(MEMO_EVENT_KIND, 1),
+                    kinds = listOf(MEMO_EVENT_KIND, 1, 6, 7),
                     authors = listOf(pubkey),
                     since = since,
                     until = until,
@@ -493,6 +494,7 @@ class DiaryViewModel : SafeViewModel() {
                     notes.forEach { event ->
                         event.replyTargetId()?.let { add(it) }
                         addAll(quotedEventIds(event))
+                        event.activityTargetId()?.let { add(it) }
                     }
                 }
                 val memoPubkeys = memos.mapNotNull { it.memo.replyToPubkey }.toHashSet()
@@ -587,6 +589,17 @@ class DiaryViewModel : SafeViewModel() {
 
 private fun NostrEvent.memoIdentifier(): String? =
     tags.firstOrNull { it.firstOrNull() == "d" }?.getOrNull(1)
+
+private fun NostrEvent.activityTargetId(): String? =
+    tags.lastOrNull { it.firstOrNull() == "e" }?.getOrNull(1)
+        ?: embeddedRepostTarget()?.id
+
+private fun NostrEvent.embeddedRepostTarget(): NostrEvent? {
+    if (kind != 6 || content.isBlank()) return null
+    return runCatching {
+        Json.decodeFromString(NostrEvent.serializer(), content)
+    }.getOrNull()
+}
 
 private fun DiaryItem.addressTagValue(): String? {
     val d = memo.identifier

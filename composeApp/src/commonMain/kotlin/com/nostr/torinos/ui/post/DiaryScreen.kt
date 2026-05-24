@@ -8,6 +8,7 @@ import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
@@ -16,6 +17,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -24,12 +26,16 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.Favorite
+import androidx.compose.material.icons.filled.FilterList
+import androidx.compose.material.icons.filled.Repeat
 import androidx.compose.material.icons.filled.Today
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -51,19 +57,26 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.nostr.torinos.model.NostrEvent
 import com.nostr.torinos.model.NostrProfile
 import com.nostr.torinos.model.quotedEventIds
 import com.nostr.torinos.model.replyTargetId
+import com.nostr.torinos.model.stripNostrEventUris
 import com.nostr.torinos.network.RelayStore
 import com.nostr.torinos.ui.components.NoteCard
 import com.nostr.torinos.ui.components.QuotedEvent
 import com.nostr.torinos.ui.components.formatTimestamp
+import com.nostr.torinos.ui.components.stripImageUrls
+import com.nostr.torinos.ui.profile.AvatarCircle
 import kotlinx.datetime.LocalDate
+import kotlinx.serialization.json.Json
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
@@ -72,6 +85,8 @@ fun DiaryScreen(
     onOpenMemo: (PostMemoData) -> Unit,
     onNewPost: () -> Unit,
     refreshTodayRequest: Int,
+    toggleCalendarRequest: Int = 0,
+    showCalendarRequest: Int = 0,
     onOpenThread: (eventId: String) -> Unit = {},
     onReply: ((eventId: String, authorPubkey: String, preview: String) -> Unit)? = null,
     onUserClick: (pubkey: String) -> Unit = {},
@@ -83,11 +98,27 @@ fun DiaryScreen(
     val selectedRelayUrl by RelayStore.selectedMemoRelayUrl.collectAsState()
     var showCalendar by remember { mutableStateOf(true) }
     var showRelayMenu by remember { mutableStateOf(false) }
-    val visibleEntries = if (showCalendar) state.selectedEntries else state.monthEntries
+    var showFilterHeader by remember { mutableStateOf(false) }
+    var selectedFilters by remember { mutableStateOf(emptySet<DiaryEntryFilter>()) }
+    val baseEntries = if (showCalendar) state.selectedEntries else state.monthEntries
+    val visibleEntries = remember(baseEntries, selectedFilters) {
+        if (selectedFilters.isEmpty()) baseEntries else baseEntries.filter { it.filter in selectedFilters }
+    }
+    val filteredEntryCountsByDate = remember(state.memos, state.notes, state.profiles, selectedFilters) {
+        filteredEntryCountsByDate(state, selectedFilters)
+    }
     val isPullRefreshing = state.isLoading && (state.memos.isNotEmpty() || state.notes.isNotEmpty())
 
     LaunchedEffect(refreshTodayRequest) {
         if (refreshTodayRequest > 0) viewModel.refreshToday()
+    }
+
+    LaunchedEffect(toggleCalendarRequest) {
+        if (toggleCalendarRequest > 0) showCalendar = !showCalendar
+    }
+
+    LaunchedEffect(showCalendarRequest) {
+        if (showCalendarRequest > 0) showCalendar = true
     }
 
     LaunchedEffect(relays, selectedRelayUrl) {
@@ -156,6 +187,13 @@ fun DiaryScreen(
                     }
                 },
                 actions = {
+                    IconButton(onClick = { showFilterHeader = !showFilterHeader }) {
+                        Icon(
+                            Icons.Default.FilterList,
+                            contentDescription = if (showFilterHeader) "フィルターを閉じる" else "フィルターを開く",
+                            tint = MaterialTheme.colorScheme.onPrimary,
+                        )
+                    }
                     IconButton(onClick = { showCalendar = !showCalendar }) {
                         Icon(
                             Icons.Default.Today,
@@ -176,14 +214,29 @@ fun DiaryScreen(
                 .fillMaxSize()
                 .padding(padding),
         ) {
+            if (showFilterHeader) {
+                DiaryFilterHeader(
+                    selectedFilters = selectedFilters,
+                    onToggle = { filter ->
+                        selectedFilters = if (filter in selectedFilters) {
+                            selectedFilters - filter
+                        } else {
+                            selectedFilters + filter
+                        }
+                    },
+                )
+                HorizontalDivider()
+            }
             MemoCalendarHeader(
                 state = state,
                 onPreviousMonth = viewModel::previousMonth,
                 onNextMonth = viewModel::nextMonth,
+                onToggleCalendar = { showCalendar = !showCalendar },
             )
             if (showCalendar) {
                 MemoCalendarGrid(
                     state = state,
+                    entryCountsByDate = filteredEntryCountsByDate,
                     onSelectDate = viewModel::selectDate,
                 )
             }
@@ -261,51 +314,67 @@ fun DiaryScreen(
                                         onClick = { onOpenMemo(entry.item.memo) },
                                         onLongClick = { viewModel.showDeleteDialog(entry.item) },
                                     )
-                                    is DiaryEntry.Note -> NoteCard(
-                                        event = entry.event,
-                                        profile = entry.profile,
-                                        profiles = state.profiles,
-                                        replyParent = run {
-                                            val parentId = entry.event.replyTargetId() ?: return@run null
-                                            val parentEvent = state.quotedEvents[parentId] ?: return@run null
-                                            QuotedEvent(event = parentEvent, profile = state.profiles[parentEvent.pubkey])
-                                        },
-                                        quotedEvents = run {
-                                            val replyParentId = entry.event.replyTargetId()
-                                            quotedEventIds(entry.event)
-                                                .filter { it != replyParentId }
-                                                .mapNotNull { id ->
-                                                    state.quotedEvents[id]?.let { ev ->
-                                                        QuotedEvent(event = ev, profile = state.profiles[ev.pubkey])
+                                    is DiaryEntry.Note -> when (entry.event.kind) {
+                                        1 -> NoteCard(
+                                            event = entry.event,
+                                            profile = entry.profile,
+                                            profiles = state.profiles,
+                                            replyParent = run {
+                                                val parentId = entry.event.replyTargetId() ?: return@run null
+                                                val parentEvent = state.quotedEvents[parentId] ?: return@run null
+                                                QuotedEvent(event = parentEvent, profile = state.profiles[parentEvent.pubkey])
+                                            },
+                                            quotedEvents = run {
+                                                val replyParentId = entry.event.replyTargetId()
+                                                quotedEventIds(entry.event)
+                                                    .filter { it != replyParentId }
+                                                    .mapNotNull { id ->
+                                                        state.quotedEvents[id]?.let { ev ->
+                                                            QuotedEvent(event = ev, profile = state.profiles[ev.pubkey])
+                                                        }
+                                                    }
+                                            },
+                                            replyCount = state.replyCounts[entry.event.id] ?: 0,
+                                            reactionCount = state.reactionCounts[entry.event.id] ?: 0,
+                                            repostCount = state.repostCounts[entry.event.id] ?: 0,
+                                            isLiked = state.likedReactions.containsKey(entry.event.id),
+                                            onUserClick = onUserClick,
+                                            onLike = if (ownPubkey != null) {
+                                                {
+                                                    if (state.likedReactions.containsKey(entry.event.id)) {
+                                                        viewModel.unreact(entry.event.id)
+                                                    } else {
+                                                        viewModel.react(entry.event.id, entry.event.pubkey)
                                                     }
                                                 }
-                                        },
-                                        replyCount = state.replyCounts[entry.event.id] ?: 0,
-                                        reactionCount = state.reactionCounts[entry.event.id] ?: 0,
-                                        repostCount = state.repostCounts[entry.event.id] ?: 0,
-                                        isLiked = state.likedReactions.containsKey(entry.event.id),
-                                        onUserClick = onUserClick,
-                                        onLike = if (ownPubkey != null) {
-                                            {
-                                                if (state.likedReactions.containsKey(entry.event.id)) {
-                                                    viewModel.unreact(entry.event.id)
-                                                } else {
-                                                    viewModel.react(entry.event.id, entry.event.pubkey)
+                                            } else null,
+                                            onReply = if (ownPubkey != null && onReply != null) {
+                                                {
+                                                    onReply(
+                                                        entry.event.id,
+                                                        entry.event.pubkey,
+                                                        entry.event.content.take(100),
+                                                    )
                                                 }
-                                            }
-                                        } else null,
-                                        onReply = if (ownPubkey != null && onReply != null) {
-                                            {
-                                                onReply(
-                                                    entry.event.id,
-                                                    entry.event.pubkey,
-                                                    entry.event.content.take(100),
-                                                )
-                                            }
-                                        } else null,
-                                        onOpenReplies = { onOpenThread(entry.event.id) },
-                                        onNoteClick = { onOpenThread(entry.event.id) },
-                                    )
+                                            } else null,
+                                            onOpenReplies = { onOpenThread(entry.event.id) },
+                                            onNoteClick = { onOpenThread(entry.event.id) },
+                                        )
+                                        6, 7 -> DiaryActivityRow(
+                                            event = entry.event,
+                                            profile = entry.profile,
+                                            targetEvent = entry.event.activityTargetId()?.let { state.quotedEvents[it] }
+                                                ?: entry.event.embeddedRepostTarget(),
+                                            targetProfile = entry.event.activityTargetId()
+                                                ?.let { state.quotedEvents[it] }
+                                                ?.let { state.profiles[it.pubkey] },
+                                            onUserClick = onUserClick,
+                                            onOpenThread = { targetId ->
+                                                onOpenThread(targetId)
+                                            },
+                                        )
+                                        else -> Unit
+                                    }
                                 }
                                 HorizontalDivider()
                             }
@@ -364,11 +433,49 @@ fun DiaryScreen(
 
 }
 
+private enum class DiaryEntryFilter(val label: String) {
+    Post("投稿"),
+    Reply("返信"),
+    Repost("リポスト"),
+    Like("いいね"),
+    Memo("メモ"),
+}
+
+private val DiaryEntry.filter: DiaryEntryFilter
+    get() = when (this) {
+        is DiaryEntry.Memo -> DiaryEntryFilter.Memo
+        is DiaryEntry.Note -> when (event.kind) {
+            6 -> DiaryEntryFilter.Repost
+            7 -> DiaryEntryFilter.Like
+            else -> if (event.replyTargetId() != null) DiaryEntryFilter.Reply else DiaryEntryFilter.Post
+        }
+    }
+
+@Composable
+private fun DiaryFilterHeader(
+    selectedFilters: Set<DiaryEntryFilter>,
+    onToggle: (DiaryEntryFilter) -> Unit,
+) {
+    LazyRow(
+        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        items(DiaryEntryFilter.entries) { filter ->
+            FilterChip(
+                selected = filter in selectedFilters,
+                onClick = { onToggle(filter) },
+                label = { Text(filter.label) },
+            )
+        }
+    }
+}
+
 @Composable
 private fun MemoCalendarHeader(
     state: DiaryState,
     onPreviousMonth: () -> Unit,
     onNextMonth: () -> Unit,
+    onToggleCalendar: () -> Unit,
 ) {
     Row(
         modifier = Modifier
@@ -385,6 +492,7 @@ private fun MemoCalendarHeader(
         }
         Text(
             text = "${state.selectedMonth.year}年${state.selectedMonth.month.ordinal + 1}月",
+            modifier = Modifier.clickable(onClick = onToggleCalendar),
             style = MaterialTheme.typography.titleMedium,
             fontWeight = FontWeight.SemiBold,
         )
@@ -403,6 +511,7 @@ private fun MemoCalendarHeader(
 @Composable
 private fun MemoCalendarGrid(
     state: DiaryState,
+    entryCountsByDate: Map<LocalDate, Int>,
     onSelectDate: (LocalDate) -> Unit,
 ) {
     val weekRows = remember(state.selectedMonth) { calendarWeeks(state.selectedMonth) }
@@ -437,7 +546,7 @@ private fun MemoCalendarGrid(
                         MemoCalendarDay(
                             date = date,
                             selected = date == state.selectedDate,
-                            memoCount = state.entryCountsByDate[date] ?: 0,
+                            memoCount = entryCountsByDate[date] ?: 0,
                             onClick = { onSelectDate(date) },
                             modifier = Modifier.weight(1f),
                         )
@@ -551,6 +660,84 @@ private fun MemoRow(
     }
 }
 
+@Composable
+private fun DiaryActivityRow(
+    event: NostrEvent,
+    profile: NostrProfile?,
+    targetEvent: NostrEvent?,
+    targetProfile: NostrProfile?,
+    onUserClick: (String) -> Unit,
+    onOpenThread: (String) -> Unit,
+) {
+    val type = if (event.kind == 6) DiaryEntryFilter.Repost else DiaryEntryFilter.Like
+    val targetId = event.activityTargetId()
+    val icon = if (type == DiaryEntryFilter.Repost) Icons.Default.Repeat else Icons.Default.Favorite
+    val accent = if (type == DiaryEntryFilter.Repost) Color(0xFF2BAE66) else Color(0xFFE17055)
+
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(enabled = targetId != null) { targetId?.let(onOpenThread) }
+            .padding(horizontal = 16.dp, vertical = 12.dp),
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        AvatarCircle(
+            pubkey = event.pubkey,
+            name = profile?.bestName,
+            pictureUrl = profile?.picture,
+            size = 40,
+            modifier = Modifier.clickable { onUserClick(event.pubkey) },
+        )
+        Column(modifier = Modifier.weight(1f)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Row(
+                    modifier = Modifier.weight(1f),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    DiaryActivityIcon(icon = icon, tint = accent)
+                    Text(
+                        text = "${profile?.bestName ?: event.shortPubkey} が${type.label}",
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.primary,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+                Text(
+                    text = formatTimestamp(event.createdAt),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+
+            Text(
+                text = targetPreviewText(targetEvent, targetProfile),
+                modifier = Modifier.padding(top = 6.dp),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 3,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+    }
+}
+
+@Composable
+private fun DiaryActivityIcon(icon: ImageVector, tint: Color) {
+    Icon(
+        imageVector = icon,
+        contentDescription = null,
+        modifier = Modifier.size(18.dp),
+        tint = tint,
+    )
+}
+
 private fun memoPreview(memo: PostMemoData): String =
     memo.text.takeIf { it.isNotBlank() }
         ?: memo.imageUrls.takeIf { it.isNotEmpty() }?.let { "画像 ${it.size} 件" }
@@ -566,6 +753,46 @@ private fun memoKindLabel(memo: PostMemoData, replyToProfile: NostrProfile? = nu
         }
         else -> "通常投稿"
     }
+
+private fun filteredEntryCountsByDate(
+    state: DiaryState,
+    selectedFilters: Set<DiaryEntryFilter>,
+): Map<LocalDate, Int> =
+    state.monthEntries
+        .asSequence()
+        .filter { selectedFilters.isEmpty() || it.filter in selectedFilters }
+        .groupingBy { dateOfEpochSeconds(it.displayTime) }
+        .eachCount()
+
+private fun NostrEvent.activityTargetId(): String? =
+    tags.lastOrNull { it.firstOrNull() == "e" }?.getOrNull(1)
+        ?: embeddedRepostTarget()?.id
+
+private fun NostrEvent.embeddedRepostTarget(): NostrEvent? {
+    if (kind != 6 || content.isBlank()) return null
+    return runCatching {
+        Json.decodeFromString(NostrEvent.serializer(), content)
+    }.getOrNull()
+}
+
+private fun targetPreviewText(event: NostrEvent?, profile: NostrProfile?): String {
+    if (event == null) return "対象ポストを読み込み中"
+    val author = profile?.bestName ?: event.shortPubkey
+    val body = event.content.previewText()
+    return if (body.isBlank()) {
+        "$author のポスト"
+    } else {
+        "$author: $body"
+    }
+}
+
+private fun String.previewText(): String =
+    stripImageUrls(stripNostrEventUris(this))
+        .lineSequence()
+        .map { it.trim() }
+        .filter { it.isNotEmpty() }
+        .joinToString(" ")
+        .take(140)
 
 private fun String.relayDisplayName(): String =
     removePrefix("wss://").removePrefix("ws://").trimEnd('/')

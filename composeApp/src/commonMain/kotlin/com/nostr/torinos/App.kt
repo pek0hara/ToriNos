@@ -128,6 +128,8 @@ fun App() {
         var selectedMemo by remember { mutableStateOf<PostMemoData?>(null) }
         var localDraft by remember { mutableStateOf<PostMemoData?>(null) }
         var memoRefreshTodayRequest by remember { mutableStateOf(0) }
+        var diaryToggleCalendarRequest by remember { mutableStateOf(0) }
+        var diaryShowCalendarRequest by remember { mutableStateOf(0) }
         var showKeySetup by remember { mutableStateOf(false) }
         var pendingKeyAction by remember { mutableStateOf<PendingKeyAction?>(null) }
         val scope = rememberCoroutineScope()
@@ -385,10 +387,15 @@ fun App() {
                                 selected = currentRoute == "diary",
                                 onClick = {
                                     runWithPrivateKey(PendingKeyAction.Diary) {
-                                        nav.navigate("diary") {
-                                            popUpTo("feed") { saveState = true; inclusive = false }
-                                            launchSingleTop = true
-                                            restoreState = true
+                                        if (currentRoute == "diary") {
+                                            diaryToggleCalendarRequest++
+                                        } else {
+                                            diaryShowCalendarRequest++
+                                            nav.navigate("diary") {
+                                                popUpTo("feed") { saveState = true; inclusive = false }
+                                                launchSingleTop = true
+                                                restoreState = true
+                                            }
                                         }
                                     }
                                 },
@@ -513,6 +520,8 @@ fun App() {
                         DiaryScreen(
                             onBack = { nav.popBackStack() },
                             refreshTodayRequest = memoRefreshTodayRequest,
+                            toggleCalendarRequest = diaryToggleCalendarRequest,
+                            showCalendarRequest = diaryShowCalendarRequest,
                             onNewPost = {
                                 selectedMemo = null
                                 replyToId = null
@@ -800,7 +809,12 @@ fun App() {
                         }
                         PendingKeyAction.Reply -> showPostSheet = true
                         PendingKeyAction.Diary -> {
-                            nav.navigate("diary") { launchSingleTop = true }
+                            if (currentRoute == "diary") {
+                                diaryToggleCalendarRequest++
+                            } else {
+                                diaryShowCalendarRequest++
+                                nav.navigate("diary") { launchSingleTop = true }
+                            }
                         }
                         PendingKeyAction.Profile -> {
                             currentFeedTab = FeedTab.Global
