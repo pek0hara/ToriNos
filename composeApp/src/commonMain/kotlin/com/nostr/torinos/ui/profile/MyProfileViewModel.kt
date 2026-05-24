@@ -1,5 +1,7 @@
 package com.nostr.torinos.ui.profile
 
+import com.nostr.torinos.crypto.KeyStorage
+import com.nostr.torinos.crypto.signEvent
 import com.nostr.torinos.ui.SafeViewModel
 import com.nostr.torinos.model.NostrFilter
 import com.nostr.torinos.model.NostrProfile
@@ -21,10 +23,14 @@ data class MyProfileState(
     val profile: NostrProfile? = null,
     val linkedProfiles: Map<String, NostrProfile> = emptyMap(),
     val relayUrls: List<String> = emptyList(),
+    val generalStatus: String? = null,
     val followingCount: Int = 0,
     val followersCount: Int = 0,
     val isFollowersLoading: Boolean = false,
     val followersLoaded: Boolean = false,
+    val isGeneralStatusPublishing: Boolean = false,
+    val generalStatusPublishCompletedCount: Int = 0,
+    val generalStatusError: String? = null,
 )
 
 class MyProfileViewModel(private val ownPubkey: String) : SafeViewModel() {
@@ -36,11 +42,13 @@ class MyProfileViewModel(private val ownPubkey: String) : SafeViewModel() {
     private val linkedProfileSubId = "mp-linked-profile-$subIdKey"
     private val followerSubId = "mp-followers-$subIdKey"
     private val relayListSubId = "mp-relay-list-$subIdKey"
+    private val generalStatusSubId = "mp-general-status-$subIdKey"
 
     private val collectorJobs = mutableListOf<Job>()
     private var followerCollectorJob: Job? = null
     private var followerEoseJob: Job? = null
     private var latestRelayListCreatedAt = -1L
+    private var latestGeneralStatusCreatedAt = -1L
     private var hasPublishedRelayList = false
     private val pendingLinkedProfilePubkeys = linkedSetOf<String>()
 
@@ -97,6 +105,14 @@ class MyProfileViewModel(private val ownPubkey: String) : SafeViewModel() {
             }
         }
 
+        collectorJobs += launch {
+            NostrRepository.events(generalStatusSubId).collect { event ->
+                if (event.createdAt <= latestGeneralStatusCreatedAt) return@collect
+                latestGeneralStatusCreatedAt = event.createdAt
+                _state.update { it.copy(generalStatus = event.toActiveGeneralStatusContent()) }
+            }
+        }
+
         launch {
             NostrRepository.subscribe(
                 profileSubId,
@@ -105,6 +121,15 @@ class MyProfileViewModel(private val ownPubkey: String) : SafeViewModel() {
             NostrRepository.subscribe(
                 relayListSubId,
                 NostrFilter(kinds = listOf(10002), authors = listOf(ownPubkey), limit = 1),
+            )
+            NostrRepository.subscribe(
+                generalStatusSubId,
+                NostrFilter(
+                    kinds = listOf(PROFILE_STATUS_KIND),
+                    authors = listOf(ownPubkey),
+                    dTags = listOf(PROFILE_GENERAL_STATUS_TAG),
+                    limit = 1,
+                ),
             )
         }
     }
@@ -151,6 +176,47 @@ class MyProfileViewModel(private val ownPubkey: String) : SafeViewModel() {
         }
     }
 
+    fun publishGeneralStatus(content: String) {
+        val body = content.trim()
+        if (body.isEmpty()) {
+            _state.update { it.copy(generalStatusError = "ステータスを入力してください") }
+            return
+        }
+        launch {
+            _state.update { it.copy(isGeneralStatusPublishing = true, generalStatusError = null) }
+            try {
+                val privateKeyHex = KeyStorage.loadPrivateKey()
+                    ?: error("秘密鍵が見つかりません")
+                val event = signEvent(
+                    privateKeyHex = privateKeyHex,
+                    content = body,
+                    kind = PROFILE_STATUS_KIND,
+                    tags = listOf(listOf("d", PROFILE_GENERAL_STATUS_TAG)),
+                )
+                latestGeneralStatusCreatedAt = event.createdAt
+                _state.update {
+                    it.copy(
+                        generalStatus = body,
+                        isGeneralStatusPublishing = false,
+                        generalStatusPublishCompletedCount = it.generalStatusPublishCompletedCount + 1,
+                    )
+                }
+                NostrRepository.publish(event)
+            } catch (e: Throwable) {
+                _state.update {
+                    it.copy(
+                        isGeneralStatusPublishing = false,
+                        generalStatusError = e.message ?: "ステータスの保存に失敗しました",
+                    )
+                }
+            }
+        }
+    }
+
+    fun clearGeneralStatusError() {
+        _state.update { it.copy(generalStatusError = null) }
+    }
+
     override fun onCleared() {
         super.onCleared()
         collectorJobs.forEach { it.cancel() }
@@ -160,6 +226,7 @@ class MyProfileViewModel(private val ownPubkey: String) : SafeViewModel() {
         NostrRepository.close(linkedProfileSubId)
         NostrRepository.close(followerSubId)
         NostrRepository.close(relayListSubId)
+        NostrRepository.close(generalStatusSubId)
     }
 
     private fun scheduleLinkedProfileFetch(text: String) {

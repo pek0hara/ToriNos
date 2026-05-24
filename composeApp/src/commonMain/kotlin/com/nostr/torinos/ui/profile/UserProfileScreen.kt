@@ -133,6 +133,7 @@ fun UserProfileScreen(
                     canFollow = state.canFollow,
                     isMuted = isMuted,
                     relayUrls = state.relayUrls,
+                    generalStatus = state.generalStatus,
                     onFollow = viewModel::follow,
                     onUnfollow = viewModel::unfollow,
                     onMuteToggle = {

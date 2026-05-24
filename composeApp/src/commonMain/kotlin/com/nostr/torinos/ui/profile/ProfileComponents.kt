@@ -87,6 +87,8 @@ internal fun ProfileHeader(
     onEditAvatar: (() -> Unit)? = null,
     onEditName: (() -> Unit)? = null,
     onEditAbout: (() -> Unit)? = null,
+    generalStatus: String? = null,
+    onEditGeneralStatus: (() -> Unit)? = null,
 ) {
     val clipboard = LocalClipboard.current
     val coroutineScope = rememberCoroutineScope()
@@ -111,7 +113,7 @@ internal fun ProfileHeader(
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(178.dp),
+                    .height(222.dp),
             ) {
                 ProfileBanner(
                     bannerUrl = profile?.banner,
@@ -119,7 +121,7 @@ internal fun ProfileHeader(
                     onEditBanner = onEditBanner,
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(132.dp),
+                        .height(176.dp),
                 )
                 ProfileAvatar(
                     pubkey = pubkey,
@@ -214,7 +216,22 @@ internal fun ProfileHeader(
                     text = profile?.bestName ?: (pubkey.take(8) + "…" + pubkey.takeLast(8)),
                     style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.Bold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f, fill = false),
                 )
+                profile?.nip05?.takeIf { it.isNotBlank() }?.let { nip05 ->
+                    Text(
+                        text = nip05,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.primary,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier
+                            .padding(start = 8.dp)
+                            .weight(1f, fill = false),
+                    )
+                }
                 if (isOwnProfile && onEditName != null) {
                     IconButton(onClick = onEditName, modifier = Modifier.size(28.dp)) {
                         Icon(
@@ -271,33 +288,86 @@ internal fun ProfileHeader(
                 }
             } else {
                 profile?.about?.takeIf { it.isNotBlank() }?.let { about ->
-                    Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.Top) {
-                        LinkedText(
-                            text = about,
-                            modifier = Modifier.weight(1f),
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            onProfileClick = onUserClick,
-                            profiles = linkedProfiles,
-                        )
-                        if (isOwnProfile && onEditAbout != null) {
-                            IconButton(onClick = onEditAbout, modifier = Modifier.size(28.dp)) {
-                                Icon(
-                                    Icons.Default.Edit,
-                                    contentDescription = "自己紹介を編集",
-                                    modifier = Modifier.size(14.dp),
-                                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                                )
-                            }
+                    ProfileAboutText(
+                        about = about,
+                        linkedProfiles = linkedProfiles,
+                        isOwnProfile = isOwnProfile,
+                        onUserClick = onUserClick,
+                        onEditAbout = onEditAbout,
+                    )
+                }
+            }
+            generalStatus?.takeIf { it.isNotBlank() }?.let { status ->
+                Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        text = "💬 $status",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f),
+                    )
+                    if (isOwnProfile && onEditGeneralStatus != null) {
+                        IconButton(onClick = onEditGeneralStatus, modifier = Modifier.size(28.dp)) {
+                            Icon(
+                                Icons.Default.Edit,
+                                contentDescription = "ステータスを編集",
+                                modifier = Modifier.size(14.dp),
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
                         }
                     }
                 }
             }
-            profile?.nip05?.takeIf { it.isNotBlank() }?.let { nip05 ->
+        }
+    }
+}
+
+@Composable
+private fun ProfileAboutText(
+    about: String,
+    linkedProfiles: Map<String, NostrProfile>,
+    isOwnProfile: Boolean,
+    onUserClick: (String) -> Unit,
+    onEditAbout: (() -> Unit)?,
+) {
+    var expanded by remember(about) { mutableStateOf(false) }
+    var hasOverflow by remember(about) { mutableStateOf(false) }
+
+    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.Top) {
+            LinkedText(
+                text = about,
+                modifier = Modifier.weight(1f),
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                onProfileClick = onUserClick,
+                profiles = linkedProfiles,
+                maxLines = if (expanded) Int.MAX_VALUE else 5,
+                overflow = TextOverflow.Ellipsis,
+                onTextLayout = { result ->
+                    if (!expanded) hasOverflow = result.hasVisualOverflow
+                },
+            )
+            if (isOwnProfile && onEditAbout != null) {
+                IconButton(onClick = onEditAbout, modifier = Modifier.size(28.dp)) {
+                    Icon(
+                        Icons.Default.Edit,
+                        contentDescription = "自己紹介を編集",
+                        modifier = Modifier.size(14.dp),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+        }
+        if (hasOverflow || expanded) {
+            TextButton(
+                onClick = { expanded = !expanded },
+                contentPadding = androidx.compose.foundation.layout.PaddingValues(0.dp),
+            ) {
                 Text(
-                    text = nip05,
+                    text = if (expanded) "閉じる" else "もっと見る",
                     style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.primary,
                 )
             }
         }

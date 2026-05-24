@@ -2,13 +2,17 @@ package com.nostr.torinos.ui.profile
 
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyListScope
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.PrimaryTabRow
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Tab
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -17,6 +21,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.runtime.collectAsState
+import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
@@ -65,6 +70,7 @@ fun MyProfileScreen(
     var showAvatarEdit by remember { mutableStateOf(false) }
     var showNameEdit by remember { mutableStateOf(false) }
     var showAboutEdit by remember { mutableStateOf(false) }
+    var showStatusEdit by remember { mutableStateOf(false) }
     var selectedTab by remember(ownPubkey) { mutableStateOf(ProfileTimelineTab.Posts) }
     val editProfileViewModel = viewModel<EditProfileViewModel>(
         key = "editProfile",
@@ -81,6 +87,12 @@ fun MyProfileScreen(
     LaunchedEffect(selectedTab) {
         if (selectedTab == ProfileTimelineTab.PostsAndReplies) {
             postsAndRepliesViewModel.startSubscriptions()
+        }
+    }
+
+    LaunchedEffect(state.generalStatusPublishCompletedCount) {
+        if (state.generalStatusPublishCompletedCount > 0) {
+            showStatusEdit = false
         }
     }
 
@@ -127,6 +139,18 @@ fun MyProfileScreen(
                 onDismiss = { showRelayList = false },
             )
         }
+        if (showStatusEdit) {
+            GeneralStatusEditDialog(
+                currentStatus = state.generalStatus.orEmpty(),
+                isPublishing = state.isGeneralStatusPublishing,
+                errorMessage = state.generalStatusError,
+                onDismiss = {
+                    showStatusEdit = false
+                    viewModel.clearGeneralStatusError()
+                },
+                onSave = viewModel::publishGeneralStatus,
+            )
+        }
 
         val profileHeader: LazyListScope.() -> Unit = {
             item {
@@ -136,6 +160,8 @@ fun MyProfileScreen(
                     linkedProfiles = state.linkedProfiles,
                     isOwnProfile = true,
                     relayUrls = state.relayUrls,
+                    generalStatus = state.generalStatus,
+                    onEditGeneralStatus = { showStatusEdit = true },
                     onUserClick = onUserClick,
                     onBack = onBack,
                     onOpenSettings = onOpenSettings,
@@ -227,4 +253,52 @@ fun MyProfileScreen(
             )
         }
     }
+}
+
+@Composable
+private fun GeneralStatusEditDialog(
+    currentStatus: String,
+    isPublishing: Boolean,
+    errorMessage: String?,
+    onDismiss: () -> Unit,
+    onSave: (String) -> Unit,
+) {
+    var status by remember(currentStatus) { mutableStateOf(currentStatus) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("ステータスを編集") },
+        text = {
+            androidx.compose.foundation.layout.Column {
+                OutlinedTextField(
+                    value = status,
+                    onValueChange = { status = it },
+                    label = { Text("general") },
+                    minLines = 2,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                errorMessage?.let {
+                    Text(
+                        text = it,
+                        color = androidx.compose.material3.MaterialTheme.colorScheme.error,
+                        style = androidx.compose.material3.MaterialTheme.typography.bodySmall,
+                        modifier = Modifier.padding(top = 8.dp),
+                    )
+                }
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("キャンセル")
+            }
+        },
+        confirmButton = {
+            TextButton(
+                enabled = !isPublishing && status.isNotBlank(),
+                onClick = { onSave(status) },
+            ) {
+                Text(if (isPublishing) "保存中" else "保存")
+            }
+        },
+    )
 }

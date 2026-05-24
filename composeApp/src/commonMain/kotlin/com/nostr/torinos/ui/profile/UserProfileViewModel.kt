@@ -21,6 +21,7 @@ data class UserProfileState(
     val profile: NostrProfile? = null,
     val linkedProfiles: Map<String, NostrProfile> = emptyMap(),
     val relayUrls: List<String> = emptyList(),
+    val generalStatus: String? = null,
     /** null = フォローリスト未ロード */
     val isFollowing: Boolean? = null,
     val isFollowLoading: Boolean = false,
@@ -46,10 +47,12 @@ class UserProfileViewModel(
     private val followingSubId = "uf-$shortKey"
     private val followersSubId = "ur-$shortKey"
     private val relayListSubId = "url-$shortKey"
+    private val generalStatusSubId = "ugs-$shortKey"
 
     private val collectorJobs = mutableListOf<Job>()
     private var followingCountStarted = false
     private var latestRelayListCreatedAt = -1L
+    private var latestGeneralStatusCreatedAt = -1L
     private val pendingLinkedProfilePubkeys = linkedSetOf<String>()
 
     init {
@@ -106,6 +109,16 @@ class UserProfileViewModel(
             NostrRepository.subscribe(
                 relayListSubId,
                 NostrFilter(kinds = listOf(10002), authors = listOf(pubkey), limit = 1),
+            )
+            NostrRepository.subscribe(
+                generalStatusSubId,
+                NostrFilter(
+                    kinds = listOf(PROFILE_STATUS_KIND),
+                    authors = listOf(pubkey),
+                    dTags = listOf(PROFILE_GENERAL_STATUS_TAG),
+                    limit = 1,
+                ),
+                relayUrl = deferredRelayUrl,
             )
         }
     }
@@ -164,6 +177,14 @@ class UserProfileViewModel(
         }
 
         collectorJobs += launch {
+            NostrRepository.events(generalStatusSubId).collect { event ->
+                if (event.createdAt <= latestGeneralStatusCreatedAt) return@collect
+                latestGeneralStatusCreatedAt = event.createdAt
+                _state.update { it.copy(generalStatus = event.toActiveGeneralStatusContent()) }
+            }
+        }
+
+        collectorJobs += launch {
             var latestAt = -1L
             NostrRepository.events(followingSubId).collect { event ->
                 if (event.kind != 3) return@collect
@@ -213,6 +234,7 @@ class UserProfileViewModel(
         NostrRepository.close(followingSubId)
         NostrRepository.close(followersSubId)
         NostrRepository.close(relayListSubId)
+        NostrRepository.close(generalStatusSubId)
     }
 
     private fun scheduleLinkedProfileFetch(text: String) {
