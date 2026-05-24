@@ -24,7 +24,6 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Edit
-import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Today
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.DropdownMenu
@@ -41,6 +40,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -84,6 +84,7 @@ fun DiaryScreen(
     var showCalendar by remember { mutableStateOf(true) }
     var showRelayMenu by remember { mutableStateOf(false) }
     val visibleEntries = if (showCalendar) state.selectedEntries else state.monthEntries
+    val isPullRefreshing = state.isLoading && (state.memos.isNotEmpty() || state.notes.isNotEmpty())
 
     LaunchedEffect(refreshTodayRequest) {
         if (refreshTodayRequest > 0) viewModel.refreshToday()
@@ -162,13 +163,6 @@ fun DiaryScreen(
                             tint = MaterialTheme.colorScheme.onPrimary,
                         )
                     }
-                    IconButton(onClick = viewModel::refresh) {
-                        Icon(
-                            Icons.Default.Refresh,
-                            contentDescription = "再読み込み",
-                            tint = MaterialTheme.colorScheme.onPrimary,
-                        )
-                    }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(
                     containerColor = MaterialTheme.colorScheme.primary,
@@ -194,30 +188,54 @@ fun DiaryScreen(
                 )
             }
             HorizontalDivider()
-            Box(modifier = Modifier.fillMaxSize()) {
+            PullToRefreshBox(
+                isRefreshing = isPullRefreshing,
+                onRefresh = {
+                    if (!state.isLoading) {
+                        viewModel.refresh()
+                    }
+                },
+                modifier = Modifier.fillMaxSize(),
+            ) {
                 when {
                     state.isLoading && state.memos.isEmpty() && state.notes.isEmpty() -> {
                         CircularProgressIndicator(modifier = Modifier.align(Alignment.Center))
                     }
                     state.error != null -> {
-                        Text(
-                            text = state.error.orEmpty(),
-                            modifier = Modifier
-                                .align(Alignment.Center)
-                                .padding(horizontal = 32.dp),
-                            color = MaterialTheme.colorScheme.error,
-                            textAlign = TextAlign.Center,
-                        )
+                        LazyColumn(modifier = Modifier.fillMaxSize()) {
+                            item(contentType = "message") {
+                                Box(
+                                    modifier = Modifier
+                                        .fillParentMaxSize()
+                                        .padding(horizontal = 32.dp),
+                                    contentAlignment = Alignment.Center,
+                                ) {
+                                    Text(
+                                        text = state.error.orEmpty(),
+                                        color = MaterialTheme.colorScheme.error,
+                                        textAlign = TextAlign.Center,
+                                    )
+                                }
+                            }
+                        }
                     }
                     visibleEntries.isEmpty() -> {
-                        Text(
-                            text = if (showCalendar) "この日の投稿はありません" else "この月の投稿はありません",
-                            modifier = Modifier
-                                .align(Alignment.Center)
-                                .padding(horizontal = 32.dp),
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            textAlign = TextAlign.Center,
-                        )
+                        LazyColumn(modifier = Modifier.fillMaxSize()) {
+                            item(contentType = "message") {
+                                Box(
+                                    modifier = Modifier
+                                        .fillParentMaxSize()
+                                        .padding(horizontal = 32.dp),
+                                    contentAlignment = Alignment.Center,
+                                ) {
+                                    Text(
+                                        text = if (showCalendar) "この日の投稿はありません" else "この月の投稿はありません",
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        textAlign = TextAlign.Center,
+                                    )
+                                }
+                            }
+                        }
                     }
                     else -> {
                         LazyColumn(modifier = Modifier.fillMaxSize()) {
@@ -293,16 +311,6 @@ fun DiaryScreen(
                             }
                         }
                     }
-                }
-
-                if (state.isLoading && (state.memos.isNotEmpty() || state.notes.isNotEmpty())) {
-                    CircularProgressIndicator(
-                        modifier = Modifier
-                            .align(Alignment.TopEnd)
-                            .padding(16.dp)
-                            .size(24.dp),
-                        strokeWidth = 2.dp,
-                    )
                 }
             }
         }
