@@ -5,6 +5,7 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -59,6 +60,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -80,7 +82,7 @@ import kotlinx.serialization.json.Json
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
-fun DiaryScreen(
+fun JournalScreen(
     onBack: () -> Unit,
     onOpenMemo: (PostMemoData) -> Unit,
     onNewPost: () -> Unit,
@@ -91,7 +93,7 @@ fun DiaryScreen(
     onReply: ((eventId: String, authorPubkey: String, preview: String) -> Unit)? = null,
     onUserClick: (pubkey: String) -> Unit = {},
     ownPubkey: String? = null,
-    viewModel: DiaryViewModel = viewModel(key = "diary") { DiaryViewModel() },
+    viewModel: JournalViewModel = viewModel(key = "journal") { JournalViewModel() },
 ) {
     val state by viewModel.state.collectAsState()
     val relays by RelayStore.relays.collectAsState(initial = emptyList())
@@ -99,7 +101,7 @@ fun DiaryScreen(
     var showCalendar by remember { mutableStateOf(true) }
     var showRelayMenu by remember { mutableStateOf(false) }
     var showFilterHeader by remember { mutableStateOf(false) }
-    var selectedFilters by remember { mutableStateOf(emptySet<DiaryEntryFilter>()) }
+    var selectedFilters by remember { mutableStateOf(emptySet<JournalEntryFilter>()) }
     val baseEntries = if (showCalendar) state.selectedEntries else state.monthEntries
     val visibleEntries = remember(baseEntries, selectedFilters) {
         if (selectedFilters.isEmpty()) baseEntries else baseEntries.filter { it.filter in selectedFilters }
@@ -122,9 +124,13 @@ fun DiaryScreen(
     }
 
     LaunchedEffect(relays, selectedRelayUrl) {
+        if (relays.isEmpty()) return@LaunchedEffect
         val active = selectedRelayUrl?.takeIf { it in relays } ?: relays.firstOrNull()
         viewModel.setRelayUrl(active)
     }
+
+    val headerBackgroundColor = MaterialTheme.colorScheme.background
+    val headerContentColor = MaterialTheme.colorScheme.onBackground
 
     Scaffold(
         contentWindowInsets = WindowInsets(0),
@@ -147,7 +153,7 @@ fun DiaryScreen(
                         Text(
                             text = selectedRelayUrl?.relayDisplayName() ?: "—",
                             modifier = Modifier.weight(1f, fill = false),
-                            color = MaterialTheme.colorScheme.onPrimary,
+                            color = headerContentColor,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
                         )
@@ -155,7 +161,7 @@ fun DiaryScreen(
                             Icon(
                                 Icons.Default.ArrowDropDown,
                                 contentDescription = "リレー切り替え",
-                                tint = MaterialTheme.colorScheme.onPrimary,
+                                tint = headerContentColor,
                             )
                         }
                         DropdownMenu(
@@ -182,7 +188,7 @@ fun DiaryScreen(
                         Icon(
                             Icons.AutoMirrored.Filled.ArrowBack,
                             contentDescription = "戻る",
-                            tint = MaterialTheme.colorScheme.onPrimary,
+                            tint = headerContentColor,
                         )
                     }
                 },
@@ -191,20 +197,23 @@ fun DiaryScreen(
                         Icon(
                             Icons.Default.FilterList,
                             contentDescription = if (showFilterHeader) "フィルターを閉じる" else "フィルターを開く",
-                            tint = MaterialTheme.colorScheme.onPrimary,
+                            tint = headerContentColor,
                         )
                     }
                     IconButton(onClick = { showCalendar = !showCalendar }) {
                         Icon(
                             Icons.Default.Today,
                             contentDescription = if (showCalendar) "カレンダーを閉じる" else "カレンダーを開く",
-                            tint = MaterialTheme.colorScheme.onPrimary,
+                            tint = headerContentColor,
                         )
                     }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = MaterialTheme.colorScheme.primary,
-                    titleContentColor = MaterialTheme.colorScheme.onPrimary,
+                    containerColor = headerBackgroundColor,
+                    scrolledContainerColor = headerBackgroundColor,
+                    titleContentColor = headerContentColor,
+                    actionIconContentColor = headerContentColor,
+                    navigationIconContentColor = headerContentColor,
                 ),
             )
         },
@@ -212,10 +221,15 @@ fun DiaryScreen(
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(padding),
+                .padding(padding)
+                .journalMonthSwipe(
+                    canGoNextMonth = state.canGoNextMonth,
+                    onPreviousMonth = viewModel::previousMonth,
+                    onNextMonth = viewModel::nextMonth,
+                ),
         ) {
             if (showFilterHeader) {
-                DiaryFilterHeader(
+                JournalFilterHeader(
                     selectedFilters = selectedFilters,
                     onToggle = { filter ->
                         selectedFilters = if (filter in selectedFilters) {
@@ -296,25 +310,25 @@ fun DiaryScreen(
                                 items = visibleEntries,
                                 key = { entry ->
                                     when (entry) {
-                                        is DiaryEntry.Memo -> "memo-${entry.item.eventId}"
-                                        is DiaryEntry.Note -> "note-${entry.event.id}"
+                                        is JournalEntry.Memo -> "memo-${entry.item.eventId}"
+                                        is JournalEntry.Note -> "note-${entry.event.id}"
                                     }
                                 },
                                 contentType = { entry ->
                                     when (entry) {
-                                        is DiaryEntry.Memo -> "memo"
-                                        is DiaryEntry.Note -> "note"
+                                        is JournalEntry.Memo -> "memo"
+                                        is JournalEntry.Note -> "note"
                                     }
                                 },
                             ) { entry ->
                                 when (entry) {
-                                    is DiaryEntry.Memo -> MemoRow(
+                                    is JournalEntry.Memo -> MemoRow(
                                         item = entry.item,
                                         replyToProfile = entry.item.memo.replyToPubkey?.let { state.profiles[it] },
                                         onClick = { onOpenMemo(entry.item.memo) },
                                         onLongClick = { viewModel.showDeleteDialog(entry.item) },
                                     )
-                                    is DiaryEntry.Note -> when (entry.event.kind) {
+                                    is JournalEntry.Note -> when (entry.event.kind) {
                                         1 -> NoteCard(
                                             event = entry.event,
                                             profile = entry.profile,
@@ -360,7 +374,7 @@ fun DiaryScreen(
                                             onOpenReplies = { onOpenThread(entry.event.id) },
                                             onNoteClick = { onOpenThread(entry.event.id) },
                                         )
-                                        6, 7 -> DiaryActivityRow(
+                                        6, 7 -> JournalActivityRow(
                                             event = entry.event,
                                             profile = entry.profile,
                                             targetEvent = entry.event.activityTargetId()?.let { state.quotedEvents[it] }
@@ -433,7 +447,7 @@ fun DiaryScreen(
 
 }
 
-private enum class DiaryEntryFilter(val label: String) {
+private enum class JournalEntryFilter(val label: String) {
     Post("投稿"),
     Reply("返信"),
     Repost("リポスト"),
@@ -441,26 +455,49 @@ private enum class DiaryEntryFilter(val label: String) {
     Memo("メモ"),
 }
 
-private val DiaryEntry.filter: DiaryEntryFilter
+private val JournalEntry.filter: JournalEntryFilter
     get() = when (this) {
-        is DiaryEntry.Memo -> DiaryEntryFilter.Memo
-        is DiaryEntry.Note -> when (event.kind) {
-            6 -> DiaryEntryFilter.Repost
-            7 -> DiaryEntryFilter.Like
-            else -> if (event.replyTargetId() != null) DiaryEntryFilter.Reply else DiaryEntryFilter.Post
+        is JournalEntry.Memo -> JournalEntryFilter.Memo
+        is JournalEntry.Note -> when (event.kind) {
+            6 -> JournalEntryFilter.Repost
+            7 -> JournalEntryFilter.Like
+            else -> if (event.replyTargetId() != null) JournalEntryFilter.Reply else JournalEntryFilter.Post
         }
     }
 
+private fun Modifier.journalMonthSwipe(
+    canGoNextMonth: Boolean,
+    onPreviousMonth: () -> Unit,
+    onNextMonth: () -> Unit,
+): Modifier = pointerInput(canGoNextMonth) {
+    var dragAmount = 0f
+    detectHorizontalDragGestures(
+        onDragStart = { dragAmount = 0f },
+        onHorizontalDrag = { change, amount ->
+            dragAmount += amount
+            change.consume()
+        },
+        onDragEnd = {
+            when {
+                dragAmount < -SwipeThresholdPx && canGoNextMonth -> onNextMonth()
+                dragAmount > SwipeThresholdPx -> onPreviousMonth()
+            }
+            dragAmount = 0f
+        },
+        onDragCancel = { dragAmount = 0f },
+    )
+}
+
 @Composable
-private fun DiaryFilterHeader(
-    selectedFilters: Set<DiaryEntryFilter>,
-    onToggle: (DiaryEntryFilter) -> Unit,
+private fun JournalFilterHeader(
+    selectedFilters: Set<JournalEntryFilter>,
+    onToggle: (JournalEntryFilter) -> Unit,
 ) {
     LazyRow(
         contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
         horizontalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        items(DiaryEntryFilter.entries) { filter ->
+        items(JournalEntryFilter.entries) { filter ->
             FilterChip(
                 selected = filter in selectedFilters,
                 onClick = { onToggle(filter) },
@@ -472,7 +509,7 @@ private fun DiaryFilterHeader(
 
 @Composable
 private fun MemoCalendarHeader(
-    state: DiaryState,
+    state: JournalState,
     onPreviousMonth: () -> Unit,
     onNextMonth: () -> Unit,
     onToggleCalendar: () -> Unit,
@@ -510,7 +547,7 @@ private fun MemoCalendarHeader(
 
 @Composable
 private fun MemoCalendarGrid(
-    state: DiaryState,
+    state: JournalState,
     entryCountsByDate: Map<LocalDate, Int>,
     onSelectDate: (LocalDate) -> Unit,
 ) {
@@ -612,7 +649,7 @@ private fun MemoCalendarDay(
 
 @Composable
 private fun MemoRow(
-    item: DiaryItem,
+    item: JournalItem,
     onClick: () -> Unit,
     onLongClick: () -> Unit,
     replyToProfile: NostrProfile? = null,
@@ -661,7 +698,7 @@ private fun MemoRow(
 }
 
 @Composable
-private fun DiaryActivityRow(
+private fun JournalActivityRow(
     event: NostrEvent,
     profile: NostrProfile?,
     targetEvent: NostrEvent?,
@@ -669,10 +706,10 @@ private fun DiaryActivityRow(
     onUserClick: (String) -> Unit,
     onOpenThread: (String) -> Unit,
 ) {
-    val type = if (event.kind == 6) DiaryEntryFilter.Repost else DiaryEntryFilter.Like
+    val type = if (event.kind == 6) JournalEntryFilter.Repost else JournalEntryFilter.Like
     val targetId = event.activityTargetId()
-    val icon = if (type == DiaryEntryFilter.Repost) Icons.Default.Repeat else Icons.Default.Favorite
-    val accent = if (type == DiaryEntryFilter.Repost) Color(0xFF2BAE66) else Color(0xFFE17055)
+    val icon = if (type == JournalEntryFilter.Repost) Icons.Default.Repeat else Icons.Default.Favorite
+    val accent = if (type == JournalEntryFilter.Repost) Color(0xFF2BAE66) else Color(0xFFE17055)
 
     Row(
         modifier = Modifier
@@ -699,7 +736,7 @@ private fun DiaryActivityRow(
                     horizontalArrangement = Arrangement.spacedBy(6.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    DiaryActivityIcon(icon = icon, tint = accent)
+                    JournalActivityIcon(icon = icon, tint = accent)
                     Text(
                         text = "${profile?.bestName ?: event.shortPubkey} が${type.label}",
                         style = MaterialTheme.typography.labelMedium,
@@ -729,7 +766,7 @@ private fun DiaryActivityRow(
 }
 
 @Composable
-private fun DiaryActivityIcon(icon: ImageVector, tint: Color) {
+private fun JournalActivityIcon(icon: ImageVector, tint: Color) {
     Icon(
         imageVector = icon,
         contentDescription = null,
@@ -755,8 +792,8 @@ private fun memoKindLabel(memo: PostMemoData, replyToProfile: NostrProfile? = nu
     }
 
 private fun filteredEntryCountsByDate(
-    state: DiaryState,
-    selectedFilters: Set<DiaryEntryFilter>,
+    state: JournalState,
+    selectedFilters: Set<JournalEntryFilter>,
 ): Map<LocalDate, Int> =
     state.monthEntries
         .asSequence()
@@ -807,3 +844,5 @@ private fun daysInMonth(year: Int, month: Int): Int =
 
 private fun isLeapYear(year: Int): Boolean =
     year % 4 == 0 && (year % 100 != 0 || year % 400 == 0)
+
+private const val SwipeThresholdPx = 80f

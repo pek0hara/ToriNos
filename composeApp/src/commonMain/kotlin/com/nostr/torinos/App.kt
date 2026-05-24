@@ -44,6 +44,7 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.toRoute
+import androidx.navigation.NavOptionsBuilder
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
@@ -58,7 +59,6 @@ import com.nostr.torinos.network.ChannelCacheStore
 import com.nostr.torinos.network.CustomEmojiStore
 import com.nostr.torinos.network.FollowRepository
 import com.nostr.torinos.network.NostrRepository
-import com.nostr.torinos.network.StatusStore
 import com.nostr.torinos.ui.channel.ChannelListScreen
 import com.nostr.torinos.ui.channel.ChannelScreen
 import com.nostr.torinos.ui.feed.FeedTab
@@ -67,7 +67,7 @@ import com.nostr.torinos.ui.notification.NotificationsDrawer
 import com.nostr.torinos.ui.notification.NotificationsViewModel
 import com.nostr.torinos.ui.settings.MuteListScreen
 import com.nostr.torinos.ui.settings.NgWordScreen
-import com.nostr.torinos.ui.post.DiaryScreen
+import com.nostr.torinos.ui.post.JournalScreen
 import com.nostr.torinos.ui.post.PostMemoData
 import com.nostr.torinos.ui.post.PostSheet
 import com.nostr.torinos.ui.profile.FollowListMode
@@ -110,7 +110,7 @@ private enum class PendingKeyAction {
     Reply,
     Profile,
     Status,
-    Diary,
+    Journal,
 }
 
 @Composable
@@ -128,8 +128,8 @@ fun App() {
         var selectedMemo by remember { mutableStateOf<PostMemoData?>(null) }
         var localDraft by remember { mutableStateOf<PostMemoData?>(null) }
         var memoRefreshTodayRequest by remember { mutableStateOf(0) }
-        var diaryToggleCalendarRequest by remember { mutableStateOf(0) }
-        var diaryShowCalendarRequest by remember { mutableStateOf(0) }
+        var journalToggleCalendarRequest by remember { mutableStateOf(0) }
+        var journalShowCalendarRequest by remember { mutableStateOf(0) }
         var showKeySetup by remember { mutableStateOf(false) }
         var pendingKeyAction by remember { mutableStateOf<PendingKeyAction?>(null) }
         val scope = rememberCoroutineScope()
@@ -167,10 +167,21 @@ fun App() {
             }
         }
 
+        fun currentProfileRoute(): String? {
+            val route = nav.currentBackStackEntry?.destination?.route ?: currentRoute ?: return null
+            val routeName = route.substringBefore("/")
+            return route.takeIf { it == "myprofile" || routeName.endsWith("ProfileRoute") }
+        }
+
+        fun NavOptionsBuilder.closeProfileRoute() {
+            val route = currentProfileRoute() ?: return
+            popUpTo(route) { inclusive = true }
+        }
+
         // 未登録カスタム絵文字タップ → 絵文字設定画面（検索クエリ付き）へ遷移
         LaunchedEffect(Unit) {
             CustomEmojiStore.openSearchEvent.collect { shortcode ->
-                nav.navigate(CustomEmojiRoute(query = shortcode))
+                nav.navigate(CustomEmojiRoute(query = shortcode)) { closeProfileRoute() }
             }
         }
 
@@ -294,7 +305,7 @@ fun App() {
             }
         }
 
-        val bottomBarRoutes = setOf("feed", "services", "channels", "status", "diary")
+        val bottomBarRoutes = setOf("feed", "services", "channels", "status", "journal")
         val routeName = currentRoute?.substringBefore("/")
         val isChannelRoute = routeName?.endsWith("ChannelRoute") == true
         val threadRoute = if (routeName?.endsWith("ThreadRoute") == true) {
@@ -306,9 +317,6 @@ fun App() {
         val isProfileRoute = currentRoute == "myprofile" ||
             routeName?.endsWith("ProfileRoute") == true
         val hasBottomBar = currentRoute in bottomBarRoutes || isChannelThreadRoute || isProfileRoute
-        // DataStoreから取得
-        val statusVisible = StatusStore.statusVisible.collectAsState().value
-
         ModalNavigationDrawer(
             drawerState = notificationsDrawerState,
             drawerContent = {
@@ -317,11 +325,11 @@ fun App() {
                     scrollToTopRequest = notificationsScrollToTopRequest,
                     onUserClick = { pubkey ->
                         scope.launch { notificationsDrawerState.close() }
-                        nav.navigate(ProfileRoute(pubkey))
+                        nav.navigate(ProfileRoute(pubkey)) { closeProfileRoute() }
                     },
                     onOpenThread = { eventId ->
                         scope.launch { notificationsDrawerState.close() }
-                        nav.navigate(ThreadRoute(eventId))
+                        nav.navigate(ThreadRoute(eventId)) { closeProfileRoute() }
                     },
                 )
             },
@@ -372,6 +380,11 @@ fun App() {
                                     if (currentRoute == "feed") {
                                         feedScrollToTopTargetTab = currentFeedTab
                                         feedScrollToTopRequest++
+                                    } else if (isProfileRoute) {
+                                        nav.navigate("feed") {
+                                            popUpTo("feed") { inclusive = false }
+                                            launchSingleTop = true
+                                        }
                                     } else {
                                         nav.navigate("feed") {
                                             popUpTo("feed") { saveState = true; inclusive = false }
@@ -383,15 +396,15 @@ fun App() {
                             )
                             NavigationBarItem(
                                 icon = { Icon(Icons.Default.Today, contentDescription = null) },
-                                label = { Text("ダイアリー") },
-                                selected = currentRoute == "diary",
+                                label = { Text("ジャーナル") },
+                                selected = currentRoute == "journal",
                                 onClick = {
-                                    runWithPrivateKey(PendingKeyAction.Diary) {
-                                        if (currentRoute == "diary") {
-                                            diaryToggleCalendarRequest++
+                                    runWithPrivateKey(PendingKeyAction.Journal) {
+                                        if (currentRoute == "journal") {
+                                            journalToggleCalendarRequest++
                                         } else {
-                                            diaryShowCalendarRequest++
-                                            nav.navigate("diary") {
+                                            journalShowCalendarRequest++
+                                            nav.navigate("journal") {
                                                 popUpTo("feed") { saveState = true; inclusive = false }
                                                 launchSingleTop = true
                                                 restoreState = true
@@ -516,12 +529,12 @@ fun App() {
                             }
                         }
                     }
-                    composable("diary") {
-                        DiaryScreen(
+                    composable("journal") {
+                        JournalScreen(
                             onBack = { nav.popBackStack() },
                             refreshTodayRequest = memoRefreshTodayRequest,
-                            toggleCalendarRequest = diaryToggleCalendarRequest,
-                            showCalendarRequest = diaryShowCalendarRequest,
+                            toggleCalendarRequest = journalToggleCalendarRequest,
+                            showCalendarRequest = journalShowCalendarRequest,
                             onNewPost = {
                                 selectedMemo = null
                                 replyToId = null
@@ -617,10 +630,16 @@ fun App() {
                         MyProfileScreen(
                             ownPubkey = pubkey,
                             onBack = { nav.popBackStack() },
-                            onOpenFollowing = { nav.navigate(FollowingRoute(pubkey)) },
-                            onOpenFollowers = { nav.navigate(FollowersRoute(pubkey)) },
+                            onOpenFollowing = {
+                                nav.navigate(FollowingRoute(pubkey)) { closeProfileRoute() }
+                            },
+                            onOpenFollowers = {
+                                nav.navigate(FollowersRoute(pubkey)) { closeProfileRoute() }
+                            },
                             onOpenSettings = { showQuickSettings = true },
-                            onUserClick = { pk -> nav.navigate(ProfileRoute(pk)) },
+                            onUserClick = { pk ->
+                                nav.navigate(ProfileRoute(pk)) { closeProfileRoute() }
+                            },
                             onReply = { eventId, authorPk, preview ->
                                 replyToId = eventId
                                 replyToPubkey = authorPk
@@ -630,9 +649,15 @@ fun App() {
                                     showPostSheet = true
                                 }
                             },
-                            onOpenReplies = { eventId -> nav.navigate(ThreadRoute(eventId)) },
-                            onOpenLikes = { eventId -> nav.navigate(ThreadRoute(eventId, "likes")) },
-                            onOpenReposts = { eventId -> nav.navigate(ThreadRoute(eventId, "reposts")) },
+                            onOpenReplies = { eventId ->
+                                nav.navigate(ThreadRoute(eventId)) { closeProfileRoute() }
+                            },
+                            onOpenLikes = { eventId ->
+                                nav.navigate(ThreadRoute(eventId, "likes")) { closeProfileRoute() }
+                            },
+                            onOpenReposts = { eventId ->
+                                nav.navigate(ThreadRoute(eventId, "reposts")) { closeProfileRoute() }
+                            },
                         )
                     }
                     composable("settings") {
@@ -704,9 +729,15 @@ fun App() {
                             onBack = { nav.popBackStack() },
                             isOwnProfile = false,
                             ownPubkey = ownPubkey,
-                            onOpenFollowing = { nav.navigate(FollowingRoute(route.pubkey)) },
-                            onOpenFollowers = { nav.navigate(FollowersRoute(route.pubkey)) },
-                            onUserClick = { pk -> nav.navigate(ProfileRoute(pk)) },
+                            onOpenFollowing = {
+                                nav.navigate(FollowingRoute(route.pubkey)) { closeProfileRoute() }
+                            },
+                            onOpenFollowers = {
+                                nav.navigate(FollowersRoute(route.pubkey)) { closeProfileRoute() }
+                            },
+                            onUserClick = { pk ->
+                                nav.navigate(ProfileRoute(pk)) { closeProfileRoute() }
+                            },
                             onReply = { eventId, authorPk, preview ->
                                 replyToId = eventId
                                 replyToPubkey = authorPk
@@ -716,9 +747,15 @@ fun App() {
                                     showPostSheet = true
                                 }
                             },
-                            onOpenReplies = { eventId -> nav.navigate(ThreadRoute(eventId)) },
-                            onOpenLikes = { eventId -> nav.navigate(ThreadRoute(eventId, "likes")) },
-                            onOpenReposts = { eventId -> nav.navigate(ThreadRoute(eventId, "reposts")) },
+                            onOpenReplies = { eventId ->
+                                nav.navigate(ThreadRoute(eventId)) { closeProfileRoute() }
+                            },
+                            onOpenLikes = { eventId ->
+                                nav.navigate(ThreadRoute(eventId, "likes")) { closeProfileRoute() }
+                            },
+                            onOpenReposts = { eventId ->
+                                nav.navigate(ThreadRoute(eventId, "reposts")) { closeProfileRoute() }
+                            },
                         )
                     }
                 }
@@ -735,10 +772,18 @@ fun App() {
                 pendingKeyAction = null
                 showKeySetup = true
             },
-            onRelaySettingsClick = { nav.navigate("relay-settings") },
-            onCustomEmojiSettingsClick = { nav.navigate(CustomEmojiRoute()) },
-            onOpenAllSettings = { nav.navigate("settings") },
-            onUserClick = { pk -> nav.navigate(ProfileRoute(pk)) },
+            onRelaySettingsClick = {
+                nav.navigate("relay-settings") { closeProfileRoute() }
+            },
+            onCustomEmojiSettingsClick = {
+                nav.navigate(CustomEmojiRoute()) { closeProfileRoute() }
+            },
+            onOpenAllSettings = {
+                nav.navigate("settings") { closeProfileRoute() }
+            },
+            onUserClick = { pk ->
+                nav.navigate(ProfileRoute(pk)) { closeProfileRoute() }
+            },
         )
 
         if (showPostSheet) {
@@ -765,7 +810,7 @@ fun App() {
                 },
                 onMemoSaved = {
                     memoRefreshTodayRequest++
-                    nav.navigate("diary") { launchSingleTop = true }
+                    nav.navigate("journal") { launchSingleTop = true }
                 },
                 replyToId = replyToId,
                 replyToPubkey = replyToPubkey,
@@ -808,12 +853,12 @@ fun App() {
                             showPostSheet = true
                         }
                         PendingKeyAction.Reply -> showPostSheet = true
-                        PendingKeyAction.Diary -> {
-                            if (currentRoute == "diary") {
-                                diaryToggleCalendarRequest++
+                        PendingKeyAction.Journal -> {
+                            if (currentRoute == "journal") {
+                                journalToggleCalendarRequest++
                             } else {
-                                diaryShowCalendarRequest++
-                                nav.navigate("diary") { launchSingleTop = true }
+                                journalShowCalendarRequest++
+                                nav.navigate("journal") { launchSingleTop = true }
                             }
                         }
                         PendingKeyAction.Profile -> {

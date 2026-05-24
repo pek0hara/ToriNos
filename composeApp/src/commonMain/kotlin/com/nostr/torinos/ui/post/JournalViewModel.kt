@@ -34,7 +34,7 @@ import kotlinx.datetime.TimeZone
 import kotlinx.datetime.atStartOfDayIn
 import kotlinx.datetime.toLocalDateTime
 
-data class DiaryItem(
+data class JournalItem(
     val eventId: String,
     val pubkey: String,
     val tags: List<List<String>>,
@@ -44,9 +44,9 @@ data class DiaryItem(
     val displayTime: Long get() = memo.updatedAt.takeIf { it > 0 } ?: createdAt
 }
 
-sealed class DiaryEntry {
-    data class Memo(val item: DiaryItem) : DiaryEntry()
-    data class Note(val event: NostrEvent, val profile: NostrProfile?) : DiaryEntry()
+sealed class JournalEntry {
+    data class Memo(val item: JournalItem) : JournalEntry()
+    data class Note(val event: NostrEvent, val profile: NostrProfile?) : JournalEntry()
 
     val displayTime: Long get() = when (this) {
         is Memo -> item.displayTime
@@ -54,16 +54,16 @@ sealed class DiaryEntry {
     }
 }
 
-data class DiaryDeleteDialogState(
-    val item: DiaryItem,
+data class JournalDeleteDialogState(
+    val item: JournalItem,
     val isDeleting: Boolean = false,
     val error: String? = null,
 )
 
-data class DiaryState(
+data class JournalState(
     val selectedMonth: LocalDate = currentMonth(),
     val selectedDate: LocalDate = currentDate(),
-    val memos: List<DiaryItem> = emptyList(),
+    val memos: List<JournalItem> = emptyList(),
     val notes: List<NostrEvent> = emptyList(),
     val profiles: Map<String, NostrProfile> = emptyMap(),
     val quotedEvents: Map<String, NostrEvent> = emptyMap(),
@@ -72,10 +72,10 @@ data class DiaryState(
     val repostCounts: Map<String, Int> = emptyMap(),
     val likedReactions: Map<String, String> = emptyMap(),
     val isLoading: Boolean = false,
-    val deleteDialog: DiaryDeleteDialogState? = null,
+    val deleteDialog: JournalDeleteDialogState? = null,
     val error: String? = null,
 ) {
-    private val memosByDate: Map<LocalDate, List<DiaryItem>> =
+    private val memosByDate: Map<LocalDate, List<JournalItem>> =
         memos.groupBy { dateOfEpochSeconds(it.displayTime) }
 
     private val notesByDate: Map<LocalDate, List<NostrEvent>> =
@@ -87,31 +87,28 @@ data class DiaryState(
         }
     }
 
-    val selectedEntries: List<DiaryEntry> = buildList {
-        memosByDate[selectedDate].orEmpty().forEach { add(DiaryEntry.Memo(it)) }
-        notesByDate[selectedDate].orEmpty().forEach { add(DiaryEntry.Note(it, profiles[it.pubkey])) }
+    val selectedEntries: List<JournalEntry> = buildList {
+        memosByDate[selectedDate].orEmpty().forEach { add(JournalEntry.Memo(it)) }
+        notesByDate[selectedDate].orEmpty().forEach { add(JournalEntry.Note(it, profiles[it.pubkey])) }
     }.sortedByDescending { it.displayTime }
 
-    val monthEntries: List<DiaryEntry> = buildList {
-        memos.forEach { add(DiaryEntry.Memo(it)) }
-        notes.forEach { add(DiaryEntry.Note(it, profiles[it.pubkey])) }
+    val monthEntries: List<JournalEntry> = buildList {
+        memos.forEach { add(JournalEntry.Memo(it)) }
+        notes.forEach { add(JournalEntry.Note(it, profiles[it.pubkey])) }
     }.sortedByDescending { it.displayTime }
 
     val canGoNextMonth: Boolean get() = selectedMonth < currentMonth()
 }
 
-class DiaryViewModel : SafeViewModel() {
-    private val _state = MutableStateFlow(DiaryState())
-    val state: StateFlow<DiaryState> = _state.asStateFlow()
+class JournalViewModel : SafeViewModel() {
+    private val _state = MutableStateFlow(JournalState())
+    val state: StateFlow<JournalState> = _state.asStateFlow()
     private var loadJob: Job? = null
     private var engagementJob: Job? = null
     private var referencedContentJob: Job? = null
     private var relayUrl: String? = null
+    private var hasConfiguredRelayUrl = false
     private var ownPublicKeyHex: String? = null
-
-    init {
-        loadMonth(_state.value.selectedMonth)
-    }
 
     fun selectDate(date: LocalDate) {
         _state.value = _state.value.copy(selectedDate = date)
@@ -145,6 +142,8 @@ class DiaryViewModel : SafeViewModel() {
     }
 
     fun setRelayUrl(url: String?) {
+        if (hasConfiguredRelayUrl && relayUrl == url) return
+        hasConfiguredRelayUrl = true
         relayUrl = url
         loadMonth(_state.value.selectedMonth)
     }
@@ -195,9 +194,9 @@ class DiaryViewModel : SafeViewModel() {
         }
     }
 
-    fun showDeleteDialog(item: DiaryItem) {
+    fun showDeleteDialog(item: JournalItem) {
         _state.value = _state.value.copy(
-            deleteDialog = DiaryDeleteDialogState(item = item),
+            deleteDialog = JournalDeleteDialogState(item = item),
         )
     }
 
@@ -308,7 +307,7 @@ class DiaryViewModel : SafeViewModel() {
 
                 val memos = memoEvents.mapNotNull { event ->
                     decodeMemo(event, privateKeyHex, publicKeyHex)?.let { memo ->
-                        DiaryItem(
+                        JournalItem(
                             eventId = event.id,
                             pubkey = event.pubkey,
                             tags = event.tags,
@@ -361,7 +360,7 @@ class DiaryViewModel : SafeViewModel() {
         until: Long,
         relayUrl: String? = null,
     ): Pair<List<NostrEvent>, List<NostrEvent>> = coroutineScope {
-        val subId = "diary-${Clock.System.now().epochSeconds}-${since}"
+        val subId = "journal-${Clock.System.now().epochSeconds}-${since}"
         val mutex = Mutex()
         val memoEvents = mutableListOf<NostrEvent>()
         val noteEvents = mutableListOf<NostrEvent>()
@@ -486,7 +485,7 @@ class DiaryViewModel : SafeViewModel() {
         }
     }
 
-    private fun fetchReferencedContent(notes: List<NostrEvent>, memos: List<DiaryItem>, relayUrl: String?) {
+    private fun fetchReferencedContent(notes: List<NostrEvent>, memos: List<JournalItem>, relayUrl: String?) {
         referencedContentJob?.cancel()
         referencedContentJob = launch {
             try {
@@ -601,7 +600,7 @@ private fun NostrEvent.embeddedRepostTarget(): NostrEvent? {
     }.getOrNull()
 }
 
-private fun DiaryItem.addressTagValue(): String? {
+private fun JournalItem.addressTagValue(): String? {
     val d = memo.identifier
         ?: return null
     return "$MEMO_EVENT_KIND:$pubkey:$d"
