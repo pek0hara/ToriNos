@@ -18,6 +18,8 @@ import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 
 class NostrRelay(
     val url: String,
@@ -33,6 +35,7 @@ class NostrRelay(
     // ArrayDeque で保持することで、切断中のメッセージが再接続後も送信される。
     // first() でピークしてから send 後に removeFirst() するため、送信失敗時もキューに残る。
     private val pendingMessages = ArrayDeque<String>()
+    private val pendingMutex = Mutex()
     private val sendSignal = Channel<Unit>(Channel.CONFLATED)
     private var job: Job? = null
 
@@ -51,11 +54,19 @@ class NostrRelay(
                             val sender = launch {
                                 try {
                                     while (isActive) {
-                                        while (pendingMessages.isNotEmpty()) {
-                                            val msg = pendingMessages.first()
+                                        while (isActive) {
+                                            val msg = pendingMutex.withLock {
+                                                if (pendingMessages.isEmpty()) null else pendingMessages.removeFirst()
+                                            } ?: break
                                             appLog("[Relay] send to $url: $msg")
-                                            outgoing.send(Frame.Text(msg))
-                                            pendingMessages.removeFirst()
+                                            try {
+                                                outgoing.send(Frame.Text(msg))
+                                            } catch (e: Throwable) {
+                                                pendingMutex.withLock {
+                                                    pendingMessages.addFirst(msg)
+                                                }
+                                                throw e
+                                            }
                                         }
                                         sendSignal.receive()
                                     }
@@ -91,7 +102,9 @@ class NostrRelay(
     }
 
     suspend fun send(message: String) {
-        pendingMessages.addLast(message)
+        pendingMutex.withLock {
+            pendingMessages.addLast(message)
+        }
         sendSignal.trySend(Unit)
     }
 

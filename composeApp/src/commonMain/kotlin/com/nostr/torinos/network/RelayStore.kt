@@ -48,6 +48,7 @@ object RelayStore {
     private val _selectedStatusRelayUrl = MutableStateFlow<String?>(null)
     private val _selectedMemoRelayUrl = MutableStateFlow<String?>(null)
 
+    
     /** 全リレー一覧（UI 用） */
     val entries: StateFlow<List<RelayEntry>> = _entries.asStateFlow()
 
