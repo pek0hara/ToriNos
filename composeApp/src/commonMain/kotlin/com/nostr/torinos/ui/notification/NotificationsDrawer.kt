@@ -148,7 +148,7 @@ private fun NotificationRow(
     onOpenThread: (String) -> Unit,
 ) {
     val threadTargetId = when (item.type) {
-        NotificationType.Reply -> item.event.id
+        NotificationType.Reply -> item.event?.id
         NotificationType.Repost,
         NotificationType.Like -> item.targetEventId
         NotificationType.Follow -> null
@@ -199,15 +199,17 @@ private fun NotificationRow(
                         color = MaterialTheme.colorScheme.primary,
                     )
                 }
-                Text(
-                    text = formatTimestamp(item.createdAt),
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
+                if (item.createdAt != null) {
+                    Text(
+                        text = formatTimestamp(item.createdAt),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
             }
 
             if (item.type == NotificationType.Reply) {
-                val replyText = item.event.content.previewText()
+                val replyText = item.event?.content?.previewText().orEmpty()
                 if (replyText.isNotBlank()) {
                     Spacer(modifier = Modifier.height(6.dp))
                     Text(
