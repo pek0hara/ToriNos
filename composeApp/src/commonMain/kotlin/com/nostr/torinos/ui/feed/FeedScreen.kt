@@ -406,6 +406,7 @@ private fun FeedTimelinePane(
         onOpenReposts = onOpenReposts,
         onRepost = viewModel::repost,
         onUnrepost = viewModel::unrepost,
+        onReport = viewModel::reportEvent,
         onHashtagClick = onHashtagClick,
         scrollToTopRequest = scrollToTopRequest,
         listState = listState,

@@ -196,6 +196,7 @@ fun UserProfileScreen(
                 onOpenReposts = onOpenReposts,
                 onRepost = postsViewModel::repost,
                 onUnrepost = postsViewModel::unrepost,
+                onReport = postsViewModel::reportEvent,
                 emptyText = "このユーザーのポストはありません",
                 header = profileHeader,
             )
@@ -220,6 +221,7 @@ fun UserProfileScreen(
                 onOpenReposts = onOpenReposts,
                 onRepost = postsAndRepliesViewModel::repost,
                 onUnrepost = postsAndRepliesViewModel::unrepost,
+                onReport = postsAndRepliesViewModel::reportEvent,
                 emptyText = "このユーザーのポストと返信はありません",
                 header = profileHeader,
             )

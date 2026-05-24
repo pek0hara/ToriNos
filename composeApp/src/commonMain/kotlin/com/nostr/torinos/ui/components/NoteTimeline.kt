@@ -35,6 +35,7 @@ fun NoteTimeline(
     onOpenReposts: (eventId: String) -> Unit = {},
     onRepost: (NostrEvent) -> Unit,
     onUnrepost: (eventId: String) -> Unit,
+    onReport: (event: NostrEvent, reason: String, detail: String) -> Unit,
     onHashtagClick: ((tag: String) -> Unit)? = null,
     emptyText: String = "ポストがありません",
     scrollToTopRequest: Int = 0,
@@ -88,6 +89,9 @@ fun NoteTimeline(
                 state.events.find { it.id == eventId }?.let(onRepost)
             },
             onUnrepost = onUnrepost,
+            onReport = { eventId, reason, detail ->
+                state.events.find { it.id == eventId }?.let { onReport(it, reason, detail) }
+            },
             onHashtagClick = onHashtagClick,
             onMuteUser = MuteStore::mute,
             onUnmuteUser = MuteStore::unmute,

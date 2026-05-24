@@ -220,6 +220,24 @@ class FeedViewModel(
         }
     }
 
+    fun reportEvent(event: NostrEvent, reason: String, detail: String) {
+        launch {
+            val privateKeyHex = KeyStorage.loadPrivateKey() ?: return@launch
+            runCatching {
+                val report = signEvent(
+                    privateKeyHex = privateKeyHex,
+                    content = detail,
+                    kind = 1984,
+                    tags = listOf(
+                        listOf("e", event.id, "", reason),
+                        listOf("p", event.pubkey),
+                    ),
+                )
+                NostrRepository.publish(report)
+            }
+        }
+    }
+
     fun loadMore() {
         if (loadingMore || !_state.value.canLoadMore) return
         launch {

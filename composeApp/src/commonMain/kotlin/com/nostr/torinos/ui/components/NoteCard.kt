@@ -29,11 +29,15 @@ import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.MailOutline
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Repeat
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -97,9 +101,11 @@ fun NoteCard(
     isMuted: Boolean = false,
     onMute: (() -> Unit)? = null,
     onUnmute: (() -> Unit)? = null,
+    onReport: ((reason: String, detail: String) -> Unit)? = null,
     onNoteClick: ((eventId: String) -> Unit)? = null,
 ) {
     var showMenu by remember { mutableStateOf(false) }
+    var showReportDialog by remember { mutableStateOf(false) }
     var expandedImageState by remember { mutableStateOf<ExpandedImageState?>(null) }
     val clipboard = LocalClipboard.current
     val coroutineScope = rememberCoroutineScope()
@@ -114,6 +120,16 @@ fun NoteCard(
             imageUrls = state.urls,
             initialIndex = state.initialIndex,
             onDismiss = { expandedImageState = null },
+        )
+    }
+
+    if (showReportDialog && onReport != null) {
+        ReportDialog(
+            onDismiss = { showReportDialog = false },
+            onReport = { reason, detail ->
+                showReportDialog = false
+                onReport(reason, detail)
+            },
         )
     }
 
@@ -254,6 +270,15 @@ fun NoteCard(
                                         },
                                     )
                                 }
+                                if (onReport != null) {
+                                    DropdownMenuItem(
+                                        text = { Text("通報", color = MaterialTheme.colorScheme.error) },
+                                        onClick = {
+                                            showMenu = false
+                                            showReportDialog = true
+                                        },
+                                    )
+                                }
                             }
                         }
                     }
@@ -360,6 +385,72 @@ data class QuotedEvent(
     val event: NostrEvent,
     val profile: NostrProfile?,
 )
+
+private enum class ReportReason(val label: String, val nip56Value: String) {
+    Spam("スパム", "spam"),
+    Impersonation("なりすまし", "impersonation"),
+    Illegal("違法な内容", "illegal"),
+    Malware("マルウェア", "malware"),
+    Nudity("露骨な画像", "nudity"),
+    Profanity("攻撃的な内容", "profanity"),
+    Other("その他", "other"),
+}
+
+@Composable
+private fun ReportDialog(
+    onDismiss: () -> Unit,
+    onReport: (reason: String, detail: String) -> Unit,
+) {
+    var selectedReason by remember { mutableStateOf(ReportReason.Spam) }
+    var detail by remember { mutableStateOf("") }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("投稿を通報") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                ReportReason.entries.forEach { reason ->
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { selectedReason = reason }
+                            .padding(vertical = 2.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        RadioButton(
+                            selected = selectedReason == reason,
+                            onClick = { selectedReason = reason },
+                        )
+                        Text(
+                            text = reason.label,
+                            style = MaterialTheme.typography.bodyMedium,
+                        )
+                    }
+                }
+                OutlinedTextField(
+                    value = detail,
+                    onValueChange = { detail = it.take(500) },
+                    label = { Text("補足（任意）") },
+                    minLines = 2,
+                    maxLines = 4,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = { onReport(selectedReason.nip56Value, detail.trim()) },
+            ) {
+                Text("通報")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("キャンセル")
+            }
+        },
+    )
+}
 
 private data class ExpandedImageState(
     val urls: List<String>,

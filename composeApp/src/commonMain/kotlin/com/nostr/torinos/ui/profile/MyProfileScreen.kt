@@ -198,6 +198,7 @@ fun MyProfileScreen(
                 onOpenReposts = onOpenReposts,
                 onRepost = postsViewModel::repost,
                 onUnrepost = postsViewModel::unrepost,
+                onReport = postsViewModel::reportEvent,
                 header = profileHeader,
             )
             ProfileTimelineTab.PostsAndReplies -> NoteTimeline(
@@ -221,6 +222,7 @@ fun MyProfileScreen(
                 onOpenReposts = onOpenReposts,
                 onRepost = postsAndRepliesViewModel::repost,
                 onUnrepost = postsAndRepliesViewModel::unrepost,
+                onReport = postsAndRepliesViewModel::reportEvent,
                 header = profileHeader,
             )
         }
