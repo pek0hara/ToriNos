@@ -6,6 +6,7 @@ import com.nostr.torinos.model.NostrProfile
 import com.nostr.torinos.model.toProfile
 import com.nostr.torinos.network.NostrRepository
 import com.nostr.torinos.ui.SafeViewModel
+import kotlin.time.Clock
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
@@ -15,17 +16,21 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 
+@Serializable
 data class NotificationItem(
     val id: String,
     val type: NotificationType,
     val actorPubkey: String,
-    val createdAt: Long,
+    val createdAt: Long?,
+    val receivedAt: Long,
     val targetEventId: String?,
-    val event: NostrEvent,
+    val event: NostrEvent?,
 )
 
+@Serializable
 enum class NotificationType {
     Reply,
     Repost,
@@ -60,6 +65,8 @@ class NotificationsViewModel(private val ownPubkey: String) : SafeViewModel() {
     private var profileBatchJob: Job? = null
     private var targetBatchJob: Job? = null
     private var eoseJob: Job? = null
+    private var hasStoredFollowerList = false
+    private val knownFollowerPubkeys = linkedSetOf<String>()
 
     private val shortKey: String
         get() = ownPubkey.take(16)
@@ -96,23 +103,27 @@ class NotificationsViewModel(private val ownPubkey: String) : SafeViewModel() {
             }
         }
         eoseJob = launch {
+            loadStoredNotifications()
+            loadKnownFollowers()
             withTimeoutOrNull(10_000) {
                 val activityEose = async { NostrRepository.eose(activitySubId).first() }
                 val followsEose = async { NostrRepository.eose(followsSubId).first() }
+                NostrRepository.subscribe(
+                    activitySubId,
+                    NostrFilter(kinds = listOf(1, 6, 7), pTags = listOf(ownPubkey), limit = 100),
+                )
+                NostrRepository.subscribe(
+                    followsSubId,
+                    NostrFilter(kinds = listOf(3), pTags = listOf(ownPubkey), limit = 100),
+                )
                 activityEose.await()
                 followsEose.await()
             }
+            if (!hasStoredFollowerList) {
+                hasStoredFollowerList = true
+                saveKnownFollowers()
+            }
             _state.update { it.copy(isInitialLoad = false) }
-        }
-        launch {
-            NostrRepository.subscribe(
-                activitySubId,
-                NostrFilter(kinds = listOf(1, 6, 7), pTags = listOf(ownPubkey), limit = 100),
-            )
-            NostrRepository.subscribe(
-                followsSubId,
-                NostrFilter(kinds = listOf(3), pTags = listOf(ownPubkey), limit = 100),
-            )
         }
     }
 
@@ -124,8 +135,6 @@ class NotificationsViewModel(private val ownPubkey: String) : SafeViewModel() {
             7 -> NotificationType.Like
             else -> return
         }
-        if (!rememberSeenId(event.id)) return
-
         val targetEventId = event.targetEventId() ?: event.embeddedRepostTarget()?.id
         addItem(
             NotificationItem(
@@ -133,6 +142,7 @@ class NotificationsViewModel(private val ownPubkey: String) : SafeViewModel() {
                 type = type,
                 actorPubkey = event.pubkey,
                 createdAt = event.createdAt,
+                receivedAt = event.createdAt,
                 targetEventId = targetEventId,
                 event = event,
             ),
@@ -149,34 +159,40 @@ class NotificationsViewModel(private val ownPubkey: String) : SafeViewModel() {
         }
     }
 
-    private fun handleFollowEvent(event: NostrEvent) {
+    private suspend fun handleFollowEvent(event: NostrEvent) {
         if (event.pubkey == ownPubkey) return
         if (!event.tags.any { it.firstOrNull() == "p" && it.getOrNull(1) == ownPubkey }) return
-        if (!rememberSeenId(event.id)) return
+        if (!knownFollowerPubkeys.add(event.pubkey)) return
+        saveKnownFollowers()
+        if (!hasStoredFollowerList) return
 
         addItem(
             NotificationItem(
                 id = event.id,
                 type = NotificationType.Follow,
                 actorPubkey = event.pubkey,
-                createdAt = event.createdAt,
+                createdAt = null,
+                receivedAt = Clock.System.now().epochSeconds,
                 targetEventId = null,
-                event = event,
+                event = null,
             ),
         )
         scheduleProfileFetch(event.pubkey)
     }
 
     private fun addItem(item: NotificationItem) {
+        if (!rememberSeenId(item.id)) return
         _state.update { state ->
-            state.copy(items = (state.items + item).sortedByDescending { it.createdAt }.take(MAX_ITEMS))
+            state.copy(items = (state.items + item).sortedByDescending { it.receivedAt }.take(MAX_ITEMS))
         }
+        saveStoredNotifications()
     }
 
     fun markAllRead() {
         _state.update { state ->
             state.copy(readItemIds = state.readItemIds + state.items.map { it.id })
         }
+        saveStoredNotifications()
     }
 
     private fun scheduleProfileFetch(pubkey: String) {
@@ -207,6 +223,51 @@ class NotificationsViewModel(private val ownPubkey: String) : SafeViewModel() {
             seenItemIds.remove(seenItemIds.first())
         }
         return true
+    }
+
+    private suspend fun loadKnownFollowers() {
+        val decoded = LocalNotificationStore.loadKnownFollowers(ownPubkey)
+        hasStoredFollowerList = decoded != null
+        knownFollowerPubkeys.clear()
+        decoded?.let { pubkeys ->
+            knownFollowerPubkeys += pubkeys.filter { it.isNotBlank() }
+        }
+    }
+
+    private suspend fun saveKnownFollowers() {
+        LocalNotificationStore.saveKnownFollowers(ownPubkey, knownFollowerPubkeys.toList())
+    }
+
+    private suspend fun loadStoredNotifications() {
+        val stored = LocalNotificationStore.load(ownPubkey)
+        seenItemIds += stored.items.map { it.id }
+        _state.update {
+            it.copy(
+                items = stored.items.sortedByDescending { item -> item.receivedAt }.take(MAX_ITEMS),
+                readItemIds = stored.readItemIds,
+            )
+        }
+        stored.items.forEach { item ->
+            scheduleProfileFetch(item.actorPubkey)
+            item.targetEventId?.let { scheduleTargetFetch(it) }
+            item.event?.embeddedRepostTarget()?.let { target ->
+                _state.update { state ->
+                    state.copy(targetEvents = state.targetEvents + (target.id to target))
+                }
+                scheduleProfileFetch(target.pubkey)
+            }
+        }
+    }
+
+    private fun saveStoredNotifications() {
+        val snapshot = _state.value
+        val stored = StoredNotifications(
+            items = snapshot.items.sortedByDescending { it.receivedAt }.take(MAX_ITEMS),
+            readItemIds = snapshot.readItemIds,
+        )
+        launch {
+            LocalNotificationStore.save(ownPubkey, stored)
+        }
     }
 
     override fun onCleared() {
