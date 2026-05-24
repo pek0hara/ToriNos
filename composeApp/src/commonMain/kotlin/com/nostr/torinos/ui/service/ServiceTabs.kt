@@ -1,6 +1,7 @@
 package com.nostr.torinos.ui.service
 
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.PrimaryTabRow
 import androidx.compose.material3.Tab
 import androidx.compose.material3.Text
@@ -18,7 +19,11 @@ fun ServiceTabRow(
     selectedTab: ServiceTab,
     onTabSelected: (ServiceTab) -> Unit,
 ) {
-    PrimaryTabRow(selectedTabIndex = ServiceTab.entries.indexOf(selectedTab).coerceAtLeast(0)) {
+    PrimaryTabRow(
+        selectedTabIndex = ServiceTab.entries.indexOf(selectedTab).coerceAtLeast(0),
+        containerColor = MaterialTheme.colorScheme.background,
+        contentColor = MaterialTheme.colorScheme.onBackground,
+    ) {
         ServiceTab.entries.forEach { tab ->
             Tab(
                 selected = selectedTab == tab,

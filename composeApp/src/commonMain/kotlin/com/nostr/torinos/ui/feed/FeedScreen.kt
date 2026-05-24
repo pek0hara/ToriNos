@@ -137,11 +137,13 @@ fun FeedScreen(
     }
     val canSelectAllRelays = authorPubkey == null && visibleFeedTab == FeedTab.Following
     val activeRelayUrl = selectedFeedRelayUrl
+    val feedBackgroundColor = MaterialTheme.colorScheme.background
+    val feedContentColor = MaterialTheme.colorScheme.onBackground
 
     Scaffold(
         contentWindowInsets = WindowInsets(0),
         topBar = {
-            Column {
+            Column(modifier = Modifier.background(feedBackgroundColor)) {
                 TopAppBar(
                     title = {
                         Row(
@@ -152,7 +154,7 @@ fun FeedScreen(
                                 text = selectedFeedRelayUrl?.relayDisplayName()
                                     ?: if (canSelectAllRelays) "すべてのリレー" else "—",
                                 modifier = Modifier.weight(1f, fill = false),
-                                color = MaterialTheme.colorScheme.onPrimary,
+                                color = feedContentColor,
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis,
                             )
@@ -160,7 +162,7 @@ fun FeedScreen(
                                 Icon(
                                     Icons.Default.ArrowDropDown,
                                     contentDescription = "リレー切り替え",
-                                    tint = MaterialTheme.colorScheme.onPrimary,
+                                    tint = feedContentColor,
                                 )
                             }
                             DropdownMenu(
@@ -233,7 +235,7 @@ fun FeedScreen(
                                 Icon(
                                     Icons.Default.Search,
                                     contentDescription = "検索",
-                                    tint = MaterialTheme.colorScheme.onPrimary,
+                                    tint = feedContentColor,
                                 )
                             }
                             if (ownPubkey != null) {
@@ -242,7 +244,7 @@ fun FeedScreen(
                                         Icon(
                                             Icons.Default.Notifications,
                                             contentDescription = "通知",
-                                            tint = MaterialTheme.colorScheme.onPrimary,
+                                            tint = feedContentColor,
                                         )
                                         if (hasNotifications) {
                                             Box(
@@ -258,12 +260,19 @@ fun FeedScreen(
                         }
                     },
                     colors = TopAppBarDefaults.topAppBarColors(
-                        containerColor = MaterialTheme.colorScheme.primary,
-                        titleContentColor = MaterialTheme.colorScheme.onPrimary,
+                        containerColor = feedBackgroundColor,
+                        scrolledContainerColor = feedBackgroundColor,
+                        titleContentColor = feedContentColor,
+                        actionIconContentColor = feedContentColor,
+                        navigationIconContentColor = feedContentColor,
                     ),
                 )
                 if (authorPubkey == null) {
-                    PrimaryTabRow(selectedTabIndex = visibleFeedTabs.indexOf(visibleFeedTab).coerceAtLeast(0)) {
+                    PrimaryTabRow(
+                        selectedTabIndex = visibleFeedTabs.indexOf(visibleFeedTab).coerceAtLeast(0),
+                        containerColor = feedBackgroundColor,
+                        contentColor = feedContentColor,
+                    ) {
                         visibleFeedTabs.forEach { tab ->
                             Tab(
                                 selected = visibleFeedTab == tab,

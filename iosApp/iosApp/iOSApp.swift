@@ -5,7 +5,7 @@ struct iOSApp: App {
     var body: some Scene {
         WindowGroup {
             ContentView()
-                .ignoresSafeArea(.container, edges: .bottom)
+                .ignoresSafeArea(.container, edges: .vertical)
         }
     }
 }

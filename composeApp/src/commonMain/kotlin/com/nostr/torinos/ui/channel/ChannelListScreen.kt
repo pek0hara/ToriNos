@@ -136,10 +136,13 @@ fun ChannelListScreen(
             .collect { viewModel.loadMore() }
     }
 
+    val headerBackgroundColor = MaterialTheme.colorScheme.background
+    val headerContentColor = MaterialTheme.colorScheme.onBackground
+
     Scaffold(
         contentWindowInsets = WindowInsets(0),
         topBar = {
-            Column {
+            Column(modifier = Modifier.background(headerBackgroundColor)) {
                 TopAppBar(
                     navigationIcon = {
                         if (ownPubkey != null) {
@@ -161,7 +164,7 @@ fun ChannelListScreen(
                             Text(
                                 text = selectedRelayUrl?.relayDisplayName() ?: "—",
                                 modifier = Modifier.weight(1f, fill = false),
-                                color = MaterialTheme.colorScheme.onPrimary,
+                                color = headerContentColor,
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis,
                             )
@@ -169,7 +172,7 @@ fun ChannelListScreen(
                                 Icon(
                                     Icons.Default.ArrowDropDown,
                                     contentDescription = "リレー切り替え",
-                                    tint = MaterialTheme.colorScheme.onPrimary,
+                                    tint = headerContentColor,
                                 )
                             }
                             DropdownMenu(
@@ -202,14 +205,17 @@ fun ChannelListScreen(
                                 Icon(
                                     Icons.Default.CleaningServices,
                                     contentDescription = "お気に入り以外のキャッシュを削除",
-                                    tint = MaterialTheme.colorScheme.onPrimary,
+                                    tint = headerContentColor,
                                 )
                             }
                         }
                     },
                     colors = TopAppBarDefaults.topAppBarColors(
-                        containerColor = MaterialTheme.colorScheme.primary,
-                        titleContentColor = MaterialTheme.colorScheme.onPrimary,
+                        containerColor = headerBackgroundColor,
+                        scrolledContainerColor = headerBackgroundColor,
+                        titleContentColor = headerContentColor,
+                        actionIconContentColor = headerContentColor,
+                        navigationIconContentColor = headerContentColor,
                     ),
                 )
                 ServiceTabRow(
