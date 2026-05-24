@@ -72,6 +72,8 @@ fun PostSheet(
     replyToPreview: String? = null,
     noteContext: NoteContext = NoteContext.Timeline,
     initialMemo: PostMemoData? = null,
+    initialMemoRestoreMessage: String? = null,
+    saveLocalDraftOnCancel: Boolean = true,
     viewModel: PostViewModel? = null,
 ) {
     val postViewModel = viewModel ?: remember { PostViewModel() }
@@ -82,8 +84,13 @@ fun PostSheet(
         if (bytes != null && mime != null) postViewModel.uploadAndAppendImage(bytes, mime)
     }
 
-    fun cancelWithLocalDraft() {
-        onCancel(postViewModel.currentMemoSnapshot(replyToId, replyToPubkey, noteContext))
+    fun cancelWithOptionalLocalDraft() {
+        val draft = if (saveLocalDraftOnCancel) {
+            postViewModel.currentMemoSnapshot(replyToId, replyToPubkey, noteContext)
+        } else {
+            null
+        }
+        onCancel(draft)
     }
 
     LaunchedEffect(state.posted) {
@@ -95,12 +102,12 @@ fun PostSheet(
 
     LaunchedEffect(initialMemo, replyToId, replyToPubkey, noteContext) {
         if (initialMemo != null) {
-            postViewModel.restoreMemo(initialMemo)
+            postViewModel.restoreMemo(initialMemo, initialMemoRestoreMessage)
         }
     }
 
     Dialog(
-        onDismissRequest = ::cancelWithLocalDraft,
+        onDismissRequest = ::cancelWithOptionalLocalDraft,
         properties = DialogProperties(usePlatformDefaultWidth = false),
     ) {
         Box(
@@ -119,7 +126,7 @@ fun PostSheet(
                     state = state,
                     title = if (replyToId != null) "返信" else "新しいポスト",
                     replyToPreview = replyToPreview,
-                    onDismiss = ::cancelWithLocalDraft,
+                    onDismiss = ::cancelWithOptionalLocalDraft,
                     onPickImage = pickImage,
                     onOpenRelaySettings = { showRelaySettingsDialog = true },
                     onTextChange = postViewModel::onTextChange,

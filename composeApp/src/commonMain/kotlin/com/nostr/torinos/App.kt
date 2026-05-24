@@ -744,7 +744,9 @@ fun App() {
                     selectedMemo = null
                 },
                 onCancel = { draft ->
-                    localDraft = draft
+                    if (selectedMemo == null) {
+                        localDraft = draft
+                    }
                     showPostSheet = false
                     replyToId = null
                     replyToPubkey = null
@@ -761,6 +763,12 @@ fun App() {
                 replyToPreview = replyToPreview,
                 noteContext = replyNoteContext,
                 initialMemo = selectedMemo ?: localDraft,
+                initialMemoRestoreMessage = if (selectedMemo == null && localDraft != null) {
+                    "下書きを復元しました"
+                } else {
+                    null
+                },
+                saveLocalDraftOnCancel = selectedMemo == null,
             )
         }
 

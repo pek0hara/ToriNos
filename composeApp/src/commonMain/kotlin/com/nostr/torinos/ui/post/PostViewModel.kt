@@ -130,7 +130,7 @@ class PostViewModel : SafeViewModel() {
         _state.update { s -> s.copy(images = s.images.filter { it.id != id }, memoMessage = null) }
     }
 
-    fun restoreMemo(memo: PostMemoData) {
+    fun restoreMemo(memo: PostMemoData, message: String? = null) {
         val restoredImages = memo.imageUrls
             .filter { it.isNotBlank() }
             .take(MAX_IMAGES)
@@ -146,7 +146,7 @@ class PostViewModel : SafeViewModel() {
         _state.value = PostState(
             text = memo.text,
             images = restoredImages,
-            memoMessage = "ポストメモを復元しました",
+            memoMessage = message,
         )
     }
 
