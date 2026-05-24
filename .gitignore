@@ -37,3 +37,6 @@ vendor/bundle/
 .fastlane/
 fastlane/report.xml
 fastlane/README.md
+
+# Local Copilot/Claude settings
+.claude/settings.local.json
