@@ -27,6 +27,7 @@ actual object ChannelCacheStore {
                     createdAt = row.createdAt,
                     latestMessageId = row.latestMessageId,
                     latestMessageCreatedAt = row.latestMessageCreatedAt,
+                    latestMessageAuthorPubkey = row.latestMessageAuthorPubkey,
                     latestMessagePreview = row.latestMessagePreview,
                     unreadCount = row.unreadCount,
                     hasBeenOpened = row.hasBeenOpened,

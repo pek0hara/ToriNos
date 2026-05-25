@@ -219,6 +219,7 @@ data class CachedChannelSummaryRow(
     val createdAt: Long,
     val latestMessageId: String?,
     val latestMessageCreatedAt: Long?,
+    val latestMessageAuthorPubkey: String?,
     val latestMessagePreview: String?,
     val unreadCount: Int,
     val hasBeenOpened: Boolean,
@@ -239,6 +240,7 @@ interface ChannelCacheDao {
             c.createdAt AS createdAt,
             latest.eventId AS latestMessageId,
             latest.createdAt AS latestMessageCreatedAt,
+            latest.pubkey AS latestMessageAuthorPubkey,
             latest.content AS latestMessagePreview,
             (
                 SELECT COUNT(*)

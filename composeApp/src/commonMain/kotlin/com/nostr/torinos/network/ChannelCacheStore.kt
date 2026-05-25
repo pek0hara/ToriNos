@@ -14,6 +14,7 @@ data class CachedChannelSummary(
     val createdAt: Long,
     val latestMessageId: String?,
     val latestMessageCreatedAt: Long?,
+    val latestMessageAuthorPubkey: String?,
     val latestMessagePreview: String?,
     val unreadCount: Int,
     val hasBeenOpened: Boolean,

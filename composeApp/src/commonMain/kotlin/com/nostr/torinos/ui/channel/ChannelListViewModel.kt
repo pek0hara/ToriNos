@@ -33,6 +33,8 @@ data class ChannelItem(
     val authorProfile: NostrProfile? = null,
     val messageCount: Int = 0,
     val lastActivityAt: Long? = null,
+    val latestMessageAuthorPubkey: String? = null,
+    val latestMessageAuthorProfile: NostrProfile? = null,
     val latestMessagePreview: String? = null,
     val unreadCount: Int = 0,
     val hasBeenOpened: Boolean = false,
@@ -146,6 +148,7 @@ class ChannelListViewModel(private val relayUrl: String? = null) : SafeViewModel
             ChannelCacheStore.observeChannels(cacheRelayUrl).collect { channels ->
                 cachedChannels.clear()
                 channels.forEach { cachedChannels[it.channelId] = it }
+                scheduleAuthorSubscription()
                 emitReady(immediate = _state.value is UiState.Loading)
             }
         }
@@ -472,8 +475,18 @@ class ChannelListViewModel(private val relayUrl: String? = null) : SafeViewModel
 
     private fun updateActivity(event: NostrEvent, channelId: String) {
         val prev = lastActivities[channelId]
+        val isLatest = prev == null || event.createdAt >= prev
         if (prev == null || event.createdAt > prev) {
             lastActivities[channelId] = event.createdAt
+        }
+        val current = channelMap[channelId]
+        if (current != null && isLatest) {
+            channelMap[channelId] = current.copy(
+                latestMessageAuthorPubkey = event.pubkey,
+                latestMessageAuthorProfile = authorProfiles[event.pubkey],
+                latestMessagePreview = event.content,
+            )
+            scheduleAuthorSubscription()
         }
         relayUrl?.let {
             launch { ChannelCacheStore.upsertMessage(it, event, channelId) }
@@ -622,7 +635,13 @@ class ChannelListViewModel(private val relayUrl: String? = null) : SafeViewModel
     }
 
     private suspend fun refreshAuthorSubscription() {
-        val authorPubkeys = channelMap.values.map { it.event.pubkey }.toSet()
+        val authorPubkeys = (
+            channelMap.values.map { it.event.pubkey } +
+                channelMap.values.mapNotNull { it.latestMessageAuthorPubkey } +
+                cachedChannels.values.map { it.ownerPubkey } +
+                cachedChannels.values.mapNotNull { it.latestMessageAuthorPubkey }
+            )
+            .toSet()
         if (authorPubkeys.isNotEmpty() && authorPubkeys != subscribedAuthorPubkeys) {
             subscribedAuthorPubkeys = authorPubkeys
             NostrRepository.subscribe(
@@ -647,7 +666,10 @@ class ChannelListViewModel(private val relayUrl: String? = null) : SafeViewModel
                     it.copy(
                         authorProfile = authorProfiles[it.event.pubkey],
                         lastActivityAt = lastActivityAt,
-                        latestMessagePreview = cached?.latestMessagePreview,
+                        latestMessageAuthorPubkey = cached?.latestMessageAuthorPubkey ?: it.latestMessageAuthorPubkey,
+                        latestMessageAuthorProfile = (cached?.latestMessageAuthorPubkey ?: it.latestMessageAuthorPubkey)
+                            ?.let { pubkey -> authorProfiles[pubkey] },
+                        latestMessagePreview = cached?.latestMessagePreview ?: it.latestMessagePreview,
                         unreadCount = cached?.unreadCount ?: 0,
                         hasBeenOpened = cached?.hasBeenOpened ?: false,
                         isFavorite = cached?.isFavorite ?: false,
@@ -676,6 +698,7 @@ class ChannelListViewModel(private val relayUrl: String? = null) : SafeViewModel
                 picture = picture,
             ),
             lastActivityAt = latestMessageCreatedAt,
+            latestMessageAuthorPubkey = latestMessageAuthorPubkey,
             latestMessagePreview = latestMessagePreview,
             unreadCount = unreadCount,
             isFavorite = isFavorite,

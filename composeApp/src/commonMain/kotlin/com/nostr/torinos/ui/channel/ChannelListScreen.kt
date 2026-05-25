@@ -65,6 +65,7 @@ import androidx.compose.runtime.snapshotFlow
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.nostr.torinos.model.NostrProfile
 import com.nostr.torinos.network.RelayStore
+import com.nostr.torinos.ui.components.LinkedText
 import com.nostr.torinos.ui.profile.AvatarCircle
 import com.nostr.torinos.ui.service.ServiceTab
 import com.nostr.torinos.ui.service.ServiceTabRow
@@ -542,13 +543,27 @@ private fun ChannelRow(item: ChannelItem, onClick: () -> Unit, onLongClick: () -
                 )
             }
             if (!item.latestMessagePreview.isNullOrBlank()) {
-                Text(
-                    text = item.latestMessagePreview,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    item.latestMessageAuthorPubkey?.let { pubkey ->
+                        AvatarCircle(
+                            pubkey = pubkey,
+                            name = item.latestMessageAuthorProfile?.bestName,
+                            pictureUrl = item.latestMessageAuthorProfile?.picture,
+                            size = 16,
+                        )
+                    }
+                    LinkedText(
+                        text = item.latestMessagePreview,
+                        modifier = Modifier.weight(1f),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
             }
             Text(
                 text = timeText,
