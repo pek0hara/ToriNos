@@ -137,7 +137,7 @@ fun CustomEmojiSettingsScreen(
                         PublishedEmojiSetRow(
                             set = set,
                             isRegistered = set.emojis.all { savedEmojiUrls[it.shortcode] == it.imageUrl },
-                            onRegister = { CustomEmojiStore.addAll(set.emojis) },
+                            onRegister = { CustomEmojiStore.addList(set.id, set.name, set.emojis) },
                         )
                         HorizontalDivider()
                     }

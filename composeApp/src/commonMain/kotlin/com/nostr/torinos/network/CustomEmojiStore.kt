@@ -13,6 +13,7 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.builtins.ListSerializer
+import kotlinx.serialization.builtins.serializer
 import kotlinx.serialization.json.Json
 
 @Serializable
@@ -21,15 +22,30 @@ data class CustomEmoji(
     val imageUrl: String,
 )
 
+@Serializable
+data class CustomEmojiList(
+    val id: String,
+    val name: String,
+    val emojis: List<CustomEmoji>,
+)
+
 object CustomEmojiStore {
     private const val EMOJIS_KEY = "custom_emojis"
+    private const val EMOJI_LISTS_KEY = "custom_emoji_lists"
+    private const val RECENT_EMOJIS_KEY = "recent_custom_emojis"
+    private const val MAX_RECENT_EMOJIS = 24
+    private const val MANUAL_LIST_ID = "manual"
 
     private val json = Json { ignoreUnknownKeys = true }
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private val _emojis = MutableStateFlow<List<CustomEmoji>>(emptyList())
+    private val _emojiLists = MutableStateFlow<List<CustomEmojiList>>(emptyList())
+    private val _recentEmojiShortcodes = MutableStateFlow<List<String>>(emptyList())
     private val _openSearchEvent = MutableSharedFlow<String>(extraBufferCapacity = 1)
 
     val emojis: StateFlow<List<CustomEmoji>> = _emojis.asStateFlow()
+    val emojiLists: StateFlow<List<CustomEmojiList>> = _emojiLists.asStateFlow()
+    val recentEmojiShortcodes: StateFlow<List<String>> = _recentEmojiShortcodes.asStateFlow()
     val openSearchEvent: SharedFlow<String> = _openSearchEvent.asSharedFlow()
 
     fun requestOpenSearch(shortcode: String) {
@@ -52,10 +68,37 @@ object CustomEmojiStore {
                 CustomEmoji(normalizedShortcode, normalizedUrl))
                 .sortedBy { it.shortcode.lowercase() }
         }
+        upsertEmojiList(
+            CustomEmojiList(
+                id = MANUAL_LIST_ID,
+                name = "カスタム絵文字",
+                emojis = listOf(CustomEmoji(normalizedShortcode, normalizedUrl)),
+            ),
+            merge = true,
+        )
         save()
     }
 
+    fun markUsed(shortcode: String) {
+        val normalizedShortcode = shortcode.trim().trim(':')
+        if (normalizedShortcode.isBlank()) return
+        _recentEmojiShortcodes.update { current ->
+            (listOf(normalizedShortcode) + current.filterNot { it == normalizedShortcode })
+                .take(MAX_RECENT_EMOJIS)
+        }
+        saveRecent()
+    }
+
     fun addAll(emojis: List<CustomEmoji>) {
+        addList(
+            id = MANUAL_LIST_ID,
+            name = "カスタム絵文字",
+            emojis = emojis,
+            merge = true,
+        )
+    }
+
+    fun addList(id: String, name: String, emojis: List<CustomEmoji>, merge: Boolean = false) {
         val normalizedEmojis = emojis.mapNotNull { emoji ->
             val normalizedShortcode = emoji.shortcode.trim().trim(':')
             val normalizedUrl = emoji.imageUrl.trim()
@@ -66,6 +109,8 @@ object CustomEmojiStore {
             }
         }
         if (normalizedEmojis.isEmpty()) return
+        val normalizedId = id.trim().takeIf { it.isNotBlank() } ?: name.trim().ifBlank { MANUAL_LIST_ID }
+        val normalizedName = name.trim().ifBlank { "カスタム絵文字" }
 
         _emojis.update { current ->
             (current.filterNot { saved -> normalizedEmojis.any { it.shortcode == saved.shortcode } } +
@@ -73,11 +118,25 @@ object CustomEmojiStore {
                 .distinctBy { it.shortcode }
                 .sortedBy { it.shortcode.lowercase() }
         }
+        upsertEmojiList(
+            CustomEmojiList(
+                id = normalizedId,
+                name = normalizedName,
+                emojis = normalizedEmojis,
+            ),
+            merge = merge,
+        )
         save()
     }
 
     fun remove(shortcode: String) {
         _emojis.update { current -> current.filterNot { it.shortcode == shortcode } }
+        _emojiLists.update { lists ->
+            lists.mapNotNull { list ->
+                val updatedEmojis = list.emojis.filterNot { it.shortcode == shortcode }
+                if (updatedEmojis.isEmpty()) null else list.copy(emojis = updatedEmojis)
+            }
+        }
         save()
     }
 
@@ -94,12 +153,86 @@ object CustomEmojiStore {
                     .distinctBy { it.shortcode }
                     .sortedBy { it.shortcode.lowercase() }
             }
+        val savedLists = LocalSettingsStorage.getString(EMOJI_LISTS_KEY)
+            ?.let { saved ->
+                runCatching {
+                    json.decodeFromString(ListSerializer(CustomEmojiList.serializer()), saved)
+                }.getOrNull()
+            }
+            .orEmpty()
+            .mapNotNull { list ->
+                val emojis = list.emojis
+                    .filter { it.shortcode.isNotBlank() && it.imageUrl.isNotBlank() }
+                    .distinctBy { it.shortcode }
+                    .sortedBy { it.shortcode.lowercase() }
+                if (emojis.isEmpty()) {
+                    null
+                } else {
+                    list.copy(
+                        id = list.id.ifBlank { list.name },
+                        name = list.name.ifBlank { "カスタム絵文字" },
+                        emojis = emojis,
+                    )
+                }
+            }
+        _emojiLists.value = savedLists.takeIf { it.isNotEmpty() }
+            ?: _emojis.value.takeIf { it.isNotEmpty() }?.let { savedEmojis ->
+                listOf(
+                    CustomEmojiList(
+                        id = MANUAL_LIST_ID,
+                        name = "カスタム絵文字",
+                        emojis = savedEmojis,
+                    ),
+                )
+            }
+            ?: emptyList()
+        LocalSettingsStorage.getString(RECENT_EMOJIS_KEY)
+            ?.let { saved ->
+                runCatching {
+                    json.decodeFromString(ListSerializer(String.serializer()), saved)
+                }.getOrNull()
+            }
+            ?.let { savedShortcodes ->
+                _recentEmojiShortcodes.value = savedShortcodes
+                    .map { it.trim().trim(':') }
+                    .filter { it.isNotBlank() }
+                    .distinct()
+                    .take(MAX_RECENT_EMOJIS)
+            }
     }
 
     private fun save() {
         val value = json.encodeToString(ListSerializer(CustomEmoji.serializer()), _emojis.value)
+        val listsValue = json.encodeToString(ListSerializer(CustomEmojiList.serializer()), _emojiLists.value)
         scope.launch {
             LocalSettingsStorage.putString(EMOJIS_KEY, value)
+            LocalSettingsStorage.putString(EMOJI_LISTS_KEY, listsValue)
+        }
+    }
+
+    private fun saveRecent() {
+        val value = json.encodeToString(ListSerializer(String.serializer()), _recentEmojiShortcodes.value)
+        scope.launch {
+            LocalSettingsStorage.putString(RECENT_EMOJIS_KEY, value)
+        }
+    }
+
+    private fun upsertEmojiList(list: CustomEmojiList, merge: Boolean) {
+        _emojiLists.update { current ->
+            val existing = current.firstOrNull { it.id == list.id }
+            val updated = if (merge && existing != null) {
+                list.copy(
+                    emojis = (existing.emojis.filterNot { saved ->
+                        list.emojis.any { it.shortcode == saved.shortcode }
+                    } + list.emojis)
+                        .distinctBy { it.shortcode }
+                        .sortedBy { it.shortcode.lowercase() },
+                )
+            } else {
+                list.copy(emojis = list.emojis.sortedBy { it.shortcode.lowercase() })
+            }
+            (current.filterNot { it.id == list.id } + updated)
+                .sortedBy { it.name.lowercase() }
         }
     }
 }

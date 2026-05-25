@@ -2,7 +2,10 @@ package com.nostr.torinos.ui.post
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.text.InlineTextContent
+import androidx.compose.foundation.text.appendInlineContent
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -19,11 +22,15 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AddPhotoAlternate
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.InsertEmoticon
 import androidx.compose.material.icons.filled.SettingsInputAntenna
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -49,18 +56,31 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.text.Placeholder
+import androidx.compose.ui.text.PlaceholderVerticalAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.TextRange
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.em
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.nostr.torinos.model.NoteContext
+import com.nostr.torinos.network.CustomEmoji
+import com.nostr.torinos.network.CustomEmojiList
+import com.nostr.torinos.network.CustomEmojiStore
 import com.nostr.torinos.network.RelayEntry
+import com.nostr.torinos.ui.components.NetworkImage
 import com.nostr.torinos.ui.components.rememberImagePickerLauncher
 import com.nostr.torinos.ui.components.PreviewImage
 import com.nostr.torinos.ui.relay.RelaySettingsViewModel
 
 private const val MAX_CHARS = 800
+private val customEmojiCodeRegex = Regex(""":([a-zA-Z0-9_]+):""")
 
 @Composable
 fun PostSheet(
@@ -163,6 +183,35 @@ private fun PostSheetContent(
     onSaveMemo: () -> Unit,
     onPost: () -> Unit,
 ) {
+    var textValue by remember { mutableStateOf(TextFieldValue(state.text)) }
+    var showCustomEmojiPicker by remember { mutableStateOf(false) }
+    val keyboardController = LocalSoftwareKeyboardController.current
+
+    LaunchedEffect(state.text) {
+        if (state.text != textValue.text) {
+            textValue = TextFieldValue(
+                text = state.text,
+                selection = TextRange(state.text.length),
+            )
+        }
+    }
+
+    fun insertCustomEmoji(emoji: CustomEmoji) {
+        val insertion = ":${emoji.shortcode}:"
+        val start = minOf(textValue.selection.start, textValue.selection.end)
+        val end = maxOf(textValue.selection.start, textValue.selection.end)
+        val newText = textValue.text.replaceRange(start, end, insertion)
+        if (newText.length > MAX_CHARS) return
+        val cursor = start + insertion.length
+        textValue = TextFieldValue(
+            text = newText,
+            selection = TextRange(cursor),
+        )
+        CustomEmojiStore.markUsed(emoji.shortcode)
+        onTextChange(newText)
+        showCustomEmojiPicker = false
+    }
+
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -207,15 +256,36 @@ private fun PostSheetContent(
                 Spacer(modifier = Modifier.height(12.dp))
             }
 
-            OutlinedTextField(
-                value = state.text,
-                onValueChange = { if (it.length <= MAX_CHARS) onTextChange(it) },
+            Box(
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(140.dp),
-                placeholder = { Text("今何してる？") },
-                maxLines = 6,
-            )
+            ) {
+                OutlinedTextField(
+                    value = textValue,
+                    onValueChange = {
+                        if (it.text.length <= MAX_CHARS) {
+                            textValue = it
+                            onTextChange(it.text)
+                        }
+                    },
+                    modifier = Modifier.fillMaxSize(),
+                    textStyle = MaterialTheme.typography.bodyLarge.copy(color = Color.Transparent),
+                    placeholder = { Text("今何してる？") },
+                    maxLines = 6,
+                )
+                if (textValue.text.isNotEmpty()) {
+                    CustomEmojiInputPreview(
+                        text = textValue.text,
+                        modifier = Modifier
+                            .matchParentSize()
+                            .padding(horizontal = 16.dp, vertical = 16.dp),
+                        style = MaterialTheme.typography.bodyLarge,
+                        color = MaterialTheme.colorScheme.onSurface,
+                        maxLines = 6,
+                    )
+                }
+            }
 
             if (state.images.isNotEmpty()) {
                 Spacer(modifier = Modifier.height(10.dp))
@@ -278,6 +348,19 @@ private fun PostSheetContent(
                         )
                     }
                     IconButton(
+                        onClick = {
+                            keyboardController?.hide()
+                            showCustomEmojiPicker = true
+                        },
+                        modifier = Modifier.size(36.dp),
+                    ) {
+                        Icon(
+                            Icons.Default.InsertEmoticon,
+                            contentDescription = "カスタム絵文字",
+                            tint = MaterialTheme.colorScheme.primary,
+                        )
+                    }
+                    IconButton(
                         onClick = onOpenRelaySettings,
                         modifier = Modifier.size(36.dp),
                     ) {
@@ -328,6 +411,257 @@ private fun PostSheetContent(
                 }
             }
         }
+    }
+
+    if (showCustomEmojiPicker) {
+        CustomEmojiPickerDialog(
+            onDismiss = { showCustomEmojiPicker = false },
+            onEmojiSelected = ::insertCustomEmoji,
+        )
+    }
+}
+
+@Composable
+private fun CustomEmojiInputPreview(
+    text: String,
+    modifier: Modifier = Modifier,
+    style: TextStyle,
+    color: Color,
+    maxLines: Int,
+) {
+    val emojis by CustomEmojiStore.emojis.collectAsState()
+    val emojiMap = remember(emojis) { emojis.associate { it.shortcode to it.imageUrl } }
+    val emojiSegments = remember(text, emojiMap) {
+        customEmojiCodeRegex.findAll(text)
+            .mapNotNull { match ->
+                val shortcode = match.groupValues[1]
+                val imageUrl = emojiMap[shortcode] ?: return@mapNotNull null
+                InputEmojiSegment(match.range.first, match.range.last + 1, shortcode, imageUrl)
+            }
+            .toList()
+    }
+    val annotated = remember(text, emojiSegments) {
+        buildAnnotatedString {
+            var cursor = 0
+            emojiSegments.forEach { segment ->
+                if (segment.start < cursor) return@forEach
+                if (segment.start > cursor) append(text.substring(cursor, segment.start))
+                appendInlineContent(
+                    id = ":${segment.shortcode}:",
+                    alternateText = ":${segment.shortcode}:",
+                )
+                cursor = segment.end
+            }
+            if (cursor < text.length) append(text.substring(cursor))
+        }
+    }
+    val inlineContent = remember(emojiSegments) {
+        buildMap {
+            emojiSegments.distinctBy { it.shortcode }.forEach { emoji ->
+                put(
+                    ":${emoji.shortcode}:",
+                    InlineTextContent(
+                        Placeholder(
+                            width = 1.2f.em,
+                            height = 1.2f.em,
+                            placeholderVerticalAlign = PlaceholderVerticalAlign.Center,
+                        ),
+                    ) {
+                        NetworkImage(
+                            url = emoji.imageUrl,
+                            contentDescription = ":${emoji.shortcode}:",
+                            contentScale = ContentScale.Fit,
+                            modifier = Modifier.fillMaxSize(),
+                        )
+                    },
+                )
+            }
+        }
+    }
+
+    Text(
+        text = annotated,
+        modifier = modifier,
+        style = style,
+        color = color,
+        inlineContent = inlineContent,
+        maxLines = maxLines,
+        overflow = TextOverflow.Clip,
+    )
+}
+
+private data class InputEmojiSegment(
+    val start: Int,
+    val end: Int,
+    val shortcode: String,
+    val imageUrl: String,
+)
+
+@Composable
+private fun CustomEmojiPickerDialog(
+    onDismiss: () -> Unit,
+    onEmojiSelected: (CustomEmoji) -> Unit,
+) {
+    val emojis by CustomEmojiStore.emojis.collectAsState()
+    val emojiLists by CustomEmojiStore.emojiLists.collectAsState()
+    val recentShortcodes by CustomEmojiStore.recentEmojiShortcodes.collectAsState()
+    val emojiMap = remember(emojis) { emojis.associateBy { it.shortcode } }
+    val recentEmojis = remember(recentShortcodes, emojiMap) {
+        recentShortcodes.mapNotNull { emojiMap[it] }
+    }
+    var selectedListId by remember { mutableStateOf<String?>(null) }
+    val selectedList = remember(selectedListId, emojiLists) {
+        emojiLists.firstOrNull { it.id == selectedListId }
+    }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(selectedList?.name ?: "カスタム絵文字") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                if (selectedList == null) {
+                    if (recentEmojis.isNotEmpty()) {
+                        Text(
+                            text = "最近使った絵文字",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            items(recentEmojis, key = { "recent-${it.shortcode}" }) { emoji ->
+                                CustomEmojiTile(
+                                    emoji = emoji,
+                                    onClick = { onEmojiSelected(emoji) },
+                                )
+                            }
+                        }
+                    }
+
+                    Text(
+                        text = "絵文字リスト",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    if (emojiLists.isEmpty()) {
+                        Text(
+                            text = "登録済みの絵文字リストがありません",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    } else {
+                        LazyColumn(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .heightIn(max = 280.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            items(emojiLists, key = { it.id }) { list ->
+                                CustomEmojiListRow(
+                                    list = list,
+                                    onClick = { selectedListId = list.id },
+                                )
+                            }
+                        }
+                    }
+                } else {
+                    TextButton(onClick = { selectedListId = null }) {
+                        Text("絵文字リストへ戻る")
+                    }
+                    LazyVerticalGrid(
+                        columns = GridCells.Adaptive(minSize = 72.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(max = 280.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        items(selectedList.emojis, key = { it.shortcode }) { emoji ->
+                            CustomEmojiTile(
+                                emoji = emoji,
+                                onClick = { onEmojiSelected(emoji) },
+                            )
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {},
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("閉じる")
+            }
+        },
+    )
+}
+
+@Composable
+private fun CustomEmojiListRow(
+    list: CustomEmojiList,
+    onClick: () -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(MaterialTheme.shapes.small)
+            .clickable(onClick = onClick)
+            .padding(horizontal = 8.dp, vertical = 6.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(
+            modifier = Modifier.weight(1f),
+            verticalArrangement = Arrangement.spacedBy(2.dp),
+        ) {
+            Text(
+                text = list.name,
+                style = MaterialTheme.typography.bodyMedium,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Text(
+                text = "${list.emojis.size}個",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+            list.emojis.take(4).forEach { emoji ->
+                NetworkImage(
+                    url = emoji.imageUrl,
+                    contentDescription = ":${emoji.shortcode}:",
+                    contentScale = ContentScale.Fit,
+                    modifier = Modifier.size(24.dp),
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun CustomEmojiTile(
+    emoji: CustomEmoji,
+    onClick: () -> Unit,
+) {
+    Column(
+        modifier = Modifier
+            .size(width = 64.dp, height = 72.dp)
+            .clip(MaterialTheme.shapes.small)
+            .clickable(onClick = onClick)
+            .padding(6.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
+        NetworkImage(
+            url = emoji.imageUrl,
+            contentDescription = ":${emoji.shortcode}:",
+            contentScale = ContentScale.Fit,
+            modifier = Modifier.size(32.dp),
+        )
+        Text(
+            text = ":${emoji.shortcode}:",
+            style = MaterialTheme.typography.labelSmall,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
     }
 }
 
