@@ -23,12 +23,14 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.ArrowForward
+import androidx.compose.material.icons.automirrored.filled.Article
+import androidx.compose.material.icons.automirrored.filled.Notes
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.Check
-import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.FilterList
+import androidx.compose.material.icons.filled.MailOutline
 import androidx.compose.material.icons.filled.Repeat
 import androidx.compose.material.icons.filled.Today
 import androidx.compose.material3.AlertDialog
@@ -447,12 +449,12 @@ fun JournalScreen(
 
 }
 
-private enum class JournalEntryFilter(val label: String) {
-    Post("投稿"),
-    Reply("返信"),
-    Repost("リポスト"),
-    Like("いいね"),
-    Memo("メモ"),
+private enum class JournalEntryFilter(val label: String, val icon: ImageVector) {
+    Post("投稿", Icons.AutoMirrored.Filled.Article),
+    Reply("返信", Icons.Default.MailOutline),
+    Repost("リポスト", Icons.Default.Repeat),
+    Like("いいね", Icons.Default.Favorite),
+    Memo("メモ", Icons.AutoMirrored.Filled.Notes),
 }
 
 private val JournalEntry.filter: JournalEntryFilter
@@ -501,7 +503,13 @@ private fun JournalFilterHeader(
             FilterChip(
                 selected = filter in selectedFilters,
                 onClick = { onToggle(filter) },
-                label = { Text(filter.label) },
+                label = {
+                    Icon(
+                        imageVector = filter.icon,
+                        contentDescription = filter.label,
+                        modifier = Modifier.size(18.dp),
+                    )
+                },
             )
         }
     }
@@ -666,7 +674,7 @@ private fun MemoRow(
         verticalAlignment = Alignment.Top,
     ) {
         Icon(
-            imageVector = Icons.Default.Edit,
+            imageVector = JournalEntryFilter.Memo.icon,
             contentDescription = null,
             tint = MaterialTheme.colorScheme.primary,
             modifier = Modifier.size(22.dp),

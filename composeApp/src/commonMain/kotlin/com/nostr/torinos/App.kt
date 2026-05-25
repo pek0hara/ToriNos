@@ -158,13 +158,20 @@ fun App() {
         val globalFeedListState = remember { LazyListState() }
         var currentServiceTab by remember { mutableStateOf(ServiceTab.Channels) }
 
-        fun navigateServiceTab(tab: ServiceTab) {
-            currentServiceTab = tab
-            nav.navigate("services") {
-                popUpTo("feed") { saveState = true; inclusive = false }
+        fun navigateTopLevelRoute(route: String) {
+            if (currentRoute == route) return
+            val poppedToFeed = nav.popBackStack(route = "feed", inclusive = true, saveState = true)
+            if (!poppedToFeed) {
+                currentRoute?.let { nav.popBackStack(route = it, inclusive = true, saveState = true) }
+            }
+            nav.navigate(route) {
                 launchSingleTop = true
                 restoreState = true
             }
+        }
+
+        fun navigateFeedTab() {
+            navigateTopLevelRoute("feed")
         }
 
         fun currentProfileRoute(): String? {
@@ -176,6 +183,15 @@ fun App() {
         fun NavOptionsBuilder.closeProfileRoute() {
             val route = currentProfileRoute() ?: return
             popUpTo(route) { inclusive = true }
+        }
+
+        fun navigateJournalTab() {
+            navigateTopLevelRoute("journal")
+        }
+
+        fun navigateServiceTab(tab: ServiceTab) {
+            currentServiceTab = tab
+            navigateTopLevelRoute("services")
         }
 
         // 未登録カスタム絵文字タップ → 絵文字設定画面（検索クエリ付き）へ遷移
@@ -380,17 +396,8 @@ fun App() {
                                     if (currentRoute == "feed") {
                                         feedScrollToTopTargetTab = currentFeedTab
                                         feedScrollToTopRequest++
-                                    } else if (isProfileRoute) {
-                                        nav.navigate("feed") {
-                                            popUpTo("feed") { inclusive = false }
-                                            launchSingleTop = true
-                                        }
                                     } else {
-                                        nav.navigate("feed") {
-                                            popUpTo("feed") { saveState = true; inclusive = false }
-                                            launchSingleTop = true
-                                            restoreState = true
-                                        }
+                                        navigateFeedTab()
                                     }
                                 },
                             )
@@ -404,11 +411,7 @@ fun App() {
                                             journalToggleCalendarRequest++
                                         } else {
                                             journalShowCalendarRequest++
-                                            nav.navigate("journal") {
-                                                popUpTo("feed") { saveState = true; inclusive = false }
-                                                launchSingleTop = true
-                                                restoreState = true
-                                            }
+                                            navigateJournalTab()
                                         }
                                     }
                                 },
@@ -810,7 +813,7 @@ fun App() {
                 },
                 onMemoSaved = {
                     memoRefreshTodayRequest++
-                    nav.navigate("journal") { launchSingleTop = true }
+                    navigateJournalTab()
                 },
                 replyToId = replyToId,
                 replyToPubkey = replyToPubkey,
@@ -858,7 +861,7 @@ fun App() {
                                 journalToggleCalendarRequest++
                             } else {
                                 journalShowCalendarRequest++
-                                nav.navigate("journal") { launchSingleTop = true }
+                                navigateJournalTab()
                             }
                         }
                         PendingKeyAction.Profile -> {
