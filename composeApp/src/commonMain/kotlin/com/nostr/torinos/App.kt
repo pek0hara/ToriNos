@@ -154,6 +154,7 @@ fun App() {
         var feedTabChangeRequest by remember { mutableStateOf(0) }
         var notificationsScrollToTopRequest by remember { mutableStateOf(0) }
         var showQuickSettings by remember { mutableStateOf(false) }
+        var relaySettingsNavigationRequest by remember { mutableStateOf(0) }
         val notificationsDrawerState = rememberDrawerState(DrawerValue.Closed)
         val followingFeedListState = remember { LazyListState() }
         val globalFeedListState = remember { LazyListState() }
@@ -193,6 +194,19 @@ fun App() {
         fun navigateServiceTab(tab: ServiceTab) {
             currentServiceTab = tab
             navigateTopLevelRoute("services")
+        }
+
+        fun requestRelaySettings() {
+            showQuickSettings = false
+            relaySettingsNavigationRequest++
+        }
+
+        LaunchedEffect(relaySettingsNavigationRequest) {
+            if (relaySettingsNavigationRequest <= 0) return@LaunchedEffect
+            nav.navigate("relay-settings") {
+                launchSingleTop = true
+                closeProfileRoute()
+            }
         }
 
         // 未登録カスタム絵文字タップ → 絵文字設定画面（検索クエリ付き）へ遷移
@@ -334,6 +348,30 @@ fun App() {
         val isProfileRoute = currentRoute == "myprofile" ||
             routeName?.endsWith("ProfileRoute") == true
         val hasBottomBar = currentRoute in bottomBarRoutes || isChannelThreadRoute || isProfileRoute
+
+        QuickSettingsDialogs(
+            open = showQuickSettings,
+            ownPubkey = ownPubkey,
+            onOpenChange = { showQuickSettings = it },
+            onAccountChanged = ::handleAccountChanged,
+            onAddAccountClick = {
+                pendingKeyAction = null
+                showKeySetup = true
+            },
+            onRelaySettingsClick = {
+                requestRelaySettings()
+            },
+            onCustomEmojiSettingsClick = {
+                nav.navigate(CustomEmojiRoute()) { closeProfileRoute() }
+            },
+            onOpenAllSettings = {
+                nav.navigate("settings") { closeProfileRoute() }
+            },
+            onUserClick = { pk ->
+                nav.navigate(ProfileRoute(pk)) { closeProfileRoute() }
+            },
+        )
+
         ModalNavigationDrawer(
             drawerState = notificationsDrawerState,
             drawerContent = {
@@ -445,7 +483,7 @@ fun App() {
                         FeedScreen(
                             onOpenSettings = { showQuickSettings = true },
                             onOpenRelaySettings = {
-                                nav.navigate("relay-settings") { closeProfileRoute() }
+                                requestRelaySettings()
                             },
                             onOpenNotifications = {
                                 notificationsViewModel?.markAllRead()
@@ -497,7 +535,7 @@ fun App() {
                                         }
                                     },
                                     onOpenRelaySettings = {
-                                        nav.navigate("relay-settings") { closeProfileRoute() }
+                                        requestRelaySettings()
                                     },
                                     onOpenSettings = { showQuickSettings = true },
                                     selectedServiceTab = currentServiceTab,
@@ -517,7 +555,7 @@ fun App() {
                                         }
                                     },
                                     onOpenRelaySettings = {
-                                        nav.navigate("relay-settings") { closeProfileRoute() }
+                                        requestRelaySettings()
                                     },
                                     onOpenSettings = { showQuickSettings = true },
                                     selectedServiceTab = currentServiceTab,
@@ -582,7 +620,7 @@ fun App() {
                             ownPubkey = ownPubkey,
                             ownProfile = ownProfile,
                             onOpenRelaySettings = {
-                                nav.navigate("relay-settings") { closeProfileRoute() }
+                                requestRelaySettings()
                             },
                         )
                     }
@@ -804,7 +842,7 @@ fun App() {
                             ownPubkey = ownPubkey,
                             ownProfile = ownProfile,
                             onOpenRelaySettings = {
-                                nav.navigate("relay-settings") { closeProfileRoute() }
+                                requestRelaySettings()
                             },
                             targetPubkey = route.pubkey,
                         )
@@ -813,29 +851,6 @@ fun App() {
             }
             }
         }
-
-        QuickSettingsDialogs(
-            open = showQuickSettings,
-            ownPubkey = ownPubkey,
-            onOpenChange = { showQuickSettings = it },
-            onAccountChanged = ::handleAccountChanged,
-            onAddAccountClick = {
-                pendingKeyAction = null
-                showKeySetup = true
-            },
-            onRelaySettingsClick = {
-                nav.navigate("relay-settings") { closeProfileRoute() }
-            },
-            onCustomEmojiSettingsClick = {
-                nav.navigate(CustomEmojiRoute()) { closeProfileRoute() }
-            },
-            onOpenAllSettings = {
-                nav.navigate("settings") { closeProfileRoute() }
-            },
-            onUserClick = { pk ->
-                nav.navigate(ProfileRoute(pk)) { closeProfileRoute() }
-            },
-        )
 
         if (showPostSheet) {
             PostSheet(
