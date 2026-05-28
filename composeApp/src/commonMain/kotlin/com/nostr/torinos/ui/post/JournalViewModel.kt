@@ -602,7 +602,7 @@ class JournalViewModel(private val targetPubkey: String? = null) : SafeViewModel
                 NostrRepository.subscribe(
                     subId,
                     NostrFilter(kinds = listOf(1, 6, 7), eTags = noteIds, limit = 500),
-                    relayUrl = null,
+                    relayUrl = relayUrl,
                 )
                 withTimeoutOrNull(8_000L) {
                     NostrRepository.eose(subId).first()
