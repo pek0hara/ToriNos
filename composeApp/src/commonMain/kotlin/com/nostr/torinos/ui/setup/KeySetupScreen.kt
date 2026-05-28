@@ -19,8 +19,10 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AddPhotoAlternate
 import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -43,6 +45,7 @@ import kotlinx.coroutines.launch
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalClipboard
+import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -56,6 +59,7 @@ import com.nostr.torinos.crypto.fromHex
 import com.nostr.torinos.crypto.generateKeyPair
 import com.nostr.torinos.crypto.hexToNpub
 import com.nostr.torinos.crypto.hexToNsec
+import com.nostr.torinos.crypto.isIosPlatform
 import com.nostr.torinos.crypto.normalizePrivateKey
 import com.nostr.torinos.crypto.rememberPasswordManagerSaver
 import com.nostr.torinos.crypto.toHex
@@ -75,6 +79,7 @@ fun KeySetupScreen(onSetupComplete: (pubkeyHex: String) -> Unit, onDismiss: (() 
     var error by remember { mutableStateOf<String?>(null) }
     var generatedInfo by remember { mutableStateOf<Pair<String, String>?>(null) } // priv, pub
     var initialProfilePubkey by remember { mutableStateOf<String?>(null) }
+    var showUsageConsentDialog by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
     val uiExceptionHandler = remember {
         loggingExceptionHandler("KeySetupScreen", "Uncaught UI coroutine exception")
@@ -125,10 +130,7 @@ fun KeySetupScreen(onSetupComplete: (pubkeyHex: String) -> Unit, onDismiss: (() 
             // ---- 新規生成 ----
             if (generatedInfo == null) {
                 Button(
-                    onClick = {
-                        val kp = generateKeyPair()
-                        generatedInfo = Pair(kp.privateKeyHex, kp.publicKeyHex)
-                    },
+                    onClick = { showUsageConsentDialog = true },
                     modifier = Modifier.fillMaxWidth(),
                 ) {
                     Text("新しい鍵を生成する")
@@ -156,68 +158,90 @@ fun KeySetupScreen(onSetupComplete: (pubkeyHex: String) -> Unit, onDismiss: (() 
                 ) {
                     Text("この鍵で始める")
                 }
+                error?.let {
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text(
+                        text = it,
+                        color = MaterialTheme.colorScheme.error,
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
                 TextButton(onClick = { generatedInfo = null }) { Text("やり直す") }
             }
 
-            Spacer(modifier = Modifier.height(24.dp))
-            HorizontalDivider()
-            Spacer(modifier = Modifier.height(24.dp))
+            if (generatedInfo == null) {
+                Spacer(modifier = Modifier.height(24.dp))
+                HorizontalDivider()
+                Spacer(modifier = Modifier.height(24.dp))
 
-            // ---- 既存鍵インポート ----
-            Surface(
-                modifier = Modifier.fillMaxWidth(),
-                color = MaterialTheme.colorScheme.surface,
-                contentColor = MaterialTheme.colorScheme.onSurface,
-                shape = MaterialTheme.shapes.medium,
-            ) {
-                Column(modifier = Modifier.padding(16.dp)) {
-                    Text(
-                        text = "既存の秘密鍵をインポート",
-                        style = MaterialTheme.typography.titleSmall,
-                        color = MaterialTheme.colorScheme.onSurface,
-                    )
-                    Spacer(modifier = Modifier.height(8.dp))
-                    OutlinedTextField(
-                        value = importKey,
-                        onValueChange = { importKey = it.trim(); error = null },
-                        modifier = Modifier.fillMaxWidth(),
-                        label = { Text("秘密鍵（nsec1... または hex）") },
-                        visualTransformation = PasswordVisualTransformation(),
-                        singleLine = true,
-                        isError = error != null,
-                        supportingText = error?.let { { Text(it) } },
-                        colors = OutlinedTextFieldDefaults.colors(
-                            focusedTextColor = MaterialTheme.colorScheme.onSurface,
-                            unfocusedTextColor = MaterialTheme.colorScheme.onSurface,
-                            focusedContainerColor = MaterialTheme.colorScheme.surface,
-                            unfocusedContainerColor = MaterialTheme.colorScheme.surface,
-                            errorContainerColor = MaterialTheme.colorScheme.surface,
-                            focusedLabelColor = MaterialTheme.colorScheme.primary,
-                            unfocusedLabelColor = MaterialTheme.colorScheme.onSurfaceVariant,
-                            focusedBorderColor = MaterialTheme.colorScheme.primary,
-                            unfocusedBorderColor = MaterialTheme.colorScheme.outline,
-                            errorBorderColor = MaterialTheme.colorScheme.error,
-                            cursorColor = MaterialTheme.colorScheme.primary,
-                            errorCursorColor = MaterialTheme.colorScheme.error,
-                            errorSupportingTextColor = MaterialTheme.colorScheme.error,
-                        ),
-                    )
-                    Spacer(modifier = Modifier.height(8.dp))
-                    Button(
-                        onClick = {
-                            scope.launch(uiExceptionHandler) {
-                                val (err, pubkey) = validateAndSave(importKey, saveToPasswordManager)
-                                if (err == null && pubkey != null) onSetupComplete(pubkey) else error = err
-                            }
-                        },
-                        modifier = Modifier.fillMaxWidth(),
-                        enabled = importKey.isNotBlank(),
-                    ) {
-                        Text("インポートして始める")
+                // ---- 既存鍵インポート ----
+                Surface(
+                    modifier = Modifier.fillMaxWidth(),
+                    color = MaterialTheme.colorScheme.surface,
+                    contentColor = MaterialTheme.colorScheme.onSurface,
+                    shape = MaterialTheme.shapes.medium,
+                ) {
+                    Column(modifier = Modifier.padding(16.dp)) {
+                        Text(
+                            text = "既存の秘密鍵をインポート",
+                            style = MaterialTheme.typography.titleSmall,
+                            color = MaterialTheme.colorScheme.onSurface,
+                        )
+                        Spacer(modifier = Modifier.height(8.dp))
+                        OutlinedTextField(
+                            value = importKey,
+                            onValueChange = { importKey = it.trim(); error = null },
+                            modifier = Modifier.fillMaxWidth(),
+                            label = { Text("秘密鍵（nsec1... または hex）") },
+                            visualTransformation = PasswordVisualTransformation(),
+                            singleLine = true,
+                            isError = error != null,
+                            supportingText = error?.let { { Text(it) } },
+                            colors = OutlinedTextFieldDefaults.colors(
+                                focusedTextColor = MaterialTheme.colorScheme.onSurface,
+                                unfocusedTextColor = MaterialTheme.colorScheme.onSurface,
+                                focusedContainerColor = MaterialTheme.colorScheme.surface,
+                                unfocusedContainerColor = MaterialTheme.colorScheme.surface,
+                                errorContainerColor = MaterialTheme.colorScheme.surface,
+                                focusedLabelColor = MaterialTheme.colorScheme.primary,
+                                unfocusedLabelColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                                focusedBorderColor = MaterialTheme.colorScheme.primary,
+                                unfocusedBorderColor = MaterialTheme.colorScheme.outline,
+                                errorBorderColor = MaterialTheme.colorScheme.error,
+                                cursorColor = MaterialTheme.colorScheme.primary,
+                                errorCursorColor = MaterialTheme.colorScheme.error,
+                                errorSupportingTextColor = MaterialTheme.colorScheme.error,
+                            ),
+                        )
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Button(
+                            onClick = {
+                                scope.launch(uiExceptionHandler) {
+                                    val (err, pubkey) = validateAndSave(importKey, saveToPasswordManager)
+                                    if (err == null && pubkey != null) onSetupComplete(pubkey) else error = err
+                                }
+                            },
+                            modifier = Modifier.fillMaxWidth(),
+                            enabled = importKey.isNotBlank(),
+                        ) {
+                            Text("インポートして始める")
+                        }
                     }
                 }
             }
         }
+    }
+
+    if (showUsageConsentDialog) {
+        UsageConsentDialog(
+            onDismiss = { showUsageConsentDialog = false },
+            onAgree = {
+                showUsageConsentDialog = false
+                val kp = generateKeyPair()
+                error = null
+                generatedInfo = Pair(kp.privateKeyHex, kp.publicKeyHex)
+            },
+        )
     }
 
     initialProfilePubkey?.let { pubkey ->
@@ -229,6 +253,81 @@ fun KeySetupScreen(onSetupComplete: (pubkeyHex: String) -> Unit, onDismiss: (() 
             },
         )
     }
+}
+
+@Composable
+private fun UsageConsentDialog(
+    onDismiss: () -> Unit,
+    onAgree: () -> Unit,
+) {
+    var agreed by remember { mutableStateOf(false) }
+    val uriHandler = LocalUriHandler.current
+    val consentItems = if (isIosPlatform) {
+        "• Apple の標準エンドユーザー使用許諾契約（EULA）に従ってアプリを利用します。\n" +
+            "• 投稿、プロフィール、チャンネルなどの公開内容は Nostr リレーへ送信され、第三者から閲覧・保存される場合があります。\n" +
+            "• 違法な内容、権利侵害、嫌がらせ、脅迫、差別、性的または暴力的な不適切コンテンツ、その他の迷惑行為を投稿しません。\n" +
+            "• 不適切なユーザーやコンテンツは、ミュート、NG ワード、削除要求などのアプリ内機能で管理できることを理解します。\n" +
+            "• 秘密鍵はアカウントの利用に必要な情報であり、自分の責任で安全に保管します。"
+    } else {
+        "• 投稿、プロフィール、チャンネルなどの公開内容は Nostr リレーへ送信され、第三者から閲覧・保存される場合があります。\n" +
+            "• 違法な内容、権利侵害、嫌がらせ、脅迫、差別、性的または暴力的な不適切コンテンツ、その他の迷惑行為を投稿しません。\n" +
+            "• 不適切なユーザーやコンテンツは、ミュート、NG ワード、削除要求などのアプリ内機能で管理できることを理解します。\n" +
+            "• 秘密鍵はアカウントの利用に必要な情報であり、自分の責任で安全に保管します。"
+    }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("利用条件への同意") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Text(
+                    text = "ToriNos を利用する前に、以下を確認してください。",
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+                Text(
+                    text = consentItems,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                if (isIosPlatform) {
+                    TextButton(
+                        onClick = {
+                            uriHandler.openUri("https://www.apple.com/legal/internet-services/itunes/dev/stdeula/")
+                        },
+                    ) {
+                        Text("Apple 標準 EULA を開く")
+                    }
+                }
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Checkbox(
+                        checked = agreed,
+                        onCheckedChange = { agreed = it },
+                    )
+                    Text(
+                        text = "上記の内容に同意します",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurface,
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = onAgree,
+                enabled = agreed,
+            ) {
+                Text("同意して鍵を生成")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("キャンセル")
+            }
+        },
+    )
 }
 
 @Composable
