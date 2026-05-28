@@ -114,7 +114,7 @@ class FeedViewModel(
                 NostrRepository.publish(deletion)
             }
             val cur = _state.value
-            _state.value = cur.copy(events = cur.events.filter { it.id != eventId })
+            updateEvents(cur.events.filter { it.id != eventId })
             seenEventIds.remove(eventId)
             rawEvents.remove(eventId)
             canonicalEvents.remove(eventId)
@@ -659,7 +659,7 @@ class FeedViewModel(
         if (loadingMore) {
             pendingHistoryBatch.add(event)
         } else {
-            _state.value = cur.copy(events = insertSorted(cur.events, event))
+            updateEvents(insertSorted(cur.events, event))
         }
         val quoteIds = quotedEventIds(event)
         scheduleQuoteFetch(quoteIds)
@@ -676,7 +676,7 @@ class FeedViewModel(
         val filtered = rawEvents.values
             .filter { !isFiltered(it) }
             .let(::sortTimelineEvents)
-        _state.value = _state.value.copy(events = filtered)
+        updateEvents(filtered)
     }
 
     private fun appendRepostedEvent(repost: NostrEvent): Int {
@@ -712,6 +712,7 @@ class FeedViewModel(
                 NostrRepository.subscribe(
                     ids.repostTarget,
                     NostrFilter(ids = pendingRepostTargets.keys.toList(), kinds = listOf(1)),
+                    relayUrl = relayUrl,
                 )
             }
         }
@@ -744,7 +745,7 @@ class FeedViewModel(
         eventSortTimes[eventId] = timelineCreatedAt
         val cur = _state.value
         if (cur.events.none { it.id == eventId }) return
-        _state.value = cur.copy(events = sortTimelineEvents(cur.events))
+        updateEvents(sortTimelineEvents(cur.events))
     }
 
     private fun sortTimelineEvents(events: List<NostrEvent>): List<NostrEvent> =
@@ -755,7 +756,7 @@ class FeedViewModel(
         val sorted = pendingHistoryBatch.sortedByDescending { eventSortTimes[it.id] ?: it.createdAt }
         pendingHistoryBatch.clear()
         val cur = _state.value
-        _state.value = cur.copy(events = mergeSorted(cur.events, sorted))
+        updateEvents(mergeSorted(cur.events, sorted))
     }
 
     private fun insertSorted(events: List<NostrEvent>, event: NostrEvent): List<NostrEvent> {
@@ -783,6 +784,34 @@ class FeedViewModel(
         return result
     }
 
+    private fun updateEvents(events: List<NostrEvent>) {
+        val visibleEvents = events.take(MAX_TIMELINE_EVENTS)
+        val visibleEventIds = visibleEvents.mapTo(linkedSetOf()) { it.id }
+        val retainedEventIds = visibleEventIds + visibleEvents.mapNotNull { it.replyTargetId() } +
+            visibleEvents.flatMap { quotedEventIds(it) }
+        val quotedEvents = _state.value.quotedEvents.filterKeys { it in retainedEventIds }
+        val retainedPubkeys = buildSet {
+            visibleEvents.forEach { add(it.pubkey) }
+            quotedEvents.values.forEach { add(it.pubkey) }
+            _state.value.repostedByPubkeys.forEach { (eventId, pubkey) ->
+                if (eventId in visibleEventIds) add(pubkey)
+            }
+            ownPubkey?.let(::add)
+        }
+
+        _state.value = _state.value.copy(
+            events = visibleEvents,
+            profiles = _state.value.profiles.filterKeys { it in retainedPubkeys },
+            reactionCounts = _state.value.reactionCounts.filterKeys { it in retainedEventIds },
+            replyCounts = _state.value.replyCounts.filterKeys { it in retainedEventIds },
+            repostCounts = _state.value.repostCounts.filterKeys { it in retainedEventIds },
+            quotedEvents = quotedEvents,
+            repostedByPubkeys = _state.value.repostedByPubkeys.filterKeys { it in visibleEventIds },
+            likedReactions = _state.value.likedReactions.filterKeys { it in retainedEventIds },
+            repostedEvents = _state.value.repostedEvents.filterKeys { it in retainedEventIds },
+        )
+    }
+
     private fun rememberSeenId(seenIds: LinkedHashSet<String>, eventId: String): Boolean {
         if (!seenIds.add(eventId)) return false
         while (seenIds.size > MAX_SEEN_IDS) seenIds.remove(seenIds.first())
@@ -802,6 +831,7 @@ class FeedViewModel(
             NostrRepository.subscribe(
                 ids.profile,
                 NostrFilter(kinds = listOf(0), authors = authors),
+                relayUrl = relayUrl,
             )
         }
     }
@@ -816,9 +846,9 @@ class FeedViewModel(
         val subIds = subscriptionIds ?: return
         if (watchedEventIds.isEmpty()) return
         val ids = watchedEventIds.toList()
-        NostrRepository.subscribe(subIds.reaction, NostrFilter(kinds = listOf(7), eTags = ids))
-        NostrRepository.subscribe(subIds.reply,    NostrFilter(kinds = listOf(1), eTags = ids))
-        NostrRepository.subscribe(subIds.repost,   NostrFilter(kinds = listOf(6), eTags = ids))
+        NostrRepository.subscribe(subIds.reaction, NostrFilter(kinds = listOf(7), eTags = ids), relayUrl = relayUrl)
+        NostrRepository.subscribe(subIds.reply,    NostrFilter(kinds = listOf(1), eTags = ids), relayUrl = relayUrl)
+        NostrRepository.subscribe(subIds.repost,   NostrFilter(kinds = listOf(6), eTags = ids), relayUrl = relayUrl)
     }
 
     private fun scheduleEngagementFetch(eventId: String) {
@@ -831,9 +861,9 @@ class FeedViewModel(
             delay(500)
             val ids = watchedEventIds.toList()
             val subIds = subscriptionIds ?: return@launch
-            NostrRepository.subscribe(subIds.reaction, NostrFilter(kinds = listOf(7), eTags = ids))
-            NostrRepository.subscribe(subIds.reply, NostrFilter(kinds = listOf(1), eTags = ids))
-            NostrRepository.subscribe(subIds.repost, NostrFilter(kinds = listOf(6), eTags = ids))
+            NostrRepository.subscribe(subIds.reaction, NostrFilter(kinds = listOf(7), eTags = ids), relayUrl = relayUrl)
+            NostrRepository.subscribe(subIds.reply, NostrFilter(kinds = listOf(1), eTags = ids), relayUrl = relayUrl)
+            NostrRepository.subscribe(subIds.repost, NostrFilter(kinds = listOf(6), eTags = ids), relayUrl = relayUrl)
         }
     }
 
@@ -847,6 +877,7 @@ class FeedViewModel(
             NostrRepository.subscribe(
                 ids.quote,
                 NostrFilter(ids = pendingQuoteIds.toList(), kinds = listOf(1)),
+                relayUrl = relayUrl,
             )
         }
     }
@@ -868,6 +899,7 @@ class FeedViewModel(
 
     companion object {
         private const val FEED_PAGE_SIZE = 30
+        private const val MAX_TIMELINE_EVENTS = 800
         private const val MAX_TRACKED_ENGAGEMENT_EVENTS = 100
         private const val MAX_SEEN_IDS = 2000
         private const val LIVE_SUBSCRIPTION_REFRESH_INTERVAL_MS = 60_000L

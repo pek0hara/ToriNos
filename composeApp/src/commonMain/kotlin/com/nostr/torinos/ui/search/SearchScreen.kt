@@ -65,6 +65,8 @@ fun SearchScreen(
     var selectedTab by remember { mutableIntStateOf(0) }
     val state by viewModel.state.collectAsState()
     val keyboardController = LocalSoftwareKeyboardController.current
+    val headerBackgroundColor = MaterialTheme.colorScheme.background
+    val headerContentColor = MaterialTheme.colorScheme.onBackground
 
     fun doSearch() {
         keyboardController?.hide()
@@ -87,13 +89,16 @@ fun SearchScreen(
                         Icon(
                             Icons.AutoMirrored.Filled.ArrowBack,
                             contentDescription = "戻る",
-                            tint = MaterialTheme.colorScheme.onPrimary,
+                            tint = headerContentColor,
                         )
                     }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = MaterialTheme.colorScheme.primary,
-                    titleContentColor = MaterialTheme.colorScheme.onPrimary,
+                    containerColor = headerBackgroundColor,
+                    scrolledContainerColor = headerBackgroundColor,
+                    titleContentColor = headerContentColor,
+                    actionIconContentColor = headerContentColor,
+                    navigationIconContentColor = headerContentColor,
                 ),
             )
         },
@@ -130,7 +135,11 @@ fun SearchScreen(
             }
 
             // タブ
-            PrimaryTabRow(selectedTabIndex = selectedTab) {
+            PrimaryTabRow(
+                selectedTabIndex = selectedTab,
+                containerColor = headerBackgroundColor,
+                contentColor = headerContentColor,
+            ) {
                 Tab(
                     selected = selectedTab == 0,
                     onClick = { selectedTab = 0 },
