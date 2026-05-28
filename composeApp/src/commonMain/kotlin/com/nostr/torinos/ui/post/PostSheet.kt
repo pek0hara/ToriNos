@@ -80,7 +80,7 @@ import com.nostr.torinos.ui.components.PreviewImage
 import com.nostr.torinos.ui.relay.RelaySettingsViewModel
 
 private const val MAX_CHARS = 800
-private val customEmojiCodeRegex = Regex(""":([a-zA-Z0-9_]+):""")
+private val customEmojiCodeRegex = Regex(""":([a-zA-Z0-9_-]+):""")
 
 @Composable
 fun PostSheet(

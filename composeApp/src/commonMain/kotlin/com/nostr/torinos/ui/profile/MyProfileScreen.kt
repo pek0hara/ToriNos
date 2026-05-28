@@ -141,7 +141,7 @@ fun MyProfileScreen(
         }
         if (showStatusEdit) {
             GeneralStatusEditDialog(
-                currentStatus = state.generalStatus.orEmpty(),
+                currentStatus = state.generalStatus?.content.orEmpty(),
                 isPublishing = state.isGeneralStatusPublishing,
                 errorMessage = state.generalStatusError,
                 onDismiss = {
@@ -294,7 +294,7 @@ private fun GeneralStatusEditDialog(
         },
         confirmButton = {
             TextButton(
-                enabled = !isPublishing && status.isNotBlank(),
+                enabled = !isPublishing,
                 onClick = { onSave(status) },
             ) {
                 Text(if (isPublishing) "保存中" else "保存")

@@ -6,8 +6,11 @@ import com.nostr.torinos.model.NostrEvent
 import com.nostr.torinos.model.NostrFilter
 import com.nostr.torinos.model.NostrProfile
 import com.nostr.torinos.model.toProfile
+import com.nostr.torinos.network.CustomEmojiStore
 import com.nostr.torinos.network.NostrRepository
 import com.nostr.torinos.ui.SafeViewModel
+import com.nostr.torinos.ui.profile.customEmojiMap
+import com.nostr.torinos.ui.profile.customEmojiTagsForContent
 import kotlin.time.Clock
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -20,6 +23,7 @@ data class UserStatus(
     val statusTag: String,
     val expiration: Long?,
     val referenceUrls: List<String>,
+    val customEmojis: Map<String, String>,
 ) {
     val key: String = "${event.pubkey}:$statusTag"
 }
@@ -84,6 +88,7 @@ class StatusViewModel(private val relayUrl: String? = null) : SafeViewModel() {
                 val tags = buildList {
                     add(listOf("d", tag))
                     if (expiration != null) add(listOf("expiration", expiration.toString()))
+                    addAll(customEmojiTagsForContent(body, CustomEmojiStore.emojis.value))
                     (listOfNotNull(explicitReferenceUrl) + extractWebUrls(body)).distinct().forEach { url ->
                         add(listOf("r", url))
                     }
@@ -175,6 +180,7 @@ class StatusViewModel(private val relayUrl: String? = null) : SafeViewModel() {
             statusTag = statusTag,
             expiration = expiration,
             referenceUrls = referenceUrls,
+            customEmojis = event.tags.customEmojiMap(),
         )
         val existing = rawStatuses[status.key]
         if (existing != null && existing.event.createdAt >= event.createdAt) return

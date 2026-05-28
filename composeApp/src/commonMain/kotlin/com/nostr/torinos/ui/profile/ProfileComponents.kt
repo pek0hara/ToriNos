@@ -87,7 +87,7 @@ internal fun ProfileHeader(
     onEditAvatar: (() -> Unit)? = null,
     onEditName: (() -> Unit)? = null,
     onEditAbout: (() -> Unit)? = null,
-    generalStatus: String? = null,
+    generalStatus: ProfileGeneralStatus? = null,
     onEditGeneralStatus: (() -> Unit)? = null,
 ) {
     val clipboard = LocalClipboard.current
@@ -297,12 +297,22 @@ internal fun ProfileHeader(
                     )
                 }
             }
-            generalStatus?.takeIf { it.isNotBlank() }?.let { status ->
-                Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            generalStatus?.takeIf { it.content.isNotBlank() }?.let { status ->
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
                     Text(
-                        text = "💬 $status",
+                        text = "💬",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    LinkedText(
+                        text = status.content,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        customEmojis = status.customEmojis,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                         modifier = Modifier.weight(1f),

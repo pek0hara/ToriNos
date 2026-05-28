@@ -19,7 +19,6 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.Check
@@ -49,7 +48,6 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
@@ -59,7 +57,6 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.lifecycle.viewmodel.viewModelFactory
 import com.nostr.torinos.model.NostrProfile
 import com.nostr.torinos.network.RelayStore
-import com.nostr.torinos.ui.components.AvatarImage
 import com.nostr.torinos.ui.components.LinkedText
 import com.nostr.torinos.ui.components.formatTimestamp
 import com.nostr.torinos.ui.profile.AvatarCircle
@@ -287,17 +284,12 @@ private fun StatusRow(
             .padding(horizontal = 16.dp, vertical = 12.dp),
         horizontalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        val picture = profile?.picture
-        if (!picture.isNullOrBlank()) {
-            AvatarImage(url = picture, size = 32.dp)
-        } else {
-            Box(
-                modifier = Modifier
-                    .size(32.dp)
-                    .clip(CircleShape)
-                    .background(MaterialTheme.colorScheme.secondaryContainer),
-            )
-        }
+        AvatarCircle(
+            pubkey = status.event.pubkey,
+            name = profile?.bestName,
+            pictureUrl = profile?.picture,
+            size = 32,
+        )
         Column(
             modifier = Modifier.weight(1f),
             verticalArrangement = Arrangement.spacedBy(6.dp),
@@ -307,6 +299,7 @@ private fun StatusRow(
                 LinkedText(
                     text = status.event.content,
                     style = MaterialTheme.typography.bodyLarge,
+                    customEmojis = status.customEmojis,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.weight(1f),

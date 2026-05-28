@@ -21,7 +21,7 @@ data class UserProfileState(
     val profile: NostrProfile? = null,
     val linkedProfiles: Map<String, NostrProfile> = emptyMap(),
     val relayUrls: List<String> = emptyList(),
-    val generalStatus: String? = null,
+    val generalStatus: ProfileGeneralStatus? = null,
     /** null = フォローリスト未ロード */
     val isFollowing: Boolean? = null,
     val isFollowLoading: Boolean = false,
@@ -180,7 +180,7 @@ class UserProfileViewModel(
             NostrRepository.events(generalStatusSubId).collect { event ->
                 if (event.createdAt <= latestGeneralStatusCreatedAt) return@collect
                 latestGeneralStatusCreatedAt = event.createdAt
-                _state.update { it.copy(generalStatus = event.toActiveGeneralStatusContent()) }
+                _state.update { it.copy(generalStatus = event.toActiveGeneralStatus()) }
             }
         }
 

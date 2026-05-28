@@ -66,6 +66,7 @@ import com.nostr.torinos.model.NostrEvent
 import com.nostr.torinos.model.NostrProfile
 import com.nostr.torinos.model.encodeNevent
 import com.nostr.torinos.model.stripNostrEventUris
+import com.nostr.torinos.ui.profile.customEmojiMap
 import com.nostr.torinos.ui.profile.AvatarCircle
 import com.nostr.torinos.ui.settings.setPlainText
 import kotlinx.coroutines.launch
@@ -322,6 +323,7 @@ fun NoteCard(
                 CollapsibleNoteText(
                     text = parsedContent.textContent,
                     style = MaterialTheme.typography.bodyMedium,
+                    customEmojis = event.tags.customEmojiMap(),
                     onProfileClick = onUserClick,
                     profiles = profiles,
                     onHashtagClick = onHashtagClick,
@@ -550,6 +552,7 @@ private fun QuotePreview(
             CollapsibleNoteText(
                 text = parsedContent.textContent,
                 style = MaterialTheme.typography.bodySmall,
+                customEmojis = event.tags.customEmojiMap(),
                 onProfileClick = onUserClick,
                 profiles = profiles,
                 onHashtagClick = null,
@@ -569,6 +572,7 @@ private fun QuotePreview(
 private fun CollapsibleNoteText(
     text: String,
     style: androidx.compose.ui.text.TextStyle,
+    customEmojis: Map<String, String> = emptyMap(),
     onProfileClick: (pubkey: String) -> Unit,
     profiles: Map<String, NostrProfile>,
     onHashtagClick: ((tag: String) -> Unit)?,
@@ -586,6 +590,7 @@ private fun CollapsibleNoteText(
     LinkedText(
         text = displayedText,
         style = style,
+        customEmojis = customEmojis,
         onProfileClick = onProfileClick,
         profiles = profiles,
         onHashtagClick = onHashtagClick,

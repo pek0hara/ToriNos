@@ -9,8 +9,10 @@ import com.nostr.torinos.crypto.signEvent
 import com.nostr.torinos.crypto.toHex
 import com.nostr.torinos.model.NoteContext
 import com.nostr.torinos.model.extractNostrEventReferences
+import com.nostr.torinos.network.CustomEmojiStore
 import com.nostr.torinos.network.ImageUploader
 import com.nostr.torinos.network.NostrRepository
+import com.nostr.torinos.ui.profile.customEmojiTagsForContent
 import kotlin.time.Clock
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -252,6 +254,7 @@ class PostViewModel : SafeViewModel() {
 
             val tags = buildList {
                 addAll(noteContext.replyTags(replyToId, replyToPubkey))
+                addAll(customEmojiTagsForContent(text, CustomEmojiStore.emojis.value))
                 extractNostrEventReferences(text).forEach { reference ->
                     add(
                         buildList {

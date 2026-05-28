@@ -11,13 +11,14 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.clickable
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
@@ -26,6 +27,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -56,9 +58,28 @@ fun CustomEmojiSettingsScreen(
     val emojis by CustomEmojiStore.emojis.collectAsState()
     val state by viewModel.state.collectAsState()
     var searchQuery by remember { mutableStateOf(initialQuery) }
+    var showRegisteredOnly by remember { mutableStateOf(false) }
+    var selectedSet by remember { mutableStateOf<PublishedEmojiSet?>(null) }
     val savedEmojiUrls = remember(emojis) { emojis.associate { it.shortcode to it.imageUrl } }
-    val filteredPublishedSets = remember(state.publishedSets, searchQuery) {
-        state.publishedSets.filterByQuery(searchQuery)
+    val filteredPublishedSets = remember(state.publishedSets, savedEmojiUrls, searchQuery, showRegisteredOnly) {
+        state.publishedSets
+            .filterByQuery(searchQuery)
+            .filter { set ->
+                !showRegisteredOnly || set.emojis.all { savedEmojiUrls[it.shortcode] == it.imageUrl }
+            }
+    }
+    val filteredEmojis = remember(emojis, searchQuery) {
+        emojis.filterCustomEmojisByQuery(searchQuery)
+    }
+
+    selectedSet?.let { set ->
+        PublishedEmojiSetDialog(
+            set = set,
+            isRegistered = set.emojis.all { savedEmojiUrls[it.shortcode] == it.imageUrl },
+            onRegister = { CustomEmojiStore.addList(set.id, set.name, set.emojis) },
+            onUnregister = { CustomEmojiStore.removeList(set.id, set.emojis) },
+            onDismiss = { selectedSet = null },
+        )
     }
 
     Scaffold(
@@ -101,7 +122,7 @@ fun CustomEmojiSettingsScreen(
                     OutlinedTextField(
                         value = searchQuery,
                         onValueChange = { searchQuery = it },
-                        label = { Text("公開絵文字セットを検索") },
+                        label = { Text("絵文字セット・登録済み絵文字を検索") },
                         leadingIcon = {
                             Icon(
                                 Icons.Default.Search,
@@ -112,6 +133,10 @@ fun CustomEmojiSettingsScreen(
                         modifier = Modifier
                             .fillMaxWidth()
                         .padding(horizontal = 16.dp, vertical = 8.dp),
+                    )
+                    RegisteredOnlyFilterRow(
+                        checked = showRegisteredOnly,
+                        onCheckedChange = { showRegisteredOnly = it },
                     )
                     HorizontalDivider()
                 }
@@ -138,6 +163,8 @@ fun CustomEmojiSettingsScreen(
                             set = set,
                             isRegistered = set.emojis.all { savedEmojiUrls[it.shortcode] == it.imageUrl },
                             onRegister = { CustomEmojiStore.addList(set.id, set.name, set.emojis) },
+                            onUnregister = { CustomEmojiStore.removeList(set.id, set.emojis) },
+                            onClick = { selectedSet = set },
                         )
                         HorizontalDivider()
                     }
@@ -146,16 +173,26 @@ fun CustomEmojiSettingsScreen(
                 item {
                     SectionHeader(
                         title = "登録済み",
-                        trailing = if (emojis.isEmpty()) "0件" else "${emojis.size}件",
+                        trailing = if (searchQuery.isBlank()) {
+                            "${emojis.size}件"
+                        } else {
+                            "${filteredEmojis.size}/${emojis.size}件"
+                        },
                     )
                 }
 
-                if (emojis.isEmpty()) {
+                if (filteredEmojis.isEmpty()) {
                     item {
-                        EmptyText("カスタム絵文字が設定されていません")
+                        EmptyText(
+                            if (emojis.isEmpty()) {
+                                "カスタム絵文字が設定されていません"
+                            } else {
+                                "登録済みカスタム絵文字が見つかりません"
+                            },
+                        )
                     }
                 } else {
-                    items(emojis, key = { "local-${it.shortcode}" }) { emoji ->
+                    items(filteredEmojis, key = { "local-${it.shortcode}" }) { emoji ->
                         CustomEmojiRow(
                             emoji = emoji,
                             onDelete = { CustomEmojiStore.remove(emoji.shortcode) },
@@ -165,6 +202,40 @@ fun CustomEmojiSettingsScreen(
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun RegisteredOnlyFilterRow(
+    checked: Boolean,
+    onCheckedChange: (Boolean) -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable { onCheckedChange(!checked) }
+            .padding(horizontal = 16.dp, vertical = 8.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(
+            modifier = Modifier.weight(1f),
+            verticalArrangement = Arrangement.spacedBy(2.dp),
+        ) {
+            Text(
+                text = "登録済みセットのみ",
+                style = MaterialTheme.typography.bodyMedium,
+            )
+            Text(
+                text = "公開絵文字セットの一覧を登録済みに絞り込みます",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        Switch(
+            checked = checked,
+            onCheckedChange = onCheckedChange,
+        )
     }
 }
 
@@ -224,7 +295,7 @@ private fun EmptyText(text: String) {
 @Composable
 private fun CustomEmojiRow(
     emoji: CustomEmoji,
-    onDelete: () -> Unit,
+    onDelete: (() -> Unit)?,
 ) {
     Row(
         modifier = Modifier
@@ -254,12 +325,14 @@ private fun CustomEmojiRow(
                 maxLines = 1,
             )
         }
-        IconButton(onClick = onDelete) {
-            Icon(
-                Icons.Default.Delete,
-                contentDescription = "削除",
-                tint = MaterialTheme.colorScheme.error,
-            )
+        if (onDelete != null) {
+            IconButton(onClick = onDelete) {
+                Icon(
+                    Icons.Default.Delete,
+                    contentDescription = "削除",
+                    tint = MaterialTheme.colorScheme.error,
+                )
+            }
         }
     }
 }
@@ -269,10 +342,13 @@ private fun PublishedEmojiSetRow(
     set: PublishedEmojiSet,
     isRegistered: Boolean,
     onRegister: () -> Unit,
+    onUnregister: () -> Unit,
+    onClick: () -> Unit,
 ) {
     Column(
         modifier = Modifier
             .fillMaxWidth()
+            .clickable(onClick = onClick)
             .padding(horizontal = 16.dp, vertical = 10.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
@@ -294,15 +370,14 @@ private fun PublishedEmojiSetRow(
                 )
             }
             TextButton(
-                onClick = onRegister,
-                enabled = !isRegistered,
+                onClick = if (isRegistered) onUnregister else onRegister,
             ) {
                 Icon(
-                    imageVector = if (isRegistered) Icons.Default.Check else Icons.Default.Add,
+                    imageVector = if (isRegistered) Icons.Default.Delete else Icons.Default.Add,
                     contentDescription = null,
                     modifier = Modifier.size(18.dp),
                 )
-                Text(if (isRegistered) "登録済み" else "登録")
+                Text(if (isRegistered) "登録解除" else "登録")
             }
         }
         Row(
@@ -328,6 +403,55 @@ private fun PublishedEmojiSetRow(
     }
 }
 
+@Composable
+private fun PublishedEmojiSetDialog(
+    set: PublishedEmojiSet,
+    isRegistered: Boolean,
+    onRegister: () -> Unit,
+    onUnregister: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(set.name) },
+        text = {
+            LazyColumn {
+                item {
+                    Text(
+                        text = "${set.emojis.size}個 / ${set.authorPubkey.take(8)}...${set.authorPubkey.takeLast(8)}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(bottom = 8.dp),
+                    )
+                }
+                items(set.emojis, key = { "dialog-${it.shortcode}" }) { emoji ->
+                    CustomEmojiRow(
+                        emoji = emoji,
+                        onDelete = null,
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(
+                onClick = if (isRegistered) onUnregister else onRegister,
+            ) {
+                Icon(
+                    imageVector = if (isRegistered) Icons.Default.Delete else Icons.Default.Add,
+                    contentDescription = null,
+                    modifier = Modifier.size(18.dp),
+                )
+                Text(if (isRegistered) "登録解除" else "登録")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("閉じる")
+            }
+        },
+    )
+}
+
 private fun List<PublishedEmojiSet>.filterByQuery(query: String): List<PublishedEmojiSet> {
     val normalizedQuery = query.trim().lowercase()
     if (normalizedQuery.isBlank()) return this
@@ -335,5 +459,14 @@ private fun List<PublishedEmojiSet>.filterByQuery(query: String): List<Published
         set.name.lowercase().contains(normalizedQuery) ||
             set.authorPubkey.lowercase().contains(normalizedQuery) ||
             set.emojis.any { it.shortcode.lowercase().contains(normalizedQuery) }
+    }
+}
+
+private fun List<CustomEmoji>.filterCustomEmojisByQuery(query: String): List<CustomEmoji> {
+    val normalizedQuery = query.trim().lowercase()
+    if (normalizedQuery.isBlank()) return this
+    return filter { emoji ->
+        emoji.shortcode.lowercase().contains(normalizedQuery) ||
+            emoji.imageUrl.lowercase().contains(normalizedQuery)
     }
 }

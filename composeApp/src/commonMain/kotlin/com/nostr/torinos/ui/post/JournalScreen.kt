@@ -74,6 +74,7 @@ import com.nostr.torinos.model.quotedEventIds
 import com.nostr.torinos.model.replyTargetId
 import com.nostr.torinos.model.stripNostrEventUris
 import com.nostr.torinos.network.RelayStore
+import com.nostr.torinos.ui.components.LinkedText
 import com.nostr.torinos.ui.components.NoteCard
 import com.nostr.torinos.ui.components.QuotedEvent
 import com.nostr.torinos.ui.components.formatTimestamp
@@ -761,7 +762,7 @@ private fun JournalActivityRow(
                 )
             }
 
-            Text(
+            LinkedText(
                 text = targetPreviewText(targetEvent, targetProfile),
                 modifier = Modifier.padding(top = 6.dp),
                 style = MaterialTheme.typography.bodySmall,

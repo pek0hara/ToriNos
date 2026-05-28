@@ -28,7 +28,7 @@ import com.nostr.torinos.model.extractNpubReferences
 import com.nostr.torinos.network.CustomEmojiStore
 
 private val hashtagTextRegex = Regex("""(?<![\p{L}\p{N}_])#[\p{L}\p{N}_]+""")
-private val emojiCodeRegex = Regex(""":([a-zA-Z0-9_]+):""")
+private val emojiCodeRegex = Regex(""":([a-zA-Z0-9_-]+):""")
 
 /** テキスト内のURLをクリッカブルリンクにして表示する。登録済みカスタム絵文字(:shortcode:)はインライン画像に置換する */
 @Composable
@@ -37,6 +37,7 @@ fun LinkedText(
     modifier: Modifier = Modifier,
     style: TextStyle = MaterialTheme.typography.bodyMedium,
     color: androidx.compose.ui.graphics.Color = androidx.compose.ui.graphics.Color.Unspecified,
+    customEmojis: Map<String, String> = emptyMap(),
     onProfileClick: ((pubkey: String) -> Unit)? = null,
     profiles: Map<String, NostrProfile> = emptyMap(),
     onHashtagClick: ((tag: String) -> Unit)? = null,
@@ -45,7 +46,9 @@ fun LinkedText(
     onTextLayout: ((TextLayoutResult) -> Unit)? = null,
 ) {
     val emojis by CustomEmojiStore.emojis.collectAsState()
-    val emojiMap = remember(emojis) { emojis.associate { it.shortcode to it.imageUrl } }
+    val emojiMap = remember(emojis, customEmojis) {
+        emojis.associate { it.shortcode to it.imageUrl } + customEmojis
+    }
 
     val linkColor = MaterialTheme.colorScheme.primary
     val linkStyle = TextLinkStyles(

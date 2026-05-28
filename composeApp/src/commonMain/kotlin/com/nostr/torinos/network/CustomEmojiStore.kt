@@ -140,6 +140,51 @@ object CustomEmojiStore {
         save()
     }
 
+    fun removeList(id: String, fallbackEmojis: List<CustomEmoji> = emptyList()) {
+        val normalizedId = id.trim()
+        if (normalizedId.isBlank()) return
+
+        val currentLists = _emojiLists.value
+        val removedList = currentLists.firstOrNull { it.id == normalizedId }
+        val removedEmojis = removedList?.emojis
+            ?: fallbackEmojis.mapNotNull { emoji ->
+                val normalizedShortcode = emoji.shortcode.trim().trim(':')
+                val normalizedUrl = emoji.imageUrl.trim()
+                if (normalizedShortcode.isBlank() || normalizedUrl.isBlank()) {
+                    null
+                } else {
+                    CustomEmoji(normalizedShortcode, normalizedUrl)
+                }
+            }
+        val updatedLists = currentLists
+            .filterNot { it.id == normalizedId }
+            .mapNotNull { list ->
+                if (removedList != null) return@mapNotNull list
+                val updatedEmojis = list.emojis.filterNot { saved ->
+                    removedEmojis.any { removed ->
+                        saved.shortcode == removed.shortcode && saved.imageUrl == removed.imageUrl
+                    }
+                }
+                if (updatedEmojis.isEmpty()) null else list.copy(emojis = updatedEmojis)
+            }
+        _emojiLists.value = updatedLists
+        val remainingEmojis = updatedLists
+            .flatMap { it.emojis }
+            .distinctBy { it.shortcode }
+            .sortedBy { it.shortcode.lowercase() }
+        _emojis.value = if (removedList == null) {
+            _emojis.value.filterNot { saved ->
+                removedEmojis.any { removed ->
+                    saved.shortcode == removed.shortcode && saved.imageUrl == removed.imageUrl
+                }
+            }
+        } else {
+            remainingEmojis
+        }.distinctBy { it.shortcode }
+            .sortedBy { it.shortcode.lowercase() }
+        save()
+    }
+
     private suspend fun loadSavedState() {
         LocalSettingsStorage.getString(EMOJIS_KEY)
             ?.let { saved ->

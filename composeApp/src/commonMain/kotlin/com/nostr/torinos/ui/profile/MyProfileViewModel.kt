@@ -7,6 +7,7 @@ import com.nostr.torinos.model.NostrFilter
 import com.nostr.torinos.model.NostrProfile
 import com.nostr.torinos.model.extractNpubReferences
 import com.nostr.torinos.model.toProfile
+import com.nostr.torinos.network.CustomEmojiStore
 import com.nostr.torinos.network.FollowRepository
 import com.nostr.torinos.network.NostrRepository
 import com.nostr.torinos.network.RelayStore
@@ -23,7 +24,7 @@ data class MyProfileState(
     val profile: NostrProfile? = null,
     val linkedProfiles: Map<String, NostrProfile> = emptyMap(),
     val relayUrls: List<String> = emptyList(),
-    val generalStatus: String? = null,
+    val generalStatus: ProfileGeneralStatus? = null,
     val followingCount: Int = 0,
     val followersCount: Int = 0,
     val isFollowersLoading: Boolean = false,
@@ -109,7 +110,7 @@ class MyProfileViewModel(private val ownPubkey: String) : SafeViewModel() {
             NostrRepository.events(generalStatusSubId).collect { event ->
                 if (event.createdAt <= latestGeneralStatusCreatedAt) return@collect
                 latestGeneralStatusCreatedAt = event.createdAt
-                _state.update { it.copy(generalStatus = event.toActiveGeneralStatusContent()) }
+                _state.update { it.copy(generalStatus = event.toActiveGeneralStatus()) }
             }
         }
 
@@ -178,10 +179,6 @@ class MyProfileViewModel(private val ownPubkey: String) : SafeViewModel() {
 
     fun publishGeneralStatus(content: String) {
         val body = content.trim()
-        if (body.isEmpty()) {
-            _state.update { it.copy(generalStatusError = "ステータスを入力してください") }
-            return
-        }
         launch {
             _state.update { it.copy(isGeneralStatusPublishing = true, generalStatusError = null) }
             try {
@@ -191,12 +188,18 @@ class MyProfileViewModel(private val ownPubkey: String) : SafeViewModel() {
                     privateKeyHex = privateKeyHex,
                     content = body,
                     kind = PROFILE_STATUS_KIND,
-                    tags = listOf(listOf("d", PROFILE_GENERAL_STATUS_TAG)),
+                    tags = listOf(listOf("d", PROFILE_GENERAL_STATUS_TAG)) +
+                        customEmojiTagsForContent(body, CustomEmojiStore.emojis.value),
                 )
                 latestGeneralStatusCreatedAt = event.createdAt
                 _state.update {
                     it.copy(
-                        generalStatus = body,
+                        generalStatus = body.takeIf { it.isNotBlank() }?.let {
+                            ProfileGeneralStatus(
+                                content = it,
+                                customEmojis = event.tags.customEmojiMap(),
+                            )
+                        },
                         isGeneralStatusPublishing = false,
                         generalStatusPublishCompletedCount = it.generalStatusPublishCompletedCount + 1,
                     )
