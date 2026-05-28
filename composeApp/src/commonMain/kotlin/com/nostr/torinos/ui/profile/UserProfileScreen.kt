@@ -4,7 +4,11 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyListScope
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Today
+import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
 import androidx.compose.material3.PrimaryTabRow
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
@@ -41,6 +45,7 @@ fun UserProfileScreen(
     onOpenReplies: (eventId: String) -> Unit = {},
     onOpenLikes: (eventId: String) -> Unit = {},
     onOpenReposts: (eventId: String) -> Unit = {},
+    onOpenJournal: (() -> Unit)? = null,
 ) {
     val relays by RelayStore.relays.collectAsState(
         initial = RelayStore.defaults.filter { it.enabled }.map { it.url },
@@ -113,6 +118,16 @@ fun UserProfileScreen(
         modifier = Modifier.fillMaxSize(),
         contentWindowInsets = WindowInsets(0),
         snackbarHost = { SnackbarHost(snackbarHostState) },
+        floatingActionButton = {
+            if (!isOwnProfile && onOpenJournal != null) {
+                FloatingActionButton(onClick = onOpenJournal) {
+                    Icon(
+                        Icons.Default.Today,
+                        contentDescription = "ジャーナル",
+                    )
+                }
+            }
+        },
     ) { padding ->
         if (showRelayList) {
             ProfileRelayListDialog(

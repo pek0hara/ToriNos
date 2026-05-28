@@ -92,6 +92,7 @@ import kotlinx.serialization.Serializable
 // 型安全なルート定義（パラメータ付き画面）
 @Serializable data class ChannelRoute(val channelId: String)
 @Serializable data class ProfileRoute(val pubkey: String)
+@Serializable data class UserJournalRoute(val pubkey: String)
 @Serializable data class FollowingRoute(val pubkey: String)
 @Serializable data class FollowersRoute(val pubkey: String)
 @Serializable data class SearchRoute(val query: String = "")
@@ -568,6 +569,7 @@ fun App() {
                             },
                             onUserClick = { pubkey -> nav.navigate(ProfileRoute(pubkey)) },
                             ownPubkey = ownPubkey,
+                            ownProfile = ownProfile,
                         )
                     }
                     composable<ChannelRoute> { backStack ->
@@ -727,10 +729,11 @@ fun App() {
                     }
                     composable<ProfileRoute> { backStack ->
                         val route = backStack.toRoute<ProfileRoute>()
+                        val isOwnRouteProfile = route.pubkey == ownPubkey
                         UserProfileScreen(
                             pubkey = route.pubkey,
                             onBack = { nav.popBackStack() },
-                            isOwnProfile = false,
+                            isOwnProfile = isOwnRouteProfile,
                             ownPubkey = ownPubkey,
                             onOpenFollowing = {
                                 nav.navigate(FollowingRoute(route.pubkey)) { closeProfileRoute() }
@@ -759,6 +762,34 @@ fun App() {
                             onOpenReposts = { eventId ->
                                 nav.navigate(ThreadRoute(eventId, "reposts")) { closeProfileRoute() }
                             },
+                            onOpenJournal = if (!isOwnRouteProfile) {
+                                {
+                                    nav.navigate(UserJournalRoute(route.pubkey))
+                                }
+                            } else null,
+                        )
+                    }
+                    composable<UserJournalRoute> { backStack ->
+                        val route = backStack.toRoute<UserJournalRoute>()
+                        JournalScreen(
+                            onBack = { nav.popBackStack() },
+                            refreshTodayRequest = 0,
+                            onNewPost = {},
+                            onOpenMemo = { _ -> },
+                            onOpenThread = { eventId -> nav.navigate(ThreadRoute(eventId)) },
+                            onReply = { eventId, authorPk, preview ->
+                                replyToId = eventId
+                                replyToPubkey = authorPk
+                                replyToPreview = preview
+                                replyNoteContext = NoteContext.Timeline
+                                runWithPrivateKey(PendingKeyAction.Reply) {
+                                    showPostSheet = true
+                                }
+                            },
+                            onUserClick = { pk -> nav.navigate(ProfileRoute(pk)) },
+                            ownPubkey = ownPubkey,
+                            ownProfile = ownProfile,
+                            targetPubkey = route.pubkey,
                         )
                     }
                 }

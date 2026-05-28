@@ -24,13 +24,13 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.ArrowForward
 import androidx.compose.material.icons.automirrored.filled.Article
-import androidx.compose.material.icons.automirrored.filled.Notes
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.FilterList
 import androidx.compose.material.icons.filled.MailOutline
+import androidx.compose.material.icons.filled.PostAdd
 import androidx.compose.material.icons.filled.Repeat
 import androidx.compose.material.icons.filled.Today
 import androidx.compose.material3.AlertDialog
@@ -61,6 +61,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.font.FontWeight
@@ -80,7 +81,9 @@ import com.nostr.torinos.ui.components.QuotedEvent
 import com.nostr.torinos.ui.components.formatTimestamp
 import com.nostr.torinos.ui.components.stripImageUrls
 import com.nostr.torinos.ui.profile.AvatarCircle
+import com.nostr.torinos.ui.profile.customEmojiMap
 import kotlinx.datetime.LocalDate
+import kotlinx.coroutines.delay
 import kotlinx.serialization.json.Json
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
@@ -96,16 +99,25 @@ fun JournalScreen(
     onReply: ((eventId: String, authorPubkey: String, preview: String) -> Unit)? = null,
     onUserClick: (pubkey: String) -> Unit = {},
     ownPubkey: String? = null,
-    viewModel: JournalViewModel = viewModel(key = "journal") { JournalViewModel() },
+    ownProfile: NostrProfile? = null,
+    targetPubkey: String? = null,
+    viewModel: JournalViewModel = viewModel(key = targetPubkey?.let { "journal-$it" } ?: "journal") {
+        JournalViewModel(targetPubkey)
+    },
 ) {
     val state by viewModel.state.collectAsState()
     val relays by RelayStore.relays.collectAsState(initial = emptyList())
     val selectedRelayUrl by RelayStore.selectedMemoRelayUrl.collectAsState()
-    var showCalendar by remember { mutableStateOf(true) }
     var showRelayMenu by remember { mutableStateOf(false) }
-    var showFilterHeader by remember { mutableStateOf(false) }
+    var showFilterHeader by remember { mutableStateOf(true) }
     var selectedFilters by remember { mutableStateOf(emptySet<JournalEntryFilter>()) }
-    val baseEntries = if (showCalendar) state.selectedEntries else state.monthEntries
+    val isUserJournal = targetPubkey != null
+    val availableFilters = remember(isUserJournal) {
+        JournalEntryFilter.entries.filter {
+            !isUserJournal || it !in setOf(JournalEntryFilter.Like, JournalEntryFilter.Memo)
+        }
+    }
+    val baseEntries = if (state.showCalendar) state.selectedEntries else state.monthEntries
     val visibleEntries = remember(baseEntries, selectedFilters) {
         if (selectedFilters.isEmpty()) baseEntries else baseEntries.filter { it.filter in selectedFilters }
     }
@@ -119,16 +131,17 @@ fun JournalScreen(
     }
 
     LaunchedEffect(toggleCalendarRequest) {
-        if (toggleCalendarRequest > 0) showCalendar = !showCalendar
+        if (toggleCalendarRequest > 0) viewModel.toggleCalendar()
     }
 
     LaunchedEffect(showCalendarRequest) {
-        if (showCalendarRequest > 0) showCalendar = true
+        if (showCalendarRequest > 0) viewModel.showCalendar()
     }
 
     LaunchedEffect(relays, selectedRelayUrl) {
         if (relays.isEmpty()) return@LaunchedEffect
         val active = selectedRelayUrl?.takeIf { it in relays } ?: relays.firstOrNull()
+        delay(JournalInitialLoadDelayMs)
         viewModel.setRelayUrl(active)
     }
 
@@ -138,7 +151,7 @@ fun JournalScreen(
     Scaffold(
         contentWindowInsets = WindowInsets(0),
         floatingActionButton = {
-            FloatingActionButton(onClick = onNewPost) {
+            if (!isUserJournal) FloatingActionButton(onClick = onNewPost) {
                 Icon(
                     Icons.Default.Add,
                     contentDescription = "ポスト",
@@ -187,12 +200,25 @@ fun JournalScreen(
                     }
                 },
                 navigationIcon = {
-                    IconButton(onClick = onBack) {
-                        Icon(
-                            Icons.AutoMirrored.Filled.ArrowBack,
-                            contentDescription = "戻る",
-                            tint = headerContentColor,
-                        )
+                    if (isUserJournal) {
+                        IconButton(onClick = onBack) {
+                            Icon(
+                                Icons.AutoMirrored.Filled.ArrowBack,
+                                contentDescription = "戻る",
+                                tint = headerContentColor,
+                            )
+                        }
+                    } else if (ownPubkey != null) {
+                        IconButton(onClick = { onUserClick(ownPubkey) }) {
+                            AvatarCircle(
+                                pubkey = ownPubkey,
+                                name = ownProfile?.bestName,
+                                pictureUrl = ownProfile?.picture,
+                                size = 34,
+                            )
+                        }
+                    } else {
+                        Box(modifier = Modifier.size(48.dp))
                     }
                 },
                 actions = {
@@ -203,10 +229,10 @@ fun JournalScreen(
                             tint = headerContentColor,
                         )
                     }
-                    IconButton(onClick = { showCalendar = !showCalendar }) {
+                    IconButton(onClick = viewModel::toggleCalendar) {
                         Icon(
                             Icons.Default.Today,
-                            contentDescription = if (showCalendar) "カレンダーを閉じる" else "カレンダーを開く",
+                            contentDescription = if (state.showCalendar) "カレンダーを閉じる" else "カレンダーを開く",
                             tint = headerContentColor,
                         )
                     }
@@ -225,14 +251,28 @@ fun JournalScreen(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(padding)
-                .journalMonthSwipe(
-                    canGoNextMonth = state.canGoNextMonth,
-                    onPreviousMonth = viewModel::previousMonth,
-                    onNextMonth = viewModel::nextMonth,
+                .journalHorizontalSwipe(
+                    canGoNext = if (state.showCalendar) state.canGoNextDate else state.canGoNextMonth,
+                    onPrevious = if (state.showCalendar) viewModel::previousDate else viewModel::previousMonth,
+                    onNext = if (state.showCalendar) viewModel::nextDate else viewModel::nextMonth,
                 ),
         ) {
+            MemoCalendarHeader(
+                state = state,
+                onPreviousMonth = viewModel::previousMonth,
+                onNextMonth = viewModel::nextMonth,
+                onToggleCalendar = viewModel::toggleCalendar,
+            )
+            if (state.showCalendar) {
+                MemoCalendarGrid(
+                    state = state,
+                    entryCountsByDate = filteredEntryCountsByDate,
+                    onSelectDate = viewModel::selectDate,
+                )
+            }
             if (showFilterHeader) {
                 JournalFilterHeader(
+                    filters = availableFilters,
                     selectedFilters = selectedFilters,
                     onToggle = { filter ->
                         selectedFilters = if (filter in selectedFilters) {
@@ -241,20 +281,6 @@ fun JournalScreen(
                             selectedFilters + filter
                         }
                     },
-                )
-                HorizontalDivider()
-            }
-            MemoCalendarHeader(
-                state = state,
-                onPreviousMonth = viewModel::previousMonth,
-                onNextMonth = viewModel::nextMonth,
-                onToggleCalendar = { showCalendar = !showCalendar },
-            )
-            if (showCalendar) {
-                MemoCalendarGrid(
-                    state = state,
-                    entryCountsByDate = filteredEntryCountsByDate,
-                    onSelectDate = viewModel::selectDate,
                 )
             }
             HorizontalDivider()
@@ -299,7 +325,7 @@ fun JournalScreen(
                                     contentAlignment = Alignment.Center,
                                 ) {
                                     Text(
-                                        text = if (showCalendar) "この日の投稿はありません" else "この月の投稿はありません",
+                                        text = if (state.showCalendar) "この日の投稿はありません" else "この月の投稿はありません",
                                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                                         textAlign = TextAlign.Center,
                                     )
@@ -451,11 +477,11 @@ fun JournalScreen(
 }
 
 private enum class JournalEntryFilter(val label: String, val icon: ImageVector) {
-    Post("投稿", Icons.AutoMirrored.Filled.Article),
+    Post("投稿", Icons.Default.PostAdd),
     Reply("返信", Icons.Default.MailOutline),
     Repost("リポスト", Icons.Default.Repeat),
     Like("いいね", Icons.Default.Favorite),
-    Memo("メモ", Icons.AutoMirrored.Filled.Notes),
+    Memo("メモ", Icons.AutoMirrored.Filled.Article),
 }
 
 private val JournalEntry.filter: JournalEntryFilter
@@ -468,11 +494,11 @@ private val JournalEntry.filter: JournalEntryFilter
         }
     }
 
-private fun Modifier.journalMonthSwipe(
-    canGoNextMonth: Boolean,
-    onPreviousMonth: () -> Unit,
-    onNextMonth: () -> Unit,
-): Modifier = pointerInput(canGoNextMonth) {
+private fun Modifier.journalHorizontalSwipe(
+    canGoNext: Boolean,
+    onPrevious: () -> Unit,
+    onNext: () -> Unit,
+): Modifier = pointerInput(canGoNext, onPrevious, onNext) {
     var dragAmount = 0f
     detectHorizontalDragGestures(
         onDragStart = { dragAmount = 0f },
@@ -482,8 +508,8 @@ private fun Modifier.journalMonthSwipe(
         },
         onDragEnd = {
             when {
-                dragAmount < -SwipeThresholdPx && canGoNextMonth -> onNextMonth()
-                dragAmount > SwipeThresholdPx -> onPreviousMonth()
+                dragAmount < -SwipeThresholdPx && canGoNext -> onNext()
+                dragAmount > SwipeThresholdPx -> onPrevious()
             }
             dragAmount = 0f
         },
@@ -493,6 +519,7 @@ private fun Modifier.journalMonthSwipe(
 
 @Composable
 private fun JournalFilterHeader(
+    filters: List<JournalEntryFilter>,
     selectedFilters: Set<JournalEntryFilter>,
     onToggle: (JournalEntryFilter) -> Unit,
 ) {
@@ -500,7 +527,7 @@ private fun JournalFilterHeader(
         contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
         horizontalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        items(JournalEntryFilter.entries) { filter ->
+        items(filters) { filter ->
             FilterChip(
                 selected = filter in selectedFilters,
                 onClick = { onToggle(filter) },
@@ -592,7 +619,7 @@ private fun MemoCalendarGrid(
                         MemoCalendarDay(
                             date = date,
                             selected = date == state.selectedDate,
-                            memoCount = entryCountsByDate[date] ?: 0,
+                            entryCount = entryCountsByDate[date] ?: 0,
                             onClick = { onSelectDate(date) },
                             modifier = Modifier.weight(1f),
                         )
@@ -619,22 +646,27 @@ private fun calendarWeeks(month: LocalDate): List<List<LocalDate?>> {
 private fun MemoCalendarDay(
     date: LocalDate,
     selected: Boolean,
-    memoCount: Int,
+    entryCount: Int,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val shape = MaterialTheme.shapes.small
+    val colorScheme = MaterialTheme.colorScheme
+    val entryIntensity = calendarEntryIntensity(entryCount)
     val backgroundColor = when {
-        selected -> MaterialTheme.colorScheme.primaryContainer
-        memoCount == 0 -> MaterialTheme.colorScheme.surface
-        memoCount == 1 -> MaterialTheme.colorScheme.primary.copy(alpha = 0.15f)
-        memoCount == 2 -> MaterialTheme.colorScheme.primary.copy(alpha = 0.35f)
-        else -> MaterialTheme.colorScheme.primary.copy(alpha = 0.55f)
+        selected -> colorScheme.primary
+        entryCount == 0 -> colorScheme.surface
+        else -> lerp(colorScheme.surface, colorScheme.primary, entryIntensity)
     }
-    val borderColor = if (date == currentDate()) {
-        MaterialTheme.colorScheme.primary
-    } else {
-        MaterialTheme.colorScheme.outlineVariant
+    val borderColor = when {
+        selected -> colorScheme.primary
+        date == currentDate() -> colorScheme.primary
+        else -> colorScheme.outlineVariant
+    }
+    val contentColor = when {
+        selected -> colorScheme.onPrimary
+        entryIntensity >= CalendarEntryHighContrastThreshold -> colorScheme.onPrimary
+        else -> colorScheme.onSurface
     }
 
     Column(
@@ -651,9 +683,16 @@ private fun MemoCalendarDay(
         Text(
             text = date.day.toString(),
             style = MaterialTheme.typography.bodySmall,
-            color = if (selected) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurface,
+            color = contentColor,
         )
     }
+}
+
+private fun calendarEntryIntensity(entryCount: Int): Float {
+    if (entryCount <= 0) return 0f
+    val clampedCount = entryCount.coerceIn(1, CalendarEntryMaxGradientCount)
+    val step = (clampedCount - 1).toFloat() / (CalendarEntryMaxGradientCount - 1)
+    return CalendarEntryMinIntensity + (CalendarEntryMaxIntensity - CalendarEntryMinIntensity) * step
 }
 
 @Composable
@@ -767,6 +806,7 @@ private fun JournalActivityRow(
                 modifier = Modifier.padding(top = 6.dp),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
+                customEmojis = targetEvent?.tags?.customEmojiMap().orEmpty(),
                 maxLines = 3,
                 overflow = TextOverflow.Ellipsis,
             )
@@ -855,3 +895,8 @@ private fun isLeapYear(year: Int): Boolean =
     year % 4 == 0 && (year % 100 != 0 || year % 400 == 0)
 
 private const val SwipeThresholdPx = 80f
+private const val JournalInitialLoadDelayMs = 200L
+private const val CalendarEntryMaxGradientCount = 10
+private const val CalendarEntryMinIntensity = 0.16f
+private const val CalendarEntryMaxIntensity = 0.82f
+private const val CalendarEntryHighContrastThreshold = 0.62f
