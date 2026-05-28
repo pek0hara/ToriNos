@@ -33,12 +33,12 @@ object RelayStore {
         RelayEntry("wss://yabu.me", enabled = true),
         RelayEntry("wss://relay-jp.nostr.wirednet.jp", enabled = true),
         RelayEntry("wss://r.kojira.io", enabled = true),
-        RelayEntry("wss://relay.damus.io", enabled = true),
-        RelayEntry("wss://nos.lol", enabled = true),
-        RelayEntry("wss://relay.nostr.band", enabled = true),
-        RelayEntry("wss://nostr.wine", enabled = true),
-        RelayEntry("wss://search.nos.today", enabled = true),
-        RelayEntry("wss://nostr.compile-error.net", enabled = true),
+        RelayEntry("wss://relay.damus.io", enabled = false),
+        RelayEntry("wss://nos.lol", enabled = false),
+        RelayEntry("wss://relay.nostr.band", enabled = false),
+        RelayEntry("wss://nostr.wine", enabled = false),
+        RelayEntry("wss://search.nos.today", enabled = false),
+        RelayEntry("wss://nostr.compile-error.net", enabled = false),
     )
 
     private val _entries = MutableStateFlow(defaults)
@@ -92,6 +92,12 @@ object RelayStore {
 
     fun setEnabled(url: String, enabled: Boolean) {
         _entries.update { list -> list.map { if (it.url == url) it.copy(enabled = enabled) else it } }
+        ensureSelectedRelay()
+        saveEntries()
+    }
+
+    fun resetToDefaults() {
+        _entries.value = defaults
         ensureSelectedRelay()
         saveEntries()
     }

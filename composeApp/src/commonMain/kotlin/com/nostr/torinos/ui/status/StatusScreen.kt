@@ -22,6 +22,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Card
 import androidx.compose.material3.CircularProgressIndicator
@@ -74,6 +75,8 @@ fun StatusScreen(
     onComposerShown: () -> Unit,
     onUserClick: (String) -> Unit,
     onOpenProfile: () -> Unit = {},
+    onOpenRelaySettings: () -> Unit = {},
+    onOpenSettings: () -> Unit = {},
     modifier: Modifier = Modifier,
     selectedServiceTab: ServiceTab = ServiceTab.Status,
     onServiceTabSelected: (ServiceTab) -> Unit = {},
@@ -151,6 +154,13 @@ fun StatusScreen(
                                 expanded = showRelayMenu,
                                 onDismissRequest = { showRelayMenu = false },
                             ) {
+                                DropdownMenuItem(
+                                    text = { Text("リレー設定") },
+                                    onClick = {
+                                        showRelayMenu = false
+                                        onOpenRelaySettings()
+                                    },
+                                )
                                 relays.forEach { url ->
                                     DropdownMenuItem(
                                         text = { Text(url.relayDisplayName()) },
@@ -169,6 +179,15 @@ fun StatusScreen(
                                     )
                                 }
                             }
+                        }
+                    },
+                    actions = {
+                        IconButton(onClick = onOpenSettings) {
+                            Icon(
+                                Icons.Default.Settings,
+                                contentDescription = "設定",
+                                tint = headerContentColor,
+                            )
                         }
                     },
                     colors = TopAppBarDefaults.topAppBarColors(

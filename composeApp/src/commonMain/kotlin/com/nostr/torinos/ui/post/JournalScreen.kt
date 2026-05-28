@@ -100,6 +100,7 @@ fun JournalScreen(
     onUserClick: (pubkey: String) -> Unit = {},
     ownPubkey: String? = null,
     ownProfile: NostrProfile? = null,
+    onOpenRelaySettings: () -> Unit = {},
     targetPubkey: String? = null,
     viewModel: JournalViewModel = viewModel(key = targetPubkey?.let { "journal-$it" } ?: "journal") {
         JournalViewModel(targetPubkey)
@@ -184,6 +185,13 @@ fun JournalScreen(
                             expanded = showRelayMenu,
                             onDismissRequest = { showRelayMenu = false },
                         ) {
+                            DropdownMenuItem(
+                                text = { Text("リレー設定") },
+                                onClick = {
+                                    showRelayMenu = false
+                                    onOpenRelaySettings()
+                                },
+                            )
                             relays.forEach { url ->
                                 DropdownMenuItem(
                                     text = { Text(url.relayDisplayName()) },

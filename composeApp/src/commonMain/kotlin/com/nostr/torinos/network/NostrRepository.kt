@@ -39,6 +39,7 @@ object NostrRepository {
     internal val httpClient = createHttpClient()
     private val stateMutex = Mutex()
     private val activeRelays = mutableMapOf<String, ActiveRelayHandle>()
+    private var enabledRelayUrls: List<String> = RelayStore.defaults.filter { it.enabled }.map { it.url }
     /** subId → (filter, targetRelayUrl) targetRelayUrl=null は全リレー対象 */
     private val activeSubscriptions = mutableMapOf<String, Pair<NostrFilter, String?>>()
     private val temporaryRelays = mutableMapOf<String, TemporaryRelayHandle>()
@@ -49,36 +50,12 @@ object NostrRepository {
         scope.launch {
             try {
                 RelayStore.relays.collect { urls ->
-                    val desiredUrls = urls.toSet()
-                    val (removedHandles, newUrls) = stateMutex.withLock {
-                        val removed = (activeRelays.keys - desiredUrls)
-                            .mapNotNull { url -> activeRelays.remove(url) }
-                        activeRelayCount.value = activeRelays.size
-                        val added = urls.filterNot { it in activeRelays }
-                        removed to added
+                    val (removedHandles, newHandles) = stateMutex.withLock {
+                        enabledRelayUrls = urls
+                        reconcileActiveRelaysLocked()
                     }
                     removedHandles.forEach { it.close() }
-
-                    // 追加されたリレーに接続
-                    newUrls.forEach { url ->
-                        appLog("[Repo] connecting to relay: $url")
-                        val relay = NostrRelay(url, httpClient)
-                        val handle = createActiveRelayHandle(relay)
-                        val shouldConnect = stateMutex.withLock {
-                            if (url in activeRelays) {
-                                false
-                            } else {
-                                activeRelays[url] = handle
-                                activeRelayCount.value = activeRelays.size
-                                true
-                            }
-                        }
-                        if (shouldConnect) {
-                            relay.connect(scope)
-                        } else {
-                            handle.close()
-                        }
-                    }
+                    newHandles.forEach { it.relay.connect(scope) }
                 }
             } catch (e: CancellationException) {
                 throw e
@@ -131,6 +108,27 @@ object NostrRepository {
         return ActiveRelayHandle(relay, listOf(messageJob, connectedJob))
     }
 
+    private fun desiredActiveRelayUrlsLocked(): Set<String> =
+        activeSubscriptions.values
+            .flatMap { (_, targetUrl) ->
+                if (targetUrl == null) enabledRelayUrls else listOf(targetUrl)
+            }
+            .filter { it in enabledRelayUrls }
+            .toSet()
+
+    private fun reconcileActiveRelaysLocked(): Pair<List<ActiveRelayHandle>, List<ActiveRelayHandle>> {
+        val desiredUrls = desiredActiveRelayUrlsLocked()
+        val removed = (activeRelays.keys - desiredUrls)
+            .mapNotNull { url -> activeRelays.remove(url) }
+        val added = (desiredUrls - activeRelays.keys).map { url ->
+            appLog("[Repo] connecting to relay: $url")
+            val relay = NostrRelay(url, httpClient)
+            createActiveRelayHandle(relay).also { activeRelays[url] = it }
+        }
+        activeRelayCount.value = activeRelays.size
+        return removed to added
+    }
+
     private fun createTemporaryRelayHandle(relay: NostrRelay): TemporaryRelayHandle {
         val messageJob = scope.launch {
             try {
@@ -175,14 +173,16 @@ object NostrRepository {
     suspend fun subscribe(subscriptionId: String, filter: NostrFilter, relayUrl: String? = null) {
         appLog("[Repo] subscribe() subId='$subscriptionId' relay=${relayUrl ?: "all"} filter=$filter")
         val message = buildReqMessage(subscriptionId, filter)
-        val targets = stateMutex.withLock {
+        val (targets, newHandles) = stateMutex.withLock {
             activeSubscriptions[subscriptionId] = Pair(filter, relayUrl)
+            val (_, added) = reconcileActiveRelaysLocked()
             if (relayUrl != null) {
                 listOfNotNull(activeRelays[relayUrl]?.relay)
             } else {
                 activeRelays.values.map { it.relay }
-            }
+            } to added
         }
+        newHandles.forEach { it.relay.connect(scope) }
         targets.forEach { relay ->
             appLog("[Repo] sending REQ to ${relay.url}")
             relay.send(message)
@@ -223,11 +223,14 @@ object NostrRepository {
         appLog("[Repo] close() subId='$subscriptionId' relayCount=${relayCount}")
         val msg = buildCloseMessage(subscriptionId)
         scope.launch {
-            val targets = stateMutex.withLock {
+            val (targets, removedHandles) = stateMutex.withLock {
+                val targetRelays = activeRelays.values.map { it.relay }
                 activeSubscriptions.remove(subscriptionId)
-                activeRelays.values.map { it.relay }
+                val (removed, _) = reconcileActiveRelaysLocked()
+                targetRelays to removed
             }
             targets.forEach { it.send(msg) }
+            removedHandles.forEach { it.close() }
         }
     }
 
@@ -261,11 +264,14 @@ object NostrRepository {
     suspend fun closeSuspending(subscriptionId: String) {
         appLog("[Repo] closeSuspending() subId='$subscriptionId' relayCount=${relayCount}")
         val msg = buildCloseMessage(subscriptionId)
-        val targets = stateMutex.withLock {
+        val (targets, removedHandles) = stateMutex.withLock {
+            val targetRelays = activeRelays.values.map { it.relay }
             activeSubscriptions.remove(subscriptionId)
-            activeRelays.values.map { it.relay }
+            val (removed, _) = reconcileActiveRelaysLocked()
+            targetRelays to removed
         }
         targets.forEach { it.send(msg) }
+        removedHandles.forEach { it.close() }
     }
 
     /** 現在接続中のリレー数 */

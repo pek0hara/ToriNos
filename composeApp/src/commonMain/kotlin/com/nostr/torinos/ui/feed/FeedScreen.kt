@@ -30,6 +30,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.key
 import androidx.compose.runtime.getValue
@@ -55,6 +56,7 @@ import com.nostr.torinos.ui.profile.AvatarCircle
 @Composable
 fun FeedScreen(
     onOpenSettings: () -> Unit = {},
+    onOpenRelaySettings: () -> Unit = {},
     onOpenNotifications: () -> Unit = {},
     onUserClick: (pubkey: String) -> Unit = {},
     onOpenProfile: () -> Unit = {},
@@ -77,9 +79,12 @@ fun FeedScreen(
     /** null = グローバルフィード、非null = 特定ユーザーのポスト */
     authorPubkey: String? = null,
 ) {
-    val relays by RelayStore.relays.collectAsState(initial = emptyList())
+    val relays by RelayStore.relays.collectAsState(
+        initial = RelayStore.defaults.filter { it.enabled }.map { it.url },
+    )
     val selectedFollowingRelayUrl by RelayStore.selectedFollowingRelayUrl.collectAsState()
     val selectedGlobalRelayUrl by RelayStore.selectedGlobalRelayUrl.collectAsState()
+    val effectiveGlobalRelayUrl = selectedGlobalRelayUrl ?: relays.firstOrNull()
     val followedPubkeys by FollowRepository.followedPubkeys.collectAsState()
     var showRelayMenu by remember { mutableStateOf(false) }
     var feedTab by rememberSaveable { mutableStateOf(FeedTab.Following) }
@@ -115,8 +120,9 @@ fun FeedScreen(
         if (selectedFollowingRelayUrl != null && selectedFollowingRelayUrl !in relays) {
             RelayStore.setSelectedFollowingRelayUrl(null)
         }
-        if (selectedGlobalRelayUrl == null || selectedGlobalRelayUrl !in relays) {
-            RelayStore.setSelectedGlobalRelayUrl(relays.firstOrNull())
+        val fallbackGlobalRelayUrl = relays.firstOrNull()
+        if (fallbackGlobalRelayUrl != null && (selectedGlobalRelayUrl == null || selectedGlobalRelayUrl !in relays)) {
+            RelayStore.setSelectedGlobalRelayUrl(fallbackGlobalRelayUrl)
         }
     }
 
@@ -131,9 +137,9 @@ fun FeedScreen(
     }
 
     val selectedFeedRelayUrl = when {
-        authorPubkey != null -> selectedGlobalRelayUrl
+        authorPubkey != null -> effectiveGlobalRelayUrl
         visibleFeedTab == FeedTab.Following -> selectedFollowingRelayUrl
-        else -> selectedGlobalRelayUrl
+        else -> effectiveGlobalRelayUrl
     }
     val canSelectAllRelays = authorPubkey == null && visibleFeedTab == FeedTab.Following
     val activeRelayUrl = selectedFeedRelayUrl
@@ -190,7 +196,7 @@ fun FeedScreen(
                                     text = { Text("リレー設定") },
                                     onClick = {
                                         showRelayMenu = false
-                                        onOpenSettings()
+                                        onOpenRelaySettings()
                                     },
                                 )
                                 relays.forEach { url ->
@@ -398,6 +404,12 @@ private fun FeedTimelinePane(
 
     LaunchedEffect(viewModel) {
         viewModel.startSubscriptions()
+    }
+
+    DisposableEffect(viewModel) {
+        onDispose {
+            viewModel.stopSubscriptions()
+        }
     }
 
     NoteTimeline(

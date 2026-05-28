@@ -13,6 +13,9 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.ExpandLess
+import androidx.compose.material.icons.filled.ExpandMore
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
@@ -44,6 +47,9 @@ fun RelaySettingsScreen(
 ) {
     val entries by viewModel.entries.collectAsState()
     var input by remember { mutableStateOf("") }
+    var showDisabledRelays by remember { mutableStateOf(false) }
+    val enabledEntries = entries.filter { it.enabled }
+    val disabledEntries = entries.filterNot { it.enabled }
 
     Scaffold(
         contentWindowInsets = WindowInsets(0),
@@ -58,10 +64,19 @@ fun RelaySettingsScreen(
                         )
                     }
                 },
+                actions = {
+                    IconButton(onClick = { viewModel.resetToDefaults() }) {
+                        Icon(
+                            Icons.Default.Refresh,
+                            contentDescription = "リレー設定をリセット",
+                        )
+                    }
+                },
                 colors = TopAppBarDefaults.topAppBarColors(
                     containerColor = MaterialTheme.colorScheme.primary,
                     titleContentColor = MaterialTheme.colorScheme.onPrimary,
                     navigationIconContentColor = MaterialTheme.colorScheme.onPrimary,
+                    actionIconContentColor = MaterialTheme.colorScheme.onPrimary,
                 ),
             )
         },
@@ -101,7 +116,7 @@ fun RelaySettingsScreen(
             HorizontalDivider()
 
             LazyColumn(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                items(entries, key = { it.url }) { entry ->
+                items(enabledEntries, key = { it.url }) { entry ->
                     RelayRow(
                         entry = entry,
                         onToggle = { viewModel.setEnabled(entry.url, it) },
@@ -109,7 +124,54 @@ fun RelaySettingsScreen(
                     )
                     HorizontalDivider()
                 }
+                if (disabledEntries.isNotEmpty()) {
+                    item(key = "disabled-relays-header") {
+                        DisabledRelaysHeader(
+                            count = disabledEntries.size,
+                            expanded = showDisabledRelays,
+                            onToggle = { showDisabledRelays = !showDisabledRelays },
+                        )
+                        HorizontalDivider()
+                    }
+                }
+                if (showDisabledRelays) {
+                    items(disabledEntries, key = { it.url }) { entry ->
+                        RelayRow(
+                            entry = entry,
+                            onToggle = { viewModel.setEnabled(entry.url, it) },
+                            onDelete = { viewModel.remove(entry.url) },
+                        )
+                        HorizontalDivider()
+                    }
+                }
             }
+        }
+    }
+}
+
+@Composable
+private fun DisabledRelaysHeader(
+    count: Int,
+    expanded: Boolean,
+    onToggle: () -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.SpaceBetween,
+    ) {
+        Text(
+            text = "無効なリレー $count 件",
+            style = MaterialTheme.typography.bodyMedium,
+            modifier = Modifier.weight(1f),
+        )
+        IconButton(onClick = onToggle) {
+            Icon(
+                imageVector = if (expanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+                contentDescription = if (expanded) "無効なリレーを折りたたむ" else "無効なリレーを表示",
+            )
         }
     }
 }

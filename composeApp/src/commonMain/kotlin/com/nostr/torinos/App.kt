@@ -444,6 +444,9 @@ fun App() {
                     composable("feed") {
                         FeedScreen(
                             onOpenSettings = { showQuickSettings = true },
+                            onOpenRelaySettings = {
+                                nav.navigate("relay-settings") { closeProfileRoute() }
+                            },
                             onOpenNotifications = {
                                 notificationsViewModel?.markAllRead()
                                 notificationsScrollToTopRequest++
@@ -493,6 +496,10 @@ fun App() {
                                             nav.navigate("myprofile") { launchSingleTop = true }
                                         }
                                     },
+                                    onOpenRelaySettings = {
+                                        nav.navigate("relay-settings") { closeProfileRoute() }
+                                    },
+                                    onOpenSettings = { showQuickSettings = true },
                                     selectedServiceTab = currentServiceTab,
                                     onServiceTabSelected = { currentServiceTab = it },
                                 )
@@ -509,6 +516,10 @@ fun App() {
                                             nav.navigate("myprofile") { launchSingleTop = true }
                                         }
                                     },
+                                    onOpenRelaySettings = {
+                                        nav.navigate("relay-settings") { closeProfileRoute() }
+                                    },
+                                    onOpenSettings = { showQuickSettings = true },
                                     selectedServiceTab = currentServiceTab,
                                     onServiceTabSelected = { currentServiceTab = it },
                                 )
@@ -570,6 +581,9 @@ fun App() {
                             onUserClick = { pubkey -> nav.navigate(ProfileRoute(pubkey)) },
                             ownPubkey = ownPubkey,
                             ownProfile = ownProfile,
+                            onOpenRelaySettings = {
+                                nav.navigate("relay-settings") { closeProfileRoute() }
+                            },
                         )
                     }
                     composable<ChannelRoute> { backStack ->
@@ -789,6 +803,9 @@ fun App() {
                             onUserClick = { pk -> nav.navigate(ProfileRoute(pk)) },
                             ownPubkey = ownPubkey,
                             ownProfile = ownProfile,
+                            onOpenRelaySettings = {
+                                nav.navigate("relay-settings") { closeProfileRoute() }
+                            },
                             targetPubkey = route.pubkey,
                         )
                     }

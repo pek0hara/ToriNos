@@ -28,6 +28,7 @@ import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.CleaningServices
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.outlined.StarBorder
 import androidx.compose.material3.AlertDialog
@@ -81,6 +82,8 @@ fun ChannelListScreen(
     ownPubkey: String? = null,
     ownProfile: NostrProfile? = null,
     onOpenProfile: () -> Unit = {},
+    onOpenRelaySettings: () -> Unit = {},
+    onOpenSettings: () -> Unit = {},
     selectedServiceTab: ServiceTab = ServiceTab.Channels,
     onServiceTabSelected: (ServiceTab) -> Unit = {},
 ) {
@@ -180,6 +183,13 @@ fun ChannelListScreen(
                                 expanded = showRelayMenu,
                                 onDismissRequest = { showRelayMenu = false },
                             ) {
+                                DropdownMenuItem(
+                                    text = { Text("リレー設定") },
+                                    onClick = {
+                                        showRelayMenu = false
+                                        onOpenRelaySettings()
+                                    },
+                                )
                                 relays.forEach { url ->
                                     DropdownMenuItem(
                                         text = { Text(url.relayDisplayName()) },
@@ -209,6 +219,13 @@ fun ChannelListScreen(
                                     tint = headerContentColor,
                                 )
                             }
+                        }
+                        IconButton(onClick = onOpenSettings) {
+                            Icon(
+                                Icons.Default.Settings,
+                                contentDescription = "設定",
+                                tint = headerContentColor,
+                            )
                         }
                     },
                     colors = TopAppBarDefaults.topAppBarColors(

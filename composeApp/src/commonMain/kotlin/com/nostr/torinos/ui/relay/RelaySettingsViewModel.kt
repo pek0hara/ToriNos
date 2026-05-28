@@ -31,6 +31,11 @@ class RelaySettingsViewModel : SafeViewModel() {
         scheduleRelayListPublish()
     }
 
+    fun resetToDefaults() {
+        RelayStore.resetToDefaults()
+        scheduleRelayListPublish()
+    }
+
     private fun scheduleRelayListPublish() {
         if (!isWriteSupported) return
         publishRelayListJob?.cancel()
