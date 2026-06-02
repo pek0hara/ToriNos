@@ -30,5 +30,20 @@ fun extractWebUrlMatches(content: String): List<ExtractedWebUrl> =
         }
         .toList()
 
+fun truncateTextPreservingWebUrls(
+    text: String,
+    maxLength: Int,
+    ellipsis: String = "…",
+): String {
+    if (text.length <= maxLength) return text
+
+    val end = extractWebUrlMatches(text)
+        .firstOrNull { match -> match.start < maxLength && maxLength < match.endExclusive }
+        ?.endExclusive
+        ?: maxLength
+
+    return text.take(end).trimEnd() + ellipsis
+}
+
 private fun String.trimUrlBoundary(): String =
     trimEnd('.', ',', ';', ':', ')', ']', '}', '>', '"', '\'')

@@ -581,9 +581,9 @@ private fun CollapsibleNoteText(
 ) {
     var expanded by remember(text) { mutableStateOf(false) }
     var hasHiddenLines by remember(text) { mutableStateOf(false) }
-    val exceedsCharacterLimit = text.length >= CollapsedTextCharacterLimit
+    val exceedsCharacterLimit = text.length > CollapsedTextCharacterLimit
     val displayedText = if (!expanded && exceedsCharacterLimit) {
-        text.take(CollapsedTextCharacterLimit).trimEnd() + "…"
+        truncateTextPreservingWebUrls(text, CollapsedTextCharacterLimit)
     } else {
         text
     }
