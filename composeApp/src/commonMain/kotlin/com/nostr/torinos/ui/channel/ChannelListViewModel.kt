@@ -15,6 +15,7 @@ import com.nostr.torinos.network.CachedChannelSummary
 import com.nostr.torinos.network.ChannelCacheStore
 import com.nostr.torinos.network.NostrRepository
 import com.nostr.torinos.ui.SafeViewModel
+import com.nostr.torinos.ui.profile.customEmojiMap
 import kotlin.reflect.KClass
 import kotlin.time.Clock
 import kotlinx.coroutines.Job
@@ -36,6 +37,7 @@ data class ChannelItem(
     val latestMessageAuthorPubkey: String? = null,
     val latestMessageAuthorProfile: NostrProfile? = null,
     val latestMessagePreview: String? = null,
+    val latestMessageCustomEmojis: Map<String, String> = emptyMap(),
     val unreadCount: Int = 0,
     val hasBeenOpened: Boolean = false,
     val isFavorite: Boolean = false,
@@ -485,6 +487,7 @@ class ChannelListViewModel(private val relayUrl: String? = null) : SafeViewModel
                 latestMessageAuthorPubkey = event.pubkey,
                 latestMessageAuthorProfile = authorProfiles[event.pubkey],
                 latestMessagePreview = event.content,
+                latestMessageCustomEmojis = event.tags.customEmojiMap(),
             )
             scheduleAuthorSubscription()
         }
@@ -670,6 +673,7 @@ class ChannelListViewModel(private val relayUrl: String? = null) : SafeViewModel
                         latestMessageAuthorProfile = (cached?.latestMessageAuthorPubkey ?: it.latestMessageAuthorPubkey)
                             ?.let { pubkey -> authorProfiles[pubkey] },
                         latestMessagePreview = cached?.latestMessagePreview ?: it.latestMessagePreview,
+                        latestMessageCustomEmojis = it.latestMessageCustomEmojis,
                         unreadCount = cached?.unreadCount ?: 0,
                         hasBeenOpened = cached?.hasBeenOpened ?: false,
                         isFavorite = cached?.isFavorite ?: false,

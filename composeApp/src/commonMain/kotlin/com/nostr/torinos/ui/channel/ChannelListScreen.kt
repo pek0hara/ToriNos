@@ -577,6 +577,7 @@ private fun ChannelRow(item: ChannelItem, onClick: () -> Unit, onLongClick: () -
                         modifier = Modifier.weight(1f),
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        customEmojis = item.latestMessageCustomEmojis,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                     )

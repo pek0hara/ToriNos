@@ -18,6 +18,8 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Send
@@ -53,6 +55,7 @@ import com.nostr.torinos.model.ChannelMeta
 import com.nostr.torinos.network.MuteStore
 import com.nostr.torinos.network.RelayStore
 import com.nostr.torinos.ui.components.LazyListScrollbar
+import com.nostr.torinos.ui.components.LinkedText
 import com.nostr.torinos.ui.components.NoteCard
 import com.nostr.torinos.ui.components.ProfileNameText
 import com.nostr.torinos.model.stripNostrEventUris
@@ -421,7 +424,9 @@ private fun ThreadInfoContent(
     onUserClick: (String) -> Unit,
 ) {
     Column(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier
+            .fillMaxWidth()
+            .verticalScroll(rememberScrollState()),
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
         Text(
@@ -431,10 +436,11 @@ private fun ThreadInfoContent(
             overflow = TextOverflow.Ellipsis,
         )
         if (meta.about.isNotBlank()) {
-            Text(
+            LinkedText(
                 text = meta.about,
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
+                onProfileClick = onUserClick,
             )
         }
         if (ownerPubkey != null) {
