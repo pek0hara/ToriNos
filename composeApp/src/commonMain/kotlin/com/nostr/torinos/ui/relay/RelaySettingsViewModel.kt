@@ -6,15 +6,30 @@ import com.nostr.torinos.crypto.isWriteSupported
 import com.nostr.torinos.crypto.signEvent
 import com.nostr.torinos.network.NostrRepository
 import com.nostr.torinos.network.RelayEntry
+import com.nostr.torinos.network.RelayInformation
+import com.nostr.torinos.network.RelayInformationRepository
 import com.nostr.torinos.network.RelayStore
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
+
+data class RelayInformationUiState(
+    val relayUrl: String? = null,
+    val isLoading: Boolean = false,
+    val information: RelayInformation? = null,
+    val errorMessage: String? = null,
+)
 
 class RelaySettingsViewModel : SafeViewModel() {
     val entries: StateFlow<List<RelayEntry>> = RelayStore.entries
+    private val _informationState = MutableStateFlow(RelayInformationUiState())
+    val informationState: StateFlow<RelayInformationUiState> = _informationState.asStateFlow()
 
     private var publishRelayListJob: Job? = null
+    private var fetchInformationJob: Job? = null
 
     fun add(url: String) {
         RelayStore.add(url)
@@ -34,6 +49,47 @@ class RelaySettingsViewModel : SafeViewModel() {
     fun resetToDefaults() {
         RelayStore.resetToDefaults()
         scheduleRelayListPublish()
+    }
+
+    fun showRelayInformation(url: String) {
+        fetchRelayInformation(url = url, forceRefresh = false)
+    }
+
+    fun refreshRelayInformation() {
+        val url = _informationState.value.relayUrl ?: return
+        fetchRelayInformation(url = url, forceRefresh = true)
+    }
+
+    fun dismissRelayInformation() {
+        fetchInformationJob?.cancel()
+        fetchInformationJob = null
+        _informationState.value = RelayInformationUiState()
+    }
+
+    private fun fetchRelayInformation(url: String, forceRefresh: Boolean) {
+        fetchInformationJob?.cancel()
+        _informationState.value = RelayInformationUiState(relayUrl = url, isLoading = true)
+        fetchInformationJob = launch {
+            val result = RelayInformationRepository.fetch(url, forceRefresh)
+            _informationState.update { current ->
+                if (current.relayUrl != url) {
+                    current
+                } else {
+                    result.fold(
+                        onSuccess = {
+                            current.copy(isLoading = false, information = it, errorMessage = null)
+                        },
+                        onFailure = {
+                            current.copy(
+                                isLoading = false,
+                                information = null,
+                                errorMessage = it.message ?: "リレー情報を取得できませんでした",
+                            )
+                        },
+                    )
+                }
+            }
+        }
     }
 
     private fun scheduleRelayListPublish() {

@@ -48,6 +48,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.nostr.torinos.model.NostrProfile
 import com.nostr.torinos.network.FollowRepository
+import com.nostr.torinos.network.MuteStore
 import com.nostr.torinos.network.RelayStore
 import com.nostr.torinos.ui.components.NoteTimeline
 import com.nostr.torinos.ui.profile.AvatarCircle
@@ -86,8 +87,10 @@ fun FeedScreen(
     val selectedGlobalRelayUrl by RelayStore.selectedGlobalRelayUrl.collectAsState()
     val effectiveGlobalRelayUrl = selectedGlobalRelayUrl ?: relays.firstOrNull()
     val followedPubkeys by FollowRepository.followedPubkeys.collectAsState()
+    val mutedPubkeys by MuteStore.mutedPubkeys.collectAsState()
     var showRelayMenu by remember { mutableStateOf(false) }
     var feedTab by rememberSaveable { mutableStateOf(FeedTab.Following) }
+    var followingFeedMode by rememberSaveable { mutableStateOf(FollowingFeedMode.Following) }
     var handledScrollToTopRequest by remember { mutableStateOf(scrollToTopRequest) }
     val isLoggedOutMainFeed = authorPubkey == null && isAccountLoaded && ownPubkey == null
     val visibleFeedTabs = if (isLoggedOutMainFeed) listOf(FeedTab.Global) else FeedTab.entries
@@ -138,11 +141,17 @@ fun FeedScreen(
 
     val selectedFeedRelayUrl = when {
         authorPubkey != null -> effectiveGlobalRelayUrl
-        visibleFeedTab == FeedTab.Following -> selectedFollowingRelayUrl
+        visibleFeedTab == FeedTab.Following -> null
         else -> effectiveGlobalRelayUrl
     }
     val canSelectAllRelays = authorPubkey == null && visibleFeedTab == FeedTab.Following
     val activeRelayUrl = selectedFeedRelayUrl
+    val topBarTitle = when {
+        authorPubkey != null -> selectedFeedRelayUrl?.relayDisplayName() ?: "—"
+        visibleFeedTab == FeedTab.Following && followingFeedMode == FollowingFeedMode.Muted -> "ミュートリスト"
+        selectedFeedRelayUrl == null && canSelectAllRelays -> "すべてのリレー"
+        else -> selectedFeedRelayUrl?.relayDisplayName() ?: "—"
+    }
     val feedBackgroundColor = MaterialTheme.colorScheme.background
     val feedContentColor = MaterialTheme.colorScheme.onBackground
 
@@ -157,8 +166,7 @@ fun FeedScreen(
                             horizontalArrangement = Arrangement.Start,
                         ) {
                             Text(
-                                text = selectedFeedRelayUrl?.relayDisplayName()
-                                    ?: if (canSelectAllRelays) "すべてのリレー" else "—",
+                                text = topBarTitle,
                                 modifier = Modifier.weight(1f, fill = false),
                                 color = feedContentColor,
                                 maxLines = 1,
@@ -167,7 +175,7 @@ fun FeedScreen(
                             IconButton(onClick = { showRelayMenu = true }) {
                                 Icon(
                                     Icons.Default.ArrowDropDown,
-                                    contentDescription = "リレー切り替え",
+                                    contentDescription = if (canSelectAllRelays) "フィードメニュー" else "リレー切り替え",
                                     tint = feedContentColor,
                                 )
                             }
@@ -179,10 +187,14 @@ fun FeedScreen(
                                     DropdownMenuItem(
                                         text = { Text("すべてのリレー") },
                                         onClick = {
+                                            followingFeedMode = FollowingFeedMode.Following
                                             RelayStore.setSelectedFollowingRelayUrl(null)
                                             showRelayMenu = false
                                         },
-                                        trailingIcon = if (selectedFeedRelayUrl == null) {
+                                        trailingIcon = if (
+                                            followingFeedMode == FollowingFeedMode.Following &&
+                                            selectedFeedRelayUrl == null
+                                        ) {
                                             {
                                                 Icon(
                                                     Icons.Default.Check,
@@ -191,26 +203,21 @@ fun FeedScreen(
                                             }
                                         } else null,
                                     )
-                                }
-                                DropdownMenuItem(
-                                    text = { Text("リレー設定") },
-                                    onClick = {
-                                        showRelayMenu = false
-                                        onOpenRelaySettings()
-                                    },
-                                )
-                                relays.forEach { url ->
                                     DropdownMenuItem(
-                                        text = { Text(url.relayDisplayName()) },
+                                        text = { Text("リレー設定") },
                                         onClick = {
-                                            if (canSelectAllRelays) {
-                                                RelayStore.setSelectedFollowingRelayUrl(url)
-                                            } else {
-                                                RelayStore.setSelectedGlobalRelayUrl(url)
-                                            }
+                                            showRelayMenu = false
+                                            onOpenRelaySettings()
+                                        },
+                                    )
+                                    DropdownMenuItem(
+                                        text = { Text("ミュートリスト") },
+                                        onClick = {
+                                            followingFeedMode = FollowingFeedMode.Muted
+                                            RelayStore.setSelectedFollowingRelayUrl(null)
                                             showRelayMenu = false
                                         },
-                                        trailingIcon = if (url == selectedFeedRelayUrl) {
+                                        trailingIcon = if (followingFeedMode == FollowingFeedMode.Muted) {
                                             {
                                                 Icon(
                                                     Icons.Default.Check,
@@ -219,6 +226,31 @@ fun FeedScreen(
                                             }
                                         } else null,
                                     )
+                                } else {
+                                    DropdownMenuItem(
+                                        text = { Text("リレー設定") },
+                                        onClick = {
+                                            showRelayMenu = false
+                                            onOpenRelaySettings()
+                                        },
+                                    )
+                                    relays.forEach { url ->
+                                        DropdownMenuItem(
+                                            text = { Text(url.relayDisplayName()) },
+                                            onClick = {
+                                                RelayStore.setSelectedGlobalRelayUrl(url)
+                                                showRelayMenu = false
+                                            },
+                                            trailingIcon = if (url == selectedFeedRelayUrl) {
+                                                {
+                                                    Icon(
+                                                        Icons.Default.Check,
+                                                        contentDescription = null,
+                                                    )
+                                                }
+                                            } else null,
+                                        )
+                                    }
                                 }
                             }
                         }
@@ -322,16 +354,20 @@ fun FeedScreen(
 
             visibleFeedTab == FeedTab.Following -> {
                 key(FeedTab.Following) {
-                    val followingAuthors = followedPubkeys.sorted()
+                    val followingAuthors = when (followingFeedMode) {
+                        FollowingFeedMode.Following -> followedPubkeys.sorted()
+                        FollowingFeedMode.Muted -> mutedPubkeys.sorted()
+                    }
                     val ownerKey = ownPubkey ?: "anonymous"
                     FeedTimelinePane(
-                        viewModelKey = "global-${FeedTab.Following.name}-${activeRelayUrl ?: "all"}-" +
-                            "$ownerKey-${followingAuthors.joinToString(separator = ",")}-true",
+                        viewModelKey = "global-${FeedTab.Following.name}-${followingFeedMode.name}-" +
+                            "${activeRelayUrl ?: "all"}-$ownerKey-${followingAuthors.joinToString(separator = ",")}",
                         authorPubkey = null,
                         authorPubkeys = followingAuthors,
                         relayUrl = activeRelayUrl,
-                        includeRepostsInFeed = true,
+                        includeRepostsInFeed = followingFeedMode == FollowingFeedMode.Following,
                         hashtag = null,
+                        filterMutedUsers = followingFeedMode == FollowingFeedMode.Following,
                         ownPubkey = ownPubkey,
                         onUserClick = onUserClick,
                         modifier = timelineModifier,
@@ -380,6 +416,7 @@ private fun FeedTimelinePane(
     relayUrl: String?,
     includeRepostsInFeed: Boolean,
     hashtag: String?,
+    filterMutedUsers: Boolean = true,
     ownPubkey: String?,
     onUserClick: (String) -> Unit,
     modifier: Modifier,
@@ -398,6 +435,7 @@ private fun FeedTimelinePane(
             relayUrl = relayUrl,
             includeRepostsInFeed = includeRepostsInFeed,
             hashtag = hashtag,
+            filterMutedUsers = filterMutedUsers,
         )
     }
     val state by viewModel.state.collectAsState()
@@ -437,6 +475,11 @@ private fun FeedTimelinePane(
 enum class FeedTab(val label: String) {
     Following("フォロー"),
     Global("グローバル"),
+}
+
+private enum class FollowingFeedMode {
+    Following,
+    Muted,
 }
 
 private fun Modifier.feedTabSwipe(

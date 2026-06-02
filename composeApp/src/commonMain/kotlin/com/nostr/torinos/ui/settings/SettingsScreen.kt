@@ -21,6 +21,7 @@ import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Delete
 import com.nostr.torinos.model.NostrProfile
+import com.nostr.torinos.ui.components.ProfileNameText
 import com.nostr.torinos.ui.profile.AvatarCircle
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ButtonDefaults
@@ -279,14 +280,13 @@ private fun AccountSwitcherSection(
                     size = 36,
                 )
                 Column(modifier = Modifier.weight(1f)) {
-                    if (profile?.bestName != null) {
-                        Text(
-                            text = profile.bestName!!,
-                            style = MaterialTheme.typography.bodyMedium,
-                            maxLines = 1,
-                            overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
-                        )
-                    }
+                    ProfileNameText(
+                        profile = profile,
+                        fallback = account.pubkeyHex.take(8),
+                        style = MaterialTheme.typography.bodyMedium,
+                        maxLines = 1,
+                        overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                    )
                     Text(
                         text = shortNpub,
                         style = MaterialTheme.typography.bodySmall,

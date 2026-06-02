@@ -62,6 +62,7 @@ import com.nostr.torinos.model.NostrProfile
 import com.nostr.torinos.network.RelayStore
 import com.nostr.torinos.ui.components.LinkedText
 import com.nostr.torinos.ui.components.NetworkImage
+import com.nostr.torinos.ui.components.ProfileNameText
 import com.nostr.torinos.ui.settings.setPlainText
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -212,8 +213,9 @@ internal fun ProfileHeader(
             }
 
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(
-                    text = profile?.bestName ?: (pubkey.take(8) + "…" + pubkey.takeLast(8)),
+                ProfileNameText(
+                    profile = profile,
+                    fallback = pubkey.take(8) + "…" + pubkey.takeLast(8),
                     style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.Bold,
                     maxLines = 1,

@@ -8,6 +8,7 @@ import com.nostr.torinos.crypto.signEvent
 import com.nostr.torinos.model.NostrFilter
 import com.nostr.torinos.model.NostrProfile
 import com.nostr.torinos.model.toProfile
+import com.nostr.torinos.network.CustomEmojiStore
 import com.nostr.torinos.network.ImageUploader
 import com.nostr.torinos.network.NostrRepository
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -137,9 +138,21 @@ class EditProfileViewModel : SafeViewModel() {
             }
 
             runCatching {
-                val event = signEvent(privateKeyHex, Json.encodeToString(contentJson), kind = 0)
+                val event = signEvent(
+                    privateKeyHex,
+                    Json.encodeToString(contentJson),
+                    kind = 0,
+                    tags = customEmojiTagsForContent(
+                        listOf(s.name, s.displayName).joinToString(" "),
+                        CustomEmojiStore.emojis.value,
+                    ),
+                )
                 NostrRepository.publish(event)
             }.onSuccess {
+                val customEmojis = customEmojiTagsForContent(
+                    listOf(s.name, s.displayName).joinToString(" "),
+                    CustomEmojiStore.emojis.value,
+                ).customEmojiMap()
                 val savedProfile = NostrProfile(
                     name = s.name.trim().ifBlank { null },
                     displayName = s.displayName.trim().ifBlank { null },
@@ -147,6 +160,7 @@ class EditProfileViewModel : SafeViewModel() {
                     picture = s.picture.trim().ifBlank { null },
                     banner = s.banner.trim().ifBlank { null },
                     nip05 = s.nip05.trim().ifBlank { null },
+                    customEmojis = customEmojis,
                 )
                 _state.value = _state.value.copy(isSaving = false, saved = true, savedProfile = savedProfile)
             }.onFailure { e ->

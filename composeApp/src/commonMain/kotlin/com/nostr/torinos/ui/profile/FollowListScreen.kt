@@ -37,6 +37,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.nostr.torinos.crypto.hexToNpub
 import com.nostr.torinos.model.NostrProfile
+import com.nostr.torinos.ui.components.ProfileNameText
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -172,8 +173,9 @@ private fun UserRow(pubkey: String, profile: NostrProfile?, onClick: () -> Unit)
             size = 44,
         )
         Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-            Text(
-                text = profile?.bestName ?: (pubkey.take(8) + "…" + pubkey.takeLast(8)),
+            ProfileNameText(
+                profile = profile,
+                fallback = pubkey.take(8) + "…" + pubkey.takeLast(8),
                 style = MaterialTheme.typography.bodyMedium,
                 fontWeight = FontWeight.Medium,
             )

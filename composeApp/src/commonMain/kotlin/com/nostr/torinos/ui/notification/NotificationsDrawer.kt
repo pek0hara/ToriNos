@@ -43,6 +43,7 @@ import androidx.lifecycle.viewmodel.viewModelFactory
 import com.nostr.torinos.model.NostrEvent
 import com.nostr.torinos.model.NostrProfile
 import com.nostr.torinos.model.stripNostrEventUris
+import com.nostr.torinos.ui.components.ProfileNameText
 import com.nostr.torinos.ui.components.formatTimestamp
 import com.nostr.torinos.ui.components.stripImageUrls
 import com.nostr.torinos.ui.profile.AvatarCircle
@@ -192,8 +193,16 @@ private fun NotificationRow(
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     NotificationIcon(icon = icon, tint = accent)
+                    ProfileNameText(
+                        profile = actorProfile,
+                        fallback = shortPubkey(item.actorPubkey),
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.weight(1f, fill = false),
+                    )
                     Text(
-                        text = notificationTitle(item.type, actorProfile?.bestName, item.actorPubkey),
+                        text = notificationTitleSuffix(item.type),
                         style = MaterialTheme.typography.labelMedium,
                         fontWeight = FontWeight.Bold,
                         color = MaterialTheme.colorScheme.primary,
@@ -255,15 +264,13 @@ private fun EmptyNotifications(text: String) {
     }
 }
 
-private fun notificationTitle(type: NotificationType, actorName: String?, actorPubkey: String): String {
-    val name = actorName ?: shortPubkey(actorPubkey)
-    return when (type) {
-        NotificationType.Reply -> "$name から返信"
-        NotificationType.Repost -> "$name がリポスト"
-        NotificationType.Like -> "$name がいいね"
-        NotificationType.Follow -> "$name がフォロー"
+private fun notificationTitleSuffix(type: NotificationType): String =
+    when (type) {
+        NotificationType.Reply -> "から返信"
+        NotificationType.Repost -> "がリポスト"
+        NotificationType.Like -> "がいいね"
+        NotificationType.Follow -> "がフォロー"
     }
-}
 
 private fun targetPreviewText(event: NostrEvent?, profile: NostrProfile?): String {
     if (event == null) return "対象ポストを読み込み中"

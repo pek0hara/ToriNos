@@ -39,6 +39,7 @@ import com.nostr.torinos.model.toProfile
 import com.nostr.torinos.network.MuteStore
 import com.nostr.torinos.network.NostrRepository
 import com.nostr.torinos.ui.SafeViewModel
+import com.nostr.torinos.ui.components.ProfileNameText
 import com.nostr.torinos.ui.profile.AvatarCircle
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -167,8 +168,9 @@ private fun MutedUserRow(
             pictureUrl = profile?.picture,
             modifier = Modifier.size(36.dp),
         )
-        Text(
-            text = profile?.bestName ?: shortPubkey(pubkey),
+        ProfileNameText(
+            profile = profile,
+            fallback = shortPubkey(pubkey),
             style = MaterialTheme.typography.bodyMedium,
             modifier = Modifier.weight(1f),
         )

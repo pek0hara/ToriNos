@@ -33,6 +33,7 @@ import androidx.compose.ui.unit.dp
 import com.nostr.torinos.model.NostrEvent
 import com.nostr.torinos.model.NostrProfile
 import com.nostr.torinos.model.stripNostrEventUris
+import com.nostr.torinos.ui.components.ProfileNameText
 import com.nostr.torinos.ui.components.formatTimestamp
 import com.nostr.torinos.ui.components.stripImageUrls
 
@@ -136,8 +137,16 @@ private fun ReactionRow(
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     ReactionIcon(icon = icon, tint = accent)
+                    ProfileNameText(
+                        profile = actorProfile,
+                        fallback = shortPubkey(item.actorPubkey),
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.weight(1f, fill = false),
+                    )
                     Text(
-                        text = reactionTitle(item.type, actorProfile?.bestName, item.actorPubkey),
+                        text = reactionTitleSuffix(item.type),
                         style = MaterialTheme.typography.labelMedium,
                         fontWeight = FontWeight.Bold,
                         color = MaterialTheme.colorScheme.primary,
@@ -181,14 +190,12 @@ private fun ReactionIcon(icon: ImageVector, tint: Color) {
     )
 }
 
-private fun reactionTitle(type: MyProfileReactionType, actorName: String?, actorPubkey: String): String {
-    val name = actorName ?: shortPubkey(actorPubkey)
-    return when (type) {
-        MyProfileReactionType.Reply -> "$name から返信"
-        MyProfileReactionType.Repost -> "$name がリポスト"
-        MyProfileReactionType.Like -> "$name がいいね"
+private fun reactionTitleSuffix(type: MyProfileReactionType): String =
+    when (type) {
+        MyProfileReactionType.Reply -> "から返信"
+        MyProfileReactionType.Repost -> "がリポスト"
+        MyProfileReactionType.Like -> "がいいね"
     }
-}
 
 private fun targetPreviewText(event: NostrEvent?, profile: NostrProfile?): String {
     if (event == null) return "対象ポストを読み込み中"

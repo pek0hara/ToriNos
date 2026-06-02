@@ -183,8 +183,9 @@ fun NoteCard(
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Text(
-                    text = profile?.bestName ?: event.shortPubkey,
+                ProfileNameText(
+                    profile = profile,
+                    fallback = event.shortPubkey,
                     style = MaterialTheme.typography.labelMedium,
                     fontWeight = FontWeight.Bold,
                     color = MaterialTheme.colorScheme.primary,
@@ -529,8 +530,9 @@ private fun QuotePreview(
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Text(
-                    text = profile?.bestName ?: event.shortPubkey,
+                ProfileNameText(
+                    profile = profile,
+                    fallback = event.shortPubkey,
                     style = MaterialTheme.typography.labelSmall,
                     fontWeight = FontWeight.Bold,
                     color = MaterialTheme.colorScheme.primary,

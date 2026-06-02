@@ -36,6 +36,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.nostr.torinos.model.NostrProfile
 import com.nostr.torinos.network.MuteStore
+import com.nostr.torinos.ui.components.ProfileNameText
 import com.nostr.torinos.ui.profile.AvatarCircle
 
 private enum class QuickSettingsPane {
@@ -266,14 +267,13 @@ private fun AccountSwitchRow(
             size = 36,
         )
         Column(modifier = Modifier.weight(1f)) {
-            if (profile?.bestName != null) {
-                Text(
-                    text = profile.bestName!!,
-                    style = MaterialTheme.typography.bodyMedium,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-            }
+            ProfileNameText(
+                profile = profile,
+                fallback = shortNpub,
+                style = MaterialTheme.typography.bodyMedium,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
             Text(
                 text = shortNpub,
                 style = MaterialTheme.typography.bodySmall,
@@ -362,8 +362,9 @@ private fun MutedUserDialogRow(
             modifier = Modifier.size(36.dp),
         )
         Column(modifier = Modifier.weight(1f)) {
-            Text(
-                text = profile?.bestName ?: shortPubkeyForDialog(pubkey),
+            ProfileNameText(
+                profile = profile,
+                fallback = shortPubkeyForDialog(pubkey),
                 style = MaterialTheme.typography.bodyMedium,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,

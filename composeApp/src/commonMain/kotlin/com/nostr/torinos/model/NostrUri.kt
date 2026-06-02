@@ -18,7 +18,7 @@ data class NostrProfileReference(
 )
 
 private val nostrUriRegex = Regex(
-    pattern = """\bnostr:([a-z0-9]+1[qpzry9x8gf2tvdw0s3jn54khce6mua7l]+)""",
+    pattern = """\b(?:nostr:)?([a-z0-9]+1[qpzry9x8gf2tvdw0s3jn54khce6mua7l]+)""",
     option = RegexOption.IGNORE_CASE,
 )
 

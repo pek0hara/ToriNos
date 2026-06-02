@@ -48,6 +48,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.nostr.torinos.model.NostrProfile
 import com.nostr.torinos.ui.components.NoteCard
+import com.nostr.torinos.ui.components.ProfileNameText
 import com.nostr.torinos.ui.profile.AvatarCircle
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -275,8 +276,9 @@ private fun UserSearchRow(pubkey: String, profile: NostrProfile, onClick: () -> 
             size = 44,
         )
         Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-            Text(
-                text = profile.bestName ?: (pubkey.take(8) + "…" + pubkey.takeLast(8)),
+            ProfileNameText(
+                profile = profile,
+                fallback = pubkey.take(8) + "…" + pubkey.takeLast(8),
                 style = MaterialTheme.typography.bodyMedium,
                 fontWeight = FontWeight.Medium,
             )

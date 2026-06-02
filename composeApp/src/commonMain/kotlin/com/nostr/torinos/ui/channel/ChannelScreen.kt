@@ -54,6 +54,7 @@ import com.nostr.torinos.network.MuteStore
 import com.nostr.torinos.network.RelayStore
 import com.nostr.torinos.ui.components.LazyListScrollbar
 import com.nostr.torinos.ui.components.NoteCard
+import com.nostr.torinos.ui.components.ProfileNameText
 import com.nostr.torinos.model.stripNostrEventUris
 import com.nostr.torinos.ui.components.stripImageUrls
 import com.nostr.torinos.ui.profile.AvatarCircle
@@ -455,8 +456,9 @@ private fun ThreadInfoContent(
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
-                    Text(
-                        text = ownerProfile?.bestName ?: ownerPubkey.take(8) + "…" + ownerPubkey.takeLast(8),
+                    ProfileNameText(
+                        profile = ownerProfile,
+                        fallback = ownerPubkey.take(8) + "…" + ownerPubkey.takeLast(8),
                         style = MaterialTheme.typography.labelMedium,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
