@@ -7,6 +7,7 @@ import com.nostr.torinos.model.NostrFilter
 import com.nostr.torinos.model.NostrProfile
 import com.nostr.torinos.model.toProfile
 import com.nostr.torinos.network.CustomEmojiStore
+import com.nostr.torinos.network.MuteStore
 import com.nostr.torinos.network.NostrRepository
 import com.nostr.torinos.ui.SafeViewModel
 import com.nostr.torinos.ui.profile.customEmojiMap
@@ -156,6 +157,9 @@ class StatusViewModel(private val relayUrl: String? = null) : SafeViewModel() {
             }
         }
         jobs += launch {
+            MuteStore.mutedPubkeys.collect { rebuildStatuses() }
+        }
+        jobs += launch {
             NostrRepository.subscribe(
                 statusSubId,
                 NostrFilter(kinds = listOf(STATUS_KIND), limit = STATUS_LIMIT),
@@ -196,13 +200,15 @@ class StatusViewModel(private val relayUrl: String? = null) : SafeViewModel() {
     private fun rebuildStatuses() {
         val now = Clock.System.now().epochSeconds
         val selected = _state.value.selectedCategories
-        val extraCategories = rawStatuses.values
+        val visibleCandidates = rawStatuses.values
+            .filter { it.expiration == null || it.expiration > now }
+            .filter { !MuteStore.isMuted(it.event.pubkey) }
+        val extraCategories = visibleCandidates
             .map { it.statusTag }
             .distinct()
             .filter { it !in DEFAULT_CATEGORIES }
         val allCategories = DEFAULT_CATEGORIES + extraCategories
-        val active = rawStatuses.values
-            .filter { it.expiration == null || it.expiration > now }
+        val active = visibleCandidates
             .filter { selected.isEmpty() || it.statusTag in selected }
             .sortedByDescending { it.event.createdAt }
         _state.value = _state.value.copy(statuses = active, availableCategories = allCategories)
