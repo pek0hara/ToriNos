@@ -569,7 +569,6 @@ fun App() {
                                     onAuthorClick = { pubkey ->
                                         nav.navigate(UserArticlesRoute(pubkey))
                                     },
-                                    onUserClick = { pubkey -> nav.navigate(ProfileRoute(pubkey)) },
                                     selectedServiceTab = currentServiceTab,
                                     onServiceTabSelected = { currentServiceTab = it },
                                 )
@@ -663,7 +662,6 @@ fun App() {
                             onArticleClick = { pubkey, identifier ->
                                 nav.navigate(ArticleRoute(pubkey, identifier))
                             },
-                            onUserClick = { pubkey -> nav.navigate(ProfileRoute(pubkey)) },
                         )
                     }
                     composable("journal") {

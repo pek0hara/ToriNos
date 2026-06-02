@@ -94,7 +94,6 @@ fun ArticleHubScreen(
     onOpenRelaySettings: () -> Unit,
     onArticleClick: (pubkey: String, identifier: String) -> Unit,
     onAuthorClick: (pubkey: String) -> Unit,
-    onUserClick: (pubkey: String) -> Unit,
     selectedServiceTab: ServiceTab,
     onServiceTabSelected: (ServiceTab) -> Unit,
 ) {
@@ -241,7 +240,6 @@ fun ArticleHubScreen(
             selectedTab = selectedTab,
             onArticleClick = onArticleClick,
             onAuthorClick = onAuthorClick,
-            onUserClick = onUserClick,
             modifier = Modifier
                 .fillMaxSize()
                 .padding(padding)
@@ -261,7 +259,6 @@ fun UserArticleListScreen(
     pubkey: String,
     onBack: () -> Unit,
     onArticleClick: (pubkey: String, identifier: String) -> Unit,
-    onUserClick: (pubkey: String) -> Unit,
 ) {
     val selectedRelayUrl by RelayStore.selectedArticleRelayUrl.collectAsState()
     val viewModel: UserArticleListViewModel = viewModel(key = "user-articles-$pubkey-${selectedRelayUrl ?: "all"}") {
@@ -312,8 +309,7 @@ fun UserArticleListScreen(
             listState = listState,
             selectedTab = ArticleHubTab.Articles,
             onArticleClick = onArticleClick,
-            onAuthorClick = onUserClick,
-            onUserClick = onUserClick,
+            onAuthorClick = {},
             emptyText = "記事がありません",
             modifier = Modifier.fillMaxSize().padding(padding),
         )
@@ -399,7 +395,6 @@ private fun ArticleListContent(
     selectedTab: ArticleHubTab,
     onArticleClick: (pubkey: String, identifier: String) -> Unit,
     onAuthorClick: (pubkey: String) -> Unit,
-    onUserClick: (pubkey: String) -> Unit,
     modifier: Modifier = Modifier,
     emptyText: String = "記事がありません",
 ) {
@@ -432,7 +427,6 @@ private fun ArticleListContent(
                         ArticleCard(
                             article = article,
                             onClick = { onArticleClick(article.event.pubkey, article.meta.identifier) },
-                            onUserClick = { onUserClick(article.event.pubkey) },
                         )
                         HorizontalDivider()
                     }
@@ -480,7 +474,6 @@ private fun EmptyArticleList(modifier: Modifier, text: String) {
 private fun ArticleCard(
     article: ArticleItem,
     onClick: () -> Unit,
-    onUserClick: () -> Unit,
 ) {
     Column(
         modifier = Modifier
@@ -517,7 +510,7 @@ private fun ArticleCard(
                 overflow = TextOverflow.Ellipsis,
             )
         }
-        ArticleAuthorLine(article = article, onUserClick = onUserClick)
+        ArticleAuthorLine(article = article, onUserClick = {})
         if (article.meta.topics.isNotEmpty()) {
             Text(
                 text = article.meta.topics.take(5).joinToString("  ") { "#$it" },

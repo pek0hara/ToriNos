@@ -27,6 +27,7 @@ object RelayStore {
     private const val SELECTED_LIVE_RELAY_KEY = "selected_live_relay_url"
     private const val SELECTED_MEMO_RELAY_KEY = "selected_memo_relay_url"
     private const val ALL_RELAYS_VALUE = "__all_relays__"
+    private val removedRelayUrls = setOf("wss://relay.nostr.band")
 
     private val json = Json { ignoreUnknownKeys = true }
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
@@ -37,7 +38,6 @@ object RelayStore {
         RelayEntry("wss://r.kojira.io", enabled = true),
         RelayEntry("wss://relay.damus.io", enabled = false),
         RelayEntry("wss://nos.lol", enabled = false),
-        RelayEntry("wss://relay.nostr.band", enabled = false),
         RelayEntry("wss://nostr.wine", enabled = false),
         RelayEntry("wss://search.nos.today", enabled = false),
         RelayEntry("wss://nostr.compile-error.net", enabled = false),
@@ -183,7 +183,16 @@ object RelayStore {
                 }.getOrNull()
             }
             ?.takeIf { it.isNotEmpty() }
-            ?.let { _entries.value = it }
+            ?.let { savedEntries ->
+                val sanitizedEntries = savedEntries
+                    .filterNot { it.url in removedRelayUrls }
+                    .takeIf { it.isNotEmpty() }
+                    ?: defaults
+                _entries.value = sanitizedEntries
+                if (sanitizedEntries != savedEntries) {
+                    saveEntries()
+                }
+            }
 
         val legacySelectedRelayUrl = LocalSettingsStorage.getString(SELECTED_RELAY_KEY)
             ?.takeIf { it in enabledRelayUrls() }
