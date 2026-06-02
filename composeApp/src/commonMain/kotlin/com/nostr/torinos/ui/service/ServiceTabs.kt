@@ -8,9 +8,12 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.unit.sp
 
 enum class ServiceTab(val label: String) {
+    Articles("アーティクル"),
     Channels("チャンネル"),
+    Live("ライブ"),
     Status("ステータス"),
 }
 
@@ -28,7 +31,7 @@ fun ServiceTabRow(
             Tab(
                 selected = selectedTab == tab,
                 onClick = { onTabSelected(tab) },
-                text = { Text(tab.label) },
+                text = { Text(tab.label, fontSize = 13.sp) },
             )
         }
     }
@@ -46,11 +49,12 @@ fun Modifier.serviceTabSwipe(
             change.consume()
         },
         onDragEnd = {
+            val currentIndex = ServiceTab.entries.indexOf(selectedTab)
             when {
-                dragAmount < -SwipeThresholdPx && selectedTab == ServiceTab.Channels ->
-                    onTabSelected(ServiceTab.Status)
-                dragAmount > SwipeThresholdPx && selectedTab == ServiceTab.Status ->
-                    onTabSelected(ServiceTab.Channels)
+                dragAmount < -SwipeThresholdPx && currentIndex < ServiceTab.entries.lastIndex ->
+                    onTabSelected(ServiceTab.entries[currentIndex + 1])
+                dragAmount > SwipeThresholdPx && currentIndex > 0 ->
+                    onTabSelected(ServiceTab.entries[currentIndex - 1])
             }
         },
         onDragCancel = { dragAmount = 0f },

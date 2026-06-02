@@ -9,6 +9,7 @@ import com.nostr.torinos.crypto.toHex
 import com.nostr.torinos.model.NostrEvent
 import com.nostr.torinos.model.NostrFilter
 import com.nostr.torinos.model.NostrProfile
+import com.nostr.torinos.model.NIP23_ARTICLE_KIND
 import com.nostr.torinos.model.quotedEventIds
 import com.nostr.torinos.model.replyTargetId
 import com.nostr.torinos.model.toProfile
@@ -498,7 +499,11 @@ class JournalViewModel(private val targetPubkey: String? = null) : SafeViewModel
         includeLikes: Boolean = true,
         limit: Int = JOURNAL_DATE_LIMIT,
     ): Pair<List<NostrEvent>, List<NostrEvent>> = coroutineScope {
-        val noteKinds = if (includeLikes) listOf(1, 6, 7) else listOf(1, 6)
+        val noteKinds = if (includeLikes) {
+            listOf(1, 6, 7, NIP23_ARTICLE_KIND)
+        } else {
+            listOf(1, 6, NIP23_ARTICLE_KIND)
+        }
         val subId = "journal-${Clock.System.now().epochSeconds}-${since}"
         val mutex = Mutex()
         val memoEvents = mutableListOf<NostrEvent>()

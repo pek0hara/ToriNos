@@ -27,6 +27,7 @@ import androidx.compose.material.icons.automirrored.filled.Article
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.FilterList
 import androidx.compose.material.icons.filled.MailOutline
@@ -71,12 +72,16 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.nostr.torinos.model.NostrEvent
 import com.nostr.torinos.model.NostrProfile
+import com.nostr.torinos.model.NIP23_ARTICLE_KIND
+import com.nostr.torinos.model.markdownPreview
 import com.nostr.torinos.model.quotedEventIds
 import com.nostr.torinos.model.replyTargetId
 import com.nostr.torinos.model.stripNostrEventUris
+import com.nostr.torinos.model.toArticleMeta
 import com.nostr.torinos.network.RelayStore
 import com.nostr.torinos.ui.components.LinkedText
 import com.nostr.torinos.ui.components.NoteCard
+import com.nostr.torinos.ui.components.ProfileNameText
 import com.nostr.torinos.ui.components.QuotedEvent
 import com.nostr.torinos.ui.components.formatTimestamp
 import com.nostr.torinos.ui.components.stripImageUrls
@@ -98,6 +103,7 @@ fun JournalScreen(
     onOpenThread: (eventId: String) -> Unit = {},
     onReply: ((eventId: String, authorPubkey: String, preview: String) -> Unit)? = null,
     onUserClick: (pubkey: String) -> Unit = {},
+    onOpenArticle: (pubkey: String, identifier: String) -> Unit = { _, _ -> },
     ownPubkey: String? = null,
     ownProfile: NostrProfile? = null,
     onOpenRelaySettings: () -> Unit = {},
@@ -424,6 +430,12 @@ fun JournalScreen(
                                                 onOpenThread(targetId)
                                             },
                                         )
+                                        NIP23_ARTICLE_KIND -> JournalArticleRow(
+                                            event = entry.event,
+                                            profile = entry.profile,
+                                            onUserClick = onUserClick,
+                                            onOpenArticle = onOpenArticle,
+                                        )
                                         else -> Unit
                                     }
                                 }
@@ -489,7 +501,8 @@ private enum class JournalEntryFilter(val label: String, val icon: ImageVector) 
     Reply("返信", Icons.Default.MailOutline),
     Repost("リポスト", Icons.Default.Repeat),
     Like("いいね", Icons.Default.Favorite),
-    Memo("メモ", Icons.AutoMirrored.Filled.Article),
+    Memo("メモ", Icons.Default.Edit),
+    Article("記事", Icons.AutoMirrored.Filled.Article),
 }
 
 private val JournalEntry.filter: JournalEntryFilter
@@ -498,6 +511,7 @@ private val JournalEntry.filter: JournalEntryFilter
         is JournalEntry.Note -> when (event.kind) {
             6 -> JournalEntryFilter.Repost
             7 -> JournalEntryFilter.Like
+            NIP23_ARTICLE_KIND -> JournalEntryFilter.Article
             else -> if (event.replyTargetId() != null) JournalEntryFilter.Reply else JournalEntryFilter.Post
         }
     }
@@ -793,13 +807,21 @@ private fun JournalActivityRow(
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     JournalActivityIcon(icon = icon, tint = accent)
-                    Text(
-                        text = "${profile?.bestName ?: event.shortPubkey} が${type.label}",
+                    ProfileNameText(
+                        profile = profile,
+                        fallback = event.shortPubkey,
                         style = MaterialTheme.typography.labelMedium,
                         fontWeight = FontWeight.Bold,
                         color = MaterialTheme.colorScheme.primary,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f, fill = false),
+                    )
+                    Text(
+                        text = "が${type.label}",
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.primary,
                     )
                 }
                 Text(
@@ -815,6 +837,80 @@ private fun JournalActivityRow(
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 customEmojis = targetEvent?.tags?.customEmojiMap().orEmpty(),
+                maxLines = 3,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+    }
+}
+
+@Composable
+private fun JournalArticleRow(
+    event: NostrEvent,
+    profile: NostrProfile?,
+    onUserClick: (String) -> Unit,
+    onOpenArticle: (String, String) -> Unit,
+) {
+    val meta = event.toArticleMeta() ?: return
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable { onOpenArticle(event.pubkey, meta.identifier) }
+            .padding(horizontal = 16.dp, vertical = 12.dp),
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+        verticalAlignment = Alignment.Top,
+    ) {
+        AvatarCircle(
+            pubkey = event.pubkey,
+            name = profile?.bestName,
+            pictureUrl = profile?.picture,
+            size = 40,
+            modifier = Modifier.clickable { onUserClick(event.pubkey) },
+        )
+        Column(
+            modifier = Modifier.weight(1f),
+            verticalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Row(
+                    modifier = Modifier.weight(1f),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    JournalActivityIcon(
+                        icon = JournalEntryFilter.Article.icon,
+                        tint = MaterialTheme.colorScheme.primary,
+                    )
+                    ProfileNameText(
+                        profile = profile,
+                        fallback = event.shortPubkey,
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = FontWeight.Bold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+                Text(
+                    text = formatTimestamp(meta.publishedAt ?: event.createdAt),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Text(
+                text = meta.title?.takeIf { it.isNotBlank() } ?: markdownPreview(event.content).ifBlank { "無題の記事" },
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.SemiBold,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Text(
+                text = meta.summary?.takeIf { it.isNotBlank() } ?: markdownPreview(event.content),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
                 maxLines = 3,
                 overflow = TextOverflow.Ellipsis,
             )

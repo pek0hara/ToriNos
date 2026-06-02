@@ -23,6 +23,8 @@ object RelayStore {
     private const val SELECTED_GLOBAL_RELAY_KEY = "selected_global_relay_url"
     private const val SELECTED_CHANNEL_RELAY_KEY = "selected_channel_relay_url"
     private const val SELECTED_STATUS_RELAY_KEY = "selected_status_relay_url"
+    private const val SELECTED_ARTICLE_RELAY_KEY = "selected_article_relay_url"
+    private const val SELECTED_LIVE_RELAY_KEY = "selected_live_relay_url"
     private const val SELECTED_MEMO_RELAY_KEY = "selected_memo_relay_url"
     private const val ALL_RELAYS_VALUE = "__all_relays__"
 
@@ -46,6 +48,8 @@ object RelayStore {
     private val _selectedGlobalRelayUrl = MutableStateFlow<String?>(null)
     private val _selectedChannelRelayUrl = MutableStateFlow<String?>(null)
     private val _selectedStatusRelayUrl = MutableStateFlow<String?>(null)
+    private val _selectedArticleRelayUrl = MutableStateFlow<String?>(null)
+    private val _selectedLiveRelayUrl = MutableStateFlow<String?>(null)
     private val _selectedMemoRelayUrl = MutableStateFlow<String?>(null)
 
 
@@ -66,6 +70,12 @@ object RelayStore {
 
     /** ステータス画面で選択中のリレー URL */
     val selectedStatusRelayUrl: StateFlow<String?> = _selectedStatusRelayUrl.asStateFlow()
+
+    /** アーティクル画面で選択中のリレー URL */
+    val selectedArticleRelayUrl: StateFlow<String?> = _selectedArticleRelayUrl.asStateFlow()
+
+    /** ライブ画面で選択中のリレー URL */
+    val selectedLiveRelayUrl: StateFlow<String?> = _selectedLiveRelayUrl.asStateFlow()
 
     /** ポストメモ画面で選択中のリレー URL */
     val selectedMemoRelayUrl: StateFlow<String?> = _selectedMemoRelayUrl.asStateFlow()
@@ -138,6 +148,24 @@ object RelayStore {
         )
     }
 
+    fun setSelectedArticleRelayUrl(url: String?) {
+        setSelectedRelayUrl(
+            state = _selectedArticleRelayUrl,
+            url = url,
+            allowAll = false,
+            save = ::saveSelectedArticleRelay,
+        )
+    }
+
+    fun setSelectedLiveRelayUrl(url: String?) {
+        setSelectedRelayUrl(
+            state = _selectedLiveRelayUrl,
+            url = url,
+            allowAll = false,
+            save = ::saveSelectedLiveRelay,
+        )
+    }
+
     fun setSelectedMemoRelayUrl(url: String?) {
         setSelectedRelayUrl(
             state = _selectedMemoRelayUrl,
@@ -182,6 +210,16 @@ object RelayStore {
             ?: legacySelectedRelayUrl
             ?: enabledRelayUrls().firstOrNull()
 
+        _selectedArticleRelayUrl.value = LocalSettingsStorage.getString(SELECTED_ARTICLE_RELAY_KEY)
+            ?.takeIf { it in enabledRelayUrls() }
+            ?: legacySelectedRelayUrl
+            ?: enabledRelayUrls().firstOrNull()
+
+        _selectedLiveRelayUrl.value = LocalSettingsStorage.getString(SELECTED_LIVE_RELAY_KEY)
+            ?.takeIf { it in enabledRelayUrls() }
+            ?: legacySelectedRelayUrl
+            ?: enabledRelayUrls().firstOrNull()
+
         _selectedMemoRelayUrl.value = LocalSettingsStorage.getString(SELECTED_MEMO_RELAY_KEY)
             ?.takeIf { it in enabledRelayUrls() }
             ?: legacySelectedRelayUrl
@@ -205,6 +243,14 @@ object RelayStore {
         if (_selectedStatusRelayUrl.value !in enabledUrls) {
             _selectedStatusRelayUrl.value = enabledUrls.firstOrNull()
             saveSelectedStatusRelay()
+        }
+        if (_selectedArticleRelayUrl.value !in enabledUrls) {
+            _selectedArticleRelayUrl.value = enabledUrls.firstOrNull()
+            saveSelectedArticleRelay()
+        }
+        if (_selectedLiveRelayUrl.value !in enabledUrls) {
+            _selectedLiveRelayUrl.value = enabledUrls.firstOrNull()
+            saveSelectedLiveRelay()
         }
         if (_selectedMemoRelayUrl.value !in enabledUrls) {
             _selectedMemoRelayUrl.value = enabledUrls.firstOrNull()
@@ -265,6 +311,20 @@ object RelayStore {
         val value = _selectedStatusRelayUrl.value
         scope.launch {
             LocalSettingsStorage.putString(SELECTED_STATUS_RELAY_KEY, value)
+        }
+    }
+
+    private fun saveSelectedArticleRelay() {
+        val value = _selectedArticleRelayUrl.value
+        scope.launch {
+            LocalSettingsStorage.putString(SELECTED_ARTICLE_RELAY_KEY, value)
+        }
+    }
+
+    private fun saveSelectedLiveRelay() {
+        val value = _selectedLiveRelayUrl.value
+        scope.launch {
+            LocalSettingsStorage.putString(SELECTED_LIVE_RELAY_KEY, value)
         }
     }
 

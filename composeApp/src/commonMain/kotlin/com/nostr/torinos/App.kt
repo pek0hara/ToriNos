@@ -59,10 +59,15 @@ import com.nostr.torinos.network.ChannelCacheStore
 import com.nostr.torinos.network.CustomEmojiStore
 import com.nostr.torinos.network.FollowRepository
 import com.nostr.torinos.network.NostrRepository
+import com.nostr.torinos.ui.article.ArticleDetailScreen
+import com.nostr.torinos.ui.article.ArticleHubScreen
+import com.nostr.torinos.ui.article.UserArticleListScreen
 import com.nostr.torinos.ui.channel.ChannelListScreen
 import com.nostr.torinos.ui.channel.ChannelScreen
 import com.nostr.torinos.ui.feed.FeedTab
 import com.nostr.torinos.ui.feed.FeedScreen
+import com.nostr.torinos.ui.live.LiveDetailScreen
+import com.nostr.torinos.ui.live.LiveHubScreen
 import com.nostr.torinos.ui.notification.NotificationsDrawer
 import com.nostr.torinos.ui.notification.NotificationsViewModel
 import com.nostr.torinos.ui.settings.MuteListScreen
@@ -93,6 +98,9 @@ import kotlinx.serialization.Serializable
 @Serializable data class ChannelRoute(val channelId: String)
 @Serializable data class ProfileRoute(val pubkey: String)
 @Serializable data class UserJournalRoute(val pubkey: String)
+@Serializable data class ArticleRoute(val pubkey: String, val identifier: String)
+@Serializable data class UserArticlesRoute(val pubkey: String)
+@Serializable data class LiveRoute(val pubkey: String, val identifier: String)
 @Serializable data class FollowingRoute(val pubkey: String)
 @Serializable data class FollowersRoute(val pubkey: String)
 @Serializable data class SearchRoute(val query: String = "")
@@ -542,6 +550,51 @@ fun App() {
                                     onServiceTabSelected = { currentServiceTab = it },
                                 )
                             }
+                            ServiceTab.Articles -> {
+                                ArticleHubScreen(
+                                    ownPubkey = ownPubkey,
+                                    ownProfile = ownProfile,
+                                    onOpenProfile = {
+                                        runWithPrivateKey(PendingKeyAction.Profile) {
+                                            nav.navigate("myprofile") { launchSingleTop = true }
+                                        }
+                                    },
+                                    onOpenSettings = { showQuickSettings = true },
+                                    onOpenRelaySettings = {
+                                        requestRelaySettings()
+                                    },
+                                    onArticleClick = { pubkey, identifier ->
+                                        nav.navigate(ArticleRoute(pubkey, identifier))
+                                    },
+                                    onAuthorClick = { pubkey ->
+                                        nav.navigate(UserArticlesRoute(pubkey))
+                                    },
+                                    onUserClick = { pubkey -> nav.navigate(ProfileRoute(pubkey)) },
+                                    selectedServiceTab = currentServiceTab,
+                                    onServiceTabSelected = { currentServiceTab = it },
+                                )
+                            }
+                            ServiceTab.Live -> {
+                                LiveHubScreen(
+                                    ownPubkey = ownPubkey,
+                                    ownProfile = ownProfile,
+                                    onOpenProfile = {
+                                        runWithPrivateKey(PendingKeyAction.Profile) {
+                                            nav.navigate("myprofile") { launchSingleTop = true }
+                                        }
+                                    },
+                                    onOpenSettings = { showQuickSettings = true },
+                                    onOpenRelaySettings = {
+                                        requestRelaySettings()
+                                    },
+                                    onLiveClick = { pubkey, identifier ->
+                                        nav.navigate(LiveRoute(pubkey, identifier))
+                                    },
+                                    onUserClick = { pubkey -> nav.navigate(ProfileRoute(pubkey)) },
+                                    selectedServiceTab = currentServiceTab,
+                                    onServiceTabSelected = { currentServiceTab = it },
+                                )
+                            }
                             ServiceTab.Status -> {
                                 StatusScreen(
                                     ownPubkey = ownPubkey,
@@ -582,6 +635,37 @@ fun App() {
                             }
                         }
                     }
+                    composable<ArticleRoute> { backStack ->
+                        val route = backStack.toRoute<ArticleRoute>()
+                        ArticleDetailScreen(
+                            pubkey = route.pubkey,
+                            identifier = route.identifier,
+                            onBack = { nav.popBackStack() },
+                            onUserClick = { pubkey -> nav.navigate(ProfileRoute(pubkey)) },
+                            onNoteClick = { eventId -> nav.navigate(ThreadRoute(eventId)) },
+                        )
+                    }
+                    composable<LiveRoute> { backStack ->
+                        val route = backStack.toRoute<LiveRoute>()
+                        LiveDetailScreen(
+                            pubkey = route.pubkey,
+                            identifier = route.identifier,
+                            ownPubkey = ownPubkey,
+                            onBack = { nav.popBackStack() },
+                            onUserClick = { pubkey -> nav.navigate(ProfileRoute(pubkey)) },
+                        )
+                    }
+                    composable<UserArticlesRoute> { backStack ->
+                        val route = backStack.toRoute<UserArticlesRoute>()
+                        UserArticleListScreen(
+                            pubkey = route.pubkey,
+                            onBack = { nav.popBackStack() },
+                            onArticleClick = { pubkey, identifier ->
+                                nav.navigate(ArticleRoute(pubkey, identifier))
+                            },
+                            onUserClick = { pubkey -> nav.navigate(ProfileRoute(pubkey)) },
+                        )
+                    }
                     composable("journal") {
                         JournalScreen(
                             onBack = { nav.popBackStack() },
@@ -617,6 +701,7 @@ fun App() {
                                 }
                             },
                             onUserClick = { pubkey -> nav.navigate(ProfileRoute(pubkey)) },
+                            onOpenArticle = { pubkey, identifier -> nav.navigate(ArticleRoute(pubkey, identifier)) },
                             ownPubkey = ownPubkey,
                             ownProfile = ownProfile,
                             onOpenRelaySettings = {
@@ -839,6 +924,7 @@ fun App() {
                                 }
                             },
                             onUserClick = { pk -> nav.navigate(ProfileRoute(pk)) },
+                            onOpenArticle = { pubkey, identifier -> nav.navigate(ArticleRoute(pubkey, identifier)) },
                             ownPubkey = ownPubkey,
                             ownProfile = ownProfile,
                             onOpenRelaySettings = {

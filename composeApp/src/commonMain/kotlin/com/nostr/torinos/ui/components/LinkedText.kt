@@ -21,7 +21,9 @@ import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.text.TextLinkStyles
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextDecoration
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.em
 import com.nostr.torinos.model.NostrProfile
 import com.nostr.torinos.model.extractNpubReferences
@@ -41,8 +43,9 @@ fun LinkedText(
     onProfileClick: ((pubkey: String) -> Unit)? = null,
     profiles: Map<String, NostrProfile> = emptyMap(),
     onHashtagClick: ((tag: String) -> Unit)? = null,
+    enableWebLinks: Boolean = true,
     maxLines: Int = Int.MAX_VALUE,
-    overflow: androidx.compose.ui.text.style.TextOverflow = androidx.compose.ui.text.style.TextOverflow.Clip,
+    overflow: TextOverflow = TextOverflow.Clip,
     onTextLayout: ((TextLayoutResult) -> Unit)? = null,
 ) {
     val emojis by CustomEmojiStore.emojis.collectAsState()
@@ -59,10 +62,12 @@ fun LinkedText(
     )
     val includeProfiles = onProfileClick != null
     val includeHashtags = onHashtagClick != null
-    val links = remember(text, includeProfiles, includeHashtags) {
+    val links = remember(text, includeProfiles, includeHashtags, enableWebLinks) {
         buildList {
-            extractWebUrlMatches(text).forEach { match ->
-                add(TextLink.Web(match.start, match.endExclusive, match.url))
+            if (enableWebLinks) {
+                extractWebUrlMatches(text).forEach { match ->
+                    add(TextLink.Web(match.start, match.endExclusive, match.url))
+                }
             }
             if (includeProfiles) {
                 extractNpubReferences(text).forEach { reference ->
@@ -225,6 +230,29 @@ fun LinkedText(
         maxLines = maxLines,
         overflow = overflow,
         onTextLayout = { result -> onTextLayout?.invoke(result) },
+    )
+}
+
+@Composable
+fun ProfileNameText(
+    profile: NostrProfile?,
+    fallback: String,
+    modifier: Modifier = Modifier,
+    style: TextStyle = MaterialTheme.typography.bodyMedium,
+    color: androidx.compose.ui.graphics.Color = androidx.compose.ui.graphics.Color.Unspecified,
+    fontWeight: FontWeight? = null,
+    maxLines: Int = 1,
+    overflow: TextOverflow = TextOverflow.Ellipsis,
+) {
+    LinkedText(
+        text = profile?.bestName ?: fallback,
+        modifier = modifier,
+        style = if (fontWeight != null) style.copy(fontWeight = fontWeight) else style,
+        color = color,
+        customEmojis = profile?.customEmojis.orEmpty(),
+        enableWebLinks = false,
+        maxLines = maxLines,
+        overflow = overflow,
     )
 }
 
