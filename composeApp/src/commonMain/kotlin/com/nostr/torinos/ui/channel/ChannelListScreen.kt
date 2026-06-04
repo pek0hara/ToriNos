@@ -89,6 +89,7 @@ fun ChannelListScreen(
 ) {
     val relays by RelayStore.relays.collectAsState(initial = emptyList())
     val selectedRelayUrl by RelayStore.selectedChannelRelayUrl.collectAsState()
+    val isRelayStoreLoaded by RelayStore.isLoaded.collectAsState()
     var showRelayMenu by remember { mutableStateOf(false) }
 
     LaunchedEffect(relays, selectedRelayUrl) {
@@ -98,7 +99,15 @@ fun ChannelListScreen(
     }
 
     val activeRelayUrl = selectedRelayUrl
-    val viewModel: ChannelListViewModel = viewModel(key = "channel-list-${activeRelayUrl ?: "all"}") {
+    if (!isRelayStoreLoaded || activeRelayUrl == null) {
+        ChannelRelayPendingContent(
+            isLoaded = isRelayStoreLoaded,
+            hasEnabledRelays = relays.isNotEmpty(),
+        )
+        return
+    }
+
+    val viewModel: ChannelListViewModel = viewModel(key = "channel-list-$activeRelayUrl") {
         ChannelListViewModel(relayUrl = activeRelayUrl)
     }
     val state by viewModel.state.collectAsState()
@@ -425,6 +434,26 @@ fun ChannelListScreen(
             onBodyChange = viewModel::onCreateBodyChange,
             onCreate = viewModel::createChannel,
         )
+    }
+}
+
+@Composable
+private fun ChannelRelayPendingContent(
+    isLoaded: Boolean,
+    hasEnabledRelays: Boolean,
+) {
+    Box(
+        modifier = Modifier.fillMaxSize().padding(32.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        when {
+            !isLoaded -> CircularProgressIndicator()
+            !hasEnabledRelays -> Text(
+                text = "有効なリレーがありません",
+                color = MaterialTheme.colorScheme.error,
+            )
+            else -> CircularProgressIndicator()
+        }
     }
 }
 

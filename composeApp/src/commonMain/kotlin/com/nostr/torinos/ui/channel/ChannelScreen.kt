@@ -74,9 +74,28 @@ fun ChannelScreen(
     onOpenReposts: (eventId: String) -> Unit = {},
     ownPubkey: String? = null,
 ) {
+    val relays by RelayStore.relays.collectAsState(initial = emptyList())
     val selectedRelayUrl by RelayStore.selectedChannelRelayUrl.collectAsState()
-    val viewModel: ChannelViewModel = viewModel(key = "$channelId-${selectedRelayUrl ?: "all"}") {
-        ChannelViewModel(channelId = channelId, relayUrl = selectedRelayUrl)
+    val isRelayStoreLoaded by RelayStore.isLoaded.collectAsState()
+
+    LaunchedEffect(relays, selectedRelayUrl) {
+        if (selectedRelayUrl == null || selectedRelayUrl !in relays) {
+            RelayStore.setSelectedChannelRelayUrl(relays.firstOrNull())
+        }
+    }
+
+    val activeRelayUrl = selectedRelayUrl
+    if (!isRelayStoreLoaded || activeRelayUrl == null) {
+        ChannelDetailRelayPendingContent(
+            isLoaded = isRelayStoreLoaded,
+            hasEnabledRelays = relays.isNotEmpty(),
+            onBack = onBack,
+        )
+        return
+    }
+
+    val viewModel: ChannelViewModel = viewModel(key = "$channelId-$activeRelayUrl") {
+        ChannelViewModel(channelId = channelId, relayUrl = activeRelayUrl)
     }
     val state by viewModel.state.collectAsState()
     val mutedPubkeys by MuteStore.mutedPubkeys.collectAsState()
@@ -320,6 +339,42 @@ fun ChannelScreen(
                 }
             },
         )
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun ChannelDetailRelayPendingContent(
+    isLoaded: Boolean,
+    hasEnabledRelays: Boolean,
+    onBack: () -> Unit,
+) {
+    Scaffold(
+        contentWindowInsets = WindowInsets(0),
+        topBar = {
+            TopAppBar(
+                title = { Text("チャンネル") },
+                navigationIcon = {
+                    IconButton(onClick = onBack) {
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "戻る")
+                    }
+                },
+            )
+        },
+    ) { padding ->
+        Box(
+            modifier = Modifier.fillMaxSize().padding(padding).padding(32.dp),
+            contentAlignment = Alignment.Center,
+        ) {
+            when {
+                !isLoaded -> CircularProgressIndicator()
+                !hasEnabledRelays -> Text(
+                    text = "有効なリレーがありません",
+                    color = MaterialTheme.colorScheme.error,
+                )
+                else -> CircularProgressIndicator()
+            }
+        }
     }
 }
 

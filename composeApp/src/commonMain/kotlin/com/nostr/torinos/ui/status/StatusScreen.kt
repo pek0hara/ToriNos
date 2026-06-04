@@ -83,6 +83,7 @@ fun StatusScreen(
 ) {
     val relays by RelayStore.relays.collectAsState(initial = emptyList())
     val selectedRelayUrl by RelayStore.selectedStatusRelayUrl.collectAsState()
+    val isRelayStoreLoaded by RelayStore.isLoaded.collectAsState()
     var showRelayMenu by remember { mutableStateOf(false) }
 
     LaunchedEffect(relays, selectedRelayUrl) {
@@ -92,8 +93,16 @@ fun StatusScreen(
     }
 
     val activeRelayUrl = selectedRelayUrl
+    if (!isRelayStoreLoaded || activeRelayUrl == null) {
+        StatusRelayPendingContent(
+            isLoaded = isRelayStoreLoaded,
+            hasEnabledRelays = relays.isNotEmpty(),
+        )
+        return
+    }
+
     val viewModel: StatusViewModel = viewModel(
-        key = "status-${activeRelayUrl ?: "all"}",
+        key = "status-$activeRelayUrl",
         factory = viewModelFactory { initializer { StatusViewModel(relayUrl = activeRelayUrl) } },
     )
     val state by viewModel.state.collectAsState()
@@ -266,6 +275,26 @@ fun StatusScreen(
                 viewModel.publishStatus(tag, content, expiration, referenceUrl)
             },
         )
+    }
+}
+
+@Composable
+private fun StatusRelayPendingContent(
+    isLoaded: Boolean,
+    hasEnabledRelays: Boolean,
+) {
+    Box(
+        modifier = Modifier.fillMaxSize().padding(32.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        when {
+            !isLoaded -> CircularProgressIndicator()
+            !hasEnabledRelays -> Text(
+                text = "有効なリレーがありません",
+                color = MaterialTheme.colorScheme.error,
+            )
+            else -> CircularProgressIndicator()
+        }
     }
 }
 

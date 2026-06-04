@@ -99,16 +99,19 @@ fun ArticleHubScreen(
 ) {
     val relays by RelayStore.relays.collectAsState(initial = emptyList())
     val selectedRelayUrl by RelayStore.selectedArticleRelayUrl.collectAsState()
+    val isRelayStoreLoaded by RelayStore.isLoaded.collectAsState()
     var showRelayMenu by remember { mutableStateOf(false) }
 
-    LaunchedEffect(relays, selectedRelayUrl) {
-        if (selectedRelayUrl == null || selectedRelayUrl !in relays) {
-            RelayStore.setSelectedArticleRelayUrl(relays.firstOrNull())
-        }
+    val activeRelayUrl = selectedRelayUrl
+    if (!isRelayStoreLoaded || activeRelayUrl == null) {
+        RelaySelectionPendingContent(
+            isLoaded = isRelayStoreLoaded,
+            hasEnabledRelays = relays.isNotEmpty(),
+        )
+        return
     }
 
-    val activeRelayUrl = selectedRelayUrl
-    val viewModel: ArticleHubViewModel = viewModel(key = "article-hub-${activeRelayUrl ?: "all"}") {
+    val viewModel: ArticleHubViewModel = viewModel(key = "article-hub-$activeRelayUrl") {
         ArticleHubViewModel(relayUrl = activeRelayUrl)
     }
     val state by viewModel.state.collectAsState()
@@ -253,6 +256,25 @@ fun ArticleHubScreen(
     }
 }
 
+@Composable
+private fun RelaySelectionPendingContent(
+    isLoaded: Boolean,
+    hasEnabledRelays: Boolean,
+) {
+    Box(
+        modifier = Modifier.fillMaxSize().padding(32.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        when {
+            !isLoaded -> CircularProgressIndicator()
+            !hasEnabledRelays -> Text(
+                text = "有効なリレーがありません",
+                color = MaterialTheme.colorScheme.error,
+            )
+        }
+    }
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun UserArticleListScreen(
@@ -260,9 +282,20 @@ fun UserArticleListScreen(
     onBack: () -> Unit,
     onArticleClick: (pubkey: String, identifier: String) -> Unit,
 ) {
+    val relays by RelayStore.relays.collectAsState(initial = emptyList())
     val selectedRelayUrl by RelayStore.selectedArticleRelayUrl.collectAsState()
-    val viewModel: UserArticleListViewModel = viewModel(key = "user-articles-$pubkey-${selectedRelayUrl ?: "all"}") {
-        UserArticleListViewModel(pubkey, relayUrl = selectedRelayUrl)
+    val isRelayStoreLoaded by RelayStore.isLoaded.collectAsState()
+    val activeRelayUrl = selectedRelayUrl
+    if (!isRelayStoreLoaded || activeRelayUrl == null) {
+        RelaySelectionPendingContent(
+            isLoaded = isRelayStoreLoaded,
+            hasEnabledRelays = relays.isNotEmpty(),
+        )
+        return
+    }
+
+    val viewModel: UserArticleListViewModel = viewModel(key = "user-articles-$pubkey-$activeRelayUrl") {
+        UserArticleListViewModel(pubkey, relayUrl = activeRelayUrl)
     }
     val state by viewModel.state.collectAsState()
     val listState = rememberSaveable(pubkey, selectedRelayUrl, saver = LazyListState.Saver) { LazyListState() }
@@ -325,9 +358,20 @@ fun ArticleDetailScreen(
     onUserClick: (pubkey: String) -> Unit,
     onNoteClick: (eventId: String) -> Unit,
 ) {
+    val relays by RelayStore.relays.collectAsState(initial = emptyList())
     val selectedRelayUrl by RelayStore.selectedArticleRelayUrl.collectAsState()
-    val viewModel: ArticleDetailViewModel = viewModel(key = "article-$pubkey-$identifier-${selectedRelayUrl ?: "all"}") {
-        ArticleDetailViewModel(pubkey, identifier, relayUrl = selectedRelayUrl)
+    val isRelayStoreLoaded by RelayStore.isLoaded.collectAsState()
+    val activeRelayUrl = selectedRelayUrl
+    if (!isRelayStoreLoaded || activeRelayUrl == null) {
+        RelaySelectionPendingContent(
+            isLoaded = isRelayStoreLoaded,
+            hasEnabledRelays = relays.isNotEmpty(),
+        )
+        return
+    }
+
+    val viewModel: ArticleDetailViewModel = viewModel(key = "article-$pubkey-$identifier-$activeRelayUrl") {
+        ArticleDetailViewModel(pubkey, identifier, relayUrl = activeRelayUrl)
     }
     val state by viewModel.state.collectAsState()
 
@@ -510,7 +554,7 @@ private fun ArticleCard(
                 overflow = TextOverflow.Ellipsis,
             )
         }
-        ArticleAuthorLine(article = article, onUserClick = {})
+        ArticleAuthorLine(article = article, onUserClick = onClick)
         if (article.meta.topics.isNotEmpty()) {
             Text(
                 text = article.meta.topics.take(5).joinToString("  ") { "#$it" },

@@ -91,6 +91,7 @@ fun LiveHubScreen(
 ) {
     val relays by RelayStore.relays.collectAsState(initial = emptyList())
     val selectedRelayUrl by RelayStore.selectedLiveRelayUrl.collectAsState()
+    val isRelayStoreLoaded by RelayStore.isLoaded.collectAsState()
     var showRelayMenu by remember { mutableStateOf(false) }
 
     LaunchedEffect(relays, selectedRelayUrl) {
@@ -99,8 +100,17 @@ fun LiveHubScreen(
         }
     }
 
-    val viewModel: LiveListViewModel = viewModel(key = "live-hub-${selectedRelayUrl ?: "all"}") {
-        LiveListViewModel(relayUrl = selectedRelayUrl)
+    val activeRelayUrl = selectedRelayUrl
+    if (!isRelayStoreLoaded || activeRelayUrl == null) {
+        LiveRelayPendingContent(
+            isLoaded = isRelayStoreLoaded,
+            hasEnabledRelays = relays.isNotEmpty(),
+        )
+        return
+    }
+
+    val viewModel: LiveListViewModel = viewModel(key = "live-hub-$activeRelayUrl") {
+        LiveListViewModel(relayUrl = activeRelayUrl)
     }
     val state by viewModel.state.collectAsState()
     val headerBackgroundColor = MaterialTheme.colorScheme.background
@@ -237,9 +247,27 @@ fun LiveDetailScreen(
     onBack: () -> Unit,
     onUserClick: (pubkey: String) -> Unit,
 ) {
+    val relays by RelayStore.relays.collectAsState(initial = emptyList())
     val selectedRelayUrl by RelayStore.selectedLiveRelayUrl.collectAsState()
-    val viewModel: LiveDetailViewModel = viewModel(key = "live-detail-$pubkey-$identifier-${selectedRelayUrl ?: "all"}") {
-        LiveDetailViewModel(pubkey = pubkey, identifier = identifier, relayUrl = selectedRelayUrl)
+    val isRelayStoreLoaded by RelayStore.isLoaded.collectAsState()
+
+    LaunchedEffect(relays, selectedRelayUrl) {
+        if (selectedRelayUrl == null || selectedRelayUrl !in relays) {
+            RelayStore.setSelectedLiveRelayUrl(relays.firstOrNull())
+        }
+    }
+
+    val activeRelayUrl = selectedRelayUrl
+    if (!isRelayStoreLoaded || activeRelayUrl == null) {
+        LiveRelayPendingContent(
+            isLoaded = isRelayStoreLoaded,
+            hasEnabledRelays = relays.isNotEmpty(),
+        )
+        return
+    }
+
+    val viewModel: LiveDetailViewModel = viewModel(key = "live-detail-$pubkey-$identifier-$activeRelayUrl") {
+        LiveDetailViewModel(pubkey = pubkey, identifier = identifier, relayUrl = activeRelayUrl)
     }
     val state by viewModel.state.collectAsState()
     val uriHandler = LocalUriHandler.current
@@ -358,6 +386,26 @@ fun LiveDetailScreen(
                     }
                 }
             }
+        }
+    }
+}
+
+@Composable
+private fun LiveRelayPendingContent(
+    isLoaded: Boolean,
+    hasEnabledRelays: Boolean,
+) {
+    Box(
+        modifier = Modifier.fillMaxSize().padding(32.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        when {
+            !isLoaded -> CircularProgressIndicator()
+            !hasEnabledRelays -> Text(
+                text = "有効なリレーがありません",
+                color = MaterialTheme.colorScheme.error,
+            )
+            else -> CircularProgressIndicator()
         }
     }
 }
