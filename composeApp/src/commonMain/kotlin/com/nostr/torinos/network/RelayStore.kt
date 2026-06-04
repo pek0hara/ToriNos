@@ -51,6 +51,7 @@ object RelayStore {
     private val _selectedArticleRelayUrl = MutableStateFlow<String?>(null)
     private val _selectedLiveRelayUrl = MutableStateFlow<String?>(null)
     private val _selectedMemoRelayUrl = MutableStateFlow<String?>(null)
+    private val _isLoaded = MutableStateFlow(false)
 
 
     /** 全リレー一覧（UI 用） */
@@ -80,9 +81,17 @@ object RelayStore {
     /** ポストメモ画面で選択中のリレー URL */
     val selectedMemoRelayUrl: StateFlow<String?> = _selectedMemoRelayUrl.asStateFlow()
 
+    /** 保存済みリレー設定の読み込み完了状態 */
+    val isLoaded: StateFlow<Boolean> = _isLoaded.asStateFlow()
+
     init {
         scope.launch {
-            loadSavedState()
+            runCatching {
+                loadSavedState()
+            }.onFailure {
+                ensureSelectedRelay()
+            }
+            _isLoaded.value = true
         }
     }
 
@@ -111,6 +120,9 @@ object RelayStore {
         ensureSelectedRelay()
         saveEntries()
     }
+
+    fun enabledRelayUrlsSnapshot(): List<String> =
+        enabledRelayUrls()
 
     fun setSelectedFollowingRelayUrl(url: String?) {
         setSelectedRelayUrl(

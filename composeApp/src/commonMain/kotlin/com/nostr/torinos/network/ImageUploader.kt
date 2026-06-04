@@ -2,7 +2,7 @@ package com.nostr.torinos.network
 
 import com.nostr.torinos.crypto.KeyStorage
 import com.nostr.torinos.crypto.signEvent
-import com.nostr.torinos.util.appLog
+import com.nostr.torinos.util.networkTraceLog
 import io.ktor.client.request.forms.MultiPartFormDataContent
 import io.ktor.client.request.forms.formData
 import io.ktor.client.request.header
@@ -43,7 +43,7 @@ object ImageUploader {
         val authToken = Base64.encode(Json.encodeToString(authEvent).encodeToByteArray())
 
         val ext = mimeType.substringAfter('/').substringBefore(';').ifBlank { "jpg" }
-        appLog("[ImageUploader] bytes=${bytes.size} mimeType=$mimeType")
+        networkTraceLog { "[ImageUploader] bytes=${bytes.size} mimeType=$mimeType" }
         val response = NostrRepository.httpClient.post(UPLOAD_URL) {
             header(HttpHeaders.Authorization, "Nostr $authToken")
             setBody(
@@ -66,7 +66,7 @@ object ImageUploader {
         }
 
         val body = response.bodyAsText()
-        appLog("[ImageUploader] status=${response.status} body=$body")
+        networkTraceLog { "[ImageUploader] status=${response.status} body=$body" }
 
         if (response.status.value !in 200..299) {
             error("サーバーエラー ${response.status.value}: $body")

@@ -4,6 +4,7 @@ import com.nostr.torinos.model.RelayMessage
 import com.nostr.torinos.model.parseRelayMessage
 import com.nostr.torinos.util.appLog
 import com.nostr.torinos.util.logException
+import com.nostr.torinos.util.networkTraceLog
 import io.ktor.client.HttpClient
 import io.ktor.client.plugins.websocket.webSocket
 import io.ktor.websocket.Frame
@@ -45,10 +46,10 @@ class NostrRelay(
                 var retryDelay = 2_000L
                 val maxDelay = 30_000L
                 while (isActive) {
-                    appLog("[Relay] connecting to $url")
+                    networkTraceLog { "[Relay] connecting to $url" }
                     runCatching {
                         client.webSocket(urlString = url) {
-                            appLog("[Relay] connected: $url")
+                            networkTraceLog { "[Relay] connected: $url" }
                             retryDelay = 2_000L
                             _connected.emit(Unit)
                             val sender = launch {
@@ -58,7 +59,7 @@ class NostrRelay(
                                             val msg = pendingMutex.withLock {
                                                 if (pendingMessages.isEmpty()) null else pendingMessages.removeFirst()
                                             } ?: break
-                                            appLog("[Relay] send to $url: $msg")
+                                            networkTraceLog { "[Relay] send to $url: $msg" }
                                             try {
                                                 outgoing.send(Frame.Text(msg))
                                             } catch (e: Throwable) {
@@ -80,7 +81,7 @@ class NostrRelay(
                             for (frame in incoming) {
                                 if (frame is Frame.Text) {
                                     val text = frame.readText()
-                                    appLog("[Relay] recv from $url: ${text.take(200)}")
+                                    networkTraceLog { "[Relay] recv from $url: ${text.take(200)}" }
                                     _messages.emit(parseRelayMessage(text))
                                 }
                             }
@@ -89,7 +90,7 @@ class NostrRelay(
                     }.onFailure { e ->
                         logException("Relay", e, "WebSocket loop failed for $url")
                     }
-                    appLog("[Relay] disconnected from $url, retrying in ${retryDelay / 1000}s")
+                    networkTraceLog { "[Relay] disconnected from $url, retrying in ${retryDelay / 1000}s" }
                     delay(retryDelay)
                     retryDelay = (retryDelay * 2).coerceAtMost(maxDelay)
                 }

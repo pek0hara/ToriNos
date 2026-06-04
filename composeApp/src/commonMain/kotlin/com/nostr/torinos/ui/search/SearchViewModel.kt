@@ -11,7 +11,7 @@ import com.nostr.torinos.model.NostrProfile
 import com.nostr.torinos.model.extractNpubReferences
 import com.nostr.torinos.model.toProfile
 import com.nostr.torinos.network.NostrRepository
-import com.nostr.torinos.util.appLog
+import com.nostr.torinos.util.networkTraceLog
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -73,9 +73,9 @@ class SearchViewModel : SafeViewModel() {
 
     fun search(query: String) {
         val trimmed = query.trim()
-        appLog("[Search] search() called: query='$trimmed'")
+        networkTraceLog { "[Search] search() called: query='$trimmed'" }
         if (trimmed.isBlank()) {
-            appLog("[Search] query is blank, ignoring")
+            networkTraceLog { "[Search] query is blank, ignoring" }
             return
         }
 
@@ -118,7 +118,7 @@ class SearchViewModel : SafeViewModel() {
     }
 
     private fun startSubscriptions() {
-        appLog("[Search] startSubscriptions() relayCount=${NostrRepository.relayCount}")
+        networkTraceLog { "[Search] startSubscriptions() relayCount=${NostrRepository.relayCount}" }
 
         // 検索結果イベントを収集
         val searchSubId = activeSearchSubId
@@ -131,7 +131,10 @@ class SearchViewModel : SafeViewModel() {
                 if (event.kind != 1) return@collect
                 val added = appendEvent(event)
                 lastBatchCount += added
-                appLog("[Search] event received id=${event.id.take(8)} pubkey=${event.pubkey.take(8)} added=$added totalSeen=${seenEventIds.size}")
+                networkTraceLog {
+                    "[Search] event received id=${event.id.take(8)} pubkey=${event.pubkey.take(8)} " +
+                        "added=$added totalSeen=${seenEventIds.size}"
+                }
                 scheduleProfileFetch(event.pubkey)
                 scheduleMentionedProfileFetch(event.content)
                 scheduleEngagementFetch(event.id)
@@ -142,7 +145,10 @@ class SearchViewModel : SafeViewModel() {
         subscriptionJobs += launch {
             NostrRepository.eose(searchSubId).collect {
                 receivedEoseCount++
-                appLog("[Search] EOSE received receivedEoseCount=$receivedEoseCount expectedEoseCount=$expectedEoseCount lastBatchCount=$lastBatchCount")
+                networkTraceLog {
+                    "[Search] EOSE received receivedEoseCount=$receivedEoseCount " +
+                        "expectedEoseCount=$expectedEoseCount lastBatchCount=$lastBatchCount"
+                }
                 if (receivedEoseCount >= expectedEoseCount) {
                     onPageCompleted()
                 }
@@ -153,7 +159,7 @@ class SearchViewModel : SafeViewModel() {
         subscriptionJobs += launch {
             delay(10_000)
             if (_state.value is UiState.Loading) {
-                appLog("[Search] timeout: no EOSE received in 10s, forcing Ready state")
+                networkTraceLog { "[Search] timeout: no EOSE received in 10s, forcing Ready state" }
                 _state.value = readyState(canLoadMore = false)
             }
         }
@@ -163,7 +169,7 @@ class SearchViewModel : SafeViewModel() {
             NostrRepository.events(profileSubId).collect { event ->
                 if (event.kind != 0) return@collect
                 val profile = event.toProfile() ?: return@collect
-                appLog("[Search] profile received pubkey=${event.pubkey.take(8)} name=${profile.name}")
+                networkTraceLog { "[Search] profile received pubkey=${event.pubkey.take(8)} name=${profile.name}" }
                 pendingPubkeys.remove(event.pubkey)
                 currentProfiles = currentProfiles + (event.pubkey to profile)
                 syncReadyState()
@@ -256,7 +262,7 @@ class SearchViewModel : SafeViewModel() {
         val filter = buildFilter(until)
         val searchSubId = activeSearchSubId
         schedulePageTimeout(searchSubId)
-        appLog("[Search] requestPage() until=$until expectedEoseCount=$expectedEoseCount filter=$filter")
+        networkTraceLog { "[Search] requestPage() until=$until expectedEoseCount=$expectedEoseCount filter=$filter" }
         NostrRepository.subscribeTemporaryRelay(searchSubId, filter, SEARCH_RELAY_URL)
 
         if (until == null) {
@@ -272,7 +278,7 @@ class SearchViewModel : SafeViewModel() {
 
     private fun buildFilter(until: Long?): NostrFilter {
         val q = currentQuery
-        appLog("[Search] buildFilter: NIP-50 search='$q' until=$until")
+        networkTraceLog { "[Search] buildFilter: NIP-50 search='$q' until=$until" }
         return NostrFilter(kinds = listOf(1), search = q, until = until, limit = PAGE_SIZE)
     }
 
@@ -282,7 +288,9 @@ class SearchViewModel : SafeViewModel() {
         pageTimeoutJob?.cancel()
         pageTimeoutJob = null
         val hasMore = lastBatchCount >= PAGE_SIZE
-        appLog("[Search] onPageCompleted() lastBatchCount=$lastBatchCount hasMore=$hasMore totalEvents=${currentEvents.size}")
+        networkTraceLog {
+            "[Search] onPageCompleted() lastBatchCount=$lastBatchCount hasMore=$hasMore totalEvents=${currentEvents.size}"
+        }
         _state.value = readyState(canLoadMore = hasMore)
         if (!hasMore) NostrRepository.closeTemporaryRelay(activeSearchSubId)
     }
@@ -295,7 +303,7 @@ class SearchViewModel : SafeViewModel() {
 
             loadingMore = false
             val hasMore = lastBatchCount >= PAGE_SIZE
-            appLog("[Search] page timeout: forcing Ready state hasMore=$hasMore")
+            networkTraceLog { "[Search] page timeout: forcing Ready state hasMore=$hasMore" }
             _state.value = readyState(canLoadMore = hasMore)
             if (!hasMore) NostrRepository.closeTemporaryRelay(searchSubId)
         }
