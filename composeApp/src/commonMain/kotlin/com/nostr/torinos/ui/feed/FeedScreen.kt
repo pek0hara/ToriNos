@@ -1,5 +1,7 @@
 package com.nostr.torinos.ui.feed
 
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.layout.Arrangement
@@ -7,8 +9,10 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.requiredHeight
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.shape.CircleShape
@@ -34,15 +38,26 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.key
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
+import androidx.compose.ui.input.nestedscroll.NestedScrollSource
+import androidx.compose.ui.input.nestedscroll.nestedScroll
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Velocity
 import androidx.compose.ui.unit.dp
 import androidx.compose.runtime.collectAsState
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -52,6 +67,7 @@ import com.nostr.torinos.network.MuteStore
 import com.nostr.torinos.network.RelayStore
 import com.nostr.torinos.ui.components.NoteTimeline
 import com.nostr.torinos.ui.profile.AvatarCircle
+import kotlinx.coroutines.delay
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -77,6 +93,8 @@ fun FeedScreen(
     followingListState: LazyListState? = null,
     globalListState: LazyListState? = null,
     hasNotifications: Boolean = false,
+    chromeCollapseFraction: Float = 0f,
+    onChromeCollapseFractionChange: (Float) -> Unit = {},
     /** null = グローバルフィード、非null = 特定ユーザーのポスト */
     authorPubkey: String? = null,
 ) {
@@ -148,17 +166,126 @@ fun FeedScreen(
     val activeRelayUrl = selectedFeedRelayUrl
     val topBarTitle = when {
         authorPubkey != null -> selectedFeedRelayUrl?.relayDisplayName() ?: "—"
-        visibleFeedTab == FeedTab.Following && followingFeedMode == FollowingFeedMode.Muted -> "ミュートリスト"
+        visibleFeedTab == FeedTab.Following && followingFeedMode == FollowingFeedMode.Muted -> "ミュートフィード"
         selectedFeedRelayUrl == null && canSelectAllRelays -> "すべてのリレー"
         else -> selectedFeedRelayUrl?.relayDisplayName() ?: "—"
     }
     val feedBackgroundColor = MaterialTheme.colorScheme.background
     val feedContentColor = MaterialTheme.colorScheme.onBackground
+    val activeListState = when {
+        authorPubkey != null -> null
+        visibleFeedTab == FeedTab.Following -> followingListState
+        else -> globalListState
+    }
+    val density = LocalDensity.current
+    val chromeCollapseDistancePx = with(density) { 112.dp.roundToPx() }
+    var topBarHeightPx by remember { mutableIntStateOf(0) }
+    val collapsedTopBarHeightPx = (topBarHeightPx * (1f - chromeCollapseFraction)).toInt()
+    val chromeAlpha = 1f - chromeCollapseFraction
+    val chromeSettleAnimation = remember { Animatable(chromeCollapseFraction) }
+    var lastChromeScrollDelta by remember { mutableStateOf(0f) }
+    var chromeSettleRequest by remember { mutableIntStateOf(0) }
+    val chromeNestedScrollConnection = remember(
+        authorPubkey,
+        activeListState,
+        chromeCollapseFraction,
+        chromeCollapseDistancePx,
+    ) {
+        object : NestedScrollConnection {
+            override fun onPreScroll(available: Offset, source: NestedScrollSource): Offset {
+                if (authorPubkey != null || activeListState == null || source != NestedScrollSource.UserInput) {
+                    return Offset.Zero
+                }
+                val delta = -available.y
+                if (delta == 0f) return Offset.Zero
+
+                val nextFraction = (chromeCollapseFraction + delta / chromeCollapseDistancePx.toFloat())
+                    .coerceIn(0f, 1f)
+                if (nextFraction != chromeCollapseFraction) {
+                    onChromeCollapseFractionChange(nextFraction)
+                }
+                val consumedDelta = (nextFraction - chromeCollapseFraction) * chromeCollapseDistancePx
+                if (consumedDelta != 0f) {
+                    lastChromeScrollDelta = consumedDelta
+                    chromeSettleRequest++
+                }
+                return Offset(x = 0f, y = -consumedDelta)
+            }
+
+            override suspend fun onPostFling(consumed: Velocity, available: Velocity): Velocity {
+                if (chromeCollapseFraction <= 0f || chromeCollapseFraction >= 1f) {
+                    return Velocity.Zero
+                }
+                val targetFraction = if (lastChromeScrollDelta >= 0f) 1f else 0f
+                chromeSettleAnimation.snapTo(chromeCollapseFraction)
+                chromeSettleAnimation.animateTo(
+                    targetValue = targetFraction,
+                    animationSpec = tween(ChromeSettleAnimationMillis),
+                ) {
+                    onChromeCollapseFractionChange(value)
+                }
+                return Velocity.Zero
+            }
+        }
+    }
+
+    LaunchedEffect(chromeSettleRequest) {
+        if (chromeSettleRequest <= 0 || chromeCollapseFraction <= 0f || chromeCollapseFraction >= 1f) {
+            return@LaunchedEffect
+        }
+        delay(ChromeSettleDelayMillis)
+        val targetFraction = if (lastChromeScrollDelta >= 0f) 1f else 0f
+        chromeSettleAnimation.snapTo(chromeCollapseFraction)
+        chromeSettleAnimation.animateTo(
+            targetValue = targetFraction,
+            animationSpec = tween(ChromeSettleAnimationMillis),
+        ) {
+            onChromeCollapseFractionChange(value)
+        }
+    }
+
+    LaunchedEffect(activeListState, authorPubkey) {
+        if (authorPubkey != null || activeListState == null) {
+            onChromeCollapseFractionChange(0f)
+            return@LaunchedEffect
+        }
+
+        snapshotFlow {
+            activeListState.firstVisibleItemIndex == 0 && activeListState.firstVisibleItemScrollOffset == 0
+        }.collect { atTop ->
+            if (atTop) {
+                onChromeCollapseFractionChange(0f)
+            }
+        }
+    }
 
     Scaffold(
         contentWindowInsets = WindowInsets(0),
+        containerColor = feedBackgroundColor,
         topBar = {
-            Column(modifier = Modifier.background(feedBackgroundColor)) {
+            val topBarContainerModifier = if (topBarHeightPx > 0) {
+                Modifier.height(with(density) { collapsedTopBarHeightPx.toDp() })
+            } else {
+                Modifier
+            }
+            Box(
+                modifier = topBarContainerModifier
+                    .clipToBounds()
+                    .background(feedBackgroundColor),
+            ) {
+                Column(
+                    modifier = Modifier
+                        .then(
+                            if (topBarHeightPx > 0) {
+                                Modifier.requiredHeight(with(density) { topBarHeightPx.toDp() })
+                            } else {
+                                Modifier
+                            },
+                        )
+                        .alpha(chromeAlpha)
+                        .onSizeChanged { topBarHeightPx = it.height }
+                        .background(feedBackgroundColor),
+                ) {
                 TopAppBar(
                     title = {
                         Row(
@@ -211,7 +338,7 @@ fun FeedScreen(
                                         },
                                     )
                                     DropdownMenuItem(
-                                        text = { Text("ミュートリスト") },
+                                        text = { Text("ミュートフィード") },
                                         onClick = {
                                             followingFeedMode = FollowingFeedMode.Muted
                                             RelayStore.setSelectedFollowingRelayUrl(null)
@@ -252,9 +379,9 @@ fun FeedScreen(
                                         )
                                     }
                                 }
-                            }
-                        }
-                    },
+                }
+            }
+        },
                     navigationIcon = {
                         if (authorPubkey == null && ownPubkey != null) {
                             IconButton(onClick = onOpenProfile) {
@@ -321,9 +448,12 @@ fun FeedScreen(
                     }
                 }
             }
+            }
         },
     ) { padding ->
         val timelineModifier = Modifier
+            .background(feedBackgroundColor)
+            .nestedScroll(chromeNestedScrollConnection)
             .padding(padding)
             .feedTabSwipe(
                 enabled = authorPubkey == null && visibleFeedTabs.size > 1,
@@ -511,6 +641,8 @@ private fun Modifier.feedTabSwipe(
 }
 
 private const val SwipeThresholdPx = 80f
+private const val ChromeSettleDelayMillis = 60L
+private const val ChromeSettleAnimationMillis = 140
 
 private fun String.relayDisplayName(): String =
     removePrefix("wss://").removePrefix("ws://").trimEnd('/')

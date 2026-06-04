@@ -87,6 +87,7 @@ fun PostSheet(
     onDismiss: () -> Unit,
     onCancel: (PostMemoData?) -> Unit,
     onMemoSaved: () -> Unit,
+    onDeleteMemo: (() -> Unit)? = null,
     replyToId: String? = null,
     replyToPubkey: String? = null,
     replyToPreview: String? = null,
@@ -147,6 +148,7 @@ fun PostSheet(
                     title = if (replyToId != null) "返信" else "新しいポスト",
                     replyToPreview = replyToPreview,
                     onDismiss = ::cancelWithOptionalLocalDraft,
+                    onDeleteMemo = onDeleteMemo,
                     onPickImage = pickImage,
                     onOpenRelaySettings = { showRelaySettingsDialog = true },
                     onTextChange = postViewModel::onTextChange,
@@ -176,6 +178,7 @@ private fun PostSheetContent(
     title: String,
     replyToPreview: String?,
     onDismiss: () -> Unit,
+    onDeleteMemo: (() -> Unit)?,
     onPickImage: () -> Unit,
     onOpenRelaySettings: () -> Unit,
     onTextChange: (String) -> Unit,
@@ -217,10 +220,28 @@ private fun PostSheetContent(
             .fillMaxWidth()
             .padding(horizontal = 16.dp, vertical = 12.dp),
     ) {
-        Text(
-            text = title,
-            style = MaterialTheme.typography.titleMedium,
-        )
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                text = title,
+                style = MaterialTheme.typography.titleMedium,
+            )
+            if (onDeleteMemo != null) {
+                IconButton(
+                    onClick = onDeleteMemo,
+                    modifier = Modifier.size(36.dp),
+                ) {
+                    Icon(
+                        Icons.Default.Delete,
+                        contentDescription = "メモを削除",
+                        tint = MaterialTheme.colorScheme.error,
+                    )
+                }
+            }
+        }
         Spacer(modifier = Modifier.height(12.dp))
 
         Column(

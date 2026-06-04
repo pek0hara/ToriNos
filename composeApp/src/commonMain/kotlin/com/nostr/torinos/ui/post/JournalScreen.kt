@@ -95,7 +95,7 @@ import kotlinx.serialization.json.Json
 @Composable
 fun JournalScreen(
     onBack: () -> Unit,
-    onOpenMemo: (PostMemoData) -> Unit,
+    onOpenMemo: (PostMemoData, () -> Unit) -> Unit,
     onNewPost: () -> Unit,
     refreshTodayRequest: Int,
     toggleCalendarRequest: Int = 0,
@@ -128,7 +128,7 @@ fun JournalScreen(
     val visibleEntries = remember(baseEntries, selectedFilters) {
         if (selectedFilters.isEmpty()) baseEntries else baseEntries.filter { it.filter in selectedFilters }
     }
-    val filteredEntryCountsByDate = remember(state.memos, state.notes, state.profiles, selectedFilters) {
+    val filteredEntryCountsByDate = remember(state.monthEntries, selectedFilters) {
         filteredEntryCountsByDate(state, selectedFilters)
     }
     val isPullRefreshing = state.isLoading && (state.memos.isNotEmpty() || state.notes.isNotEmpty())
@@ -368,7 +368,7 @@ fun JournalScreen(
                                     is JournalEntry.Memo -> MemoRow(
                                         item = entry.item,
                                         replyToProfile = entry.item.memo.replyToPubkey?.let { state.profiles[it] },
-                                        onClick = { onOpenMemo(entry.item.memo) },
+                                        onClick = { onOpenMemo(entry.item.memo) { viewModel.showDeleteDialog(entry.item) } },
                                         onLongClick = { viewModel.showDeleteDialog(entry.item) },
                                     )
                                     is JournalEntry.Note -> when (entry.event.kind) {

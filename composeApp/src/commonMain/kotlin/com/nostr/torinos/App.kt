@@ -1,10 +1,12 @@
 package com.nostr.torinos
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
@@ -15,6 +17,7 @@ import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.ModalNavigationDrawer
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.Scaffold
@@ -25,6 +28,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import kotlin.coroutines.cancellation.CancellationException
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -35,9 +39,14 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.requiredHeight
 import androidx.compose.foundation.layout.size
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.dp
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
@@ -135,6 +144,7 @@ fun App() {
         var replyToPreview by remember { mutableStateOf<String?>(null) }
         var replyNoteContext by remember { mutableStateOf<NoteContext>(NoteContext.Timeline) }
         var selectedMemo by remember { mutableStateOf<PostMemoData?>(null) }
+        var selectedMemoDeleteAction by remember { mutableStateOf<(() -> Unit)?>(null) }
         var localDraft by remember { mutableStateOf<PostMemoData?>(null) }
         var memoRefreshTodayRequest by remember { mutableStateOf(0) }
         var journalToggleCalendarRequest by remember { mutableStateOf(0) }
@@ -160,6 +170,7 @@ fun App() {
         var currentFeedTab by remember { mutableStateOf(FeedTab.Following) }
         var feedScrollToTopTargetTab by remember { mutableStateOf(FeedTab.Following) }
         var feedTabChangeRequest by remember { mutableStateOf(0) }
+        var feedChromeCollapseFraction by remember { mutableStateOf(0f) }
         var notificationsScrollToTopRequest by remember { mutableStateOf(0) }
         var showQuickSettings by remember { mutableStateOf(false) }
         var relaySettingsNavigationRequest by remember { mutableStateOf(0) }
@@ -181,6 +192,7 @@ fun App() {
         }
 
         fun navigateFeedTab() {
+            feedChromeCollapseFraction = 0f
             navigateTopLevelRoute("feed")
         }
 
@@ -305,6 +317,7 @@ fun App() {
             replyToPreview = null
             replyNoteContext = NoteContext.Timeline
             selectedMemo = null
+            selectedMemoDeleteAction = null
             localDraft = null
             FollowRepository.reload()
             currentFeedTab = FeedTab.Global
@@ -333,6 +346,7 @@ fun App() {
             replyToPreview = null
             replyNoteContext = NoteContext.Timeline
             selectedMemo = null
+            selectedMemoDeleteAction = null
             localDraft = null
             FollowRepository.reload()
             currentFeedTab = FeedTab.Global
@@ -356,6 +370,17 @@ fun App() {
         val isProfileRoute = currentRoute == "myprofile" ||
             routeName?.endsWith("ProfileRoute") == true
         val hasBottomBar = currentRoute in bottomBarRoutes || isChannelThreadRoute || isProfileRoute
+        val density = LocalDensity.current
+        var bottomBarHeightPx by remember { mutableIntStateOf(0) }
+        val activeFeedChromeCollapseFraction = if (currentRoute == "feed") feedChromeCollapseFraction else 0f
+        val collapsedBottomBarHeightPx = (bottomBarHeightPx * (1f - activeFeedChromeCollapseFraction)).toInt()
+        val bottomBarAlpha = 1f - activeFeedChromeCollapseFraction
+
+        LaunchedEffect(currentRoute) {
+            if (currentRoute != "feed") {
+                feedChromeCollapseFraction = 0f
+            }
+        }
 
         QuickSettingsDialogs(
             open = showQuickSettings,
@@ -399,6 +424,7 @@ fun App() {
         ) {
             Scaffold(
                 contentWindowInsets = WindowInsets(0),
+                containerColor = MaterialTheme.colorScheme.background,
                 floatingActionButton = {
                     if (isWriteSupported) {
                         when (currentRoute) {
@@ -406,6 +432,7 @@ fun App() {
                                 onPostClick = {
                                     runWithPrivateKey(PendingKeyAction.NewPost) {
                                         selectedMemo = null
+                                        selectedMemoDeleteAction = null
                                         replyToId = null
                                         replyToPubkey = null
                                         replyToPreview = null
@@ -434,45 +461,68 @@ fun App() {
                 },
                 bottomBar = {
                     if (hasBottomBar) {
-                        NavigationBar {
-                            NavigationBarItem(
-                                icon = { Icon(Icons.Default.Home, contentDescription = null) },
-                                label = { Text("フィード") },
-                                selected = currentRoute == "feed",
-                                onClick = {
-                                    if (currentRoute == "feed") {
-                                        feedScrollToTopTargetTab = currentFeedTab
-                                        feedScrollToTopRequest++
-                                    } else {
-                                        navigateFeedTab()
-                                    }
-                                },
-                            )
-                            NavigationBarItem(
-                                icon = { Icon(Icons.Default.Today, contentDescription = null) },
-                                label = { Text("ジャーナル") },
-                                selected = currentRoute == "journal",
-                                onClick = {
-                                    runWithPrivateKey(PendingKeyAction.Journal) {
-                                        if (currentRoute == "journal") {
-                                            journalToggleCalendarRequest++
+                        val bottomBarContainerModifier = if (bottomBarHeightPx > 0) {
+                            Modifier.height(with(density) { collapsedBottomBarHeightPx.toDp() })
+                        } else {
+                            Modifier
+                        }
+                        Box(
+                            modifier = bottomBarContainerModifier
+                                .clipToBounds()
+                                .background(MaterialTheme.colorScheme.background),
+                        ) {
+                            NavigationBar(
+                                modifier = Modifier
+                                    .then(
+                                        if (bottomBarHeightPx > 0) {
+                                            Modifier.requiredHeight(with(density) { bottomBarHeightPx.toDp() })
                                         } else {
-                                            journalShowCalendarRequest++
-                                            navigateJournalTab()
+                                            Modifier
+                                        },
+                                    )
+                                    .alpha(bottomBarAlpha)
+                                    .onSizeChanged { bottomBarHeightPx = it.height },
+                            ) {
+                                NavigationBarItem(
+                                    icon = { Icon(Icons.Default.Home, contentDescription = null) },
+                                    label = { Text("フィード") },
+                                    selected = currentRoute == "feed",
+                                    onClick = {
+                                        feedChromeCollapseFraction = 0f
+                                        if (currentRoute == "feed") {
+                                            feedScrollToTopTargetTab = currentFeedTab
+                                            feedScrollToTopRequest++
+                                        } else {
+                                            navigateFeedTab()
                                         }
-                                    }
-                                },
-                            )
-                            NavigationBarItem(
-                                icon = { Icon(Icons.Default.Apps, contentDescription = null) },
-                                label = { Text("サービス") },
-                                selected = currentRoute == "services" ||
-                                    currentRoute == "channels" ||
-                                    isChannelRoute ||
-                                    isChannelThreadRoute ||
-                                    currentRoute == "status",
-                                onClick = { navigateServiceTab(currentServiceTab) },
-                            )
+                                    },
+                                )
+                                NavigationBarItem(
+                                    icon = { Icon(Icons.Default.Today, contentDescription = null) },
+                                    label = { Text("ジャーナル") },
+                                    selected = currentRoute == "journal",
+                                    onClick = {
+                                        runWithPrivateKey(PendingKeyAction.Journal) {
+                                            if (currentRoute == "journal") {
+                                                journalToggleCalendarRequest++
+                                            } else {
+                                                journalShowCalendarRequest++
+                                                navigateJournalTab()
+                                            }
+                                        }
+                                    },
+                                )
+                                NavigationBarItem(
+                                    icon = { Icon(Icons.Default.Apps, contentDescription = null) },
+                                    label = { Text("サービス") },
+                                    selected = currentRoute == "services" ||
+                                        currentRoute == "channels" ||
+                                        isChannelRoute ||
+                                        isChannelThreadRoute ||
+                                        currentRoute == "status",
+                                    onClick = { navigateServiceTab(currentServiceTab) },
+                                )
+                            }
                         }
                     }
                 },
@@ -480,6 +530,7 @@ fun App() {
             Column(
                 modifier = Modifier
                     .fillMaxSize()
+                    .background(MaterialTheme.colorScheme.background)
                     .padding(bottom = padding.calculateBottomPadding()),
             ) {
                 NavHost(
@@ -528,6 +579,8 @@ fun App() {
                             followingListState = followingFeedListState,
                             globalListState = globalFeedListState,
                             hasNotifications = notificationsState?.hasUnread == true,
+                            chromeCollapseFraction = feedChromeCollapseFraction,
+                            onChromeCollapseFractionChange = { feedChromeCollapseFraction = it },
                         )
                     }
                     composable("services") {
@@ -672,14 +725,16 @@ fun App() {
                             showCalendarRequest = journalShowCalendarRequest,
                             onNewPost = {
                                 selectedMemo = null
+                                selectedMemoDeleteAction = null
                                 replyToId = null
                                 replyToPubkey = null
                                 replyToPreview = null
                                 replyNoteContext = NoteContext.Timeline
                                 showPostSheet = true
                             },
-                            onOpenMemo = { memo ->
+                            onOpenMemo = { memo, deleteAction ->
                                 selectedMemo = memo
+                                selectedMemoDeleteAction = deleteAction
                                 replyToId = memo.replyToId
                                 replyToPubkey = memo.replyToPubkey
                                 replyToPreview = null
@@ -910,7 +965,7 @@ fun App() {
                             onBack = { nav.popBackStack() },
                             refreshTodayRequest = 0,
                             onNewPost = {},
-                            onOpenMemo = { _ -> },
+                            onOpenMemo = { _, _ -> },
                             onOpenThread = { eventId -> nav.navigate(ThreadRoute(eventId)) },
                             onReply = { eventId, authorPk, preview ->
                                 replyToId = eventId
@@ -946,6 +1001,7 @@ fun App() {
                     replyToPreview = null
                     replyNoteContext = NoteContext.Timeline
                     selectedMemo = null
+                    selectedMemoDeleteAction = null
                 },
                 onCancel = { draft ->
                     if (selectedMemo == null) {
@@ -957,10 +1013,24 @@ fun App() {
                     replyToPreview = null
                     replyNoteContext = NoteContext.Timeline
                     selectedMemo = null
+                    selectedMemoDeleteAction = null
                 },
                 onMemoSaved = {
                     memoRefreshTodayRequest++
                     navigateJournalTab()
+                },
+                onDeleteMemo = selectedMemoDeleteAction?.let { deleteAction ->
+                    {
+                        localDraft = null
+                        showPostSheet = false
+                        replyToId = null
+                        replyToPubkey = null
+                        replyToPreview = null
+                        replyNoteContext = NoteContext.Timeline
+                        selectedMemo = null
+                        selectedMemoDeleteAction = null
+                        deleteAction()
+                    }
                 },
                 replyToId = replyToId,
                 replyToPubkey = replyToPubkey,
@@ -989,6 +1059,7 @@ fun App() {
                     when (action) {
                         PendingKeyAction.NewPost -> {
                             selectedMemo = null
+                            selectedMemoDeleteAction = null
                             replyToId = null
                             replyToPubkey = null
                             replyToPreview = null
@@ -1042,6 +1113,7 @@ fun App() {
                     replyToPreview = null
                     replyNoteContext = NoteContext.Timeline
                     selectedMemo = null
+                    selectedMemoDeleteAction = null
                     showKeySetup = false
                 },
             )

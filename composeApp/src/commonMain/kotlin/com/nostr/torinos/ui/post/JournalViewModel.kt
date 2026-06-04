@@ -15,17 +15,19 @@ import com.nostr.torinos.model.replyTargetId
 import com.nostr.torinos.model.toProfile
 import com.nostr.torinos.network.NostrRepository
 import com.nostr.torinos.ui.SafeViewModel
+import com.nostr.torinos.util.appLog
 import kotlin.time.Clock
 import kotlin.time.Instant
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.async
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.merge
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeoutOrNull
@@ -34,6 +36,7 @@ import kotlinx.datetime.LocalDate
 import kotlinx.datetime.TimeZone
 import kotlinx.datetime.atStartOfDayIn
 import kotlinx.datetime.toLocalDateTime
+import kotlin.random.Random
 
 data class JournalItem(
     val eventId: String,
@@ -73,6 +76,7 @@ data class JournalState(
     val replyCounts: Map<String, Int> = emptyMap(),
     val repostCounts: Map<String, Int> = emptyMap(),
     val likedReactions: Map<String, String> = emptyMap(),
+    val loadedDates: Set<LocalDate> = emptySet(),
     val isLoading: Boolean = false,
     val deleteDialog: JournalDeleteDialogState? = null,
     val error: String? = null,
@@ -95,8 +99,12 @@ data class JournalState(
     }.sortedBy { it.displayTime }
 
     val monthEntries: List<JournalEntry> = buildList {
-        memos.forEach { add(JournalEntry.Memo(it)) }
-        notes.forEach { add(JournalEntry.Note(it, profiles[it.pubkey])) }
+        memos
+            .filter { isSameMonth(dateOfEpochSeconds(it.displayTime), selectedMonth) }
+            .forEach { add(JournalEntry.Memo(it)) }
+        notes
+            .filter { isSameMonth(dateOfEpochSeconds(it.createdAt), selectedMonth) }
+            .forEach { add(JournalEntry.Note(it, profiles[it.pubkey])) }
     }.sortedBy { it.displayTime }
 
     val canGoNextMonth: Boolean get() = selectedMonth < currentMonth()
@@ -113,6 +121,7 @@ class JournalViewModel(private val targetPubkey: String? = null) : SafeViewModel
     private var relayUrl: String? = null
     private var hasConfiguredRelayUrl = false
     private var ownPublicKeyHex: String? = null
+    private var subscriptionSequence = 0L
 
     fun selectDate(date: LocalDate) {
         _state.value = _state.value.copy(selectedDate = date)
@@ -120,13 +129,13 @@ class JournalViewModel(private val targetPubkey: String? = null) : SafeViewModel
     }
 
     fun previousDate() {
-        selectDateOrLoadMonth(_state.value.selectedDate.minusDays(1))
+        navigateDate(_state.value.selectedDate.minusDays(1))
     }
 
     fun nextDate() {
         val next = _state.value.selectedDate.plusDays(1)
         if (next <= currentDate()) {
-            selectDateOrLoadMonth(next)
+            navigateDate(next)
         }
     }
 
@@ -160,23 +169,26 @@ class JournalViewModel(private val targetPubkey: String? = null) : SafeViewModel
 
     fun refreshToday() {
         val today = currentDate()
-        loadMonth(today.monthStart(), selectedDate = today)
+        loadDate(today, forceRefresh = true)
     }
 
     fun refresh() {
-        loadMonth(_state.value.selectedMonth)
+        if (_state.value.showCalendar) {
+            loadDate(_state.value.selectedDate, forceRefresh = true)
+        } else {
+            loadMonth(_state.value.selectedMonth, refreshMonth = true)
+        }
     }
 
     fun setRelayUrl(url: String?) {
         if (hasConfiguredRelayUrl && relayUrl == url) return
         hasConfiguredRelayUrl = true
         relayUrl = url
-        loadMonth(_state.value.selectedMonth)
+        loadMonth(_state.value.selectedMonth, resetCache = true)
     }
 
-    private fun selectDateOrLoadMonth(date: LocalDate) {
-        val currentMonth = _state.value.selectedMonth
-        if (date.year == currentMonth.year && date.month == currentMonth.month) {
+    private fun navigateDate(date: LocalDate) {
+        if (isSameMonth(date, _state.value.selectedMonth)) {
             selectDate(date)
         } else {
             loadMonth(date.monthStart(), selectedDate = date)
@@ -288,6 +300,8 @@ class JournalViewModel(private val targetPubkey: String? = null) : SafeViewModel
     private fun loadMonth(
         month: LocalDate,
         selectedDate: LocalDate? = null,
+        refreshMonth: Boolean = false,
+        resetCache: Boolean = false,
     ) {
         val monthStart = month.monthStart()
         val nextSelectedDate = selectedDate
@@ -295,10 +309,34 @@ class JournalViewModel(private val targetPubkey: String? = null) : SafeViewModel
             ?: _state.value.selectedDate
             .takeIf { it.year == monthStart.year && it.month == monthStart.month }
             ?: monthStart
-        _state.value = _state.value.copy(
+        val currentState = _state.value
+        val retainedMemos = when {
+            resetCache -> emptyList()
+            refreshMonth -> currentState.memos.filterNot { isSameMonth(dateOfEpochSeconds(it.displayTime), monthStart) }
+            else -> currentState.memos
+        }
+        val retainedNotes = when {
+            resetCache -> emptyList()
+            refreshMonth -> currentState.notes.filterNot { isSameMonth(dateOfEpochSeconds(it.createdAt), monthStart) }
+            else -> currentState.notes
+        }
+        val retainedLoadedDates = when {
+            resetCache -> emptySet()
+            refreshMonth -> currentState.loadedDates.filterNot { isSameMonth(it, monthStart) }.toSet()
+            else -> currentState.loadedDates
+        }
+        _state.value = currentState.copy(
             selectedMonth = monthStart,
             selectedDate = nextSelectedDate,
             isLoading = true,
+            memos = retainedMemos,
+            notes = retainedNotes,
+            quotedEvents = if (resetCache) emptyMap() else currentState.quotedEvents,
+            reactionCounts = if (resetCache) emptyMap() else currentState.reactionCounts,
+            replyCounts = if (resetCache) emptyMap() else currentState.replyCounts,
+            repostCounts = if (resetCache) emptyMap() else currentState.repostCounts,
+            likedReactions = if (resetCache) emptyMap() else currentState.likedReactions,
+            loadedDates = retainedLoadedDates,
             error = null,
         )
 
@@ -310,30 +348,26 @@ class JournalViewModel(private val targetPubkey: String? = null) : SafeViewModel
             try {
                 val context = resolveLoadContext() ?: return@launch
 
-                val (memoEvents, noteEvents, profile) = coroutineScope {
-                    val eventsDeferred = async {
-                        fetchEvents(
-                            pubkey = context.publicKeyHex,
-                            since = nextSelectedDate.startOfDayEpochSeconds(),
-                            until = nextSelectedDate.plusDays(1).startOfDayEpochSeconds() - 1,
-                            relayUrl = relayUrl,
-                            includeMemos = targetPubkey == null,
-                            includeLikes = targetPubkey == null,
-                            limit = JOURNAL_DATE_LIMIT,
-                        )
-                    }
-                    val profileDeferred = async {
-                        if (_state.value.profiles.containsKey(context.publicKeyHex)) {
-                            _state.value.profiles[context.publicKeyHex]
-                        } else {
-                            fetchProfile(context.publicKeyHex, relayUrl)
-                        }
-                    }
-                    val (memos, notes) = eventsDeferred.await()
-                    Triple(memos, notes, profileDeferred.await())
+                val profile = if (_state.value.profiles.containsKey(context.publicKeyHex)) {
+                    _state.value.profiles[context.publicKeyHex]
+                } else {
+                    fetchProfile(context.publicKeyHex, relayUrl)
                 }
-
+                val (memoEvents, noteEvents) = if (nextSelectedDate in _state.value.loadedDates) {
+                    emptyList<NostrEvent>() to emptyList()
+                } else {
+                    fetchEvents(
+                        pubkey = context.publicKeyHex,
+                        since = nextSelectedDate.startOfDayEpochSeconds(),
+                        until = nextSelectedDate.plusDays(1).startOfDayEpochSeconds() - 1,
+                        relayUrl = relayUrl,
+                        includeMemos = targetPubkey == null,
+                        includeLikes = targetPubkey == null,
+                        limit = JOURNAL_DATE_LIMIT,
+                    )
+                }
                 val memos = decodeMemoEvents(memoEvents, context)
+                val notes = noteEvents.sortedByDescending { it.createdAt }
 
                 val profiles = if (profile != null) {
                     _state.value.profiles + (context.publicKeyHex to profile)
@@ -343,22 +377,18 @@ class JournalViewModel(private val targetPubkey: String? = null) : SafeViewModel
 
                 _state.value = _state.value.copy(
                     isLoading = false,
-                    memos = memos,
-                    notes = noteEvents.sortedByDescending { it.createdAt },
+                    memos = mergeMemos(_state.value.memos, memos),
+                    notes = mergeNotes(_state.value.notes, notes),
                     profiles = profiles,
-                    quotedEvents = emptyMap(),
-                    reactionCounts = emptyMap(),
-                    replyCounts = emptyMap(),
-                    repostCounts = emptyMap(),
-                    likedReactions = emptyMap(),
+                    loadedDates = _state.value.loadedDates + nextSelectedDate,
                     error = null,
                 )
 
-                val noteIds = noteEvents.map { it.id }
+                val noteIds = notes.map { it.id }
                 if (noteIds.isNotEmpty()) {
                     fetchEngagement(noteIds, ownPublicKeyHex)
                 }
-                fetchReferencedContent(noteEvents, memos, relayUrl)
+                fetchReferencedContentNow(notes, memos, relayUrl)
                 backfillMonthEntries(
                     context = context,
                     monthStart = monthStart,
@@ -369,8 +399,6 @@ class JournalViewModel(private val targetPubkey: String? = null) : SafeViewModel
             } catch (e: Throwable) {
                 _state.value = _state.value.copy(
                     isLoading = false,
-                    memos = emptyList(),
-                    notes = emptyList(),
                     error = e.message ?: "ポストメモの読み込みに失敗しました",
                 )
             }
@@ -385,35 +413,63 @@ class JournalViewModel(private val targetPubkey: String? = null) : SafeViewModel
         monthBackfillJob?.cancel()
         monthBackfillJob = launch {
             try {
-                val (memoEvents, noteEvents) = fetchMonthEvents(
-                    pubkey = context.publicKeyHex,
-                    monthStart = monthStart,
-                    relayUrl = relayUrl,
-                    includeMemos = targetPubkey == null,
-                    includeLikes = targetPubkey == null,
-                    excludeDates = setOf(loadedDate),
-                )
-                if (_state.value.selectedMonth != monthStart) return@launch
+                val lastDay = minOf(monthStart.nextMonth().minusDays(1), currentDate())
+                val dates = generateSequence(monthStart) { it.plusDays(1) }
+                    .takeWhile { it <= lastDay }
+                    .filterNot { it == loadedDate }
 
-                val memos = decodeMemoEvents(memoEvents, context)
-                _state.value = _state.value.copy(
-                    memos = (_state.value.memos + memos)
-                        .distinctBy { it.eventId }
-                        .sortedByDescending { it.displayTime },
-                    notes = (_state.value.notes + noteEvents)
-                        .distinctBy { it.id }
-                        .sortedByDescending { it.createdAt },
-                )
+                for (date in dates) {
+                    if (_state.value.selectedMonth != monthStart) return@launch
+                    if (date in _state.value.loadedDates) continue
+                    val (memoEvents, noteEvents) = fetchEvents(
+                        pubkey = context.publicKeyHex,
+                        since = date.startOfDayEpochSeconds(),
+                        until = date.plusDays(1).startOfDayEpochSeconds() - 1,
+                        relayUrl = relayUrl,
+                        includeMemos = targetPubkey == null,
+                        includeLikes = targetPubkey == null,
+                        limit = JOURNAL_MONTH_DAY_LIMIT,
+                    )
+                    if (_state.value.selectedMonth != monthStart) return@launch
+
+                    val memos = decodeMemoEvents(memoEvents, context)
+                    _state.value = _state.value.copy(
+                        memos = (_state.value.memos + memos)
+                            .distinctBy { it.eventId }
+                            .sortedByDescending { it.displayTime },
+                        notes = (_state.value.notes + noteEvents)
+                            .distinctBy { it.id }
+                            .sortedByDescending { it.createdAt },
+                        loadedDates = _state.value.loadedDates + date,
+                    )
+                    fetchReferencedContentNow(noteEvents, memos, relayUrl)
+                }
             } catch (e: CancellationException) {
                 throw e
             }
         }
     }
 
-    private fun loadDate(date: LocalDate) {
+    private fun loadDate(date: LocalDate, forceRefresh: Boolean = false) {
         referencedContentJob?.cancel()
         engagementJob?.cancel()
         loadJob?.cancel()
+        if (!forceRefresh && date in _state.value.loadedDates) {
+            val notes = notesForDate(date)
+            val memos = memosForDate(date)
+            _state.value = _state.value.copy(
+                selectedMonth = date.monthStart(),
+                selectedDate = date,
+                isLoading = false,
+                error = null,
+            )
+            val noteIds = notes.map { it.id }
+            if (noteIds.isNotEmpty()) {
+                fetchEngagement(noteIds, ownPublicKeyHex)
+            }
+            fetchReferencedContent(notes, memos, relayUrl)
+            return
+        }
         loadJob = launch {
             try {
                 val context = resolveLoadContext() ?: return@launch
@@ -436,8 +492,9 @@ class JournalViewModel(private val targetPubkey: String? = null) : SafeViewModel
                 val notes = noteEvents.sortedByDescending { it.createdAt }
                 _state.value = _state.value.copy(
                     isLoading = false,
-                    memos = replaceMemosForDate(_state.value.memos, date, memos),
-                    notes = replaceNotesForDate(_state.value.notes, date, notes),
+                    memos = mergeMemos(_state.value.memos, memos),
+                    notes = mergeNotes(_state.value.notes, notes),
+                    loadedDates = _state.value.loadedDates + date,
                     error = null,
                 )
 
@@ -457,39 +514,6 @@ class JournalViewModel(private val targetPubkey: String? = null) : SafeViewModel
         }
     }
 
-    private suspend fun fetchMonthEvents(
-        pubkey: String,
-        monthStart: LocalDate,
-        relayUrl: String? = null,
-        includeMemos: Boolean = true,
-        includeLikes: Boolean = true,
-        excludeDates: Set<LocalDate> = emptySet(),
-    ): Pair<List<NostrEvent>, List<NostrEvent>> = coroutineScope {
-        val lastDay = minOf(monthStart.nextMonth().minusDays(1), currentDate())
-        val dates = generateSequence(monthStart) { it.plusDays(1) }
-            .takeWhile { it <= lastDay }
-            .filterNot { it in excludeDates }
-            .toList()
-        val dailyResults = dates.map { date ->
-            async {
-                fetchEvents(
-                    pubkey = pubkey,
-                    since = date.startOfDayEpochSeconds(),
-                    until = date.plusDays(1).startOfDayEpochSeconds() - 1,
-                    relayUrl = relayUrl,
-                    includeMemos = includeMemos,
-                    includeLikes = includeLikes,
-                    limit = JOURNAL_MONTH_DAY_LIMIT,
-                )
-            }
-        }.map { it.await() }
-
-        Pair(
-            dailyResults.flatMap { it.first }.distinctBy { it.id },
-            dailyResults.flatMap { it.second }.distinctBy { it.id },
-        )
-    }
-
     private suspend fun fetchEvents(
         pubkey: String,
         since: Long,
@@ -504,7 +528,7 @@ class JournalViewModel(private val targetPubkey: String? = null) : SafeViewModel
         } else {
             listOf(1, 6, NIP23_ARTICLE_KIND)
         }
-        val subId = "journal-${Clock.System.now().epochSeconds}-${since}"
+        val subId = nextSubscriptionId("journal")
         val mutex = Mutex()
         val memoEvents = mutableListOf<NostrEvent>()
         val noteEvents = mutableListOf<NostrEvent>()
@@ -531,9 +555,7 @@ class JournalViewModel(private val targetPubkey: String? = null) : SafeViewModel
                 ),
                 relayUrl = relayUrl,
             )
-            withTimeoutOrNull(MEMO_FETCH_TIMEOUT_MS) {
-                NostrRepository.eose(subId).first()
-            }
+            awaitSubscriptionEnd(subId, MEMO_FETCH_TIMEOUT_MS)
             mutex.withLock {
                 Pair(memoEvents.distinctBy { it.id }, noteEvents.distinctBy { it.id })
             }
@@ -547,7 +569,7 @@ class JournalViewModel(private val targetPubkey: String? = null) : SafeViewModel
         pubkey: String,
         relayUrl: String? = null,
     ): NostrProfile? = coroutineScope {
-        val subId = "memo-prof-${pubkey.take(16)}-${Clock.System.now().epochSeconds}"
+        val subId = nextSubscriptionId("memo-prof")
         var result: NostrProfile? = null
         var collector: Job? = null
         try {
@@ -563,9 +585,7 @@ class JournalViewModel(private val targetPubkey: String? = null) : SafeViewModel
                 NostrFilter(kinds = listOf(0), authors = listOf(pubkey), limit = 1),
                 relayUrl = relayUrl,
             )
-            withTimeoutOrNull(5_000L) {
-                NostrRepository.eose(subId).first()
-            }
+            awaitSubscriptionEnd(subId, 5_000L)
             result
         } finally {
             runCatching { NostrRepository.close(subId) }
@@ -576,7 +596,7 @@ class JournalViewModel(private val targetPubkey: String? = null) : SafeViewModel
     private fun fetchEngagement(noteIds: List<String>, ownPubkey: String?) {
         engagementJob?.cancel()
         engagementJob = launch {
-            val subId = "memo-engage-${Clock.System.now().epochSeconds}"
+            val subId = nextSubscriptionId("memo-engage")
             val noteIdSet = noteIds.toHashSet()
             val mutex = Mutex()
             val reactionCounts = mutableMapOf<String, Int>()
@@ -609,15 +629,17 @@ class JournalViewModel(private val targetPubkey: String? = null) : SafeViewModel
                     NostrFilter(kinds = listOf(1, 6, 7), eTags = noteIds, limit = 500),
                     relayUrl = relayUrl,
                 )
-                withTimeoutOrNull(8_000L) {
-                    NostrRepository.eose(subId).first()
-                }
+                awaitSubscriptionEnd(subId, 8_000L)
                 mutex.withLock {
+                    val retainedReactionCounts = _state.value.reactionCounts - noteIdSet
+                    val retainedReplyCounts = _state.value.replyCounts - noteIdSet
+                    val retainedRepostCounts = _state.value.repostCounts - noteIdSet
+                    val retainedLikedReactions = _state.value.likedReactions - noteIdSet
                     _state.value = _state.value.copy(
-                        reactionCounts = reactionCounts,
-                        replyCounts = replyCounts,
-                        repostCounts = repostCounts,
-                        likedReactions = likedReactions,
+                        reactionCounts = retainedReactionCounts + reactionCounts,
+                        replyCounts = retainedReplyCounts + replyCounts,
+                        repostCounts = retainedRepostCounts + repostCounts,
+                        likedReactions = retainedLikedReactions + likedReactions,
                     )
                 }
             } catch (e: CancellationException) {
@@ -671,109 +693,132 @@ class JournalViewModel(private val targetPubkey: String? = null) : SafeViewModel
         }.sortedByDescending { it.displayTime }
     }
 
-    private fun replaceMemosForDate(
+    private fun mergeMemos(
         current: List<JournalItem>,
-        date: LocalDate,
-        replacement: List<JournalItem>,
+        additions: List<JournalItem>,
     ): List<JournalItem> =
-        (current.filterNot { dateOfEpochSeconds(it.displayTime) == date } + replacement)
+        (current + additions)
             .distinctBy { it.eventId }
             .sortedByDescending { it.displayTime }
 
-    private fun replaceNotesForDate(
+    private fun mergeNotes(
         current: List<NostrEvent>,
-        date: LocalDate,
-        replacement: List<NostrEvent>,
+        additions: List<NostrEvent>,
     ): List<NostrEvent> =
-        (current.filterNot { dateOfEpochSeconds(it.createdAt) == date } + replacement)
+        (current + additions)
             .distinctBy { it.id }
             .sortedByDescending { it.createdAt }
+
+    private fun memosForDate(date: LocalDate): List<JournalItem> =
+        _state.value.memos.filter { dateOfEpochSeconds(it.displayTime) == date }
+
+    private fun notesForDate(date: LocalDate): List<NostrEvent> =
+        _state.value.notes.filter { dateOfEpochSeconds(it.createdAt) == date }
+
+    private fun nextSubscriptionId(prefix: String): String {
+        subscriptionSequence += 1
+        return "$prefix-${Clock.System.now().toEpochMilliseconds()}-${subscriptionSequence}-${Random.nextInt()}"
+    }
+
+    private suspend fun awaitSubscriptionEnd(subId: String, timeoutMillis: Long) {
+        withTimeoutOrNull(timeoutMillis) {
+            merge(
+                NostrRepository.endOfStoredEvents(subId),
+                NostrRepository.closedMessages(subId).map { closed ->
+                    appLog("[Journal] CLOSED subId=$subId reason=${closed.message}")
+                    Unit
+                },
+            ).first()
+        }
+    }
 
     private fun fetchReferencedContent(notes: List<NostrEvent>, memos: List<JournalItem>, relayUrl: String?) {
         referencedContentJob?.cancel()
         referencedContentJob = launch {
             try {
-                val eventIdsToFetch = buildSet {
-                    notes.forEach { event ->
-                        event.replyTargetId()?.let { add(it) }
-                        addAll(quotedEventIds(event))
-                        event.activityTargetId()?.let { add(it) }
-                    }
-                }
-                val memoPubkeys = memos.mapNotNull { it.memo.replyToPubkey }.toHashSet()
-
-                val fetchedEvents = mutableListOf<NostrEvent>()
-
-                if (eventIdsToFetch.isNotEmpty()) {
-                    val subId = "memo-refs-${Clock.System.now().epochSeconds}"
-                    val mutex = Mutex()
-                    var collector: Job? = null
-                    try {
-                        collector = launch {
-                            NostrRepository.events(subId).collect { event ->
-                                if (event.id in eventIdsToFetch) {
-                                    mutex.withLock { fetchedEvents += event }
-                                }
-                            }
-                        }
-                        NostrRepository.subscribe(
-                            subId,
-                            NostrFilter(ids = eventIdsToFetch.toList(), kinds = listOf(1), limit = eventIdsToFetch.size),
-                            relayUrl = relayUrl,
-                        )
-                        withTimeoutOrNull(5_000L) {
-                            NostrRepository.eose(subId).first()
-                        }
-                        _state.value = _state.value.copy(
-                            quotedEvents = fetchedEvents.associateBy { it.id },
-                        )
-                    } finally {
-                        runCatching { NostrRepository.close(subId) }
-                        collector?.cancelAndJoin()
-                    }
-                }
-
-                val pubkeysToFetch = buildSet {
-                    addAll(memoPubkeys)
-                    fetchedEvents.forEach { add(it.pubkey) }
-                }.filterNot { _state.value.profiles.containsKey(it) }
-
-                if (pubkeysToFetch.isNotEmpty()) {
-                    val subId = "memo-ref-prof-${Clock.System.now().epochSeconds}"
-                    val mutex = Mutex()
-                    val newProfiles = mutableMapOf<String, NostrProfile>()
-                    val pubkeySet = pubkeysToFetch.toHashSet()
-                    var collector: Job? = null
-                    try {
-                        collector = launch {
-                            NostrRepository.events(subId).collect { event ->
-                                if (event.kind == 0 && event.pubkey in pubkeySet) {
-                                    event.toProfile()?.let { profile ->
-                                        mutex.withLock { newProfiles[event.pubkey] = profile }
-                                    }
-                                }
-                            }
-                        }
-                        NostrRepository.subscribe(
-                            subId,
-                            NostrFilter(kinds = listOf(0), authors = pubkeysToFetch, limit = pubkeysToFetch.size),
-                            relayUrl = relayUrl,
-                        )
-                        withTimeoutOrNull(5_000L) {
-                            NostrRepository.eose(subId).first()
-                        }
-                        if (newProfiles.isNotEmpty()) {
-                            _state.value = _state.value.copy(
-                                profiles = _state.value.profiles + newProfiles,
-                            )
-                        }
-                    } finally {
-                        runCatching { NostrRepository.close(subId) }
-                        collector?.cancelAndJoin()
-                    }
-                }
+                fetchReferencedContentNow(notes, memos, relayUrl)
             } catch (e: CancellationException) {
                 throw e
+            }
+        }
+    }
+
+    private suspend fun fetchReferencedContentNow(notes: List<NostrEvent>, memos: List<JournalItem>, relayUrl: String?) = coroutineScope {
+        val eventIdsToFetch = buildSet {
+            notes.forEach { event ->
+                event.replyTargetId()?.let { add(it) }
+                addAll(quotedEventIds(event))
+                event.activityTargetId()?.let { add(it) }
+            }
+        }.filterNot { _state.value.quotedEvents.containsKey(it) }
+            .toSet()
+        val memoPubkeys = memos.mapNotNull { it.memo.replyToPubkey }.toHashSet()
+
+        val fetchedEvents = mutableListOf<NostrEvent>()
+
+        if (eventIdsToFetch.isNotEmpty()) {
+            val subId = nextSubscriptionId("memo-refs")
+            val mutex = Mutex()
+            var collector: Job? = null
+            try {
+                collector = launch {
+                    NostrRepository.events(subId).collect { event ->
+                        if (event.id in eventIdsToFetch) {
+                            mutex.withLock { fetchedEvents += event }
+                        }
+                    }
+                }
+                NostrRepository.subscribe(
+                    subId,
+                    NostrFilter(ids = eventIdsToFetch.toList(), limit = eventIdsToFetch.size),
+                    relayUrl = relayUrl,
+                )
+                awaitSubscriptionEnd(subId, 5_000L)
+                _state.value = _state.value.copy(
+                    quotedEvents = _state.value.quotedEvents + fetchedEvents.associateBy { it.id },
+                )
+            } finally {
+                runCatching { NostrRepository.close(subId) }
+                collector?.cancelAndJoin()
+            }
+        }
+
+        val referencedEvents = fetchedEvents + eventIdsToFetch.mapNotNull { _state.value.quotedEvents[it] }
+        val pubkeysToFetch = buildSet {
+            addAll(memoPubkeys)
+            referencedEvents.forEach { add(it.pubkey) }
+        }.filterNot { _state.value.profiles.containsKey(it) }
+
+        if (pubkeysToFetch.isNotEmpty()) {
+            val subId = nextSubscriptionId("memo-ref-prof")
+            val mutex = Mutex()
+            val newProfiles = mutableMapOf<String, NostrProfile>()
+            val pubkeySet = pubkeysToFetch.toHashSet()
+            var collector: Job? = null
+            try {
+                collector = launch {
+                    NostrRepository.events(subId).collect { event ->
+                        if (event.kind == 0 && event.pubkey in pubkeySet) {
+                            event.toProfile()?.let { profile ->
+                                mutex.withLock { newProfiles[event.pubkey] = profile }
+                            }
+                        }
+                    }
+                }
+                NostrRepository.subscribe(
+                    subId,
+                    NostrFilter(kinds = listOf(0), authors = pubkeysToFetch, limit = pubkeysToFetch.size),
+                    relayUrl = relayUrl,
+                )
+                awaitSubscriptionEnd(subId, 5_000L)
+                if (newProfiles.isNotEmpty()) {
+                    _state.value = _state.value.copy(
+                        profiles = _state.value.profiles + newProfiles,
+                    )
+                }
+            } finally {
+                runCatching { NostrRepository.close(subId) }
+                collector?.cancelAndJoin()
             }
         }
     }
@@ -809,6 +854,9 @@ private fun JournalItem.addressTagValue(): String? {
         ?: return null
     return "$MEMO_EVENT_KIND:$pubkey:$d"
 }
+
+private fun isSameMonth(date: LocalDate, monthStart: LocalDate): Boolean =
+    date.year == monthStart.year && date.month == monthStart.month
 
 internal fun currentDate(): LocalDate =
     Clock.System.now().toLocalDateTime(TimeZone.currentSystemDefault()).date
