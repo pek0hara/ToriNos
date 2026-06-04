@@ -4,6 +4,7 @@ import kotlinx.coroutines.flow.StateFlow
 
 object NgWordStore {
     val ngWords: StateFlow<List<String>> = PrivateMuteListStore.ngWords
+    val syncState: StateFlow<PrivateMuteListSyncState> = PrivateMuteListStore.syncState
 
     fun add(word: String) {
         PrivateMuteListStore.addNgWord(word)

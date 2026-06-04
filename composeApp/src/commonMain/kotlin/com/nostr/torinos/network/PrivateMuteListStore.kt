@@ -42,6 +42,13 @@ data class PrivateMuteListCache(
     val updatedAt: Long = 0,
 )
 
+data class PrivateMuteListSyncState(
+    val isRefreshing: Boolean = false,
+    val isPublishing: Boolean = false,
+    val lastSyncedAt: Long? = null,
+    val error: String? = null,
+)
+
 object PrivateMuteListStore {
     private const val KIND_MUTE_LIST = 10000
     private const val CACHE_KEY = "private_mute_list_cache_v1"
@@ -60,10 +67,13 @@ object PrivateMuteListStore {
     private val _ngWords = MutableStateFlow<List<String>>(emptyList())
     val ngWords: StateFlow<List<String>> = _ngWords.asStateFlow()
 
+    private val _syncState = MutableStateFlow(PrivateMuteListSyncState())
+    val syncState: StateFlow<PrivateMuteListSyncState> = _syncState.asStateFlow()
+
     init {
         scope.launch {
             loadCache()
-            refreshFromRelays()
+            refreshFromRelays(updateStatus = true)
         }
     }
 
@@ -107,7 +117,7 @@ object PrivateMuteListStore {
         }.getOrDefault(false)
 
     fun refresh() {
-        scope.launch { refreshFromRelays() }
+        scope.launch { refreshFromRelays(updateStatus = true) }
     }
 
     private suspend fun loadCache() {
@@ -175,34 +185,102 @@ object PrivateMuteListStore {
         }
     }
 
-    private suspend fun refreshFromRelays() {
-        val privateKey = KeyStorage.loadPrivateKey() ?: return
-        val publicKey = runCatching { derivePublicKey(privateKey.fromHex()).toHex() }.getOrNull() ?: return
-        val event = fetchLatestMuteList(publicKey) ?: return
-        val parsed = decodeEventContent(event, privateKey) ?: return
-        _mutedPubkeys.value = parsed.mutedPubkeys.toSet()
-        _ngWords.value = parsed.ngWords
-        saveCache(event)
+    private suspend fun refreshFromRelays(updateStatus: Boolean = false) {
+        if (updateStatus) {
+            _syncState.value = _syncState.value.copy(isRefreshing = true, error = null)
+        }
+        try {
+            val privateKey = KeyStorage.loadPrivateKey() ?: return
+            val publicKey = derivePublicKey(privateKey.fromHex()).toHex()
+            val event = fetchLatestMuteList(publicKey) ?: run {
+                if (updateStatus) {
+                    _syncState.value = _syncState.value.copy(
+                        isRefreshing = false,
+                        lastSyncedAt = Clock.System.now().epochSeconds,
+                    )
+                }
+                return
+            }
+            val parsed = decodeEventContent(event, privateKey) ?: run {
+                if (updateStatus) {
+                    _syncState.value = _syncState.value.copy(
+                        isRefreshing = false,
+                        error = "リレーのミュートリストを読み込めませんでした",
+                    )
+                }
+                return
+            }
+            _mutedPubkeys.value = parsed.mutedPubkeys.toSet()
+            _ngWords.value = parsed.ngWords
+            saveCache(event)
+            if (updateStatus) {
+                _syncState.value = _syncState.value.copy(
+                    isRefreshing = false,
+                    lastSyncedAt = Clock.System.now().epochSeconds,
+                    error = null,
+                )
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Throwable) {
+            appLog("[PrivateMuteListStore] refresh failed: ${e::class.simpleName}: ${e.message}")
+            if (updateStatus) {
+                _syncState.value = _syncState.value.copy(
+                    isRefreshing = false,
+                    error = e.message ?: "リレー同期に失敗しました",
+                )
+            }
+        } finally {
+            if (updateStatus && _syncState.value.isRefreshing) {
+                _syncState.value = _syncState.value.copy(isRefreshing = false)
+            }
+        }
     }
 
     private suspend fun publishCurrentList() {
         val privateKey = KeyStorage.loadPrivateKey() ?: return
         val publicKey = runCatching { derivePublicKey(privateKey.fromHex()).toHex() }.getOrNull() ?: return
+        val targets = RelayStore.enabledRelayUrlsSnapshot()
+        if (targets.isEmpty()) {
+            _syncState.value = _syncState.value.copy(error = "有効なリレーがありません")
+            return
+        }
+        _syncState.value = _syncState.value.copy(isPublishing = true, error = null)
         val tagsJson = encodePrivateTags()
         if (tagsJson.encodeToByteArray().size > MAX_NIP44_PLAINTEXT_BYTES) {
             appLog("[PrivateMuteListStore] private mute list is too large")
+            _syncState.value = _syncState.value.copy(isPublishing = false, error = "ミュートリストが大きすぎます")
             return
         }
         val content = runCatching { Nip44.encrypt(tagsJson, privateKey, publicKey) }
             .onFailure { appLog("[PrivateMuteListStore] NIP-44 encrypt failed: ${it::class.simpleName}: ${it.message}") }
-            .getOrNull() ?: return
+            .getOrNull() ?: run {
+                _syncState.value = _syncState.value.copy(isPublishing = false, error = "ミュートリストを暗号化できませんでした")
+                return
+            }
         val event = runCatching {
             signEvent(privateKeyHex = privateKey, content = content, kind = KIND_MUTE_LIST, tags = emptyList())
         }.onFailure {
             appLog("[PrivateMuteListStore] sign failed: ${it::class.simpleName}: ${it.message}")
-        }.getOrNull() ?: return
-        runCatching { NostrRepository.publish(event) }
-            .onFailure { appLog("[PrivateMuteListStore] publish failed: ${it::class.simpleName}: ${it.message}") }
+        }.getOrNull() ?: run {
+            _syncState.value = _syncState.value.copy(isPublishing = false, error = "ミュートリストへ署名できませんでした")
+            return
+        }
+        runCatching { NostrRepository.publishToRelays(event, targets) }
+            .onSuccess {
+                _syncState.value = _syncState.value.copy(
+                    isPublishing = false,
+                    lastSyncedAt = Clock.System.now().epochSeconds,
+                    error = null,
+                )
+            }
+            .onFailure {
+                appLog("[PrivateMuteListStore] publish failed: ${it::class.simpleName}: ${it.message}")
+                _syncState.value = _syncState.value.copy(
+                    isPublishing = false,
+                    error = it.message ?: "リレーへ送信できませんでした",
+                )
+            }
     }
 
     private fun encodePrivateTags(): String {
