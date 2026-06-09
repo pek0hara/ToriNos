@@ -12,8 +12,8 @@ import com.nostr.torinos.model.NostrProfile
 import com.nostr.torinos.model.latestLiveActivityVersions
 import com.nostr.torinos.model.liveActivityAddress
 import com.nostr.torinos.model.toLiveActivityMeta
-import com.nostr.torinos.model.toProfile
 import com.nostr.torinos.network.NostrRepository
+import com.nostr.torinos.network.ProfileCache
 import com.nostr.torinos.ui.SafeViewModel
 import kotlin.coroutines.cancellation.CancellationException
 import kotlin.time.Clock
@@ -76,7 +76,7 @@ class LiveListViewModel(private val relayUrl: String? = null) : SafeViewModel() 
         jobs += launch {
             NostrRepository.events(profileSubId).collect { event ->
                 if (event.kind != 0) return@collect
-                val profile = event.toProfile() ?: return@collect
+                val profile = ProfileCache.putEvent(event) ?: return@collect
                 pendingPubkeys.remove(event.pubkey)
                 _state.value = _state.value.copy(profiles = _state.value.profiles + (event.pubkey to profile))
                 rebuildActivities()
@@ -122,7 +122,14 @@ class LiveListViewModel(private val relayUrl: String? = null) : SafeViewModel() 
     private fun rebuildActivities() {
         val now = Clock.System.now().epochSeconds
         val selected = _state.value.selectedStatuses
-        val profiles = _state.value.profiles
+        val requiredPubkeys = rawEvents.values.flatMap { event ->
+            val meta = event.toLiveActivityMeta(now)
+            if (meta == null) listOf(event.pubkey) else listOf(event.pubkey) + meta.participants.map { it.pubkey }
+        }
+        val profiles = _state.value.profiles + ProfileCache.getAll(requiredPubkeys)
+        if (profiles != _state.value.profiles) {
+            _state.value = _state.value.copy(profiles = profiles)
+        }
         val activities = rawEvents.values
             .mapNotNull { event ->
                 val meta = event.toLiveActivityMeta(now) ?: return@mapNotNull null
@@ -135,6 +142,12 @@ class LiveListViewModel(private val relayUrl: String? = null) : SafeViewModel() 
 
     private fun scheduleProfileFetch(pubkey: String) {
         if (pubkey in _state.value.profiles || !pendingPubkeys.add(pubkey)) return
+        ProfileCache.get(pubkey)?.let { cachedProfile ->
+            pendingPubkeys.remove(pubkey)
+            _state.value = _state.value.copy(profiles = _state.value.profiles + (pubkey to cachedProfile))
+            rebuildActivities()
+            return
+        }
         profileBatchJob?.cancel()
         profileBatchJob = launch {
             delay(PROFILE_BATCH_DELAY_MS)
@@ -246,7 +259,7 @@ class LiveDetailViewModel(
         jobs += launch {
             NostrRepository.events(profileSubId).collect { event ->
                 if (event.kind != 0) return@collect
-                val profile = event.toProfile() ?: return@collect
+                val profile = ProfileCache.putEvent(event) ?: return@collect
                 pendingPubkeys.remove(event.pubkey)
                 _state.value = _state.value.copy(profiles = _state.value.profiles + (event.pubkey to profile))
                 refreshProfilesOnItems()
@@ -295,6 +308,12 @@ class LiveDetailViewModel(
 
     private fun scheduleProfileFetch(pubkey: String) {
         if (pubkey in _state.value.profiles || !pendingPubkeys.add(pubkey)) return
+        ProfileCache.get(pubkey)?.let { cachedProfile ->
+            pendingPubkeys.remove(pubkey)
+            _state.value = _state.value.copy(profiles = _state.value.profiles + (pubkey to cachedProfile))
+            refreshProfilesOnItems()
+            return
+        }
         profileBatchJob?.cancel()
         profileBatchJob = launch {
             delay(PROFILE_BATCH_DELAY_MS)

@@ -6,10 +6,10 @@ import com.nostr.torinos.ui.SafeViewModel
 import com.nostr.torinos.model.NostrFilter
 import com.nostr.torinos.model.NostrProfile
 import com.nostr.torinos.model.extractNpubReferences
-import com.nostr.torinos.model.toProfile
 import com.nostr.torinos.network.CustomEmojiStore
 import com.nostr.torinos.network.FollowRepository
 import com.nostr.torinos.network.NostrRepository
+import com.nostr.torinos.network.ProfileCache
 import com.nostr.torinos.network.RelayStore
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -58,6 +58,10 @@ class MyProfileViewModel(private val ownPubkey: String) : SafeViewModel() {
     }
 
     private fun start() {
+        ProfileCache.get(ownPubkey)?.let { cachedProfile ->
+            _state.update { it.copy(profile = cachedProfile) }
+            scheduleLinkedProfileFetch(cachedProfile.about.orEmpty())
+        }
         collectorJobs += launch {
             FollowRepository.followedPubkeys.collect { follows ->
                 _state.update { it.copy(followingCount = follows.size) }
@@ -75,7 +79,7 @@ class MyProfileViewModel(private val ownPubkey: String) : SafeViewModel() {
         collectorJobs += launch {
             NostrRepository.events(profileSubId).collect { event ->
                 if (event.kind != 0) return@collect
-                event.toProfile()?.let { profile ->
+                ProfileCache.putEvent(event)?.let { profile ->
                     _state.update { it.copy(profile = profile) }
                     scheduleLinkedProfileFetch(profile.about.orEmpty())
                 }
@@ -85,7 +89,7 @@ class MyProfileViewModel(private val ownPubkey: String) : SafeViewModel() {
         collectorJobs += launch {
             NostrRepository.events(linkedProfileSubId).collect { event ->
                 if (event.kind != 0) return@collect
-                event.toProfile()?.let { profile ->
+                ProfileCache.putEvent(event)?.let { profile ->
                     pendingLinkedProfilePubkeys.remove(event.pubkey)
                     _state.update {
                         it.copy(linkedProfiles = it.linkedProfiles + (event.pubkey to profile))
@@ -166,6 +170,7 @@ class MyProfileViewModel(private val ownPubkey: String) : SafeViewModel() {
 
     /** 編集保存後に UI を即時更新する（リレーの応答を待たない）。 */
     fun applyProfile(profile: NostrProfile) {
+        ProfileCache.put(ownPubkey, profile)
         _state.update { it.copy(profile = profile) }
         launch {
             delay(2_000)
@@ -233,9 +238,17 @@ class MyProfileViewModel(private val ownPubkey: String) : SafeViewModel() {
     }
 
     private fun scheduleLinkedProfileFetch(text: String) {
-        val authors = extractNpubReferences(text)
+        val linkedPubkeys = extractNpubReferences(text)
             .map { it.pubkey }
-            .filter { it !in _state.value.linkedProfiles && pendingLinkedProfilePubkeys.add(it) }
+            .filter { it !in _state.value.linkedProfiles }
+            .distinct()
+        val cachedProfiles = ProfileCache.getAll(linkedPubkeys)
+        if (cachedProfiles.isNotEmpty()) {
+            _state.update { it.copy(linkedProfiles = it.linkedProfiles + cachedProfiles) }
+        }
+        val authors = linkedPubkeys
+            .filterNot { it in cachedProfiles }
+            .filter { pendingLinkedProfilePubkeys.add(it) }
         if (authors.isEmpty()) return
         launch {
             NostrRepository.subscribe(

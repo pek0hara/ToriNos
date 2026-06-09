@@ -6,9 +6,9 @@ import com.nostr.torinos.crypto.isWriteSupported
 import com.nostr.torinos.model.NostrFilter
 import com.nostr.torinos.model.NostrProfile
 import com.nostr.torinos.model.extractNpubReferences
-import com.nostr.torinos.model.toProfile
 import com.nostr.torinos.network.FollowRepository
 import com.nostr.torinos.network.NostrRepository
+import com.nostr.torinos.network.ProfileCache
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -100,6 +100,10 @@ class UserProfileViewModel(
     fun clearFollowError() { _state.update { it.copy(followError = null) } }
 
     private fun start() {
+        ProfileCache.get(pubkey)?.let { cachedProfile ->
+            _state.update { it.copy(profile = cachedProfile) }
+            scheduleLinkedProfileFetch(cachedProfile.about.orEmpty())
+        }
         startCollectors()
         launch {
             NostrRepository.subscribe(
@@ -151,7 +155,7 @@ class UserProfileViewModel(
         collectorJobs += launch {
             NostrRepository.events(profileSubId).collect { event ->
                 if (event.kind != 0) return@collect
-                val profile = event.toProfile() ?: return@collect
+                val profile = ProfileCache.putEvent(event) ?: return@collect
                 _state.update { it.copy(profile = profile) }
                 scheduleLinkedProfileFetch(profile.about.orEmpty())
             }
@@ -160,7 +164,7 @@ class UserProfileViewModel(
         collectorJobs += launch {
             NostrRepository.events(linkedProfileSubId).collect { event ->
                 if (event.kind != 0) return@collect
-                val profile = event.toProfile() ?: return@collect
+                val profile = ProfileCache.putEvent(event) ?: return@collect
                 pendingLinkedProfilePubkeys.remove(event.pubkey)
                 _state.update {
                     it.copy(linkedProfiles = it.linkedProfiles + (event.pubkey to profile))
@@ -238,9 +242,17 @@ class UserProfileViewModel(
     }
 
     private fun scheduleLinkedProfileFetch(text: String) {
-        val authors = extractNpubReferences(text)
+        val linkedPubkeys = extractNpubReferences(text)
             .map { it.pubkey }
-            .filter { it !in _state.value.linkedProfiles && pendingLinkedProfilePubkeys.add(it) }
+            .filter { it !in _state.value.linkedProfiles }
+            .distinct()
+        val cachedProfiles = ProfileCache.getAll(linkedPubkeys)
+        if (cachedProfiles.isNotEmpty()) {
+            _state.update { it.copy(linkedProfiles = it.linkedProfiles + cachedProfiles) }
+        }
+        val authors = linkedPubkeys
+            .filterNot { it in cachedProfiles }
+            .filter { pendingLinkedProfilePubkeys.add(it) }
         if (authors.isEmpty()) return
         launch {
             NostrRepository.subscribe(
