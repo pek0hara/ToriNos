@@ -69,6 +69,7 @@ import com.nostr.torinos.model.ArticleItem
 import com.nostr.torinos.model.NostrEvent
 import com.nostr.torinos.model.NostrProfile
 import com.nostr.torinos.model.extractNostrEventReferences
+import com.nostr.torinos.model.quotedEventIds
 import com.nostr.torinos.model.stripNostrEventUris
 import com.nostr.torinos.network.RelayStore
 import com.nostr.torinos.ui.components.LinkedText
@@ -422,6 +423,7 @@ fun ArticleDetailScreen(
                             article = article,
                             quotedEvents = state.quotedEvents,
                             quotedProfiles = state.quotedProfiles,
+                            loadingQuoteIds = state.loadingQuoteIds,
                             onUserClick = onUserClick,
                             onNoteClick = onNoteClick,
                         )
@@ -654,6 +656,7 @@ private fun ArticleDetailContent(
     article: ArticleItem,
     quotedEvents: Map<String, NostrEvent>,
     quotedProfiles: Map<String, NostrProfile>,
+    loadingQuoteIds: Set<String>,
     onUserClick: (pubkey: String) -> Unit,
     onNoteClick: (eventId: String) -> Unit,
 ) {
@@ -683,8 +686,10 @@ private fun ArticleDetailContent(
         }
         MarkdownBody(
             content = article.event.content,
+            articleQuoteIds = quotedEventIds(article.event),
             quotedEvents = quotedEvents,
             quotedProfiles = quotedProfiles,
+            loadingQuoteIds = loadingQuoteIds,
             onUserClick = onUserClick,
             onNoteClick = onNoteClick,
         )
@@ -737,11 +742,14 @@ private const val SwipeThresholdPx = 80f
 @Composable
 private fun MarkdownBody(
     content: String,
+    articleQuoteIds: List<String>,
     quotedEvents: Map<String, NostrEvent>,
     quotedProfiles: Map<String, NostrProfile>,
+    loadingQuoteIds: Set<String>,
     onUserClick: (pubkey: String) -> Unit,
     onNoteClick: (eventId: String) -> Unit,
 ) {
+    val inlineQuoteIds = mutableSetOf<String>()
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         parseMarkdownBlocks(content).forEach { block ->
             val quoteIds = when (block) {
@@ -753,6 +761,7 @@ private fun MarkdownBody(
                 is MarkdownBlock.ListItem -> extractNostrEventReferences(block.text).map { it.eventId }
                 is MarkdownBlock.Paragraph -> extractNostrEventReferences(block.text).map { it.eventId }
             }
+            inlineQuoteIds += quoteIds
             when (block) {
                 MarkdownBlock.Blank -> Box(modifier = Modifier.height(6.dp))
                 is MarkdownBlock.Heading -> stripNostrEventUris(block.text).takeIf { it.isNotBlank() }?.let { text ->
@@ -804,19 +813,50 @@ private fun MarkdownBody(
                 }
             }
             quoteIds.forEach { eventId ->
-                val quotedEvent = quotedEvents[eventId]
-                if (quotedEvent != null) {
-                    ArticleQuotePreview(
-                        event = quotedEvent,
-                        profile = quotedProfiles[quotedEvent.pubkey],
-                        onUserClick = onUserClick,
-                        onNoteClick = { onNoteClick(eventId) },
-                    )
-                } else {
-                    MissingArticleQuotePreview()
-                }
+                ArticleQuotePreviewSlot(
+                    eventId = eventId,
+                    quotedEvents = quotedEvents,
+                    quotedProfiles = quotedProfiles,
+                    loadingQuoteIds = loadingQuoteIds,
+                    onUserClick = onUserClick,
+                    onNoteClick = onNoteClick,
+                )
             }
         }
+        articleQuoteIds.filterNot { it in inlineQuoteIds }.forEach { eventId ->
+            ArticleQuotePreviewSlot(
+                eventId = eventId,
+                quotedEvents = quotedEvents,
+                quotedProfiles = quotedProfiles,
+                loadingQuoteIds = loadingQuoteIds,
+                onUserClick = onUserClick,
+                onNoteClick = onNoteClick,
+            )
+        }
+    }
+}
+
+@Composable
+private fun ArticleQuotePreviewSlot(
+    eventId: String,
+    quotedEvents: Map<String, NostrEvent>,
+    quotedProfiles: Map<String, NostrProfile>,
+    loadingQuoteIds: Set<String>,
+    onUserClick: (pubkey: String) -> Unit,
+    onNoteClick: (eventId: String) -> Unit,
+) {
+    val quotedEvent = quotedEvents[eventId]
+    if (quotedEvent != null) {
+        ArticleQuotePreview(
+            event = quotedEvent,
+            profile = quotedProfiles[quotedEvent.pubkey],
+            onUserClick = onUserClick,
+            onNoteClick = { onNoteClick(eventId) },
+        )
+    } else if (eventId in loadingQuoteIds) {
+        ArticleQuoteStatusPreview("引用投稿を読み込んでいます")
+    } else {
+        ArticleQuoteStatusPreview("引用投稿を読み込めませんでした")
     }
 }
 
@@ -901,9 +941,9 @@ private fun ArticleQuotePreview(
 }
 
 @Composable
-private fun MissingArticleQuotePreview() {
+private fun ArticleQuoteStatusPreview(text: String) {
     Text(
-        text = "引用投稿を読み込めませんでした",
+        text = text,
         modifier = Modifier
             .fillMaxWidth()
             .border(

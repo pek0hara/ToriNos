@@ -3,8 +3,8 @@ package com.nostr.torinos.ui.profile
 import com.nostr.torinos.model.NostrEvent
 import com.nostr.torinos.model.NostrFilter
 import com.nostr.torinos.model.NostrProfile
-import com.nostr.torinos.model.toProfile
 import com.nostr.torinos.network.NostrRepository
+import com.nostr.torinos.network.ProfileCache
 import com.nostr.torinos.ui.SafeViewModel
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -70,7 +70,7 @@ class MyProfileReactionsViewModel(private val ownPubkey: String) : SafeViewModel
         collectorJobs += launch {
             NostrRepository.events(profileSubId).collect { event ->
                 if (event.kind != 0) return@collect
-                val profile = event.toProfile() ?: return@collect
+                val profile = ProfileCache.putEvent(event) ?: return@collect
                 pendingPubkeys.remove(event.pubkey)
                 _state.update { it.copy(profiles = it.profiles + (event.pubkey to profile)) }
             }
@@ -133,6 +133,11 @@ class MyProfileReactionsViewModel(private val ownPubkey: String) : SafeViewModel
 
     private fun scheduleProfileFetch(pubkey: String) {
         if (pubkey in _state.value.profiles || !pendingPubkeys.add(pubkey)) return
+        ProfileCache.get(pubkey)?.let { cachedProfile ->
+            pendingPubkeys.remove(pubkey)
+            _state.update { it.copy(profiles = it.profiles + (pubkey to cachedProfile)) }
+            return
+        }
         profileBatchJob?.cancel()
         profileBatchJob = launch {
             delay(400)

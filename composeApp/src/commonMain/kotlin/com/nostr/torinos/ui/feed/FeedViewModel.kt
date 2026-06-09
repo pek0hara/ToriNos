@@ -12,10 +12,11 @@ import com.nostr.torinos.model.NostrProfile
 import com.nostr.torinos.model.extractNpubReferences
 import com.nostr.torinos.model.quotedEventIds
 import com.nostr.torinos.model.replyTargetId
-import com.nostr.torinos.model.toProfile
 import com.nostr.torinos.network.MuteStore
 import com.nostr.torinos.network.NgWordStore
 import com.nostr.torinos.network.NostrRepository
+import com.nostr.torinos.network.ProfileCache
+import com.nostr.torinos.network.RelayTarget
 import kotlinx.serialization.json.Json
 import kotlinx.coroutines.Job
 import kotlin.time.Clock
@@ -60,8 +61,11 @@ class FeedViewModel(
     private val instanceKey = nextInstanceKey()
     private val shortKey = authorPubkey?.take(16) ?: authorPubkeys?.hashCode()?.toString() ?: "global"
     private val subscriptionJobs = mutableListOf<Job>()
+    private val historyCollectorJobs = mutableListOf<Job>()
     private var subscriptionIds: SubscriptionIds? = null
+    private var currentHistorySubId: String? = null
     private var subscriptionGeneration = 0
+    private var historyRequestGeneration = 0
     private val pendingPubkeys = mutableSetOf<String>()
     private var profileBatchJob: Job? = null
     private var historyPageTimeoutJob: Job? = null
@@ -76,18 +80,22 @@ class FeedViewModel(
     private val eventSortTimes = mutableMapOf<String, Long>()
     private val pendingQuoteIds = linkedSetOf<String>()
     private val pendingRepostTargets = mutableMapOf<String, PendingRepostTarget>()
-    private val pendingHistoryBatch = mutableListOf<NostrEvent>()
     private var subscriptionsStarted = false
     private var ownPubkey: String? = null
 
     private var oldestCreatedAt: Long? = null
+    private var nextHistoryUntil: Long? = null
+    private var activeHistoryUntil: Long? = null
+    private var shouldRetryHistoryPage = false
     private var loadingMore = false
     private var isGapFill = false
     private var lastHistoryBatchReceivedCount = 0
     private var lastHistoryBatchUniqueCount = 0
-    private var receivedEoseCount = 0
+    private var lastHistoryBatchOldestCreatedAt: Long? = null
+    private val completedHistoryRelayUrls = mutableSetOf<String>()
     private var expectedEoseCount = 1
     private var initialHistoryRequested = false
+    private val relayTarget: RelayTarget = relayUrl?.let(RelayTarget::Single) ?: RelayTarget.AllEnabled
     private val shouldRefreshLiveSubscription: Boolean
         get() = authorPubkey == null && authorPubkeys != null
 
@@ -97,6 +105,7 @@ class FeedViewModel(
     }
 
     fun injectProfile(pubkey: String, profile: com.nostr.torinos.model.NostrProfile) {
+        ProfileCache.put(pubkey, profile)
         if (_state.value.profiles.containsKey(pubkey)) return
         _state.value = _state.value.copy(profiles = _state.value.profiles + (pubkey to profile))
     }
@@ -241,7 +250,8 @@ class FeedViewModel(
     fun loadMore() {
         if (loadingMore || !_state.value.canLoadMore) return
         launch {
-            requestHistoryPage(until = oldestCreatedAt?.minus(1))
+            val until = if (shouldRetryHistoryPage) nextHistoryUntil else nextHistoryUntil ?: oldestCreatedAt?.minus(1)
+            requestHistoryPage(until = until)
         }
     }
 
@@ -251,60 +261,10 @@ class FeedViewModel(
         val ids = newSubscriptionIds()
         subscriptionIds = ids
 
-        subscriptionJobs += launch {
-            val current = _state.value
-            if (current.isInitialLoad && current.events.isEmpty() && !initialHistoryRequested) {
-                // 初回のみ履歴ページを取得
-                requestHistoryPage(until = null)
-            } else {
-                // タブ再表示時はライブ購読を再開し、離れていた間のギャップを補完する
-                val nowSec = Clock.System.now().epochSeconds
-                subscribeLiveFeed(since = nowSec)
-                val gapSince = eventSortTimes.values.maxOrNull()
-                if (gapSince != null && gapSince < nowSec - 5) {
-                    requestGapFill(since = gapSince, until = nowSec)
-                }
-                resubscribeEngagement()
-            }
-        }
-
         // フィードイベント収集（ライブ：feedSubId）
         subscriptionJobs += launch {
             NostrRepository.events(ids.feed).collect { event ->
                 appendFeedEvent(event)
-            }
-        }
-
-        // 過去ページイベント収集（historySubId）
-        subscriptionJobs += launch {
-            NostrRepository.events(ids.history).collect { event ->
-                lastHistoryBatchReceivedCount++
-                lastHistoryBatchUniqueCount += appendFeedEvent(event)
-            }
-        }
-
-        // EOSE でローディング解除
-        subscriptionJobs += launch {
-            NostrRepository.eose(ids.history).collect {
-                receivedEoseCount++
-                if (receivedEoseCount >= expectedEoseCount) {
-                    onHistoryPageCompleted()
-                }
-            }
-        }
-
-        // タイムアウトフォールバック：10 秒経っても EOSE が来なければスピナーを消す
-        subscriptionJobs += launch {
-            delay(10_000)
-            val current = _state.value
-            if (current.isInitialLoad && current.events.isEmpty()) {
-                loadingMore = false
-                _state.value = current.copy(
-                    isInitialLoad = false,
-                    canLoadMore = false,
-                    isLoadingMore = false,
-                )
-                NostrRepository.close(ids.history)
             }
         }
 
@@ -342,7 +302,7 @@ class FeedViewModel(
         subscriptionJobs += launch {
             NostrRepository.events(ids.profile).collect { event ->
                 if (event.kind != 0) return@collect
-                val profile = event.toProfile() ?: return@collect
+                val profile = ProfileCache.putEvent(event) ?: return@collect
                 pendingPubkeys.remove(event.pubkey)
                 _state.value = _state.value.copy(
                     profiles = _state.value.profiles + (event.pubkey to profile),
@@ -437,6 +397,23 @@ class FeedViewModel(
                 scheduleEngagementFetch(event.id)
             }
         }
+
+        subscriptionJobs += launch {
+            val current = _state.value
+            if (current.isInitialLoad && current.events.isEmpty() && !initialHistoryRequested) {
+                // 初回のみ履歴ページを取得
+                requestHistoryPage(until = null)
+            } else {
+                // タブ再表示時はライブ購読を再開し、離れていた間のギャップを補完する
+                val nowSec = Clock.System.now().epochSeconds
+                subscribeLiveFeed(since = nowSec)
+                val gapSince = eventSortTimes.values.maxOrNull()
+                if (gapSince != null && gapSince < nowSec - 5) {
+                    requestGapFill(since = gapSince, until = nowSec)
+                }
+                resubscribeEngagement()
+            }
+        }
     }
 
     fun stopSubscriptions() {
@@ -446,13 +423,14 @@ class FeedViewModel(
         subscriptionIds = null
         subscriptionJobs.forEach { it.cancel() }
         subscriptionJobs.clear()
+        historyCollectorJobs.forEach { it.cancel() }
+        historyCollectorJobs.clear()
         profileBatchJob?.cancel()
         engagementBatchJob?.cancel()
         historyPageTimeoutJob?.cancel()
         historyPageTimeoutJob = null
         if (loadingMore) {
             loadingMore = false
-            pendingHistoryBatch.clear()
             val current = _state.value
             _state.value = current.copy(
                 isInitialLoad = current.isInitialLoad && current.events.isEmpty(),
@@ -463,9 +441,10 @@ class FeedViewModel(
         if (_state.value.isInitialLoad && _state.value.events.isEmpty()) {
             initialHistoryRequested = false
         }
+        currentHistorySubId?.let { NostrRepository.close(it) }
+        currentHistorySubId = null
         ids?.let {
             NostrRepository.close(it.feed)
-            NostrRepository.close(it.history)
             NostrRepository.close(it.profile)
             NostrRepository.close(it.reaction)
             NostrRepository.close(it.reply)
@@ -492,25 +471,29 @@ class FeedViewModel(
             return
         }
 
-        NostrRepository.closeSuspending(ids.history)
+        currentHistorySubId?.let { NostrRepository.closeSuspending(it) }
+        val historySubId = nextHistorySubscriptionId(ids)
+        currentHistorySubId = historySubId
+        startHistoryCollectors(historySubId)
 
         isGapFill = false
+        activeHistoryUntil = until
         loadingMore = true
         lastHistoryBatchReceivedCount = 0
         lastHistoryBatchUniqueCount = 0
-        receivedEoseCount = 0
-        pendingHistoryBatch.clear()
-        expectedEoseCount = 1
-        _state.value = _state.value.copy(canLoadMore = false, isLoadingMore = true)
-        scheduleHistoryPageTimeout()
+        lastHistoryBatchOldestCreatedAt = null
+        completedHistoryRelayUrls.clear()
 
         // 初回のみライブ購読も開始（since=現在時刻でライブイベントのみ）
         if (until == null) {
             initialHistoryRequested = true
             subscribeLiveFeed(since = Clock.System.now().epochSeconds)
         }
+        expectedEoseCount = NostrRepository.targetRelayUrls(relayTarget).size.coerceAtLeast(1)
+        _state.value = _state.value.copy(canLoadMore = false, isLoadingMore = true)
+        scheduleHistoryPageTimeout()
         NostrRepository.subscribe(
-            ids.history,
+            historySubId,
             NostrFilter(
                 kinds = feedKinds(),
                 authors = authorPubkeys,
@@ -518,24 +501,27 @@ class FeedViewModel(
                 until = until,
                 limit = FEED_PAGE_SIZE,
             ),
-            relayUrl = relayUrl,
+            target = relayTarget,
         )
     }
 
     private suspend fun requestGapFill(since: Long, until: Long) {
         val ids = subscriptionIds ?: return
         if (authorPubkeys?.isEmpty() == true) return
-        NostrRepository.closeSuspending(ids.history)
+        currentHistorySubId?.let { NostrRepository.closeSuspending(it) }
+        val historySubId = nextHistorySubscriptionId(ids)
+        currentHistorySubId = historySubId
+        startHistoryCollectors(historySubId)
         isGapFill = true
         loadingMore = true
         lastHistoryBatchReceivedCount = 0
         lastHistoryBatchUniqueCount = 0
-        receivedEoseCount = 0
-        pendingHistoryBatch.clear()
-        expectedEoseCount = 1
+        lastHistoryBatchOldestCreatedAt = null
+        completedHistoryRelayUrls.clear()
+        expectedEoseCount = NostrRepository.targetRelayUrls(relayTarget).size.coerceAtLeast(1)
         scheduleHistoryPageTimeout()
         NostrRepository.subscribe(
-            ids.history,
+            historySubId,
             NostrFilter(
                 kinds = feedKinds(),
                 authors = authorPubkeys,
@@ -544,7 +530,7 @@ class FeedViewModel(
                 until = until,
                 limit = FEED_PAGE_SIZE,
             ),
-            relayUrl = relayUrl,
+            target = relayTarget,
         )
     }
 
@@ -553,9 +539,13 @@ class FeedViewModel(
         loadingMore = false
         historyPageTimeoutJob?.cancel()
         historyPageTimeoutJob = null
-        flushHistoryBatch()
         // リプライ等がフィルタされても受信件数が上限に達していれば次ページがある
         val hasMore = lastHistoryBatchReceivedCount >= FEED_PAGE_SIZE
+        val oldestReceivedAt = lastHistoryBatchOldestCreatedAt
+        if (!isGapFill) {
+            shouldRetryHistoryPage = false
+            nextHistoryUntil = if (hasMore && oldestReceivedAt != null) oldestReceivedAt - 1 else null
+        }
         val cur = _state.value
         // ギャップ補完は期間が限定されるため件数で過去ページの有無を判断できない
         _state.value = cur.copy(
@@ -563,8 +553,8 @@ class FeedViewModel(
             isInitialLoad = false,
             isLoadingMore = false,
         )
-        subscriptionIds?.let { ids ->
-            if (isGapFill || !hasMore) NostrRepository.close(ids.history)
+        currentHistorySubId?.let { subId ->
+            if (isGapFill || !hasMore) NostrRepository.close(subId)
         }
     }
 
@@ -575,16 +565,56 @@ class FeedViewModel(
             if (!loadingMore) return@launch
 
             loadingMore = false
-            flushHistoryBatch()
             val hasMore = lastHistoryBatchReceivedCount >= FEED_PAGE_SIZE
+            val hasIncompleteRelays = completedHistoryRelayUrls.size < expectedEoseCount
+            val oldestReceivedAt = lastHistoryBatchOldestCreatedAt
+            val canAdvanceFromPartialResponse = hasIncompleteRelays &&
+                lastHistoryBatchReceivedCount > 0 &&
+                oldestReceivedAt != null
+            val shouldRetryCurrentPage = hasIncompleteRelays && !canAdvanceFromPartialResponse
+            if (!isGapFill) {
+                shouldRetryHistoryPage = shouldRetryCurrentPage
+                nextHistoryUntil = when {
+                    shouldRetryCurrentPage -> activeHistoryUntil
+                    (hasMore || canAdvanceFromPartialResponse) && oldestReceivedAt != null -> oldestReceivedAt - 1
+                    else -> null
+                }
+            }
             val current = _state.value
             _state.value = current.copy(
                 isInitialLoad = false,
-                canLoadMore = if (isGapFill) current.canLoadMore else hasMore,
+                canLoadMore = if (isGapFill) {
+                    current.canLoadMore
+                } else {
+                    hasMore || shouldRetryCurrentPage || canAdvanceFromPartialResponse
+                },
                 isLoadingMore = false,
             )
-            subscriptionIds?.let { ids ->
-                if (isGapFill || !hasMore) NostrRepository.close(ids.history)
+            currentHistorySubId?.let { subId ->
+                if (isGapFill || !hasMore) NostrRepository.close(subId)
+            }
+        }
+    }
+
+    private fun startHistoryCollectors(historySubId: String) {
+        historyCollectorJobs.forEach { it.cancel() }
+        historyCollectorJobs.clear()
+        historyCollectorJobs += launch {
+            NostrRepository.events(historySubId).collect { event ->
+                lastHistoryBatchReceivedCount++
+                lastHistoryBatchOldestCreatedAt = minOf(lastHistoryBatchOldestCreatedAt ?: event.createdAt, event.createdAt)
+                lastHistoryBatchUniqueCount += appendFeedEvent(event)
+                if (_state.value.isInitialLoad && _state.value.events.isNotEmpty()) {
+                    _state.value = _state.value.copy(isInitialLoad = false)
+                }
+            }
+        }
+        historyCollectorJobs += launch {
+            NostrRepository.eoseRelays(historySubId).collect { relayUrl ->
+                completedHistoryRelayUrls.add(relayUrl)
+                if (completedHistoryRelayUrls.size >= expectedEoseCount) {
+                    onHistoryPageCompleted()
+                }
             }
         }
     }
@@ -599,7 +629,7 @@ class FeedViewModel(
                 tTags = hashtag?.let { listOf(it) },
                 since = since,
             ),
-            relayUrl = relayUrl,
+            target = relayTarget,
         )
     }
 
@@ -656,11 +686,7 @@ class FeedViewModel(
         if (isFiltered(event)) return 0
         val cur = _state.value
         if (cur.events.any { it.id == event.id }) return 0
-        if (loadingMore) {
-            pendingHistoryBatch.add(event)
-        } else {
-            updateEvents(insertSorted(cur.events, event))
-        }
+        updateEvents(insertSorted(cur.events, event))
         val quoteIds = quotedEventIds(event)
         scheduleQuoteFetch(quoteIds)
         event.replyTargetId()?.takeIf { it !in quoteIds }?.let { scheduleQuoteFetch(listOf(it)) }
@@ -712,7 +738,7 @@ class FeedViewModel(
                 NostrRepository.subscribe(
                     ids.repostTarget,
                     NostrFilter(ids = pendingRepostTargets.keys.toList(), kinds = listOf(1)),
-                    relayUrl = relayUrl,
+                    target = relayTarget,
                 )
             }
         }
@@ -751,14 +777,6 @@ class FeedViewModel(
     private fun sortTimelineEvents(events: List<NostrEvent>): List<NostrEvent> =
         events.sortedByDescending { eventSortTimes[it.id] ?: it.createdAt }
 
-    private fun flushHistoryBatch() {
-        if (pendingHistoryBatch.isEmpty()) return
-        val sorted = pendingHistoryBatch.sortedByDescending { eventSortTimes[it.id] ?: it.createdAt }
-        pendingHistoryBatch.clear()
-        val cur = _state.value
-        updateEvents(mergeSorted(cur.events, sorted))
-    }
-
     private fun insertSorted(events: List<NostrEvent>, event: NostrEvent): List<NostrEvent> {
         val sortTime = eventSortTimes[event.id] ?: event.createdAt
         var lo = 0
@@ -769,19 +787,6 @@ class FeedViewModel(
             else hi = mid
         }
         return events.take(lo) + event + events.drop(lo)
-    }
-
-    private fun mergeSorted(existing: List<NostrEvent>, batch: List<NostrEvent>): List<NostrEvent> {
-        val result = ArrayList<NostrEvent>(existing.size + batch.size)
-        var ei = 0; var bi = 0
-        while (ei < existing.size && bi < batch.size) {
-            val eTime = eventSortTimes[existing[ei].id] ?: existing[ei].createdAt
-            val bTime = eventSortTimes[batch[bi].id] ?: batch[bi].createdAt
-            if (eTime >= bTime) result.add(existing[ei++]) else result.add(batch[bi++])
-        }
-        while (ei < existing.size) result.add(existing[ei++])
-        while (bi < batch.size) result.add(batch[bi++])
-        return result
     }
 
     private fun updateEvents(events: List<NostrEvent>) {
@@ -798,10 +803,12 @@ class FeedViewModel(
             }
             ownPubkey?.let(::add)
         }
+        val profiles = _state.value.profiles.filterKeys { it in retainedPubkeys } +
+            ProfileCache.getAll(retainedPubkeys)
 
         _state.value = _state.value.copy(
             events = visibleEvents,
-            profiles = _state.value.profiles.filterKeys { it in retainedPubkeys },
+            profiles = profiles,
             reactionCounts = _state.value.reactionCounts.filterKeys { it in retainedEventIds },
             replyCounts = _state.value.replyCounts.filterKeys { it in retainedEventIds },
             repostCounts = _state.value.repostCounts.filterKeys { it in retainedEventIds },
@@ -819,20 +826,38 @@ class FeedViewModel(
     }
 
     private fun scheduleProfileFetch(pubkey: String) {
-        if (pubkey in _state.value.profiles || pubkey in pendingPubkeys) return
+        if (pubkey in _state.value.profiles) return
+        ProfileCache.get(pubkey)?.let { cachedProfile ->
+            _state.value = _state.value.copy(profiles = _state.value.profiles + (pubkey to cachedProfile))
+            return
+        }
         pendingPubkeys.add(pubkey)
+        scheduleProfileSubscription()
+    }
+
+    private fun scheduleProfileSubscription() {
         profileBatchJob?.cancel()
         profileBatchJob = launch {
             delay(500)
-            if (pendingPubkeys.isEmpty()) return@launch
-            val authors = pendingPubkeys.toList()
-            pendingPubkeys.removeAll(authors)
+            val cachedProfiles = ProfileCache.getAll(pendingPubkeys)
+            if (cachedProfiles.isNotEmpty()) {
+                pendingPubkeys.removeAll(cachedProfiles.keys)
+                _state.value = _state.value.copy(profiles = _state.value.profiles + cachedProfiles)
+            }
+            val authors = pendingPubkeys
+                .filterNot { it in _state.value.profiles }
+                .take(PROFILE_FETCH_BATCH_LIMIT)
+            if (authors.isEmpty()) return@launch
             val ids = subscriptionIds ?: return@launch
             NostrRepository.subscribe(
                 ids.profile,
                 NostrFilter(kinds = listOf(0), authors = authors),
-                relayUrl = relayUrl,
+                target = relayTarget,
             )
+            delay(PROFILE_FETCH_RETRY_INTERVAL_MS)
+            if (subscriptionsStarted && pendingPubkeys.any { it !in _state.value.profiles }) {
+                scheduleProfileSubscription()
+            }
         }
     }
 
@@ -846,9 +871,9 @@ class FeedViewModel(
         val subIds = subscriptionIds ?: return
         if (watchedEventIds.isEmpty()) return
         val ids = watchedEventIds.toList()
-        NostrRepository.subscribe(subIds.reaction, NostrFilter(kinds = listOf(7), eTags = ids), relayUrl = relayUrl)
-        NostrRepository.subscribe(subIds.reply,    NostrFilter(kinds = listOf(1), eTags = ids), relayUrl = relayUrl)
-        NostrRepository.subscribe(subIds.repost,   NostrFilter(kinds = listOf(6), eTags = ids), relayUrl = relayUrl)
+        NostrRepository.subscribe(subIds.reaction, NostrFilter(kinds = listOf(7), eTags = ids), target = relayTarget)
+        NostrRepository.subscribe(subIds.reply,    NostrFilter(kinds = listOf(1), eTags = ids), target = relayTarget)
+        NostrRepository.subscribe(subIds.repost,   NostrFilter(kinds = listOf(6), eTags = ids), target = relayTarget)
     }
 
     private fun scheduleEngagementFetch(eventId: String) {
@@ -861,9 +886,9 @@ class FeedViewModel(
             delay(500)
             val ids = watchedEventIds.toList()
             val subIds = subscriptionIds ?: return@launch
-            NostrRepository.subscribe(subIds.reaction, NostrFilter(kinds = listOf(7), eTags = ids), relayUrl = relayUrl)
-            NostrRepository.subscribe(subIds.reply, NostrFilter(kinds = listOf(1), eTags = ids), relayUrl = relayUrl)
-            NostrRepository.subscribe(subIds.repost, NostrFilter(kinds = listOf(6), eTags = ids), relayUrl = relayUrl)
+            NostrRepository.subscribe(subIds.reaction, NostrFilter(kinds = listOf(7), eTags = ids), target = relayTarget)
+            NostrRepository.subscribe(subIds.reply, NostrFilter(kinds = listOf(1), eTags = ids), target = relayTarget)
+            NostrRepository.subscribe(subIds.repost, NostrFilter(kinds = listOf(6), eTags = ids), target = relayTarget)
         }
     }
 
@@ -877,7 +902,7 @@ class FeedViewModel(
             NostrRepository.subscribe(
                 ids.quote,
                 NostrFilter(ids = pendingQuoteIds.toList(), kinds = listOf(1)),
-                relayUrl = relayUrl,
+                target = relayTarget,
             )
         }
     }
@@ -897,11 +922,18 @@ class FeedViewModel(
         )
     }
 
+    private fun nextHistorySubscriptionId(ids: SubscriptionIds): String {
+        historyRequestGeneration++
+        return "${ids.history}-$historyRequestGeneration"
+    }
+
     companion object {
         private const val FEED_PAGE_SIZE = 30
         private const val MAX_TIMELINE_EVENTS = 800
         private const val MAX_TRACKED_ENGAGEMENT_EVENTS = 100
         private const val MAX_SEEN_IDS = 2000
+        private const val PROFILE_FETCH_BATCH_LIMIT = 200
+        private const val PROFILE_FETCH_RETRY_INTERVAL_MS = 5_000L
         private const val LIVE_SUBSCRIPTION_REFRESH_INTERVAL_MS = 60_000L
         private const val LIVE_SUBSCRIPTION_SINCE_OVERLAP_SECONDS = 300L
         private var nextInstanceKeyValue = 0

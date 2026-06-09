@@ -9,6 +9,9 @@ import io.ktor.client.HttpClient
 import io.ktor.client.plugins.websocket.webSocket
 import io.ktor.websocket.Frame
 import io.ktor.websocket.readText
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
@@ -33,9 +36,9 @@ class NostrRelay(
     private val _connected = MutableSharedFlow<Unit>(replay = 1, extraBufferCapacity = 1)
     val connected: SharedFlow<Unit> = _connected.asSharedFlow()
 
-    // ArrayDeque で保持することで、切断中のメッセージが再接続後も送信される。
-    // first() でピークしてから send 後に removeFirst() するため、送信失敗時もキューに残る。
-    private val pendingMessages = ArrayDeque<String>()
+    // 切断中のメッセージを保持し、REQ/CLOSE は subId 単位で最新だけを残す。
+    // 送信失敗時は先頭に戻すため、再接続後に再送される。
+    private val pendingMessages = mutableListOf<PendingMessage>()
     private val pendingMutex = Mutex()
     private val sendSignal = Channel<Unit>(Channel.CONFLATED)
     private var job: Job? = null
@@ -56,15 +59,16 @@ class NostrRelay(
                                 try {
                                     while (isActive) {
                                         while (isActive) {
-                                            val msg = pendingMutex.withLock {
-                                                if (pendingMessages.isEmpty()) null else pendingMessages.removeFirst()
+                                            val pending = pendingMutex.withLock {
+                                                if (pendingMessages.isEmpty()) null else pendingMessages.removeAt(0)
                                             } ?: break
+                                            val msg = pending.text
                                             networkTraceLog { "[Relay] send to $url: $msg" }
                                             try {
                                                 outgoing.send(Frame.Text(msg))
                                             } catch (e: Throwable) {
                                                 pendingMutex.withLock {
-                                                    pendingMessages.addFirst(msg)
+                                                    pendingMessages.add(0, pending)
                                                 }
                                                 throw e
                                             }
@@ -103,8 +107,12 @@ class NostrRelay(
     }
 
     suspend fun send(message: String) {
+        val pending = PendingMessage(message, subscriptionQueueKey(message))
         pendingMutex.withLock {
-            pendingMessages.addLast(message)
+            pending.key?.let { key ->
+                pendingMessages.removeAll { it.key == key }
+            }
+            pendingMessages.add(pending)
         }
         sendSignal.trySend(Unit)
     }
@@ -114,3 +122,17 @@ class NostrRelay(
         job = null
     }
 }
+
+private data class PendingMessage(
+    val text: String,
+    val key: String?,
+)
+
+private val relayMessageJson = Json { ignoreUnknownKeys = true }
+
+private fun subscriptionQueueKey(message: String): String? = runCatching {
+    val array = relayMessageJson.parseToJsonElement(message).jsonArray
+    val type = array.getOrNull(0)?.jsonPrimitive?.content ?: return@runCatching null
+    if (type != "REQ" && type != "CLOSE") return@runCatching null
+    array.getOrNull(1)?.jsonPrimitive?.content
+}.getOrNull()

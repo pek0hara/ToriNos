@@ -7,18 +7,20 @@ import com.nostr.torinos.model.NostrEvent
 import com.nostr.torinos.model.NostrFilter
 import com.nostr.torinos.model.NostrProfile
 import com.nostr.torinos.model.articleAddress
-import com.nostr.torinos.model.extractNostrEventReferences
 import com.nostr.torinos.model.latestArticleVersions
+import com.nostr.torinos.model.quotedEventIds
 import com.nostr.torinos.model.toArticleAuthors
 import com.nostr.torinos.model.toArticleMeta
-import com.nostr.torinos.model.toProfile
 import com.nostr.torinos.network.MuteStore
 import com.nostr.torinos.network.NostrRepository
-import com.nostr.torinos.network.RelayStore
+import com.nostr.torinos.network.ProfileCache
 import com.nostr.torinos.ui.SafeViewModel
+import kotlin.random.Random
 import kotlin.time.Clock
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
@@ -32,7 +34,7 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeoutOrNull
 
 enum class ArticleHubTab(val label: String) {
-    Articles("記事"),
+    Articles("記事一覧"),
     Users("ユーザー"),
 }
 
@@ -48,7 +50,7 @@ data class ArticleListState(
 
 private object ArticleMemoryCache {
     private val articlesByRelayAndAddress = mutableMapOf<String, ArticleItem>()
-    private val profilesByRelayAndPubkey = mutableMapOf<String, NostrProfile>()
+    private val eventsByRelayAndId = mutableMapOf<String, NostrEvent>()
 
     fun putArticles(relayUrl: String?, articles: List<ArticleItem>) {
         articles.forEach { article ->
@@ -56,23 +58,23 @@ private object ArticleMemoryCache {
         }
     }
 
-    fun putProfiles(relayUrl: String?, profiles: Map<String, NostrProfile>) {
-        profiles.forEach { (pubkey, profile) ->
-            profilesByRelayAndPubkey[profileKey(relayUrl, pubkey)] = profile
-        }
+    fun putEvent(relayUrl: String?, event: NostrEvent) {
+        eventsByRelayAndId[eventKey(relayUrl, event.id)] = event
     }
 
     fun article(relayUrl: String?, pubkey: String, identifier: String): ArticleItem? =
         articlesByRelayAndAddress[articleKey(relayUrl, articleAddress(pubkey, identifier))]
 
-    fun profile(relayUrl: String?, pubkey: String): NostrProfile? =
-        profilesByRelayAndPubkey[profileKey(relayUrl, pubkey)]
+    fun events(relayUrl: String?, eventIds: Collection<String>): Map<String, NostrEvent> =
+        eventIds.mapNotNull { eventId ->
+            eventsByRelayAndId[eventKey(relayUrl, eventId)]?.let { eventId to it }
+        }.toMap()
 
     private fun articleKey(relayUrl: String?, address: String): String =
         "${relayUrl.orEmpty()}|$address"
 
-    private fun profileKey(relayUrl: String?, pubkey: String): String =
-        "${relayUrl.orEmpty()}|$pubkey"
+    private fun eventKey(relayUrl: String?, eventId: String): String =
+        "${relayUrl.orEmpty()}|$eventId"
 }
 
 class ArticleHubViewModel(private val relayUrl: String? = null) : SafeViewModel() {
@@ -165,10 +167,15 @@ class ArticleHubViewModel(private val relayUrl: String? = null) : SafeViewModel(
             .map { it.pubkey }
             .distinct()
             .filterNot { it in _state.value.profiles }
-        if (missing.isEmpty()) return
-        val profiles = fetchProfiles(missing, relayUrl)
+        val cachedProfiles = ProfileCache.getAll(missing)
+        if (cachedProfiles.isNotEmpty()) {
+            _state.value = _state.value.copy(profiles = _state.value.profiles + cachedProfiles)
+            updateStateFromEvents()
+        }
+        val uncached = missing.filterNot { it in cachedProfiles }
+        if (uncached.isEmpty()) return
+        val profiles = fetchProfiles(uncached, relayUrl)
         if (profiles.isEmpty()) return
-        ArticleMemoryCache.putProfiles(relayUrl, profiles)
         _state.value = _state.value.copy(profiles = _state.value.profiles + profiles)
         updateStateFromEvents()
     }
@@ -265,9 +272,13 @@ class UserArticleListViewModel(
 
     private suspend fun fetchProfile() {
         if (pubkey in _state.value.profiles) return
+        ProfileCache.get(pubkey)?.let { cachedProfile ->
+            _state.value = _state.value.copy(profiles = _state.value.profiles + (pubkey to cachedProfile))
+            updateStateFromEvents()
+            return
+        }
         val profile = fetchProfiles(listOf(pubkey), relayUrl)
         if (profile.isEmpty()) return
-        ArticleMemoryCache.putProfiles(relayUrl, profile)
         _state.value = _state.value.copy(profiles = _state.value.profiles + profile)
         updateStateFromEvents()
     }
@@ -278,6 +289,7 @@ data class ArticleDetailState(
     val profile: NostrProfile? = null,
     val quotedEvents: Map<String, NostrEvent> = emptyMap(),
     val quotedProfiles: Map<String, NostrProfile> = emptyMap(),
+    val loadingQuoteIds: Set<String> = emptySet(),
     val isLoading: Boolean = true,
     val error: String? = null,
 )
@@ -289,37 +301,44 @@ class ArticleDetailViewModel(
 ) : SafeViewModel() {
     private val _state = MutableStateFlow(ArticleDetailState())
     val state: StateFlow<ArticleDetailState> = _state.asStateFlow()
+    private var loadJob: Job? = null
+    private var quoteJob: Job? = null
 
     init {
         load()
     }
 
     fun load() {
+        loadJob?.cancel()
+        quoteJob?.cancel()
         _state.value = ArticleDetailState()
-        launch {
+        loadJob = launch {
             try {
                 val latest = ArticleMemoryCache.article(relayUrl, pubkey, identifier)
                     ?: fetchLatestArticleByAddress(pubkey, identifier, relayUrl)
-                val quoteIds = latest
-                    ?.event
-                    ?.content
-                    ?.let { extractNostrEventReferences(it).map { reference -> reference.eventId }.distinct() }
-                    .orEmpty()
-                val quotedEvents = fetchEventsByIds(quoteIds, relayUrl).associateBy { it.id }
-                val profilePubkeys = listOf(pubkey) + quotedEvents.values.map { it.pubkey }
-                val profiles = fetchProfiles(profilePubkeys, relayUrl)
-                ArticleMemoryCache.putProfiles(relayUrl, profiles)
-                val profile = profiles[pubkey]
+                val quoteIds = latest?.event?.let(::quotedEventIds).orEmpty()
+                val cachedQuotedEvents = ArticleMemoryCache.events(relayUrl, quoteIds)
+                val profilePubkeys = (listOf(pubkey) + cachedQuotedEvents.values.map { it.pubkey }).distinct()
+                val cachedProfiles = ProfileCache.getAll(profilePubkeys)
+                val profile = cachedProfiles[pubkey]
                     ?: latest?.authorProfile
-                    ?: ArticleMemoryCache.profile(relayUrl, pubkey)
+                    ?: ProfileCache.get(pubkey)
                 _state.value = ArticleDetailState(
                     article = latest?.copy(authorProfile = profile),
                     profile = profile,
-                    quotedEvents = quotedEvents,
-                    quotedProfiles = profiles,
+                    quotedEvents = cachedQuotedEvents,
+                    quotedProfiles = cachedProfiles + listOfNotNull(profile?.let { pubkey to it }),
+                    loadingQuoteIds = quoteIds.filterNot { it in cachedQuotedEvents }.toSet(),
                     isLoading = false,
                     error = if (latest == null) "記事が見つかりません" else null,
                 )
+                if (latest != null && profile == null) {
+                    launch { fetchAuthorProfile() }
+                }
+                val missingQuoteIds = quoteIds.filterNot { it in cachedQuotedEvents }
+                if (latest != null && missingQuoteIds.isNotEmpty()) {
+                    quoteJob = launch { fetchQuotedEvents(missingQuoteIds) }
+                }
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Throwable) {
@@ -328,6 +347,54 @@ class ArticleDetailViewModel(
                     error = e.message ?: "記事を読み込めませんでした",
                 )
             }
+        }
+    }
+
+    private suspend fun fetchAuthorProfile() {
+        val profile = fetchProfiles(listOf(pubkey), relayUrl)[pubkey] ?: return
+        val cur = _state.value
+        val article = cur.article ?: return
+        _state.value = cur.copy(
+            article = article.copy(authorProfile = profile),
+            profile = profile,
+            quotedProfiles = cur.quotedProfiles + (pubkey to profile),
+        )
+    }
+
+    private suspend fun fetchQuotedEvents(quoteIds: List<String>) {
+        val eventIds = quoteIds.distinct()
+        if (eventIds.isEmpty()) return
+        val subId = articleSubscriptionId("article-detail-quote", eventIds)
+        try {
+            coroutineScope {
+                launch(start = CoroutineStart.UNDISPATCHED) {
+                    NostrRepository.events(subId).collect { event ->
+                        if (event.id !in eventIds) return@collect
+                        ArticleMemoryCache.putEvent(relayUrl, event)
+                        val quoteProfiles = fetchProfiles(listOf(event.pubkey), relayUrl)
+                        val cur = _state.value
+                        _state.value = cur.copy(
+                            quotedEvents = cur.quotedEvents + (event.id to event),
+                            quotedProfiles = cur.quotedProfiles + quoteProfiles,
+                            loadingQuoteIds = cur.loadingQuoteIds - event.id,
+                        )
+                    }
+                }
+                launch {
+                    withTimeoutOrNull(ARTICLE_FETCH_TIMEOUT_MS) {
+                        NostrRepository.eose(subId).first()
+                    }
+                    _state.value = _state.value.copy(loadingQuoteIds = emptySet())
+                }
+                NostrRepository.subscribe(
+                    subId,
+                    NostrFilter(ids = eventIds, limit = eventIds.size),
+                    relayUrl = relayUrl,
+                )
+                awaitCancellation()
+            }
+        } finally {
+            runCatching { NostrRepository.closeSuspending(subId) }
         }
     }
 }
@@ -374,12 +441,12 @@ private suspend fun fetchArticleEvents(
     filter: NostrFilter,
     relayUrl: String? = null,
 ): List<NostrEvent> = coroutineScope {
-    val subId = "article-${Clock.System.now().epochSeconds}-${filter.hashCode()}"
+    val subId = articleSubscriptionId("article", filter)
     val mutex = Mutex()
     val events = mutableListOf<NostrEvent>()
     var collector: Job? = null
     try {
-        collector = launch {
+        collector = launch(start = CoroutineStart.UNDISPATCHED) {
             NostrRepository.events(subId).collect { event ->
                 if (event.kind == NIP23_ARTICLE_KIND) {
                     mutex.withLock { events += event }
@@ -403,12 +470,12 @@ private suspend fun fetchEventsByIds(
 ): List<NostrEvent> = coroutineScope {
     val eventIds = ids.distinct()
     if (eventIds.isEmpty()) return@coroutineScope emptyList()
-    val subId = "article-quote-${Clock.System.now().epochSeconds}-${eventIds.hashCode()}"
+    val subId = articleSubscriptionId("article-quote", eventIds)
     val mutex = Mutex()
     val events = mutableListOf<NostrEvent>()
     var collector: Job? = null
     try {
-        collector = launch {
+        collector = launch(start = CoroutineStart.UNDISPATCHED) {
             NostrRepository.events(subId).collect { event ->
                 if (event.id in eventIds) {
                     mutex.withLock { events += event }
@@ -436,32 +503,25 @@ private suspend fun fetchProfiles(
 ): Map<String, NostrProfile> {
     val authors = pubkeys.distinct().take(PROFILE_FETCH_LIMIT)
     if (authors.isEmpty()) return emptyMap()
-    val profiles = fetchProfilesFromRelay(authors, relayUrl).toMutableMap()
-    if (profiles.size >= authors.size) return profiles
-
-    val fallbackRelayUrls = RelayStore.enabledRelayUrlsSnapshot()
-        .filter { it != relayUrl }
-    for (fallbackRelayUrl in fallbackRelayUrls) {
-        val missing = authors.filterNot { it in profiles }
-        if (missing.isEmpty()) break
-        profiles += fetchProfilesFromRelay(missing, fallbackRelayUrl)
-    }
-    return profiles
+    val cachedProfiles = ProfileCache.getAll(authors)
+    val missingAuthors = authors.filterNot { it in cachedProfiles }
+    if (missingAuthors.isEmpty()) return cachedProfiles
+    return cachedProfiles + fetchProfilesFromRelay(missingAuthors, relayUrl)
 }
 
 private suspend fun fetchProfilesFromRelay(
     authors: List<String>,
     relayUrl: String?,
 ): Map<String, NostrProfile> = coroutineScope {
-    val subId = "article-prof-${Clock.System.now().epochSeconds}-${authors.hashCode()}"
+    val subId = articleSubscriptionId("article-prof", authors)
     val mutex = Mutex()
     val profiles = mutableMapOf<String, NostrProfile>()
     var collector: Job? = null
     try {
-        collector = launch {
+        collector = launch(start = CoroutineStart.UNDISPATCHED) {
             NostrRepository.events(subId).collect { event ->
                 if (event.kind == 0 && event.pubkey in authors) {
-                    event.toProfile()?.let { profile ->
+                    ProfileCache.putEvent(event)?.let { profile ->
                         mutex.withLock { profiles[event.pubkey] = profile }
                     }
                 }
@@ -487,3 +547,6 @@ private const val ARTICLE_DETAIL_AUTHOR_FALLBACK_LIMIT = 100
 private const val ARTICLE_FETCH_TIMEOUT_MS = 8_000L
 private const val PROFILE_FETCH_TIMEOUT_MS = 5_000L
 private const val PROFILE_FETCH_LIMIT = 200
+
+private fun articleSubscriptionId(prefix: String, key: Any): String =
+    "$prefix-${Clock.System.now().toEpochMilliseconds()}-${key.hashCode()}-${Random.nextInt()}"

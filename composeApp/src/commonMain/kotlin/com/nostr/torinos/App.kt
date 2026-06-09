@@ -177,7 +177,7 @@ fun App() {
         val notificationsDrawerState = rememberDrawerState(DrawerValue.Closed)
         val followingFeedListState = remember { LazyListState() }
         val globalFeedListState = remember { LazyListState() }
-        var currentServiceTab by remember { mutableStateOf(ServiceTab.Channels) }
+        var currentServiceTab by remember { mutableStateOf(ServiceTab.Articles) }
 
         fun navigateTopLevelRoute(route: String) {
             if (currentRoute == route) return
@@ -214,6 +214,12 @@ fun App() {
         fun navigateServiceTab(tab: ServiceTab) {
             currentServiceTab = tab
             navigateTopLevelRoute("services")
+        }
+
+        fun navigateNextServiceTab() {
+            val currentIndex = ServiceTab.entries.indexOf(currentServiceTab).coerceAtLeast(0)
+            val nextIndex = (currentIndex + 1) % ServiceTab.entries.size
+            navigateServiceTab(ServiceTab.entries[nextIndex])
         }
 
         fun requestRelaySettings() {
@@ -520,7 +526,13 @@ fun App() {
                                         isChannelRoute ||
                                         isChannelThreadRoute ||
                                         currentRoute == "status",
-                                    onClick = { navigateServiceTab(currentServiceTab) },
+                                    onClick = {
+                                        if (currentRoute == "services") {
+                                            navigateNextServiceTab()
+                                        } else {
+                                            navigateServiceTab(currentServiceTab)
+                                        }
+                                    },
                                 )
                             }
                         }
