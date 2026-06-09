@@ -11,6 +11,7 @@ import com.nostr.torinos.util.appLog
 import com.nostr.torinos.util.loggingExceptionHandler
 import com.nostr.torinos.util.networkTraceLog
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -20,13 +21,27 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.filter
-import kotlinx.coroutines.flow.filterIsInstance
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeoutOrNull
+
+sealed interface RelayTarget {
+    data object AllEnabled : RelayTarget
+    data class Single(val url: String) : RelayTarget
+}
+
+private fun RelayTarget.urls(enabledRelayUrls: List<String>): List<String> = when (this) {
+    RelayTarget.AllEnabled -> enabledRelayUrls
+    is RelayTarget.Single -> listOf(url).filter { it in enabledRelayUrls }
+}
+
+private fun RelayTarget.includes(relayUrl: String): Boolean = when (this) {
+    RelayTarget.AllEnabled -> true
+    is RelayTarget.Single -> url == relayUrl
+}
 
 object NostrRepository {
     private val scope = CoroutineScope(
@@ -35,14 +50,13 @@ object NostrRepository {
     )
 
     /** 全リレーからのメッセージを集約するバス */
-    private val bus = MutableSharedFlow<RelayMessage>(extraBufferCapacity = 512)
+    private val bus = MutableSharedFlow<RelayEnvelope>(extraBufferCapacity = 512)
 
     internal val httpClient = createHttpClient()
     private val stateMutex = Mutex()
     private val activeRelays = mutableMapOf<String, ActiveRelayHandle>()
     private var enabledRelayUrls: List<String> = RelayStore.defaults.filter { it.enabled }.map { it.url }
-    /** subId → (filter, targetRelayUrl) targetRelayUrl=null は全リレー対象 */
-    private val activeSubscriptions = mutableMapOf<String, Pair<NostrFilter, String?>>()
+    private val activeSubscriptions = mutableMapOf<String, Pair<NostrFilter, RelayTarget>>()
     private val temporaryRelays = mutableMapOf<String, TemporaryRelayHandle>()
     private val temporarySubscriptions = mutableMapOf<String, Pair<NostrFilter, String>>()
     private val activeRelayCount = MutableStateFlow(0)
@@ -77,7 +91,7 @@ object NostrRepository {
                         }
                         else -> networkTraceLog { "[Repo] message from ${relay.url}: $message" }
                     }
-                    bus.emit(message)
+                    bus.emit(RelayEnvelope(relay.url, message))
                 }
             } catch (e: CancellationException) {
                 throw e
@@ -91,8 +105,8 @@ object NostrRepository {
                 relay.connected.collect {
                     val messages = stateMutex.withLock {
                         activeSubscriptions.mapNotNull { (subId, filterAndRelay) ->
-                            val (filter, targetUrl) = filterAndRelay
-                            if (targetUrl == null || targetUrl == relay.url) {
+                            val (filter, target) = filterAndRelay
+                            if (target.includes(relay.url)) {
                                 buildReqMessage(subId, filter)
                             } else {
                                 null
@@ -113,10 +127,7 @@ object NostrRepository {
 
     private fun desiredActiveRelayUrlsLocked(): Set<String> =
         activeSubscriptions.values
-            .flatMap { (_, targetUrl) ->
-                if (targetUrl == null) enabledRelayUrls else listOf(targetUrl)
-            }
-            .filter { it in enabledRelayUrls }
+            .flatMap { (_, target) -> target.urls(enabledRelayUrls) }
             .toSet()
 
     private fun reconcileActiveRelaysLocked(): Pair<List<ActiveRelayHandle>, List<ActiveRelayHandle>> {
@@ -142,7 +153,7 @@ object NostrRepository {
                         }
                         else -> networkTraceLog { "[Repo] message from ${relay.url}: $message" }
                     }
-                    bus.emit(message)
+                    bus.emit(RelayEnvelope(relay.url, message))
                 }
             } catch (e: CancellationException) {
                 throw e
@@ -175,23 +186,32 @@ object NostrRepository {
         return TemporaryRelayHandle(relay, listOf(messageJob, connectedJob))
     }
 
-    suspend fun subscribe(subscriptionId: String, filter: NostrFilter, relayUrl: String? = null) {
-        networkTraceLog { "[Repo] subscribe() subId='$subscriptionId' relay=${relayUrl ?: "all"} filter=$filter" }
+    suspend fun subscribe(subscriptionId: String, filter: NostrFilter, relayUrl: String? = null): Set<String> =
+        subscribe(
+            subscriptionId = subscriptionId,
+            filter = filter,
+            target = relayUrl?.let(RelayTarget::Single) ?: RelayTarget.AllEnabled,
+        )
+
+    suspend fun subscribe(subscriptionId: String, filter: NostrFilter, target: RelayTarget): Set<String> {
+        networkTraceLog { "[Repo] subscribe() subId='$subscriptionId' target=$target filter=$filter" }
         val message = buildReqMessage(subscriptionId, filter)
-        val (targets, newHandles) = stateMutex.withLock {
-            activeSubscriptions[subscriptionId] = Pair(filter, relayUrl)
+        val (targetUrls, existingTargets, newHandles) = stateMutex.withLock {
+            val urls = target.urls(enabledRelayUrls).toSet()
+            val targetsBeforeReconcile = activeRelays
+                .filterKeys { it in urls }
+                .values
+                .map { it.relay }
+            activeSubscriptions[subscriptionId] = Pair(filter, target)
             val (_, added) = reconcileActiveRelaysLocked()
-            if (relayUrl != null) {
-                listOfNotNull(activeRelays[relayUrl]?.relay)
-            } else {
-                activeRelays.values.map { it.relay }
-            } to added
+            Triple(urls, targetsBeforeReconcile, added)
         }
         newHandles.forEach { it.relay.connect(scope) }
-        targets.forEach { relay ->
+        existingTargets.distinctBy { it.url }.forEach { relay ->
             networkTraceLog { "[Repo] sending REQ to ${relay.url}" }
             relay.send(message)
         }
+        return targetUrls
     }
 
     suspend fun subscribeTemporaryRelay(subscriptionId: String, filter: NostrFilter, relayUrl: String) {
@@ -227,15 +247,8 @@ object NostrRepository {
     fun close(subscriptionId: String) {
         networkTraceLog { "[Repo] close() subId='$subscriptionId' relayCount=${relayCount}" }
         val msg = buildCloseMessage(subscriptionId)
-        scope.launch {
-            val (targets, removedHandles) = stateMutex.withLock {
-                val targetRelays = activeRelays.values.map { it.relay }
-                activeSubscriptions.remove(subscriptionId)
-                val (removed, _) = reconcileActiveRelaysLocked()
-                targetRelays to removed
-            }
-            targets.forEach { it.send(msg) }
-            removedHandles.forEach { it.close() }
+        scope.launch(start = CoroutineStart.UNDISPATCHED) {
+            closeActiveSubscription(subscriptionId, msg)
         }
     }
 
@@ -269,18 +282,28 @@ object NostrRepository {
     suspend fun closeSuspending(subscriptionId: String) {
         networkTraceLog { "[Repo] closeSuspending() subId='$subscriptionId' relayCount=${relayCount}" }
         val msg = buildCloseMessage(subscriptionId)
+        closeActiveSubscription(subscriptionId, msg)
+    }
+
+    private suspend fun closeActiveSubscription(subscriptionId: String, closeMessage: String) {
         val (targets, removedHandles) = stateMutex.withLock {
             val targetRelays = activeRelays.values.map { it.relay }
             activeSubscriptions.remove(subscriptionId)
             val (removed, _) = reconcileActiveRelaysLocked()
             targetRelays to removed
         }
-        targets.forEach { it.send(msg) }
+        targets.forEach { it.send(closeMessage) }
+        if (removedHandles.isNotEmpty()) {
+            delay(100L)
+        }
         removedHandles.forEach { it.close() }
     }
 
     /** 現在接続中のリレー数 */
     val relayCount: Int get() = activeRelayCount.value
+
+    suspend fun targetRelayUrls(target: RelayTarget): Set<String> =
+        stateMutex.withLock { target.urls(enabledRelayUrls).toSet() }
 
     /** 署名済みイベントを全リレーに送信 */
     suspend fun publish(event: NostrEvent) {
@@ -329,37 +352,49 @@ object NostrRepository {
 
     fun events(subscriptionId: String): Flow<NostrEvent> =
         bus
-            .filterIsInstance<RelayMessage.Event>()
-            .filter { it.subscriptionId == subscriptionId }
-            .map { it.event }
+            .filter { it.message is RelayMessage.Event && it.message.subscriptionId == subscriptionId }
+            .map { (it.message as RelayMessage.Event).event }
 
     /** 指定サブスクリプションの EOSE または CLOSED（リレー側でサブスクが終了）を通知する Flow */
     fun eose(subscriptionId: String): Flow<Unit> =
         bus
             .filter { msg ->
-                (msg is RelayMessage.EndOfStoredEvents && msg.subscriptionId == subscriptionId) ||
-                (msg is RelayMessage.Closed && msg.subscriptionId == subscriptionId)
+                (msg.message is RelayMessage.EndOfStoredEvents && msg.message.subscriptionId == subscriptionId) ||
+                (msg.message is RelayMessage.Closed && msg.message.subscriptionId == subscriptionId)
             }
             .map { }
 
+    fun eoseRelays(subscriptionId: String): Flow<String> =
+        bus
+            .filter { envelope ->
+                (envelope.message is RelayMessage.EndOfStoredEvents &&
+                    envelope.message.subscriptionId == subscriptionId) ||
+                    (envelope.message is RelayMessage.Closed &&
+                        envelope.message.subscriptionId == subscriptionId)
+            }
+            .map { it.relayUrl }
+
     fun endOfStoredEvents(subscriptionId: String): Flow<Unit> =
         bus
-            .filterIsInstance<RelayMessage.EndOfStoredEvents>()
-            .filter { it.subscriptionId == subscriptionId }
+            .filter { it.message is RelayMessage.EndOfStoredEvents && it.message.subscriptionId == subscriptionId }
             .map { }
 
     /** リレーが CLOSED を送ってきたときだけ通知する Flow */
     fun closed(subscriptionId: String): Flow<Unit> =
         bus
-            .filterIsInstance<RelayMessage.Closed>()
-            .filter { it.subscriptionId == subscriptionId }
+            .filter { it.message is RelayMessage.Closed && it.message.subscriptionId == subscriptionId }
             .map { }
 
     fun closedMessages(subscriptionId: String): Flow<RelayMessage.Closed> =
         bus
-            .filterIsInstance<RelayMessage.Closed>()
-            .filter { it.subscriptionId == subscriptionId }
+            .filter { it.message is RelayMessage.Closed && it.message.subscriptionId == subscriptionId }
+            .map { it.message as RelayMessage.Closed }
 }
+
+private data class RelayEnvelope(
+    val relayUrl: String,
+    val message: RelayMessage,
+)
 
 private data class TemporaryRelayHandle(
     val relay: NostrRelay,
