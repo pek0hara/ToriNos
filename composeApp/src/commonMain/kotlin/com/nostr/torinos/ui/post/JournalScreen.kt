@@ -121,7 +121,7 @@ fun JournalScreen(
     val isUserJournal = targetPubkey != null
     val availableFilters = remember(isUserJournal) {
         JournalEntryFilter.entries.filter {
-            !isUserJournal || it !in setOf(JournalEntryFilter.Like, JournalEntryFilter.Memo)
+            it != JournalEntryFilter.Memo && (!isUserJournal || it != JournalEntryFilter.Like)
         }
     }
     val baseEntries = if (state.showCalendar) state.selectedEntries else state.monthEntries
