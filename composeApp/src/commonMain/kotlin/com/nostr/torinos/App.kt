@@ -416,6 +416,7 @@ fun App() {
             drawerContent = {
                 NotificationsDrawer(
                     ownPubkey = ownPubkey,
+                    isOpen = notificationsDrawerState.currentValue == DrawerValue.Open,
                     scrollToTopRequest = notificationsScrollToTopRequest,
                     onUserClick = { pubkey ->
                         scope.launch { notificationsDrawerState.close() }
