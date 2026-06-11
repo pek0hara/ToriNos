@@ -57,6 +57,8 @@ class FeedViewModel(
 
     private val _state = MutableStateFlow(UiState())
     val state: StateFlow<UiState> = _state.asStateFlow()
+    private var pendingFeedState = UiState()
+    private var feedStateEmitJob: Job? = null
 
     private val instanceKey = nextInstanceKey()
     private val shortKey = authorPubkey?.take(16) ?: authorPubkeys?.hashCode()?.toString() ?: "global"
@@ -104,10 +106,42 @@ class FeedViewModel(
         if (autoStart) startSubscriptions()
     }
 
+    private fun currentFeedState(): UiState = pendingFeedState
+
+    private fun setFeedState(value: UiState, immediate: Boolean = true) {
+        pendingFeedState = value
+        if (immediate) {
+            emitFeedStateNow()
+        } else {
+            scheduleFeedStateEmit()
+        }
+    }
+
+    private fun updateFeedState(
+        immediate: Boolean = true,
+        transform: (UiState) -> UiState,
+    ) {
+        setFeedState(transform(pendingFeedState), immediate = immediate)
+    }
+
+    private fun scheduleFeedStateEmit() {
+        if (feedStateEmitJob?.isActive == true) return
+        feedStateEmitJob = launch {
+            delay(FEED_STATE_EMIT_DELAY_MS)
+            emitFeedStateNow()
+        }
+    }
+
+    private fun emitFeedStateNow() {
+        feedStateEmitJob?.cancel()
+        feedStateEmitJob = null
+        _state.value = pendingFeedState
+    }
+
     fun injectProfile(pubkey: String, profile: com.nostr.torinos.model.NostrProfile) {
         ProfileCache.put(pubkey, profile)
-        if (_state.value.profiles.containsKey(pubkey)) return
-        _state.value = _state.value.copy(profiles = _state.value.profiles + (pubkey to profile))
+        if (currentFeedState().profiles.containsKey(pubkey)) return
+        updateFeedState { it.copy(profiles = it.profiles + (pubkey to profile)) }
     }
 
     fun deleteEvent(eventId: String) {
@@ -122,8 +156,8 @@ class FeedViewModel(
                 )
                 NostrRepository.publish(deletion)
             }
-            val cur = _state.value
-            updateEvents(cur.events.filter { it.id != eventId })
+            val cur = currentFeedState()
+            updateEvents(cur.events.filter { it.id != eventId }, immediate = true)
             seenEventIds.remove(eventId)
             rawEvents.remove(eventId)
             canonicalEvents.remove(eventId)
@@ -132,13 +166,13 @@ class FeedViewModel(
     }
 
     fun react(eventId: String, eventPubkey: String) {
-        val cur = _state.value
+        val cur = currentFeedState()
         if (cur.likedReactions.containsKey(eventId)) return
         // 楽観的UI更新（reactionEventIdは署名後に確定）
-        _state.value = cur.copy(
+        setFeedState(cur.copy(
             likedReactions = cur.likedReactions + (eventId to ""),
             reactionCounts = cur.reactionCounts + (eventId to (cur.reactionCounts[eventId] ?: 0) + 1),
-        )
+        ))
         launch {
             val privateKeyHex = KeyStorage.loadPrivateKey() ?: return@launch
             runCatching {
@@ -151,21 +185,21 @@ class FeedViewModel(
                 rememberSeenId(seenReactionIds, reaction.id)
                 NostrRepository.publish(reaction)
                 // 署名済みイベントIDを保存（後でキャンセルに使用）
-                _state.value = _state.value.copy(
-                    likedReactions = _state.value.likedReactions + (eventId to reaction.id),
-                )
+                updateFeedState { state ->
+                    state.copy(likedReactions = state.likedReactions + (eventId to reaction.id))
+                }
             }
         }
     }
 
     fun unreact(eventId: String) {
-        val cur = _state.value
+        val cur = currentFeedState()
         val reactionEventId = cur.likedReactions[eventId] ?: return
         // 楽観的UI更新
-        _state.value = cur.copy(
+        setFeedState(cur.copy(
             likedReactions = cur.likedReactions - eventId,
             reactionCounts = cur.reactionCounts + (eventId to maxOf(0, (cur.reactionCounts[eventId] ?: 0) - 1)),
-        )
+        ))
         if (reactionEventId.isEmpty()) return
         launch {
             val privateKeyHex = KeyStorage.loadPrivateKey() ?: return@launch
@@ -182,13 +216,13 @@ class FeedViewModel(
     }
 
     fun repost(event: NostrEvent) {
-        val cur = _state.value
+        val cur = currentFeedState()
         if (cur.repostedEvents.containsKey(event.id)) return
         val eventToRepost = canonicalEvents[event.id] ?: event
-        _state.value = cur.copy(
+        setFeedState(cur.copy(
             repostedEvents = cur.repostedEvents + (event.id to ""),
             repostCounts = cur.repostCounts + (event.id to (cur.repostCounts[event.id] ?: 0) + 1),
-        )
+        ))
         launch {
             val privateKeyHex = KeyStorage.loadPrivateKey() ?: return@launch
             runCatching {
@@ -200,20 +234,20 @@ class FeedViewModel(
                 )
                 rememberSeenId(seenRepostIds, repostEvent.id)
                 NostrRepository.publish(repostEvent)
-                _state.value = _state.value.copy(
-                    repostedEvents = _state.value.repostedEvents + (event.id to repostEvent.id),
-                )
+                updateFeedState { state ->
+                    state.copy(repostedEvents = state.repostedEvents + (event.id to repostEvent.id))
+                }
             }
         }
     }
 
     fun unrepost(eventId: String) {
-        val cur = _state.value
+        val cur = currentFeedState()
         val repostEventId = cur.repostedEvents[eventId] ?: return
-        _state.value = cur.copy(
+        setFeedState(cur.copy(
             repostedEvents = cur.repostedEvents - eventId,
             repostCounts = cur.repostCounts + (eventId to maxOf(0, (cur.repostCounts[eventId] ?: 0) - 1)),
-        )
+        ))
         if (repostEventId.isEmpty()) return
         launch {
             val privateKeyHex = KeyStorage.loadPrivateKey() ?: return@launch
@@ -248,7 +282,7 @@ class FeedViewModel(
     }
 
     fun loadMore() {
-        if (loadingMore || !_state.value.canLoadMore) return
+        if (loadingMore || !currentFeedState().canLoadMore) return
         launch {
             val until = if (shouldRetryHistoryPage) nextHistoryUntil else nextHistoryUntil ?: oldestCreatedAt?.minus(1)
             requestHistoryPage(until = until)
@@ -304,9 +338,9 @@ class FeedViewModel(
                 if (event.kind != 0) return@collect
                 val profile = ProfileCache.putEvent(event) ?: return@collect
                 pendingPubkeys.remove(event.pubkey)
-                _state.value = _state.value.copy(
-                    profiles = _state.value.profiles + (event.pubkey to profile),
-                )
+                updateFeedState(immediate = false) { state ->
+                    state.copy(profiles = state.profiles + (event.pubkey to profile))
+                }
             }
         }
 
@@ -317,15 +351,15 @@ class FeedViewModel(
                 if (!rememberSeenId(seenReactionIds, event.id)) return@collect
                 val targetId = event.tags.lastOrNull { it.firstOrNull() == "e" }?.getOrNull(1)
                     ?: return@collect
-                val cur = _state.value
+                val cur = currentFeedState()
                 val isOwn = ownPubkey != null && event.pubkey == ownPubkey
-                _state.value = cur.copy(
+                setFeedState(cur.copy(
                     reactionCounts = cur.reactionCounts +
                         (targetId to (cur.reactionCounts[targetId] ?: 0) + 1),
                     likedReactions = if (isOwn && !cur.likedReactions.containsKey(targetId))
                         cur.likedReactions + (targetId to event.id)
                     else cur.likedReactions,
-                )
+                ), immediate = false)
             }
         }
 
@@ -336,11 +370,11 @@ class FeedViewModel(
                 if (!rememberSeenId(seenReplyIds, event.id)) return@collect
                 val targetId = event.tags.lastOrNull { it.firstOrNull() == "e" }?.getOrNull(1)
                     ?: return@collect
-                val cur = _state.value
-                _state.value = cur.copy(
+                val cur = currentFeedState()
+                setFeedState(cur.copy(
                     replyCounts = cur.replyCounts +
                         (targetId to (cur.replyCounts[targetId] ?: 0) + 1),
-                )
+                ), immediate = false)
             }
         }
 
@@ -351,15 +385,15 @@ class FeedViewModel(
                 if (!rememberSeenId(seenRepostIds, event.id)) return@collect
                 val targetId = event.tags.lastOrNull { it.firstOrNull() == "e" }?.getOrNull(1)
                     ?: return@collect
-                val cur = _state.value
+                val cur = currentFeedState()
                 val isOwn = ownPubkey != null && event.pubkey == ownPubkey
-                _state.value = cur.copy(
+                setFeedState(cur.copy(
                     repostCounts = cur.repostCounts +
                         (targetId to (cur.repostCounts[targetId] ?: 0) + 1),
                     repostedEvents = if (isOwn && !cur.repostedEvents.containsKey(targetId))
                         cur.repostedEvents + (targetId to event.id)
                     else cur.repostedEvents,
-                )
+                ), immediate = false)
             }
         }
 
@@ -367,10 +401,10 @@ class FeedViewModel(
         subscriptionJobs += launch {
             NostrRepository.events(ids.quote).collect { event ->
                 if (event.kind != 1) return@collect
-                val cur = _state.value
+                val cur = currentFeedState()
                 if (cur.quotedEvents.containsKey(event.id)) return@collect
                 pendingQuoteIds.remove(event.id)
-                _state.value = cur.copy(quotedEvents = cur.quotedEvents + (event.id to event))
+                setFeedState(cur.copy(quotedEvents = cur.quotedEvents + (event.id to event)), immediate = false)
                 scheduleProfileFetch(event.pubkey)
             }
         }
@@ -399,7 +433,7 @@ class FeedViewModel(
         }
 
         subscriptionJobs += launch {
-            val current = _state.value
+            val current = currentFeedState()
             if (current.isInitialLoad && current.events.isEmpty() && !initialHistoryRequested) {
                 // 初回のみ履歴ページを取得
                 requestHistoryPage(until = null)
@@ -429,16 +463,17 @@ class FeedViewModel(
         engagementBatchJob?.cancel()
         historyPageTimeoutJob?.cancel()
         historyPageTimeoutJob = null
+        emitFeedStateNow()
         if (loadingMore) {
             loadingMore = false
-            val current = _state.value
-            _state.value = current.copy(
+            val current = currentFeedState()
+            setFeedState(current.copy(
                 isInitialLoad = current.isInitialLoad && current.events.isEmpty(),
                 canLoadMore = current.canLoadMore || current.events.isNotEmpty(),
                 isLoadingMore = false,
-            )
+            ))
         }
-        if (_state.value.isInitialLoad && _state.value.events.isEmpty()) {
+        if (currentFeedState().isInitialLoad && currentFeedState().events.isEmpty()) {
             initialHistoryRequested = false
         }
         currentHistorySubId?.let { NostrRepository.close(it) }
@@ -463,11 +498,13 @@ class FeedViewModel(
         val ids = subscriptionIds ?: return
         if (authorPubkeys?.isEmpty() == true) {
             loadingMore = false
-            _state.value = _state.value.copy(
-                isInitialLoad = false,
-                canLoadMore = false,
-                isLoadingMore = false,
-            )
+            updateFeedState {
+                it.copy(
+                    isInitialLoad = false,
+                    canLoadMore = false,
+                    isLoadingMore = false,
+                )
+            }
             return
         }
 
@@ -490,7 +527,7 @@ class FeedViewModel(
             subscribeLiveFeed(since = Clock.System.now().epochSeconds)
         }
         expectedEoseCount = NostrRepository.targetRelayUrls(relayTarget).size.coerceAtLeast(1)
-        _state.value = _state.value.copy(canLoadMore = false, isLoadingMore = true)
+        updateFeedState { it.copy(canLoadMore = false, isLoadingMore = true) }
         scheduleHistoryPageTimeout()
         NostrRepository.subscribe(
             historySubId,
@@ -546,13 +583,13 @@ class FeedViewModel(
             shouldRetryHistoryPage = false
             nextHistoryUntil = if (hasMore && oldestReceivedAt != null) oldestReceivedAt - 1 else null
         }
-        val cur = _state.value
+        val cur = currentFeedState()
         // ギャップ補完は期間が限定されるため件数で過去ページの有無を判断できない
-        _state.value = cur.copy(
+        setFeedState(cur.copy(
             canLoadMore = if (isGapFill) cur.canLoadMore else hasMore,
             isInitialLoad = false,
             isLoadingMore = false,
-        )
+        ))
         currentHistorySubId?.let { subId ->
             if (isGapFill || !hasMore) NostrRepository.close(subId)
         }
@@ -580,8 +617,8 @@ class FeedViewModel(
                     else -> null
                 }
             }
-            val current = _state.value
-            _state.value = current.copy(
+            val current = currentFeedState()
+            setFeedState(current.copy(
                 isInitialLoad = false,
                 canLoadMore = if (isGapFill) {
                     current.canLoadMore
@@ -589,7 +626,7 @@ class FeedViewModel(
                     hasMore || shouldRetryCurrentPage || canAdvanceFromPartialResponse
                 },
                 isLoadingMore = false,
-            )
+            ))
             currentHistorySubId?.let { subId ->
                 if (isGapFill || !hasMore) NostrRepository.close(subId)
             }
@@ -604,8 +641,8 @@ class FeedViewModel(
                 lastHistoryBatchReceivedCount++
                 lastHistoryBatchOldestCreatedAt = minOf(lastHistoryBatchOldestCreatedAt ?: event.createdAt, event.createdAt)
                 lastHistoryBatchUniqueCount += appendFeedEvent(event)
-                if (_state.value.isInitialLoad && _state.value.events.isNotEmpty()) {
-                    _state.value = _state.value.copy(isInitialLoad = false)
+                if (currentFeedState().isInitialLoad && currentFeedState().events.isNotEmpty()) {
+                    updateFeedState { it.copy(isInitialLoad = false) }
                 }
             }
         }
@@ -684,7 +721,7 @@ class FeedViewModel(
             oldestCreatedAt = timelineCreatedAt
         }
         if (isFiltered(event)) return 0
-        val cur = _state.value
+        val cur = currentFeedState()
         if (cur.events.any { it.id == event.id }) return 0
         updateEvents(insertSorted(cur.events, event))
         val quoteIds = quotedEventIds(event)
@@ -747,29 +784,29 @@ class FeedViewModel(
 
     private fun updateRepostState(repost: NostrEvent, targetId: String?) {
         if (targetId == null) return
-        val cur = _state.value
+        val cur = currentFeedState()
         val isOwn = ownPubkey != null && repost.pubkey == ownPubkey
-        _state.value = cur.copy(
+        setFeedState(cur.copy(
             repostCounts = cur.repostCounts +
                 (targetId to (cur.repostCounts[targetId] ?: 0) + 1),
             repostedEvents = if (isOwn && !cur.repostedEvents.containsKey(targetId))
                 cur.repostedEvents + (targetId to repost.id)
             else cur.repostedEvents,
-        )
+        ), immediate = false)
     }
 
     private fun markRepostedBy(eventId: String, reposterPubkey: String) {
-        val cur = _state.value
-        _state.value = cur.copy(
+        val cur = currentFeedState()
+        setFeedState(cur.copy(
             repostedByPubkeys = cur.repostedByPubkeys + (eventId to reposterPubkey),
-        )
+        ), immediate = false)
     }
 
     private fun updateTimelineSortTime(eventId: String, timelineCreatedAt: Long) {
         val currentSortTime = eventSortTimes[eventId]
         if (currentSortTime != null && timelineCreatedAt <= currentSortTime) return
         eventSortTimes[eventId] = timelineCreatedAt
-        val cur = _state.value
+        val cur = currentFeedState()
         if (cur.events.none { it.id == eventId }) return
         updateEvents(sortTimelineEvents(cur.events))
     }
@@ -789,34 +826,35 @@ class FeedViewModel(
         return events.take(lo) + event + events.drop(lo)
     }
 
-    private fun updateEvents(events: List<NostrEvent>) {
+    private fun updateEvents(events: List<NostrEvent>, immediate: Boolean = false) {
         val visibleEvents = events.take(MAX_TIMELINE_EVENTS)
         val visibleEventIds = visibleEvents.mapTo(linkedSetOf()) { it.id }
         val retainedEventIds = visibleEventIds + visibleEvents.mapNotNull { it.replyTargetId() } +
             visibleEvents.flatMap { quotedEventIds(it) }
-        val quotedEvents = _state.value.quotedEvents.filterKeys { it in retainedEventIds }
+        val current = currentFeedState()
+        val quotedEvents = current.quotedEvents.filterKeys { it in retainedEventIds }
         val retainedPubkeys = buildSet {
             visibleEvents.forEach { add(it.pubkey) }
             quotedEvents.values.forEach { add(it.pubkey) }
-            _state.value.repostedByPubkeys.forEach { (eventId, pubkey) ->
+            current.repostedByPubkeys.forEach { (eventId, pubkey) ->
                 if (eventId in visibleEventIds) add(pubkey)
             }
             ownPubkey?.let(::add)
         }
-        val profiles = _state.value.profiles.filterKeys { it in retainedPubkeys } +
+        val profiles = current.profiles.filterKeys { it in retainedPubkeys } +
             ProfileCache.getAll(retainedPubkeys)
 
-        _state.value = _state.value.copy(
+        setFeedState(current.copy(
             events = visibleEvents,
             profiles = profiles,
-            reactionCounts = _state.value.reactionCounts.filterKeys { it in retainedEventIds },
-            replyCounts = _state.value.replyCounts.filterKeys { it in retainedEventIds },
-            repostCounts = _state.value.repostCounts.filterKeys { it in retainedEventIds },
+            reactionCounts = current.reactionCounts.filterKeys { it in retainedEventIds },
+            replyCounts = current.replyCounts.filterKeys { it in retainedEventIds },
+            repostCounts = current.repostCounts.filterKeys { it in retainedEventIds },
             quotedEvents = quotedEvents,
-            repostedByPubkeys = _state.value.repostedByPubkeys.filterKeys { it in visibleEventIds },
-            likedReactions = _state.value.likedReactions.filterKeys { it in retainedEventIds },
-            repostedEvents = _state.value.repostedEvents.filterKeys { it in retainedEventIds },
-        )
+            repostedByPubkeys = current.repostedByPubkeys.filterKeys { it in visibleEventIds },
+            likedReactions = current.likedReactions.filterKeys { it in retainedEventIds },
+            repostedEvents = current.repostedEvents.filterKeys { it in retainedEventIds },
+        ), immediate = immediate)
     }
 
     private fun rememberSeenId(seenIds: LinkedHashSet<String>, eventId: String): Boolean {
@@ -826,9 +864,11 @@ class FeedViewModel(
     }
 
     private fun scheduleProfileFetch(pubkey: String) {
-        if (pubkey in _state.value.profiles) return
+        if (pubkey in currentFeedState().profiles) return
         ProfileCache.get(pubkey)?.let { cachedProfile ->
-            _state.value = _state.value.copy(profiles = _state.value.profiles + (pubkey to cachedProfile))
+            updateFeedState(immediate = false) { state ->
+                state.copy(profiles = state.profiles + (pubkey to cachedProfile))
+            }
             return
         }
         pendingPubkeys.add(pubkey)
@@ -842,10 +882,12 @@ class FeedViewModel(
             val cachedProfiles = ProfileCache.getAll(pendingPubkeys)
             if (cachedProfiles.isNotEmpty()) {
                 pendingPubkeys.removeAll(cachedProfiles.keys)
-                _state.value = _state.value.copy(profiles = _state.value.profiles + cachedProfiles)
+                updateFeedState(immediate = false) { state ->
+                    state.copy(profiles = state.profiles + cachedProfiles)
+                }
             }
             val authors = pendingPubkeys
-                .filterNot { it in _state.value.profiles }
+                .filterNot { it in currentFeedState().profiles }
                 .take(PROFILE_FETCH_BATCH_LIMIT)
             if (authors.isEmpty()) return@launch
             val ids = subscriptionIds ?: return@launch
@@ -855,7 +897,7 @@ class FeedViewModel(
                 target = relayTarget,
             )
             delay(PROFILE_FETCH_RETRY_INTERVAL_MS)
-            if (subscriptionsStarted && pendingPubkeys.any { it !in _state.value.profiles }) {
+            if (subscriptionsStarted && pendingPubkeys.any { it !in currentFeedState().profiles }) {
                 scheduleProfileSubscription()
             }
         }
@@ -894,7 +936,7 @@ class FeedViewModel(
 
     private fun scheduleQuoteFetch(eventIds: List<String>) {
         val missingIds = eventIds.filter { id ->
-            id !in _state.value.quotedEvents && pendingQuoteIds.add(id)
+            id !in currentFeedState().quotedEvents && pendingQuoteIds.add(id)
         }
         if (missingIds.isEmpty()) return
         launch {
@@ -934,6 +976,7 @@ class FeedViewModel(
         private const val MAX_SEEN_IDS = 2000
         private const val PROFILE_FETCH_BATCH_LIMIT = 200
         private const val PROFILE_FETCH_RETRY_INTERVAL_MS = 5_000L
+        private const val FEED_STATE_EMIT_DELAY_MS = 150L
         private const val LIVE_SUBSCRIPTION_REFRESH_INTERVAL_MS = 60_000L
         private const val LIVE_SUBSCRIPTION_SINCE_OVERLAP_SECONDS = 300L
         private var nextInstanceKeyValue = 0
