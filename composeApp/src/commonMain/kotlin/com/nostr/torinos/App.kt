@@ -129,6 +129,7 @@ private enum class PendingKeyAction {
     Profile,
     Status,
     Journal,
+    Live,
 }
 
 @Composable
@@ -149,6 +150,7 @@ fun App() {
         var memoRefreshTodayRequest by remember { mutableStateOf(0) }
         var journalToggleCalendarRequest by remember { mutableStateOf(0) }
         var journalShowCalendarRequest by remember { mutableStateOf(0) }
+        var liveCreateRequest by remember { mutableStateOf(0) }
         var showKeySetup by remember { mutableStateOf(false) }
         var pendingKeyAction by remember { mutableStateOf<PendingKeyAction?>(null) }
         val scope = rememberCoroutineScope()
@@ -318,6 +320,7 @@ fun App() {
             showStatusComposer = false
             showKeySetup = false
             pendingKeyAction = null
+            liveCreateRequest = 0
             replyToId = null
             replyToPubkey = null
             replyToPreview = null
@@ -347,6 +350,7 @@ fun App() {
             showStatusComposer = false
             showKeySetup = false
             pendingKeyAction = null
+            liveCreateRequest = 0
             replyToId = null
             replyToPubkey = null
             replyToPreview = null
@@ -448,13 +452,23 @@ fun App() {
                                     }
                                 },
                             )
-                            "services" -> if (currentServiceTab == ServiceTab.Status) FloatingActionButton(onClick = {
-                                runWithPrivateKey(PendingKeyAction.Status) {
-                                    showStatusComposer = true
+                            "services" -> when (currentServiceTab) {
+                                ServiceTab.Live -> FloatingActionButton(onClick = {
+                                    runWithPrivateKey(PendingKeyAction.Live) {
+                                        liveCreateRequest++
+                                    }
+                                }) {
+                                    Icon(Icons.Default.Add, contentDescription = "ライブを投稿")
                                 }
-                            }) {
-                                Icon(Icons.Default.Add, contentDescription = "ステータス追加")
-                            } else Unit
+                                ServiceTab.Status -> FloatingActionButton(onClick = {
+                                    runWithPrivateKey(PendingKeyAction.Status) {
+                                        showStatusComposer = true
+                                    }
+                                }) {
+                                    Icon(Icons.Default.Add, contentDescription = "ステータス追加")
+                                }
+                                else -> Unit
+                            }
                             "status" -> FloatingActionButton(onClick = {
                                 runWithPrivateKey(PendingKeyAction.Status) {
                                     showStatusComposer = true
@@ -658,6 +672,8 @@ fun App() {
                                     onUserClick = { pubkey -> nav.navigate(ProfileRoute(pubkey)) },
                                     selectedServiceTab = currentServiceTab,
                                     onServiceTabSelected = { currentServiceTab = it },
+                                    createLiveRequest = liveCreateRequest,
+                                    onCreateLiveRequestConsumed = { liveCreateRequest = 0 },
                                 )
                             }
                             ServiceTab.Status -> {
@@ -1107,6 +1123,10 @@ fun App() {
                         PendingKeyAction.Status -> {
                             navigateServiceTab(ServiceTab.Status)
                             showStatusComposer = true
+                        }
+                        PendingKeyAction.Live -> {
+                            navigateServiceTab(ServiceTab.Live)
+                            liveCreateRequest++
                         }
                         null -> {
                             currentFeedTab = FeedTab.Global
