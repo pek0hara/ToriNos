@@ -39,6 +39,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
@@ -66,16 +67,24 @@ fun SearchScreen(
     var selectedTab by remember { mutableIntStateOf(0) }
     val state by viewModel.state.collectAsState()
     val keyboardController = LocalSoftwareKeyboardController.current
+    val uriHandler = LocalUriHandler.current
     val headerBackgroundColor = MaterialTheme.colorScheme.background
     val headerContentColor = MaterialTheme.colorScheme.onBackground
 
     fun doSearch() {
         keyboardController?.hide()
+        spotifySearchUriOrNull(inputText)?.let { uri ->
+            uriHandler.openUri(uri)
+            return
+        }
         viewModel.search(inputText)
     }
 
     LaunchedEffect(initialQuery) {
-        if (initialQuery.isNotBlank()) {
+        val spotifySearchUri = spotifySearchUriOrNull(initialQuery)
+        if (spotifySearchUri != null) {
+            uriHandler.openUri(spotifySearchUri)
+        } else if (initialQuery.isNotBlank()) {
             viewModel.search(initialQuery)
         }
     }
@@ -258,6 +267,55 @@ fun SearchScreen(
         }
     }
 }
+
+internal fun spotifySearchUriOrNull(input: String): String? {
+    val trimmed = input.trim()
+    val prefix = "spotify:search:"
+    if (!trimmed.startsWith(prefix, ignoreCase = true)) return null
+
+    val query = trimmed.substring(prefix.length).trim()
+    if (query.isBlank()) return null
+
+    return prefix + query.encodeSpotifySearchQuery()
+}
+
+private fun String.encodeSpotifySearchQuery(): String {
+    val builder = StringBuilder()
+    var index = 0
+    while (index < length) {
+        val char = this[index]
+        when {
+            char.isUnreservedUriChar() -> builder.append(char)
+            char == '%' && hasPercentEncodedByteAt(index) -> {
+                builder.append('%')
+                builder.append(this[index + 1].uppercaseChar())
+                builder.append(this[index + 2].uppercaseChar())
+                index += 2
+            }
+            else -> char.toString().encodeToByteArray().forEach { byte ->
+                builder.append('%')
+                builder.append(byte.toUByte().toString(16).uppercase().padStart(2, '0'))
+            }
+        }
+        index++
+    }
+    return builder.toString()
+}
+
+private fun Char.isUnreservedUriChar(): Boolean =
+    this in 'A'..'Z' ||
+        this in 'a'..'z' ||
+        this in '0'..'9' ||
+        this == '-' ||
+        this == '.' ||
+        this == '_' ||
+        this == '~'
+
+private fun String.hasPercentEncodedByteAt(index: Int): Boolean =
+    index + 2 < length && this[index + 1].isHexDigit() && this[index + 2].isHexDigit()
+
+private fun Char.isHexDigit(): Boolean =
+    this in '0'..'9' || this in 'A'..'F' || this in 'a'..'f'
 
 @Composable
 private fun UserSearchRow(pubkey: String, profile: NostrProfile, onClick: () -> Unit) {
