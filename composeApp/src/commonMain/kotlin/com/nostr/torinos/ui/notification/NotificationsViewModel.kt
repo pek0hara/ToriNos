@@ -69,6 +69,7 @@ class NotificationsViewModel(private val ownPubkey: String) : SafeViewModel() {
     private var hasStoredFollowerList = false
     private val knownFollowerPubkeys = linkedSetOf<String>()
     private var liveSubscriptionsStarted = false
+    private var startupSyncActive = true
 
     private val shortKey: String
         get() = ownPubkey.take(16)
@@ -76,9 +77,13 @@ class NotificationsViewModel(private val ownPubkey: String) : SafeViewModel() {
     init {
         startCollectors()
         startupSyncJob = launch {
-            loadStoredNotifications()
-            loadKnownFollowers()
-            syncOnce()
+            try {
+                loadStoredNotifications()
+                loadKnownFollowers()
+                syncOnce()
+            } finally {
+                startupSyncActive = false
+            }
         }
     }
 
@@ -149,6 +154,7 @@ class NotificationsViewModel(private val ownPubkey: String) : SafeViewModel() {
         liveSubscriptionsStarted = false
         liveSubscriptionJob?.cancel()
         liveSubscriptionJob = null
+        cancelAuxiliaryFetches()
         closeSubscriptions()
     }
 
@@ -232,10 +238,15 @@ class NotificationsViewModel(private val ownPubkey: String) : SafeViewModel() {
     }
 
     private fun scheduleProfileFetch(pubkey: String) {
+        if (!canFetchAuxiliaryDetails()) return
         if (pubkey in _state.value.profiles || !pendingPubkeys.add(pubkey)) return
         profileBatchJob?.cancel()
         profileBatchJob = launch {
             delay(400)
+            if (!canFetchAuxiliaryDetails()) {
+                pendingPubkeys.clear()
+                return@launch
+            }
             val pubkeys = pendingPubkeys.toList()
             pendingPubkeys.clear()
             NostrRepository.subscribe(profileSubId, NostrFilter(kinds = listOf(0), authors = pubkeys))
@@ -243,10 +254,15 @@ class NotificationsViewModel(private val ownPubkey: String) : SafeViewModel() {
     }
 
     private fun scheduleTargetFetch(eventId: String) {
+        if (!canFetchAuxiliaryDetails()) return
         if (eventId in _state.value.targetEvents || !pendingTargetIds.add(eventId)) return
         targetBatchJob?.cancel()
         targetBatchJob = launch {
             delay(400)
+            if (!canFetchAuxiliaryDetails()) {
+                pendingTargetIds.clear()
+                return@launch
+            }
             val eventIds = pendingTargetIds.toList()
             pendingTargetIds.clear()
             NostrRepository.subscribe(targetSubId, NostrFilter(ids = eventIds, kinds = listOf(1)))
@@ -319,11 +335,22 @@ class NotificationsViewModel(private val ownPubkey: String) : SafeViewModel() {
     override fun onCleared() {
         super.onCleared()
         collectorJobs.forEach { it.cancel() }
-        profileBatchJob?.cancel()
-        targetBatchJob?.cancel()
+        cancelAuxiliaryFetches()
         startupSyncJob?.cancel()
         liveSubscriptionJob?.cancel()
         closeSubscriptions()
+    }
+
+    private fun canFetchAuxiliaryDetails(): Boolean =
+        liveSubscriptionsStarted || startupSyncActive
+
+    private fun cancelAuxiliaryFetches() {
+        profileBatchJob?.cancel()
+        profileBatchJob = null
+        targetBatchJob?.cancel()
+        targetBatchJob = null
+        pendingPubkeys.clear()
+        pendingTargetIds.clear()
     }
 
     private fun closeSubscriptions() {
