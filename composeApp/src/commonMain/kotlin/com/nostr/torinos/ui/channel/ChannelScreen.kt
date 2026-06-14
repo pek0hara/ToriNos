@@ -58,6 +58,7 @@ import com.nostr.torinos.ui.components.LazyListScrollbar
 import com.nostr.torinos.ui.components.LinkedText
 import com.nostr.torinos.ui.components.NoteCard
 import com.nostr.torinos.ui.components.ProfileNameText
+import com.nostr.torinos.ui.components.rememberSyncedTextFieldValue
 import com.nostr.torinos.model.stripNostrEventUris
 import com.nostr.torinos.ui.components.stripImageUrls
 import com.nostr.torinos.ui.profile.AvatarCircle
@@ -288,58 +289,84 @@ fun ChannelScreen(
 
     val editDialog = (state as? ChannelViewModel.UiState.Ready)?.editDialog
     if (editDialog != null) {
-        AlertDialog(
-            onDismissRequest = viewModel::dismissEditThreadDialog,
-            title = { Text("スレッドを編集") },
-            text = {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    OutlinedTextField(
-                        value = editDialog.title,
-                        onValueChange = viewModel::onEditTitleChange,
-                        label = { Text("スレッドタイトル") },
-                        singleLine = true,
-                        enabled = !editDialog.isSaving,
-                        modifier = Modifier.fillMaxWidth(),
-                    )
-                    OutlinedTextField(
-                        value = editDialog.description,
-                        onValueChange = viewModel::onEditDescriptionChange,
-                        label = { Text("スレッド説明") },
-                        maxLines = 4,
-                        enabled = !editDialog.isSaving,
-                        modifier = Modifier.fillMaxWidth(),
-                    )
-                    editDialog.error?.let {
-                        Text(
-                            text = it,
-                            color = MaterialTheme.colorScheme.error,
-                            style = MaterialTheme.typography.labelSmall,
-                        )
-                    }
-                }
-            },
-            confirmButton = {
-                Button(
-                    onClick = viewModel::saveThreadMeta,
-                    enabled = editDialog.title.isNotBlank() && !editDialog.isSaving,
-                ) {
-                    if (editDialog.isSaving) {
-                        CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
-                    } else {
-                        Text("保存")
-                    }
-                }
-            },
-            dismissButton = {
-                TextButton(
-                    onClick = viewModel::dismissEditThreadDialog,
-                    enabled = !editDialog.isSaving,
-                ) {
-                    Text("キャンセル")
-                }
-            },
+        EditThreadDialog(
+            state = editDialog,
+            onTitleChange = viewModel::onEditTitleChange,
+            onDescriptionChange = viewModel::onEditDescriptionChange,
+            onSave = viewModel::saveThreadMeta,
+            onDismiss = viewModel::dismissEditThreadDialog,
         )
     }
+}
+
+@Composable
+private fun EditThreadDialog(
+    state: ChannelViewModel.EditThreadDialogState,
+    onTitleChange: (String) -> Unit,
+    onDescriptionChange: (String) -> Unit,
+    onSave: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    var titleValue by rememberSyncedTextFieldValue(state.title)
+    var descriptionValue by rememberSyncedTextFieldValue(state.description)
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("スレッドを編集") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedTextField(
+                    value = titleValue,
+                    onValueChange = {
+                        titleValue = it
+                        onTitleChange(it.text)
+                    },
+                    label = { Text("スレッドタイトル") },
+                    singleLine = true,
+                    enabled = !state.isSaving,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                OutlinedTextField(
+                    value = descriptionValue,
+                    onValueChange = {
+                        descriptionValue = it
+                        onDescriptionChange(it.text)
+                    },
+                    label = { Text("スレッド説明") },
+                    maxLines = 4,
+                    enabled = !state.isSaving,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                state.error?.let {
+                    Text(
+                        text = it,
+                        color = MaterialTheme.colorScheme.error,
+                        style = MaterialTheme.typography.labelSmall,
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = onSave,
+                enabled = titleValue.text.isNotBlank() && !state.isSaving,
+            ) {
+                if (state.isSaving) {
+                    CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+                } else {
+                    Text("保存")
+                }
+            }
+        },
+        dismissButton = {
+            TextButton(
+                onClick = onDismiss,
+                enabled = !state.isSaving,
+            ) {
+                Text("キャンセル")
+            }
+        },
+    )
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -385,6 +412,9 @@ private fun ChannelMessageInputBar(
     onDraftChange: (String) -> Unit,
     onSend: () -> Unit,
 ) {
+    val text = ready?.draftText ?: ""
+    var textValue by rememberSyncedTextFieldValue(text)
+
     HorizontalDivider()
     Column(
         modifier = Modifier
@@ -400,8 +430,11 @@ private fun ChannelMessageInputBar(
             horizontalArrangement = Arrangement.spacedBy(4.dp),
         ) {
             OutlinedTextField(
-                value = ready?.draftText ?: "",
-                onValueChange = onDraftChange,
+                value = textValue,
+                onValueChange = {
+                    textValue = it
+                    onDraftChange(it.text)
+                },
                 modifier = Modifier.weight(1f),
                 placeholder = { Text("メッセージを入力…") },
                 maxLines = 4,
