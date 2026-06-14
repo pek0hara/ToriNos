@@ -165,7 +165,7 @@ class SettingsViewModel : SafeViewModel() {
                 )
             }
             try {
-                KeyStorage.deleteKey()
+                KeyStorage.logout()
                 val accounts = KeyStorage.listAccounts()
                 _state.update {
                     it.copy(
@@ -176,7 +176,7 @@ class SettingsViewModel : SafeViewModel() {
                         accountActionError = null,
                     )
                 }
-                onCleared(accounts.firstOrNull()?.pubkeyHex)
+                onCleared(null)
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Throwable) {
