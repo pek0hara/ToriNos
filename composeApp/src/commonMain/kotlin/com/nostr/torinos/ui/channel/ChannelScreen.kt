@@ -37,8 +37,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.TopAppBar
-import androidx.compose.material3.TopAppBarDefaults
+import com.nostr.torinos.ui.components.AppTopBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -106,7 +105,7 @@ fun ChannelScreen(
     Scaffold(
         contentWindowInsets = WindowInsets(0),
         topBar = {
-            TopAppBar(
+            AppTopBar(
                 title = {
                     val title = (state as? ChannelViewModel.UiState.Ready)
                         ?.channelMeta?.name?.ifBlank { "チャンネル" } ?: "チャンネル"
@@ -121,7 +120,6 @@ fun ChannelScreen(
                         Icon(
                             Icons.AutoMirrored.Filled.ArrowBack,
                             contentDescription = "戻る",
-                            tint = MaterialTheme.colorScheme.onPrimary,
                         )
                     }
                 },
@@ -132,15 +130,10 @@ fun ChannelScreen(
                             Icon(
                                 Icons.Default.Info,
                                 contentDescription = "スレッド情報",
-                                tint = MaterialTheme.colorScheme.onPrimary,
                             )
                         }
                     }
                 },
-                colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = MaterialTheme.colorScheme.primary,
-                    titleContentColor = MaterialTheme.colorScheme.onPrimary,
-                ),
             )
         },
         bottomBar = {
@@ -379,7 +372,7 @@ private fun ChannelDetailRelayPendingContent(
     Scaffold(
         contentWindowInsets = WindowInsets(0),
         topBar = {
-            TopAppBar(
+            AppTopBar(
                 title = { Text("チャンネル") },
                 navigationIcon = {
                     IconButton(onClick = onBack) {

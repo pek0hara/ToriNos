@@ -28,8 +28,7 @@ import androidx.compose.material3.PrimaryTabRow
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Tab
 import androidx.compose.material3.Text
-import androidx.compose.material3.TopAppBar
-import androidx.compose.material3.TopAppBarDefaults
+import com.nostr.torinos.ui.components.AppTopBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -92,7 +91,7 @@ fun SearchScreen(
     Scaffold(
         contentWindowInsets = WindowInsets(0),
         topBar = {
-            TopAppBar(
+            AppTopBar(
                 title = { Text("検索") },
                 navigationIcon = {
                     IconButton(onClick = onBack) {
@@ -103,13 +102,6 @@ fun SearchScreen(
                         )
                     }
                 },
-                colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = headerBackgroundColor,
-                    scrolledContainerColor = headerBackgroundColor,
-                    titleContentColor = headerContentColor,
-                    actionIconContentColor = headerContentColor,
-                    navigationIconContentColor = headerContentColor,
-                ),
             )
         },
     ) { padding ->

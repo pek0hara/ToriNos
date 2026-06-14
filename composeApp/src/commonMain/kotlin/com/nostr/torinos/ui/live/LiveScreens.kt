@@ -52,8 +52,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.TopAppBar
-import androidx.compose.material3.TopAppBarDefaults
+import com.nostr.torinos.ui.components.AppTopBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -162,7 +161,7 @@ fun LiveHubScreen(
         contentWindowInsets = WindowInsets(0),
         topBar = {
             Column(modifier = Modifier.background(headerBackgroundColor)) {
-                TopAppBar(
+                AppTopBar(
                     navigationIcon = {
                         if (ownPubkey != null) {
                             IconButton(onClick = onOpenProfile) {
@@ -220,13 +219,6 @@ fun LiveHubScreen(
                             Icon(Icons.Default.Settings, contentDescription = "設定", tint = headerContentColor)
                         }
                     },
-                    colors = TopAppBarDefaults.topAppBarColors(
-                        containerColor = headerBackgroundColor,
-                        scrolledContainerColor = headerBackgroundColor,
-                        titleContentColor = headerContentColor,
-                        actionIconContentColor = headerContentColor,
-                        navigationIconContentColor = headerContentColor,
-                    ),
                 )
                 ServiceTabRow(selectedTab = selectedServiceTab, onTabSelected = onServiceTabSelected)
             }
@@ -389,7 +381,7 @@ fun LiveDetailScreen(
     Scaffold(
         contentWindowInsets = WindowInsets(0),
         topBar = {
-            TopAppBar(
+            AppTopBar(
                 navigationIcon = {
                     IconButton(onClick = onBack) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "戻る")
@@ -640,7 +632,7 @@ private fun LiveChatExpandedScreen(
     Scaffold(
         contentWindowInsets = WindowInsets(0),
         topBar = {
-            TopAppBar(
+            AppTopBar(
                 navigationIcon = {
                     IconButton(onClick = onBack) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "ライブ詳細に戻る")

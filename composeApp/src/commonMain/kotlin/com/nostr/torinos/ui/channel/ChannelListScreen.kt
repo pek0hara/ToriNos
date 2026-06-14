@@ -46,8 +46,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.TopAppBar
-import androidx.compose.material3.TopAppBarDefaults
+import com.nostr.torinos.ui.components.AppTopBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -156,7 +155,7 @@ fun ChannelListScreen(
         contentWindowInsets = WindowInsets(0),
         topBar = {
             Column(modifier = Modifier.background(headerBackgroundColor)) {
-                TopAppBar(
+                AppTopBar(
                     navigationIcon = {
                         if (ownPubkey != null) {
                             IconButton(onClick = onOpenProfile) {
@@ -237,13 +236,6 @@ fun ChannelListScreen(
                             )
                         }
                     },
-                    colors = TopAppBarDefaults.topAppBarColors(
-                        containerColor = headerBackgroundColor,
-                        scrolledContainerColor = headerBackgroundColor,
-                        titleContentColor = headerContentColor,
-                        actionIconContentColor = headerContentColor,
-                        navigationIconContentColor = headerContentColor,
-                    ),
                 )
                 ServiceTabRow(
                     selectedTab = selectedServiceTab,
