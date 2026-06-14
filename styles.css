@@ -1,0 +1,379 @@
+:root {
+  color-scheme: light;
+  --ink: #172d25;
+  --muted: #5d6c66;
+  --paper: #f6f4ec;
+  --surface: #fffdf7;
+  --line: #d8dbd1;
+  --accent: #d7623d;
+  --accent-dark: #a63e25;
+  --moss: #7b9278;
+  --max-width: 1160px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  margin: 0;
+  color: var(--ink);
+  background:
+    radial-gradient(circle at 85% 5%, rgb(215 98 61 / 12%), transparent 28rem),
+    var(--paper);
+  font-family: "Hiragino Sans", "Yu Gothic", "Noto Sans JP", system-ui, sans-serif;
+  line-height: 1.8;
+}
+
+a {
+  color: inherit;
+}
+
+.site-header,
+.site-footer,
+main {
+  width: min(calc(100% - 40px), var(--max-width));
+  margin-inline: auto;
+}
+
+.site-header {
+  display: flex;
+  align-items: center;
+  min-height: 88px;
+  border-bottom: 1px solid var(--line);
+}
+
+.brand {
+  display: inline-flex;
+  gap: 12px;
+  align-items: center;
+  font-family: Georgia, "Times New Roman", serif;
+  font-size: 1.3rem;
+  font-weight: 700;
+  letter-spacing: .04em;
+  text-decoration: none;
+}
+
+.brand-mark {
+  display: grid;
+  width: 38px;
+  height: 38px;
+  place-items: center;
+  color: var(--paper);
+  background: var(--ink);
+  border-radius: 50% 50% 46% 54% / 48% 44% 56% 52%;
+}
+
+.hero {
+  max-width: 890px;
+  padding: clamp(80px, 14vw, 170px) 0 clamp(70px, 11vw, 130px);
+}
+
+.eyebrow {
+  margin: 0 0 20px;
+  color: var(--accent-dark);
+  font-size: .75rem;
+  font-weight: 700;
+  letter-spacing: .18em;
+  text-transform: uppercase;
+}
+
+.hero h1,
+.policy-summary h1 {
+  margin: 0;
+  font-family: Georgia, "Yu Mincho", "Hiragino Mincho ProN", serif;
+  font-weight: 500;
+  letter-spacing: -.04em;
+  line-height: 1.18;
+}
+
+.hero h1 {
+  max-width: 800px;
+  font-size: clamp(3rem, 8vw, 6.8rem);
+}
+
+.lead {
+  max-width: 650px;
+  margin: 36px 0 0;
+  color: var(--muted);
+  font-size: clamp(1rem, 2vw, 1.2rem);
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-top: 40px;
+}
+
+.button {
+  display: inline-flex;
+  min-height: 50px;
+  align-items: center;
+  justify-content: center;
+  padding: 10px 24px;
+  border: 1px solid var(--ink);
+  border-radius: 999px;
+  font-weight: 700;
+  text-decoration: none;
+  transition: transform .2s ease, background-color .2s ease, color .2s ease;
+}
+
+.button:hover {
+  transform: translateY(-2px);
+}
+
+.button.primary {
+  color: var(--paper);
+  background: var(--ink);
+}
+
+.button.secondary:hover {
+  color: var(--paper);
+  background: var(--ink);
+}
+
+.cards {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+}
+
+.card {
+  min-height: 300px;
+  padding: 36px 32px;
+}
+
+.card + .card {
+  border-left: 1px solid var(--line);
+}
+
+.card-number {
+  color: var(--accent);
+  font-family: Georgia, serif;
+  font-size: .9rem;
+}
+
+.card h2 {
+  margin: 70px 0 14px;
+  font-family: Georgia, "Yu Mincho", serif;
+  font-size: 1.4rem;
+}
+
+.card p {
+  margin: 0;
+  color: var(--muted);
+}
+
+.policy-layout {
+  display: grid;
+  grid-template-columns: minmax(240px, .75fr) minmax(0, 1.6fr);
+  gap: clamp(50px, 9vw, 130px);
+  padding: clamp(65px, 10vw, 120px) 0;
+}
+
+.policy-summary {
+  align-self: start;
+  position: sticky;
+  top: 40px;
+}
+
+.policy-summary h1 {
+  font-size: clamp(2.8rem, 5vw, 5rem);
+}
+
+.updated {
+  margin-top: 42px;
+  color: var(--muted);
+  font-size: .85rem;
+  line-height: 1.7;
+}
+
+.updated strong {
+  color: var(--ink);
+}
+
+.policy {
+  min-width: 0;
+}
+
+.policy-intro {
+  margin: 0 0 70px;
+  padding-bottom: 42px;
+  border-bottom: 1px solid var(--line);
+  font-size: 1.1rem;
+}
+
+.policy section {
+  margin-top: 64px;
+  scroll-margin-top: 30px;
+}
+
+.policy h2 {
+  display: flex;
+  gap: 14px;
+  align-items: baseline;
+  margin: 0 0 24px;
+  font-family: Georgia, "Yu Mincho", serif;
+  font-size: 1.55rem;
+  line-height: 1.4;
+}
+
+.policy h2 span {
+  color: var(--accent);
+  font-size: .9rem;
+}
+
+.policy h3 {
+  margin: 32px 0 8px;
+  font-size: 1rem;
+}
+
+.policy p,
+.policy li {
+  color: #46554f;
+}
+
+.policy ul {
+  padding-left: 1.3em;
+}
+
+.policy li + li {
+  margin-top: 6px;
+}
+
+.table-wrap {
+  margin: 24px 0;
+  overflow-x: auto;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface);
+}
+
+table {
+  width: 100%;
+  min-width: 620px;
+  border-collapse: collapse;
+  font-size: .9rem;
+}
+
+th,
+td {
+  padding: 16px;
+  border-bottom: 1px solid var(--line);
+  text-align: left;
+  vertical-align: top;
+}
+
+th {
+  color: var(--ink);
+  background: rgb(123 146 120 / 10%);
+}
+
+tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+.contact {
+  padding: 32px;
+  border-radius: 18px;
+  background: var(--ink);
+}
+
+.contact h2,
+.contact p {
+  color: var(--paper);
+}
+
+.contact-link {
+  display: inline-block;
+  color: #ffc3ad;
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+
+.site-footer {
+  display: flex;
+  min-height: 110px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  border-top: 1px solid var(--line);
+  color: var(--muted);
+  font-size: .85rem;
+}
+
+.site-footer nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 22px;
+}
+
+.site-footer a:hover {
+  color: var(--ink);
+}
+
+@media (max-width: 760px) {
+  .site-header,
+  .site-footer,
+  main {
+    width: min(calc(100% - 28px), var(--max-width));
+  }
+
+  .cards,
+  .policy-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .card {
+    min-height: 230px;
+    padding-inline: 12px;
+  }
+
+  .card + .card {
+    border-top: 1px solid var(--line);
+    border-left: 0;
+  }
+
+  .card h2 {
+    margin-top: 44px;
+  }
+
+  .policy-layout {
+    gap: 55px;
+  }
+
+  .policy-summary {
+    position: static;
+  }
+
+  .policy-intro {
+    margin-bottom: 50px;
+  }
+
+  .contact {
+    padding: 26px 22px;
+  }
+
+  .site-footer {
+    align-items: flex-start;
+    flex-direction: column;
+    justify-content: center;
+    padding: 28px 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+
+  .button {
+    transition: none;
+  }
+}
