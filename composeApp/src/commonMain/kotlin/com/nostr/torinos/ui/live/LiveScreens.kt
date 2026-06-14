@@ -86,6 +86,7 @@ import com.nostr.torinos.ui.components.PreviewImage
 import com.nostr.torinos.ui.components.ProfileNameText
 import com.nostr.torinos.ui.components.formatTimestamp
 import com.nostr.torinos.ui.components.rememberImagePickerLauncher
+import com.nostr.torinos.ui.components.rememberSyncedTextFieldValue
 import com.nostr.torinos.ui.profile.AvatarCircle
 import com.nostr.torinos.ui.service.ServiceTab
 import com.nostr.torinos.ui.service.ServiceTabRow
@@ -268,7 +269,7 @@ fun LiveHubScreen(
                                     activity = activity,
                                     profiles = state.profiles,
                                     onClick = { onLiveClick(activity.event.pubkey, activity.meta.identifier) },
-                                    onUserClick = onUserClick,
+                                    onUserClick = { onLiveClick(activity.event.pubkey, activity.meta.identifier) },
                                 )
                             }
                         }
@@ -749,6 +750,10 @@ private fun LiveCreateDialog(
     onRemoveImage: () -> Unit,
     onPublish: () -> Unit,
 ) {
+    var titleValue by rememberSyncedTextFieldValue(state.title)
+    var summaryValue by rememberSyncedTextFieldValue(state.summary)
+    var topicsValue by rememberSyncedTextFieldValue(state.topicsText)
+
     Dialog(
         onDismissRequest = onDismiss,
         properties = DialogProperties(usePlatformDefaultWidth = false),
@@ -833,8 +838,11 @@ private fun LiveCreateDialog(
                         )
                     }
                     OutlinedTextField(
-                        value = state.title,
-                        onValueChange = onTitleChange,
+                        value = titleValue,
+                        onValueChange = {
+                            titleValue = it
+                            onTitleChange(it.text)
+                        },
                         modifier = Modifier.fillMaxWidth(),
                         enabled = !state.isPublishing,
                         label = { Text("タイトル") },
@@ -849,8 +857,11 @@ private fun LiveCreateDialog(
                         singleLine = true,
                     )
                     OutlinedTextField(
-                        value = state.summary,
-                        onValueChange = onSummaryChange,
+                        value = summaryValue,
+                        onValueChange = {
+                            summaryValue = it
+                            onSummaryChange(it.text)
+                        },
                         modifier = Modifier.fillMaxWidth(),
                         enabled = !state.isPublishing,
                         label = { Text("概要") },
@@ -858,8 +869,11 @@ private fun LiveCreateDialog(
                         maxLines = 4,
                     )
                     OutlinedTextField(
-                        value = state.topicsText,
-                        onValueChange = onTopicsTextChange,
+                        value = topicsValue,
+                        onValueChange = {
+                            topicsValue = it
+                            onTopicsTextChange(it.text)
+                        },
                         modifier = Modifier.fillMaxWidth(),
                         enabled = !state.isPublishing,
                         label = { Text("トピック") },
@@ -1007,7 +1021,7 @@ private fun LiveActivityCard(
     activity: LiveActivityItem,
     profiles: Map<String, NostrProfile>,
     onClick: () -> Unit,
-    onUserClick: (String) -> Unit,
+    onUserClick: () -> Unit,
 ) {
     Card(
         modifier = Modifier
@@ -1054,8 +1068,14 @@ private fun LiveActivityCard(
                         overflow = TextOverflow.Ellipsis,
                     )
                 }
+                activity.meta.streamingUrl?.takeIf { it.isNotBlank() }?.let { url ->
+                    LiveUrlText(label = "配信URL", url = url, maxLines = 1)
+                }
+                activity.meta.recordingUrl?.takeIf { it.isNotBlank() }?.let { url ->
+                    LiveUrlText(label = "録画URL", url = url, maxLines = 1)
+                }
                 Row(
-                    modifier = Modifier.clickable { onUserClick(activity.event.pubkey) },
+                    modifier = Modifier.clickable(onClick = onUserClick),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     AvatarCircle(
@@ -1160,6 +1180,12 @@ private fun LiveDetailHeader(
             item.meta.ends?.let {
                 Text(text = "終了 ${formatTimestamp(it)}", color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
+            item.meta.streamingUrl?.takeIf { it.isNotBlank() }?.let { url ->
+                LiveUrlText(label = "配信URL", url = url)
+            }
+            item.meta.recordingUrl?.takeIf { it.isNotBlank() }?.let { url ->
+                LiveUrlText(label = "録画URL", url = url)
+            }
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 item.meta.streamingUrl?.takeIf { it.isNotBlank() }?.let { url ->
                     Button(onClick = { onOpenUrl(url) }) {
@@ -1227,6 +1253,21 @@ private fun LiveDetailHeader(
         }
         HorizontalDivider()
     }
+}
+
+@Composable
+private fun LiveUrlText(
+    label: String,
+    url: String,
+    maxLines: Int = Int.MAX_VALUE,
+) {
+    LinkedText(
+        text = "$label: $url",
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        style = MaterialTheme.typography.bodySmall,
+        maxLines = maxLines,
+        overflow = TextOverflow.Ellipsis,
+    )
 }
 
 @Composable
@@ -1313,6 +1354,8 @@ private fun ChatComposer(
     onTextChange: (String) -> Unit,
     onSubmit: () -> Unit,
 ) {
+    var textValue by rememberSyncedTextFieldValue(text)
+
     SurfaceLikeBar {
         Row(
             modifier = Modifier
@@ -1322,8 +1365,11 @@ private fun ChatComposer(
             horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
             OutlinedTextField(
-                value = text,
-                onValueChange = onTextChange,
+                value = textValue,
+                onValueChange = {
+                    textValue = it
+                    onTextChange(it.text)
+                },
                 modifier = Modifier.weight(1f),
                 enabled = enabled,
                 placeholder = { Text(if (enabled) "チャットを書く" else "ログインするとチャットできます") },
