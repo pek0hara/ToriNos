@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
@@ -32,12 +33,10 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.PrimaryTabRow
 import androidx.compose.material3.Scaffold
-import androidx.compose.material3.Tab
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.TopAppBar
-import androidx.compose.material3.TopAppBarDefaults
+import com.nostr.torinos.ui.components.AppTopBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -63,6 +62,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.nostr.torinos.model.ArticleAuthorItem
 import com.nostr.torinos.model.ArticleItem
@@ -138,7 +138,7 @@ fun ArticleHubScreen(
         contentWindowInsets = WindowInsets(0),
         topBar = {
             Column(modifier = Modifier.background(headerBackgroundColor)) {
-                TopAppBar(
+                AppTopBar(
                     navigationIcon = {
                         if (ownPubkey != null) {
                             IconButton(onClick = onOpenProfile) {
@@ -210,50 +210,94 @@ fun ArticleHubScreen(
                             )
                         }
                     },
-                    colors = TopAppBarDefaults.topAppBarColors(
-                        containerColor = headerBackgroundColor,
-                        scrolledContainerColor = headerBackgroundColor,
-                        titleContentColor = headerContentColor,
-                        actionIconContentColor = headerContentColor,
-                        navigationIconContentColor = headerContentColor,
-                    ),
                 )
                 ServiceTabRow(
                     selectedTab = selectedServiceTab,
                     onTabSelected = onServiceTabSelected,
                 )
-                PrimaryTabRow(
-                    selectedTabIndex = ArticleHubTab.entries.indexOf(selectedTab),
-                    containerColor = headerBackgroundColor,
-                    contentColor = headerContentColor,
-                ) {
-                    ArticleHubTab.entries.forEach { tab ->
-                        Tab(
-                            selected = selectedTab == tab,
-                            onClick = { selectedTab = tab },
-                            text = { Text(tab.label) },
+            }
+        },
+    ) { padding ->
+        Box(modifier = Modifier.fillMaxSize()) {
+            ArticleListContent(
+                state = state,
+                listState = listState,
+                selectedTab = selectedTab,
+                onArticleClick = onArticleClick,
+                onAuthorClick = onAuthorClick,
+                contentPadding = PaddingValues(top = 48.dp),
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(padding)
+                    .articleHubSwipe(
+                        selectedArticleTab = selectedTab,
+                        onArticleTabSelected = { selectedTab = it },
+                        selectedServiceTab = selectedServiceTab,
+                        onServiceTabSelected = onServiceTabSelected,
+                    ),
+            )
+            ArticleHubSegmentedControl(
+                selectedTab = selectedTab,
+                onTabSelected = { selectedTab = it },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(padding)
+                    .padding(top = 10.dp),
+            )
+        }
+    }
+}
+
+@Composable
+private fun ArticleHubSegmentedControl(
+    selectedTab: ArticleHubTab,
+    onTabSelected: (ArticleHubTab) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Box(
+        modifier = modifier,
+        contentAlignment = Alignment.TopCenter,
+    ) {
+        Surface(
+            modifier = Modifier
+                .width(240.dp)
+                .height(40.dp),
+            shape = RoundedCornerShape(12.dp),
+            color = MaterialTheme.colorScheme.surfaceVariant,
+            shadowElevation = 6.dp,
+        ) {
+            Row(modifier = Modifier.padding(3.dp)) {
+                ArticleHubTab.entries.forEach { tab ->
+                    val isSelected = selectedTab == tab
+                    Box(
+                        modifier = Modifier
+                            .weight(1f)
+                            .fillMaxSize()
+                            .clip(RoundedCornerShape(9.dp))
+                            .background(
+                                if (isSelected) {
+                                    MaterialTheme.colorScheme.primary
+                                } else {
+                                    MaterialTheme.colorScheme.surfaceVariant
+                                },
+                            )
+                            .clickable { onTabSelected(tab) },
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Text(
+                            text = tab.label,
+                            color = if (isSelected) {
+                                MaterialTheme.colorScheme.onPrimary
+                            } else {
+                                MaterialTheme.colorScheme.onSurfaceVariant
+                            },
+                            fontSize = 13.sp,
+                            fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Normal,
                         )
                     }
                 }
             }
-        },
-    ) { padding ->
-        ArticleListContent(
-            state = state,
-            listState = listState,
-            selectedTab = selectedTab,
-            onArticleClick = onArticleClick,
-            onAuthorClick = onAuthorClick,
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(padding)
-                .articleHubSwipe(
-                    selectedArticleTab = selectedTab,
-                    onArticleTabSelected = { selectedTab = it },
-                    selectedServiceTab = selectedServiceTab,
-                    onServiceTabSelected = onServiceTabSelected,
-                ),
-        )
+        }
     }
 }
 
@@ -318,7 +362,7 @@ fun UserArticleListScreen(
     Scaffold(
         contentWindowInsets = WindowInsets(0),
         topBar = {
-            TopAppBar(
+            AppTopBar(
                 navigationIcon = {
                     IconButton(onClick = onBack) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "戻る")
@@ -331,10 +375,6 @@ fun UserArticleListScreen(
                         overflow = TextOverflow.Ellipsis,
                     )
                 },
-                colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = MaterialTheme.colorScheme.background,
-                    scrolledContainerColor = MaterialTheme.colorScheme.background,
-                ),
             )
         },
     ) { padding ->
@@ -379,7 +419,7 @@ fun ArticleDetailScreen(
     Scaffold(
         contentWindowInsets = WindowInsets(0),
         topBar = {
-            TopAppBar(
+            AppTopBar(
                 navigationIcon = {
                     IconButton(onClick = onBack) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "戻る")
@@ -392,10 +432,6 @@ fun ArticleDetailScreen(
                         overflow = TextOverflow.Ellipsis,
                     )
                 },
-                colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = MaterialTheme.colorScheme.background,
-                    scrolledContainerColor = MaterialTheme.colorScheme.background,
-                ),
             )
         },
     ) { padding ->
@@ -442,6 +478,7 @@ private fun ArticleListContent(
     onArticleClick: (pubkey: String, identifier: String) -> Unit,
     onAuthorClick: (pubkey: String) -> Unit,
     modifier: Modifier = Modifier,
+    contentPadding: PaddingValues = PaddingValues(),
     emptyText: String = "記事がありません",
 ) {
     when {
@@ -462,6 +499,7 @@ private fun ArticleListContent(
         else -> LazyColumn(
             state = listState,
             modifier = modifier,
+            contentPadding = contentPadding,
         ) {
             when (selectedTab) {
                 ArticleHubTab.Articles -> {
