@@ -3,19 +3,24 @@ package com.nostr.torinos.ui.feed
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.requiredHeight
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.Check
@@ -24,15 +29,13 @@ import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.PrimaryTabRow
 import androidx.compose.material3.Scaffold
-import androidx.compose.material3.Tab
 import androidx.compose.material3.Text
-import androidx.compose.material3.TopAppBar
-import androidx.compose.material3.TopAppBarDefaults
+import com.nostr.torinos.ui.components.AppTopBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -56,9 +59,11 @@ import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
 import androidx.compose.ui.input.nestedscroll.NestedScrollSource
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Velocity
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.compose.runtime.collectAsState
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.nostr.torinos.model.NostrProfile
@@ -286,7 +291,7 @@ fun FeedScreen(
                         .onSizeChanged { topBarHeightPx = it.height }
                         .background(feedBackgroundColor),
                 ) {
-                TopAppBar(
+                AppTopBar(
                     title = {
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
@@ -424,28 +429,13 @@ fun FeedScreen(
                             }
                         }
                     },
-                    colors = TopAppBarDefaults.topAppBarColors(
-                        containerColor = feedBackgroundColor,
-                        scrolledContainerColor = feedBackgroundColor,
-                        titleContentColor = feedContentColor,
-                        actionIconContentColor = feedContentColor,
-                        navigationIconContentColor = feedContentColor,
-                    ),
                 )
                 if (authorPubkey == null) {
-                    PrimaryTabRow(
-                        selectedTabIndex = visibleFeedTabs.indexOf(visibleFeedTab).coerceAtLeast(0),
-                        containerColor = feedBackgroundColor,
-                        contentColor = feedContentColor,
-                    ) {
-                        visibleFeedTabs.forEach { tab ->
-                            Tab(
-                                selected = visibleFeedTab == tab,
-                                onClick = { setFeedTab(tab) },
-                                text = { Text(tab.label) },
-                            )
-                        }
-                    }
+                    FeedTabRow(
+                        tabs = visibleFeedTabs,
+                        selectedTab = visibleFeedTab,
+                        onTabSelected = { setFeedTab(it) },
+                    )
                 }
             }
             }
@@ -535,6 +525,60 @@ fun FeedScreen(
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun FeedTabRow(
+    tabs: List<FeedTab>,
+    selectedTab: FeedTab,
+    onTabSelected: (FeedTab) -> Unit,
+) {
+    val backgroundColor = MaterialTheme.colorScheme.background
+    val contentColor = MaterialTheme.colorScheme.onBackground
+    val selectedColor = MaterialTheme.colorScheme.primary
+
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(40.dp)
+            .background(backgroundColor),
+    ) {
+        Row(modifier = Modifier.fillMaxWidth()) {
+            tabs.forEach { tab ->
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxHeight()
+                        .clickable { onTabSelected(tab) },
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(
+                        text = tab.label,
+                        fontSize = 12.sp,
+                        maxLines = 1,
+                        overflow = TextOverflow.Clip,
+                        softWrap = false,
+                        textAlign = TextAlign.Center,
+                        color = contentColor,
+                        modifier = Modifier.padding(horizontal = 2.dp),
+                    )
+                    if (selectedTab == tab) {
+                        Box(
+                            modifier = Modifier
+                                .align(Alignment.BottomCenter)
+                                .width(64.dp)
+                                .height(3.dp)
+                                .background(
+                                    color = selectedColor,
+                                    shape = RoundedCornerShape(topStart = 2.dp, topEnd = 2.dp),
+                                ),
+                        )
+                    }
+                }
+            }
+        }
+        HorizontalDivider(modifier = Modifier.align(Alignment.BottomCenter))
     }
 }
 
