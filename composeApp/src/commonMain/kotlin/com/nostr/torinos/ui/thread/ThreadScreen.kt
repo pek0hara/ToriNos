@@ -29,8 +29,7 @@ import androidx.compose.material3.PrimaryTabRow
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Tab
 import androidx.compose.material3.Text
-import androidx.compose.material3.TopAppBar
-import androidx.compose.material3.TopAppBarDefaults
+import com.nostr.torinos.ui.components.AppTopBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -52,6 +51,7 @@ import com.nostr.torinos.model.stripNostrEventUris
 import com.nostr.torinos.ui.components.NoteCard
 import com.nostr.torinos.ui.components.ProfileNameText
 import com.nostr.torinos.ui.components.QuotedEvent
+import com.nostr.torinos.ui.components.rememberSyncedTextFieldValue
 import com.nostr.torinos.ui.components.stripImageUrls
 import com.nostr.torinos.ui.profile.AvatarCircle
 
@@ -107,21 +107,16 @@ fun ThreadScreen(
     Scaffold(
         contentWindowInsets = WindowInsets(0),
         topBar = {
-            TopAppBar(
+            AppTopBar(
                 title = { Text("ポスト詳細") },
                 navigationIcon = {
                     IconButton(onClick = onBack) {
                         Icon(
                             Icons.AutoMirrored.Filled.ArrowBack,
                             contentDescription = "戻る",
-                            tint = MaterialTheme.colorScheme.onPrimary,
                         )
                     }
                 },
-                colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = MaterialTheme.colorScheme.primary,
-                    titleContentColor = MaterialTheme.colorScheme.onPrimary,
-                ),
             )
         },
         bottomBar = {
@@ -382,6 +377,8 @@ private fun ThreadReplyInputBar(
     onTextChange: (String) -> Unit,
     onSend: () -> Unit,
 ) {
+    var textValue by rememberSyncedTextFieldValue(text)
+
     HorizontalDivider()
     Column(
         modifier = Modifier
@@ -396,8 +393,11 @@ private fun ThreadReplyInputBar(
             horizontalArrangement = Arrangement.spacedBy(4.dp),
         ) {
             OutlinedTextField(
-                value = text,
-                onValueChange = onTextChange,
+                value = textValue,
+                onValueChange = {
+                    textValue = it
+                    onTextChange(it.text)
+                },
                 modifier = Modifier.weight(1f),
                 placeholder = { Text("返信を追加...") },
                 maxLines = 4,

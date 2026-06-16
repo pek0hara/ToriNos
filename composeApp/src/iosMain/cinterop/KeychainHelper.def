@@ -81,6 +81,18 @@ static OSStatus KeychainSaveData(NSString * _Nonnull service,
     return SecItemAdd((__bridge CFDictionaryRef)attrs, NULL);
 }
 
+static OSStatus KeychainSaveSynchronizableData(NSString * _Nonnull service,
+                                               NSString * _Nonnull account,
+                                               NSData * _Nonnull data) {
+    KeychainDeleteData(service, account, NO, NO);
+    KeychainDeleteData(service, account, YES, YES);
+
+    NSMutableDictionary *attrs = KeychainBaseQuery(service, account, YES, YES);
+    attrs[(__bridge id)kSecValueData] = data;
+    attrs[(__bridge id)kSecAttrAccessible] = (__bridge id)kSecAttrAccessibleAfterFirstUnlock;
+    return SecItemAdd((__bridge CFDictionaryRef)attrs, NULL);
+}
+
 /**
  * kSecClassInternetPassword で iCloud Keychain に保存する。
  * iOS の「パスワード」アプリ（設定 > パスワード / iOS 18 の Passwords アプリ）に表示される。
@@ -109,4 +121,19 @@ static OSStatus KeychainSaveInternetPassword(NSString * _Nonnull server,
         (__bridge id)kSecAttrAccessible: (__bridge id)kSecAttrAccessibleAfterFirstUnlock,
     };
     return SecItemAdd((__bridge CFDictionaryRef)attrs, NULL);
+}
+
+/**
+ * Associated Domains の webcredentials と組み合わせて、iOS Password AutoFill
+ * で使える共有 Web 認証情報として保存を依頼する。
+ */
+static void KeychainAddSharedWebCredential(NSString * _Nonnull domain,
+                                           NSString * _Nonnull account,
+                                           NSString * _Nonnull password) {
+    SecAddSharedWebCredential(
+        (__bridge CFStringRef)domain,
+        (__bridge CFStringRef)account,
+        (__bridge CFStringRef)password,
+        NULL
+    );
 }

@@ -1,6 +1,7 @@
 package com.nostr.torinos.crypto
 
 import androidx.compose.runtime.Composable
+import com.nostr.torinos.crypto.interop.KeychainAddSharedWebCredential
 import com.nostr.torinos.crypto.interop.KeychainSaveInternetPassword
 import com.nostr.torinos.util.logException
 import kotlinx.cinterop.BetaInteropApi
@@ -26,6 +27,7 @@ actual fun rememberPasswordManagerSaver(): suspend (nsec: String, npub: String) 
                 val status = KeychainSaveInternetPassword(PASSWORDS_APP_SERVER, npub, data)
                 check(status == 0) { "Keychain internet password save failed (OSStatus=$status)" }
             }
+            KeychainAddSharedWebCredential(PASSWORDS_APP_SERVER, npub, nsec)
         }.onFailure { e ->
             logException("PasswordManagerSaver", e, "Failed to save to iOS Passwords app")
         }

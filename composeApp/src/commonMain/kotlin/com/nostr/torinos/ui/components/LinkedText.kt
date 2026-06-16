@@ -65,8 +65,8 @@ fun LinkedText(
     val links = remember(text, includeProfiles, includeHashtags, enableWebLinks) {
         buildList {
             if (enableWebLinks) {
-                extractWebUrlMatches(text).forEach { match ->
-                    add(TextLink.Web(match.start, match.endExclusive, match.url))
+                extractClickableUriMatches(text).forEach { match ->
+                    add(TextLink.Uri(match.start, match.endExclusive, match.uri, match.text))
                 }
             }
             if (includeProfiles) {
@@ -123,9 +123,9 @@ fun LinkedText(
                 }
                 when (segment) {
                     is Segment.Link -> when (val link = segment.link) {
-                        is TextLink.Web -> {
-                            pushLink(LinkAnnotation.Url(url = link.url, styles = linkStyle))
-                            append(link.url)
+                        is TextLink.Uri -> {
+                            pushLink(LinkAnnotation.Url(url = link.uri, styles = linkStyle))
+                            append(link.text)
                             pop()
                         }
                         is TextLink.Profile -> {
@@ -291,7 +291,7 @@ private sealed class TextLink(
     val start: Int,
     val endExclusive: Int,
 ) {
-    class Web(start: Int, endExclusive: Int, val url: String) : TextLink(start, endExclusive)
+    class Uri(start: Int, endExclusive: Int, val uri: String, val text: String) : TextLink(start, endExclusive)
     class Profile(start: Int, endExclusive: Int, val pubkey: String) : TextLink(start, endExclusive)
     class Hashtag(start: Int, endExclusive: Int, val tag: String) : TextLink(start, endExclusive)
 }

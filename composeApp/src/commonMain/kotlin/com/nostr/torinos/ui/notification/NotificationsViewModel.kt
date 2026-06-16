@@ -64,18 +64,30 @@ class NotificationsViewModel(private val ownPubkey: String) : SafeViewModel() {
     private val collectorJobs = mutableListOf<Job>()
     private var profileBatchJob: Job? = null
     private var targetBatchJob: Job? = null
-    private var eoseJob: Job? = null
+    private var startupSyncJob: Job? = null
+    private var liveSubscriptionJob: Job? = null
     private var hasStoredFollowerList = false
     private val knownFollowerPubkeys = linkedSetOf<String>()
+    private var liveSubscriptionsStarted = false
+    private var startupSyncActive = true
 
     private val shortKey: String
         get() = ownPubkey.take(16)
 
     init {
-        start()
+        startCollectors()
+        startupSyncJob = launch {
+            try {
+                loadStoredNotifications()
+                loadKnownFollowers()
+                syncOnce()
+            } finally {
+                startupSyncActive = false
+            }
+        }
     }
 
-    private fun start() {
+    private fun startCollectors() {
         collectorJobs += launch {
             NostrRepository.events(activitySubId).collect { event ->
                 handleActivityEvent(event)
@@ -102,29 +114,59 @@ class NotificationsViewModel(private val ownPubkey: String) : SafeViewModel() {
                 scheduleProfileFetch(event.pubkey)
             }
         }
-        eoseJob = launch {
-            loadStoredNotifications()
-            loadKnownFollowers()
-            withTimeoutOrNull(10_000) {
+    }
+
+    private suspend fun syncOnce() {
+        try {
+            withTimeoutOrNull(INITIAL_SYNC_TIMEOUT_MS) {
                 val activityEose = async { NostrRepository.eose(activitySubId).first() }
                 val followsEose = async { NostrRepository.eose(followsSubId).first() }
-                NostrRepository.subscribe(
-                    activitySubId,
-                    NostrFilter(kinds = listOf(1, 6, 7), pTags = listOf(ownPubkey), limit = 100),
-                )
-                NostrRepository.subscribe(
-                    followsSubId,
-                    NostrFilter(kinds = listOf(3), pTags = listOf(ownPubkey), limit = 100),
-                )
+                subscribeNotificationFeeds(limit = INITIAL_SYNC_LIMIT)
                 activityEose.await()
                 followsEose.await()
             }
+            // Activity events schedule profile/target fetches with a short debounce.
+            delay(AUXILIARY_FETCH_DRAIN_MS)
             if (!hasStoredFollowerList) {
                 hasStoredFollowerList = true
                 saveKnownFollowers()
             }
             _state.update { it.copy(isInitialLoad = false) }
+        } finally {
+            if (!liveSubscriptionsStarted) {
+                closeSubscriptions()
+            }
         }
+    }
+
+    fun startLiveSubscriptions() {
+        if (liveSubscriptionsStarted) return
+        liveSubscriptionsStarted = true
+        scheduleMissingDetails()
+        liveSubscriptionJob?.cancel()
+        liveSubscriptionJob = launch {
+            subscribeNotificationFeeds(limit = LIVE_SYNC_LIMIT)
+        }
+    }
+
+    fun stopLiveSubscriptions() {
+        if (!liveSubscriptionsStarted) return
+        liveSubscriptionsStarted = false
+        liveSubscriptionJob?.cancel()
+        liveSubscriptionJob = null
+        cancelAuxiliaryFetches()
+        closeSubscriptions()
+    }
+
+    private suspend fun subscribeNotificationFeeds(limit: Int) {
+        NostrRepository.subscribe(
+            activitySubId,
+            NostrFilter(kinds = listOf(1, 6, 7), pTags = listOf(ownPubkey), limit = limit),
+        )
+        NostrRepository.subscribe(
+            followsSubId,
+            NostrFilter(kinds = listOf(3), pTags = listOf(ownPubkey), limit = limit),
+        )
     }
 
     private fun handleActivityEvent(event: NostrEvent) {
@@ -196,10 +238,15 @@ class NotificationsViewModel(private val ownPubkey: String) : SafeViewModel() {
     }
 
     private fun scheduleProfileFetch(pubkey: String) {
+        if (!canFetchAuxiliaryDetails()) return
         if (pubkey in _state.value.profiles || !pendingPubkeys.add(pubkey)) return
         profileBatchJob?.cancel()
         profileBatchJob = launch {
             delay(400)
+            if (!canFetchAuxiliaryDetails()) {
+                pendingPubkeys.clear()
+                return@launch
+            }
             val pubkeys = pendingPubkeys.toList()
             pendingPubkeys.clear()
             NostrRepository.subscribe(profileSubId, NostrFilter(kinds = listOf(0), authors = pubkeys))
@@ -207,10 +254,15 @@ class NotificationsViewModel(private val ownPubkey: String) : SafeViewModel() {
     }
 
     private fun scheduleTargetFetch(eventId: String) {
+        if (!canFetchAuxiliaryDetails()) return
         if (eventId in _state.value.targetEvents || !pendingTargetIds.add(eventId)) return
         targetBatchJob?.cancel()
         targetBatchJob = launch {
             delay(400)
+            if (!canFetchAuxiliaryDetails()) {
+                pendingTargetIds.clear()
+                return@launch
+            }
             val eventIds = pendingTargetIds.toList()
             pendingTargetIds.clear()
             NostrRepository.subscribe(targetSubId, NostrFilter(ids = eventIds, kinds = listOf(1)))
@@ -248,14 +300,24 @@ class NotificationsViewModel(private val ownPubkey: String) : SafeViewModel() {
             )
         }
         stored.items.forEach { item ->
-            scheduleProfileFetch(item.actorPubkey)
-            item.targetEventId?.let { scheduleTargetFetch(it) }
-            item.event?.embeddedRepostTarget()?.let { target ->
-                _state.update { state ->
-                    state.copy(targetEvents = state.targetEvents + (target.id to target))
-                }
-                scheduleProfileFetch(target.pubkey)
+            scheduleDetailsForItem(item)
+        }
+    }
+
+    private fun scheduleMissingDetails() {
+        _state.value.items.forEach { item ->
+            scheduleDetailsForItem(item)
+        }
+    }
+
+    private fun scheduleDetailsForItem(item: NotificationItem) {
+        scheduleProfileFetch(item.actorPubkey)
+        item.targetEventId?.let { scheduleTargetFetch(it) }
+        item.event?.embeddedRepostTarget()?.let { target ->
+            _state.update { state ->
+                state.copy(targetEvents = state.targetEvents + (target.id to target))
             }
+            scheduleProfileFetch(target.pubkey)
         }
     }
 
@@ -273,9 +335,25 @@ class NotificationsViewModel(private val ownPubkey: String) : SafeViewModel() {
     override fun onCleared() {
         super.onCleared()
         collectorJobs.forEach { it.cancel() }
+        cancelAuxiliaryFetches()
+        startupSyncJob?.cancel()
+        liveSubscriptionJob?.cancel()
+        closeSubscriptions()
+    }
+
+    private fun canFetchAuxiliaryDetails(): Boolean =
+        liveSubscriptionsStarted || startupSyncActive
+
+    private fun cancelAuxiliaryFetches() {
         profileBatchJob?.cancel()
+        profileBatchJob = null
         targetBatchJob?.cancel()
-        eoseJob?.cancel()
+        targetBatchJob = null
+        pendingPubkeys.clear()
+        pendingTargetIds.clear()
+    }
+
+    private fun closeSubscriptions() {
         NostrRepository.close(activitySubId)
         NostrRepository.close(followsSubId)
         NostrRepository.close(profileSubId)
@@ -285,6 +363,10 @@ class NotificationsViewModel(private val ownPubkey: String) : SafeViewModel() {
     companion object {
         private const val MAX_ITEMS = 100
         private const val MAX_SEEN_IDS = 1000
+        private const val INITIAL_SYNC_LIMIT = 100
+        private const val LIVE_SYNC_LIMIT = 100
+        private const val INITIAL_SYNC_TIMEOUT_MS = 10_000L
+        private const val AUXILIARY_FETCH_DRAIN_MS = 1_000L
     }
 }
 

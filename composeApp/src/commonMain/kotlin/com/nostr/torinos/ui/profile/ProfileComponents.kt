@@ -300,36 +300,71 @@ internal fun ProfileHeader(
                 }
             }
             generalStatus?.takeIf { it.content.isNotBlank() }?.let { status ->
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(4.dp),
-                    verticalAlignment = Alignment.CenterVertically,
+                ProfileGeneralStatusText(
+                    status = status,
+                    isOwnProfile = isOwnProfile,
+                    onEditGeneralStatus = onEditGeneralStatus,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun ProfileGeneralStatusText(
+    status: ProfileGeneralStatus,
+    isOwnProfile: Boolean,
+    onEditGeneralStatus: (() -> Unit)?,
+) {
+    var expanded by remember(status.content) { mutableStateOf(false) }
+    var hasOverflow by remember(status.content) { mutableStateOf(false) }
+
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(4.dp),
+        verticalAlignment = Alignment.Top,
+    ) {
+        Text(
+            text = "💬",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(top = 2.dp),
+        )
+        Column(
+            modifier = Modifier.weight(1f),
+            verticalArrangement = Arrangement.spacedBy(2.dp),
+        ) {
+            LinkedText(
+                text = status.content,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                customEmojis = status.customEmojis,
+                maxLines = if (expanded) Int.MAX_VALUE else 1,
+                overflow = TextOverflow.Ellipsis,
+                onTextLayout = { result ->
+                    if (!expanded) hasOverflow = result.hasVisualOverflow
+                },
+            )
+            if (hasOverflow || expanded) {
+                TextButton(
+                    onClick = { expanded = !expanded },
+                    contentPadding = androidx.compose.foundation.layout.PaddingValues(0.dp),
                 ) {
                     Text(
-                        text = "💬",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        text = if (expanded) "閉じる" else "もっと見る",
+                        style = MaterialTheme.typography.labelSmall,
                     )
-                    LinkedText(
-                        text = status.content,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        customEmojis = status.customEmojis,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.weight(1f),
-                    )
-                    if (isOwnProfile && onEditGeneralStatus != null) {
-                        IconButton(onClick = onEditGeneralStatus, modifier = Modifier.size(28.dp)) {
-                            Icon(
-                                Icons.Default.Edit,
-                                contentDescription = "ステータスを編集",
-                                modifier = Modifier.size(14.dp),
-                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                        }
-                    }
                 }
+            }
+        }
+        if (isOwnProfile && onEditGeneralStatus != null) {
+            IconButton(onClick = onEditGeneralStatus, modifier = Modifier.size(28.dp)) {
+                Icon(
+                    Icons.Default.Edit,
+                    contentDescription = "ステータスを編集",
+                    modifier = Modifier.size(14.dp),
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
             }
         }
     }

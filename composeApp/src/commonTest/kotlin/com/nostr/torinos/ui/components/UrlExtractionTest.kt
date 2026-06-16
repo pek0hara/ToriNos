@@ -31,4 +31,34 @@ class UrlExtractionTest {
 
         assertEquals(text, truncateTextPreservingWebUrls(text, text.length))
     }
+
+    @Test
+    fun extractClickableUriMatches_includesSpotifySearchUriWithSpaces() {
+        val text = "now playing spotify:search:King Gnu"
+
+        assertEquals(
+            listOf(
+                ExtractedClickableUri(
+                    uri = "spotify:search:King%20Gnu",
+                    text = "spotify:search:King Gnu",
+                    start = "now playing ".length,
+                    endExclusive = text.length,
+                ),
+            ),
+            extractClickableUriMatches(text),
+        )
+    }
+
+    @Test
+    fun extractClickableUriMatches_encodesSpotifySearchQueryAsUtf8() {
+        assertEquals(
+            "spotify:search:%E6%98%9F%E9%87%8E%E6%BA%90",
+            extractClickableUriMatches("spotify:search:星野源").single().uri,
+        )
+    }
+
+    @Test
+    fun extractWebUrls_excludesSpotifySearchUri() {
+        assertEquals(emptyList(), extractWebUrls("spotify:search:King Gnu"))
+    }
 }

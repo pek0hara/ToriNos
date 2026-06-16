@@ -11,6 +11,7 @@ expect object KeyStorage {
     suspend fun hasKey(): Boolean
     suspend fun listAccounts(): List<StoredAccount>
     suspend fun switchAccount(pubkeyHex: String)
+    suspend fun logout()
     suspend fun deleteKey()
 }
 

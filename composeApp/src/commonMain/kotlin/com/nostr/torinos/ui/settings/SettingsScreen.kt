@@ -36,8 +36,7 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.TopAppBar
-import androidx.compose.material3.TopAppBarDefaults
+import com.nostr.torinos.ui.components.AppTopBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -118,21 +117,16 @@ fun SettingsScreen(
     Scaffold(
         contentWindowInsets = WindowInsets(0),
         topBar = {
-            TopAppBar(
+            AppTopBar(
                 title = { Text("設定") },
                 navigationIcon = {
                     IconButton(onClick = onBack) {
                         Icon(
                             Icons.AutoMirrored.Filled.ArrowBack,
                             contentDescription = "戻る",
-                            tint = MaterialTheme.colorScheme.onPrimary,
                         )
                     }
                 },
-                colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = MaterialTheme.colorScheme.primary,
-                    titleContentColor = MaterialTheme.colorScheme.onPrimary,
-                ),
             )
         },
     ) { padding ->
@@ -201,7 +195,7 @@ fun SettingsScreen(
     if (showLogoutDialog) {
         ConfirmAccountDialog(
             title = "ログアウト",
-            text = "現在のアカウントの秘密鍵をこの端末から削除します。ほかに保存済みアカウントがある場合は、そのアカウントへ切り替わります。",
+            text = "現在のアカウントからログアウトします。保存済みの鍵は残るため、ログイン画面から再度選択できます。",
             confirmText = "ログアウト",
             isProcessing = state.isAccountActionProcessing,
             onDismiss = { showLogoutDialog = false },

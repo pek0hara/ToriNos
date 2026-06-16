@@ -129,14 +129,11 @@ class JournalViewModel(private val targetPubkey: String? = null) : SafeViewModel
     }
 
     fun previousDate() {
-        navigateDate(_state.value.selectedDate.minusDays(1))
+        navigateDate(_state.value.previousJournalDate())
     }
 
     fun nextDate() {
-        val next = _state.value.selectedDate.plusDays(1)
-        if (next <= currentDate()) {
-            navigateDate(next)
-        }
+        _state.value.nextJournalDate()?.let { navigateDate(it) }
     }
 
     fun toggleCalendar() {
@@ -150,13 +147,14 @@ class JournalViewModel(private val targetPubkey: String? = null) : SafeViewModel
     }
 
     fun previousMonth() {
-        loadMonth(_state.value.selectedMonth.previousMonth())
+        val previous = _state.value.selectedMonth.previousMonth()
+        loadMonth(previous, selectedDate = _state.value.lastJournalDateInMonthOrEnd(previous))
     }
 
     fun nextMonth() {
         val next = _state.value.selectedMonth.nextMonth()
         if (next <= currentMonth()) {
-            loadMonth(next)
+            loadMonth(next, selectedDate = _state.value.firstJournalDateInMonthOrStart(next))
         }
     }
 
@@ -303,6 +301,11 @@ class JournalViewModel(private val targetPubkey: String? = null) : SafeViewModel
         refreshMonth: Boolean = false,
         resetCache: Boolean = false,
     ) {
+        referencedContentJob?.cancel()
+        engagementJob?.cancel()
+        monthBackfillJob?.cancel()
+        loadJob?.cancel()
+
         val monthStart = month.monthStart()
         val nextSelectedDate = selectedDate
             ?.takeIf { it.year == monthStart.year && it.month == monthStart.month }
@@ -340,10 +343,6 @@ class JournalViewModel(private val targetPubkey: String? = null) : SafeViewModel
             error = null,
         )
 
-        referencedContentJob?.cancel()
-        engagementJob?.cancel()
-        monthBackfillJob?.cancel()
-        loadJob?.cancel()
         loadJob = launch {
             try {
                 val context = resolveLoadContext() ?: return@launch
@@ -857,6 +856,65 @@ private fun JournalItem.addressTagValue(): String? {
 
 private fun isSameMonth(date: LocalDate, monthStart: LocalDate): Boolean =
     date.year == monthStart.year && date.month == monthStart.month
+
+private fun JournalState.previousJournalDate(): LocalDate {
+    val currentMonthStart = selectedDate.monthStart()
+    journalEntryDatesInMonth(currentMonthStart)
+        .filter { it < selectedDate }
+        .maxOrNull()
+        ?.let { return it }
+
+    if (selectedDate > currentMonthStart) return currentMonthStart
+
+    val previousMonthStart = currentMonthStart.previousMonth()
+    val previousMonthEnd = monthEnd(previousMonthStart)
+    return journalEntryDatesInMonth(previousMonthStart)
+        .filter { it <= previousMonthEnd }
+        .maxOrNull()
+        ?: previousMonthEnd
+}
+
+private fun JournalState.nextJournalDate(): LocalDate? {
+    val today = currentDate()
+    val currentMonthStart = selectedDate.monthStart()
+    val currentMonthEnd = minOf(monthEnd(currentMonthStart), today)
+    journalEntryDatesInMonth(currentMonthStart)
+        .filter { it > selectedDate && it <= today }
+        .minOrNull()
+        ?.let { return it }
+
+    if (selectedDate < currentMonthEnd) return currentMonthEnd
+    if (currentMonthEnd == today) return null
+
+    val nextMonthStart = currentMonthStart.nextMonth()
+    val nextMonthEnd = minOf(monthEnd(nextMonthStart), today)
+    return journalEntryDatesInMonth(nextMonthStart)
+        .filter { it <= nextMonthEnd }
+        .minOrNull()
+        ?: nextMonthStart
+}
+
+private fun JournalState.firstJournalDateInMonthOrStart(monthStart: LocalDate): LocalDate =
+    journalEntryDatesInMonth(monthStart)
+        .filter { it <= minOf(monthEnd(monthStart), currentDate()) }
+        .minOrNull()
+        ?: monthStart
+
+private fun JournalState.lastJournalDateInMonthOrEnd(monthStart: LocalDate): LocalDate {
+    val end = minOf(monthEnd(monthStart), currentDate())
+    return journalEntryDatesInMonth(monthStart)
+        .filter { it <= end }
+        .maxOrNull()
+        ?: end
+}
+
+private fun JournalState.journalEntryDatesInMonth(monthStart: LocalDate): List<LocalDate> =
+    entryCountsByDate.keys
+        .filter { isSameMonth(it, monthStart) && (entryCountsByDate[it] ?: 0) > 0 }
+        .sorted()
+
+private fun monthEnd(monthStart: LocalDate): LocalDate =
+    monthStart.nextMonth().minusDays(1)
 
 internal fun currentDate(): LocalDate =
     Clock.System.now().toLocalDateTime(TimeZone.currentSystemDefault()).date

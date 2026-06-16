@@ -28,6 +28,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalDrawerSheet
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -51,6 +52,7 @@ import com.nostr.torinos.ui.profile.AvatarCircle
 @Composable
 fun NotificationsDrawer(
     ownPubkey: String?,
+    isOpen: Boolean,
     scrollToTopRequest: Int = 0,
     onUserClick: (String) -> Unit,
     onOpenThread: (String) -> Unit,
@@ -72,6 +74,17 @@ fun NotificationsDrawer(
         )
         val state by viewModel.state.collectAsState()
         val listState = rememberLazyListState()
+
+        LaunchedEffect(isOpen, viewModel) {
+            if (isOpen) {
+                viewModel.startLiveSubscriptions()
+            } else {
+                viewModel.stopLiveSubscriptions()
+            }
+        }
+        DisposableEffect(viewModel) {
+            onDispose { viewModel.stopLiveSubscriptions() }
+        }
 
         LaunchedEffect(scrollToTopRequest) {
             if (scrollToTopRequest > 0) {

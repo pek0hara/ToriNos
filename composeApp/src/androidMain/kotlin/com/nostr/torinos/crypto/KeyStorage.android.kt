@@ -28,6 +28,7 @@ actual object KeyStorage {
     private val PREF_IV = stringPreferencesKey("encrypted_private_key_iv")
     private val PREF_ACCOUNTS = stringSetPreferencesKey("encrypted_accounts")
     private val PREF_ACTIVE_PUBKEY = stringPreferencesKey("active_pubkey")
+    private val PREF_LOGGED_OUT = androidx.datastore.preferences.core.booleanPreferencesKey("logged_out")
 
     private val context get() = ToriNosApp.appContext
     private fun keyStore() = KeyStore.getInstance(KEYSTORE_PROVIDER).also { it.load(null) }
@@ -129,6 +130,7 @@ actual object KeyStorage {
                 .toSet()
             prefs[PREF_ACCOUNTS] = existing + accountRecord(pubkeyHex, encryptedPayload.first, encryptedPayload.second)
             prefs[PREF_ACTIVE_PUBKEY] = pubkeyHex
+            prefs[PREF_LOGGED_OUT] = false
             prefs.remove(PREF_ENCRYPTED)
             prefs.remove(PREF_IV)
         }
@@ -137,6 +139,7 @@ actual object KeyStorage {
     actual suspend fun loadPrivateKey(): String? {
         migrateLegacyKeyIfNeeded()
         val prefs = runCatching { context.dataStore.data.first() }.getOrElse { emptyPreferences() }
+        if (prefs[PREF_LOGGED_OUT] == true) return null
         val records = prefs[PREF_ACCOUNTS].orEmpty()
         val activePubkey = prefs[PREF_ACTIVE_PUBKEY] ?: records.firstOrNull()?.let { parseAccountRecord(it)?.first }
         val activeRecord = records
@@ -175,6 +178,14 @@ actual object KeyStorage {
                 .any { it.first == pubkeyHex }
             check(exists) { "アカウントが保存されていません" }
             prefs[PREF_ACTIVE_PUBKEY] = pubkeyHex
+            prefs[PREF_LOGGED_OUT] = false
+        }
+    }
+
+    actual suspend fun logout() {
+        migrateLegacyKeyIfNeeded()
+        context.dataStore.edit { prefs ->
+            prefs[PREF_LOGGED_OUT] = true
         }
     }
 
@@ -190,10 +201,12 @@ actual object KeyStorage {
                 prefs.remove(PREF_ACTIVE_PUBKEY)
                 prefs.remove(PREF_ENCRYPTED)
                 prefs.remove(PREF_IV)
+                prefs.remove(PREF_LOGGED_OUT)
                 deleteKeystoreKey()
             } else {
                 prefs[PREF_ACCOUNTS] = remaining
                 prefs[PREF_ACTIVE_PUBKEY] = parseAccountRecord(remaining.first())!!.first
+                prefs[PREF_LOGGED_OUT] = false
             }
         }
     }

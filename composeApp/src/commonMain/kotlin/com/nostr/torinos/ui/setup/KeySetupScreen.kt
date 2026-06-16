@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
@@ -55,6 +56,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
 import com.nostr.torinos.crypto.KeyStorage
+import com.nostr.torinos.crypto.StoredAccount
 import com.nostr.torinos.crypto.derivePublicKey
 import com.nostr.torinos.crypto.fromHex
 import com.nostr.torinos.crypto.generateKeyPair
@@ -68,6 +70,7 @@ import com.nostr.torinos.model.NostrProfile
 import com.nostr.torinos.ui.components.EditableImage
 import com.nostr.torinos.ui.components.ImageCropperDialog
 import com.nostr.torinos.ui.components.rememberImagePickerLauncher
+import com.nostr.torinos.ui.components.rememberSyncedTextFieldValue
 import com.nostr.torinos.ui.profile.AvatarCircle
 import com.nostr.torinos.ui.profile.EditProfileViewModel
 import com.nostr.torinos.ui.settings.setPlainText
@@ -82,6 +85,8 @@ fun KeySetupScreen(onSetupComplete: (pubkeyHex: String) -> Unit, onDismiss: (() 
     var generatedInfo by remember { mutableStateOf<Pair<String, String>?>(null) } // priv, pub
     var initialProfilePubkey by remember { mutableStateOf<String?>(null) }
     var showUsageConsentDialog by remember { mutableStateOf(false) }
+    var storedAccounts by remember { mutableStateOf<List<StoredAccount>>(emptyList()) }
+    var accountLoginError by remember { mutableStateOf<String?>(null) }
     val scope = rememberCoroutineScope()
     val uiExceptionHandler = remember {
         loggingExceptionHandler("KeySetupScreen", "Uncaught UI coroutine exception")
@@ -89,6 +94,19 @@ fun KeySetupScreen(onSetupComplete: (pubkeyHex: String) -> Unit, onDismiss: (() 
     val focusManager = LocalFocusManager.current
     val keyboardController = LocalSoftwareKeyboardController.current
     val saveToPasswordManager = rememberPasswordManagerSaver()
+    val scrollState = rememberScrollState()
+
+    LaunchedEffect(showImportForm) {
+        scrollState.scrollTo(0)
+    }
+
+    LaunchedEffect(Unit) {
+        storedAccounts = runCatching { KeyStorage.listAccounts() }
+            .getOrElse { e ->
+                logException("KeySetupScreen", e, "Failed to load stored accounts")
+                emptyList()
+            }
+    }
 
     Box(
         modifier = Modifier
@@ -98,8 +116,9 @@ fun KeySetupScreen(onSetupComplete: (pubkeyHex: String) -> Unit, onDismiss: (() 
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .verticalScroll(rememberScrollState())
+                .statusBarsPadding()
                 .navigationBarsPadding()
+                .verticalScroll(scrollState)
                 .padding(24.dp),
             verticalArrangement = Arrangement.Center,
             horizontalAlignment = Alignment.CenterHorizontally,
@@ -130,6 +149,27 @@ fun KeySetupScreen(onSetupComplete: (pubkeyHex: String) -> Unit, onDismiss: (() 
                     textAlign = TextAlign.Center,
                 )
                 Spacer(modifier = Modifier.height(24.dp))
+
+                if (generatedInfo == null && storedAccounts.isNotEmpty()) {
+                    StoredAccountsSection(
+                        accounts = storedAccounts,
+                        error = accountLoginError,
+                        onAccountClick = { account ->
+                            scope.launch(uiExceptionHandler) {
+                                val err = runCatching {
+                                    KeyStorage.switchAccount(account.pubkeyHex)
+                                }.exceptionOrNull()?.let {
+                                    logException("KeySetupScreen", it, "Failed to switch stored account")
+                                    "アカウントを選択できませんでした: ${it.message}"
+                                }
+                                if (err == null) onSetupComplete(account.pubkeyHex) else accountLoginError = err
+                            }
+                        },
+                    )
+                    Spacer(modifier = Modifier.height(24.dp))
+                    HorizontalDivider()
+                    Spacer(modifier = Modifier.height(24.dp))
+                }
 
                 // ---- 新規生成 ----
                 if (generatedInfo == null) {
@@ -361,6 +401,7 @@ private fun InitialProfileDialog(
     ),
 ) {
     val state by viewModel.state.collectAsState()
+    var displayNameValue by rememberSyncedTextFieldValue(state.displayName)
     var imageToCrop by remember { mutableStateOf<EditableImage?>(null) }
     val pickImage = rememberImagePickerLauncher { bytes, mime ->
         if (bytes != null && mime != null) imageToCrop = EditableImage(bytes, mime)
@@ -393,10 +434,11 @@ private fun InitialProfileDialog(
                 }
 
                 OutlinedTextField(
-                    value = state.displayName,
-                    onValueChange = { name ->
-                        viewModel.onDisplayNameChange(name)
-                        viewModel.onNameChange(name)
+                    value = displayNameValue,
+                    onValueChange = {
+                        displayNameValue = it
+                        viewModel.onDisplayNameChange(it.text)
+                        viewModel.onNameChange(it.text)
                     },
                     label = { Text("名前") },
                     singleLine = true,
@@ -536,6 +578,49 @@ private fun GeneratedKeyValues(npub: String, nsec: String) {
         }
     }
 }
+
+@Composable
+private fun StoredAccountsSection(
+    accounts: List<StoredAccount>,
+    error: String?,
+    onAccountClick: (StoredAccount) -> Unit,
+) {
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        color = MaterialTheme.colorScheme.surface,
+        contentColor = MaterialTheme.colorScheme.onSurface,
+        shape = MaterialTheme.shapes.medium,
+    ) {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Text(
+                text = "保存済みアカウントでログイン",
+                style = MaterialTheme.typography.titleSmall,
+                color = MaterialTheme.colorScheme.onSurface,
+            )
+            accounts.forEach { account ->
+                Button(
+                    onClick = { onAccountClick(account) },
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Text(shortNpub(account.npub))
+                }
+            }
+            error?.let {
+                Text(
+                    text = it,
+                    color = MaterialTheme.colorScheme.error,
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
+        }
+    }
+}
+
+private fun shortNpub(npub: String): String =
+    if (npub.length <= 24) npub else "${npub.take(14)}...${npub.takeLast(8)}"
 
 @Composable
 private fun KeyInfoCard(

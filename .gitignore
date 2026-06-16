@@ -9,6 +9,7 @@ build/
 
 # Local environment
 local.properties
+gradle/config.properties
 *.jks
 *.keystore
 

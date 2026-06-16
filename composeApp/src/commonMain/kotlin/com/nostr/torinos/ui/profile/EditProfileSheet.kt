@@ -42,6 +42,7 @@ import com.nostr.torinos.ui.components.EditableImage
 import com.nostr.torinos.ui.components.ImageCropperDialog
 import com.nostr.torinos.ui.components.NetworkImage
 import com.nostr.torinos.ui.components.rememberImagePickerLauncher
+import com.nostr.torinos.ui.components.rememberSyncedTextFieldValue
 
 @Composable
 fun EditProfileSheet(
@@ -120,6 +121,10 @@ private fun EditProfileSheetContent(
     onPickBanner: () -> Unit,
     viewModel: EditProfileViewModel,
 ) {
+    var nameValue by rememberSyncedTextFieldValue(state.name)
+    var displayNameValue by rememberSyncedTextFieldValue(state.displayName)
+    var aboutValue by rememberSyncedTextFieldValue(state.about)
+
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -131,24 +136,33 @@ private fun EditProfileSheetContent(
         Text("プロフィール編集", style = MaterialTheme.typography.titleMedium)
 
         OutlinedTextField(
-            value = state.name,
-            onValueChange = viewModel::onNameChange,
+            value = nameValue,
+            onValueChange = {
+                nameValue = it
+                viewModel.onNameChange(it.text)
+            },
             label = { Text("ユーザー名 (name)") },
             singleLine = true,
             modifier = Modifier.fillMaxWidth(),
         )
 
         OutlinedTextField(
-            value = state.displayName,
-            onValueChange = viewModel::onDisplayNameChange,
+            value = displayNameValue,
+            onValueChange = {
+                displayNameValue = it
+                viewModel.onDisplayNameChange(it.text)
+            },
             label = { Text("表示名 (display_name)") },
             singleLine = true,
             modifier = Modifier.fillMaxWidth(),
         )
 
         OutlinedTextField(
-            value = state.about,
-            onValueChange = viewModel::onAboutChange,
+            value = aboutValue,
+            onValueChange = {
+                aboutValue = it
+                viewModel.onAboutChange(it.text)
+            },
             label = { Text("自己紹介 (about)") },
             modifier = Modifier.fillMaxWidth().height(100.dp),
             maxLines = 4,

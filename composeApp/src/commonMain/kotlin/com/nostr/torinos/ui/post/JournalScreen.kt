@@ -48,8 +48,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.TopAppBar
-import androidx.compose.material3.TopAppBarDefaults
+import com.nostr.torinos.ui.components.AppTopBar
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -121,7 +120,8 @@ fun JournalScreen(
     val isUserJournal = targetPubkey != null
     val availableFilters = remember(isUserJournal) {
         JournalEntryFilter.entries.filter {
-            it != JournalEntryFilter.Memo && (!isUserJournal || it != JournalEntryFilter.Like)
+            it != JournalEntryFilter.Article &&
+                (!isUserJournal || it !in setOf(JournalEntryFilter.Like, JournalEntryFilter.Memo))
         }
     }
     val baseEntries = if (state.showCalendar) state.selectedEntries else state.monthEntries
@@ -167,7 +167,7 @@ fun JournalScreen(
             }
         },
         topBar = {
-            TopAppBar(
+            AppTopBar(
                 title = {
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
@@ -251,13 +251,6 @@ fun JournalScreen(
                         )
                     }
                 },
-                colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = headerBackgroundColor,
-                    scrolledContainerColor = headerBackgroundColor,
-                    titleContentColor = headerContentColor,
-                    actionIconContentColor = headerContentColor,
-                    navigationIconContentColor = headerContentColor,
-                ),
             )
         },
     ) { padding ->

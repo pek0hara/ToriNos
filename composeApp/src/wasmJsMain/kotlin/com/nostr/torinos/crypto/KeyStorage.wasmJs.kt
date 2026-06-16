@@ -6,5 +6,6 @@ actual object KeyStorage {
     actual suspend fun hasKey(): Boolean = false
     actual suspend fun listAccounts(): List<StoredAccount> = emptyList()
     actual suspend fun switchAccount(pubkeyHex: String) = Unit
+    actual suspend fun logout() = Unit
     actual suspend fun deleteKey() = Unit
 }
