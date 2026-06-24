@@ -38,9 +38,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.runtime.collectAsState
 import androidx.compose.material3.Card
 import androidx.compose.ui.window.Dialog
-import com.nostr.torinos.ui.components.EditableImage
-import com.nostr.torinos.ui.components.ImageCropperDialog
 import com.nostr.torinos.ui.components.NetworkImage
+import com.nostr.torinos.ui.components.rememberDismissKeyboard
 import com.nostr.torinos.ui.components.rememberImagePickerLauncher
 import com.nostr.torinos.ui.components.rememberSyncedTextFieldValue
 
@@ -51,14 +50,12 @@ fun EditProfileSheet(
     onSaved: (NostrProfile) -> Unit = {},
 ) {
     val state by viewModel.state.collectAsState()
-    var avatarImageToCrop by remember { mutableStateOf<EditableImage?>(null) }
-    var bannerImageToCrop by remember { mutableStateOf<EditableImage?>(null) }
 
     val pickImage = rememberImagePickerLauncher { bytes, mime ->
-        if (bytes != null && mime != null) avatarImageToCrop = EditableImage(bytes, mime)
+        if (bytes != null && mime != null) viewModel.uploadProfileImage(bytes, mime)
     }
     val pickBanner = rememberImagePickerLauncher { bytes, mime ->
-        if (bytes != null && mime != null) bannerImageToCrop = EditableImage(bytes, mime)
+        if (bytes != null && mime != null) viewModel.uploadBannerImage(bytes, mime)
     }
 
     LaunchedEffect(state.saved) {
@@ -83,34 +80,6 @@ fun EditProfileSheet(
             }
         }
     }
-
-    avatarImageToCrop?.let { image ->
-        ImageCropperDialog(
-            image = image,
-            title = "アイコンを調整",
-            aspectRatio = 1f,
-            circularMask = true,
-            onDismiss = { avatarImageToCrop = null },
-            onCropped = { bytes, mime ->
-                avatarImageToCrop = null
-                viewModel.uploadProfileImage(bytes, mime)
-            },
-        )
-    }
-
-    bannerImageToCrop?.let { image ->
-        ImageCropperDialog(
-            image = image,
-            title = "バナーを調整",
-            aspectRatio = 3f,
-            circularMask = false,
-            onDismiss = { bannerImageToCrop = null },
-            onCropped = { bytes, mime ->
-                bannerImageToCrop = null
-                viewModel.uploadBannerImage(bytes, mime)
-            },
-        )
-    }
 }
 
 @Composable
@@ -124,6 +93,7 @@ private fun EditProfileSheetContent(
     var nameValue by rememberSyncedTextFieldValue(state.name)
     var displayNameValue by rememberSyncedTextFieldValue(state.displayName)
     var aboutValue by rememberSyncedTextFieldValue(state.about)
+    val dismissKeyboard = rememberDismissKeyboard()
 
     Column(
         modifier = Modifier
@@ -187,7 +157,10 @@ private fun EditProfileSheetContent(
                 },
             )
             IconButton(
-                onClick = onPickImage,
+                onClick = {
+                    dismissKeyboard()
+                    onPickImage()
+                },
                 enabled = !state.isUploadingImage,
             ) {
                 Icon(
@@ -216,7 +189,10 @@ private fun EditProfileSheetContent(
                 },
             )
             IconButton(
-                onClick = onPickBanner,
+                onClick = {
+                    dismissKeyboard()
+                    onPickBanner()
+                },
                 enabled = !state.isUploadingImage,
             ) {
                 Icon(
@@ -274,10 +250,10 @@ fun BannerEditDialog(
 ) {
     val state by viewModel.state.collectAsState()
     var url by remember { mutableStateOf(currentProfile?.banner ?: "") }
-    var imageToCrop by remember { mutableStateOf<EditableImage?>(null) }
+    val dismissKeyboard = rememberDismissKeyboard()
 
     val pickImage = rememberImagePickerLauncher { bytes, mime ->
-        if (bytes != null && mime != null) imageToCrop = EditableImage(bytes, mime)
+        if (bytes != null && mime != null) viewModel.uploadBannerImage(bytes, mime)
     }
 
     LaunchedEffect(state.banner) {
@@ -325,7 +301,13 @@ fun BannerEditDialog(
                         modifier = Modifier.weight(1f),
                         enabled = !state.isSaving,
                     )
-                    IconButton(onClick = pickImage, enabled = !state.isUploadingImage && !state.isSaving) {
+                    IconButton(
+                        onClick = {
+                            dismissKeyboard()
+                            pickImage()
+                        },
+                        enabled = !state.isUploadingImage && !state.isSaving,
+                    ) {
                         if (state.isUploadingImage) {
                             CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
                         } else {
@@ -357,20 +339,6 @@ fun BannerEditDialog(
             }
         }
     }
-
-    imageToCrop?.let { image ->
-        ImageCropperDialog(
-            image = image,
-            title = "バナーを調整",
-            aspectRatio = 3f,
-            circularMask = false,
-            onDismiss = { imageToCrop = null },
-            onCropped = { bytes, mime ->
-                imageToCrop = null
-                viewModel.uploadBannerImage(bytes, mime)
-            },
-        )
-    }
 }
 
 @Composable
@@ -383,10 +351,10 @@ fun AvatarEditDialog(
 ) {
     val state by viewModel.state.collectAsState()
     var url by remember { mutableStateOf(currentProfile?.picture ?: "") }
-    var imageToCrop by remember { mutableStateOf<EditableImage?>(null) }
+    val dismissKeyboard = rememberDismissKeyboard()
 
     val pickImage = rememberImagePickerLauncher { bytes, mime ->
-        if (bytes != null && mime != null) imageToCrop = EditableImage(bytes, mime)
+        if (bytes != null && mime != null) viewModel.uploadProfileImage(bytes, mime)
     }
 
     LaunchedEffect(state.picture) {
@@ -432,7 +400,13 @@ fun AvatarEditDialog(
                         modifier = Modifier.weight(1f),
                         enabled = !state.isSaving,
                     )
-                    IconButton(onClick = pickImage, enabled = !state.isUploadingImage && !state.isSaving) {
+                    IconButton(
+                        onClick = {
+                            dismissKeyboard()
+                            pickImage()
+                        },
+                        enabled = !state.isUploadingImage && !state.isSaving,
+                    ) {
                         if (state.isUploadingImage) {
                             CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
                         } else {
@@ -459,20 +433,6 @@ fun AvatarEditDialog(
                 }
             }
         }
-    }
-
-    imageToCrop?.let { image ->
-        ImageCropperDialog(
-            image = image,
-            title = "アイコンを調整",
-            aspectRatio = 1f,
-            circularMask = true,
-            onDismiss = { imageToCrop = null },
-            onCropped = { bytes, mime ->
-                imageToCrop = null
-                viewModel.uploadProfileImage(bytes, mime)
-            },
-        )
     }
 }
 
