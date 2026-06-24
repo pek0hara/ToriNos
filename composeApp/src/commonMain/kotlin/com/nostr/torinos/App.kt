@@ -14,14 +14,15 @@ import androidx.compose.material.icons.filled.Apps
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Today
 import androidx.compose.material3.FloatingActionButton
+import androidx.compose.material3.FloatingActionButtonDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.ModalNavigationDrawer
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
+import androidx.compose.material3.NavigationBarItemDefaults
 import androidx.compose.material3.Scaffold
-import androidx.compose.material3.Text
 import androidx.compose.material3.rememberDrawerState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -41,11 +42,12 @@ import kotlinx.coroutines.launch
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.requiredHeight
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clipToBounds
-import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.dp
 import androidx.navigation.compose.NavHost
@@ -387,7 +389,7 @@ fun App() {
             routeName?.endsWith("ProfileRoute") == true
         val hasBottomBar = currentRoute in bottomBarRoutes || isChannelThreadRoute || isProfileRoute
         val density = LocalDensity.current
-        var bottomBarHeightPx by remember { mutableIntStateOf(0) }
+        val bottomBarHeightPx = with(density) { AppNavigationBarHeight.toPx() }.toInt()
         val activeFeedChromeCollapseFraction = if (currentRoute == "feed") feedChromeCollapseFraction else 0f
         val collapsedBottomBarHeightPx = (bottomBarHeightPx * (1f - activeFeedChromeCollapseFraction)).toInt()
         val bottomBarAlpha = 1f - activeFeedChromeCollapseFraction
@@ -459,14 +461,14 @@ fun App() {
                                 },
                             )
                             "services" -> when (currentServiceTab) {
-                                ServiceTab.Live -> FloatingActionButton(onClick = {
+                                ServiceTab.Live -> AppFloatingActionButton(onClick = {
                                     runWithPrivateKey(PendingKeyAction.Live) {
                                         liveCreateRequest++
                                     }
                                 }) {
                                     Icon(Icons.Default.Add, contentDescription = "ライブを投稿")
                                 }
-                                ServiceTab.Status -> FloatingActionButton(onClick = {
+                                ServiceTab.Status -> AppFloatingActionButton(onClick = {
                                     runWithPrivateKey(PendingKeyAction.Status) {
                                         showStatusComposer = true
                                     }
@@ -475,7 +477,7 @@ fun App() {
                                 }
                                 else -> Unit
                             }
-                            "status" -> FloatingActionButton(onClick = {
+                            "status" -> AppFloatingActionButton(onClick = {
                                 runWithPrivateKey(PendingKeyAction.Status) {
                                     showStatusComposer = true
                                 }
@@ -488,32 +490,29 @@ fun App() {
                 },
                 bottomBar = {
                     if (hasBottomBar) {
-                        val bottomBarContainerModifier = if (bottomBarHeightPx > 0) {
-                            Modifier.height(with(density) { collapsedBottomBarHeightPx.toDp() })
-                        } else {
-                            Modifier
-                        }
                         Box(
-                            modifier = bottomBarContainerModifier
+                            modifier = Modifier
+                                .height(with(density) { collapsedBottomBarHeightPx.toDp() })
                                 .clipToBounds()
                                 .background(MaterialTheme.colorScheme.background),
                         ) {
                             NavigationBar(
                                 modifier = Modifier
-                                    .then(
-                                        if (bottomBarHeightPx > 0) {
-                                            Modifier.requiredHeight(with(density) { bottomBarHeightPx.toDp() })
-                                        } else {
-                                            Modifier
-                                        },
-                                    )
-                                    .alpha(bottomBarAlpha)
-                                    .onSizeChanged { bottomBarHeightPx = it.height },
+                                    .requiredHeight(AppNavigationBarHeight)
+                                    .alpha(bottomBarAlpha),
+                                containerColor = MaterialTheme.colorScheme.background,
+                                tonalElevation = 0.dp,
                             ) {
                                 NavigationBarItem(
-                                    icon = { Icon(Icons.Default.Home, contentDescription = null) },
-                                    label = { Text("フィード") },
+                                    icon = {
+                                        Icon(
+                                            Icons.Default.Home,
+                                            contentDescription = null,
+                                            modifier = Modifier.size(if (currentRoute == "feed") 26.dp else 24.dp),
+                                        )
+                                    },
                                     selected = currentRoute == "feed",
+                                    colors = appNavigationBarItemColors(),
                                     onClick = {
                                         feedChromeCollapseFraction = 0f
                                         if (currentRoute == "feed") {
@@ -525,9 +524,15 @@ fun App() {
                                     },
                                 )
                                 NavigationBarItem(
-                                    icon = { Icon(Icons.Default.Today, contentDescription = null) },
-                                    label = { Text("ジャーナル") },
+                                    icon = {
+                                        Icon(
+                                            Icons.Default.Today,
+                                            contentDescription = null,
+                                            modifier = Modifier.size(if (currentRoute == "journal") 26.dp else 24.dp),
+                                        )
+                                    },
                                     selected = currentRoute == "journal",
+                                    colors = appNavigationBarItemColors(),
                                     onClick = {
                                         runWithPrivateKey(PendingKeyAction.Journal) {
                                             if (currentRoute == "journal") {
@@ -539,14 +544,21 @@ fun App() {
                                         }
                                     },
                                 )
+                                val isServiceRoute = currentRoute == "services" ||
+                                    currentRoute == "channels" ||
+                                    isChannelRoute ||
+                                    isChannelThreadRoute ||
+                                    currentRoute == "status"
                                 NavigationBarItem(
-                                    icon = { Icon(Icons.Default.Apps, contentDescription = null) },
-                                    label = { Text("サービス") },
-                                    selected = currentRoute == "services" ||
-                                        currentRoute == "channels" ||
-                                        isChannelRoute ||
-                                        isChannelThreadRoute ||
-                                        currentRoute == "status",
+                                    icon = {
+                                        Icon(
+                                            Icons.Default.Apps,
+                                            contentDescription = null,
+                                            modifier = Modifier.size(if (isServiceRoute) 26.dp else 24.dp),
+                                        )
+                                    },
+                                    selected = isServiceRoute,
+                                    colors = appNavigationBarItemColors(),
                                     onClick = {
                                         if (currentRoute == "services") {
                                             navigateNextServiceTab()
@@ -1181,7 +1193,7 @@ fun App() {
 private fun PostFloatingActionButton(
     onPostClick: () -> Unit,
 ) {
-    FloatingActionButton(onClick = onPostClick) {
+    AppFloatingActionButton(onClick = onPostClick) {
         Icon(
             imageVector = Icons.Default.Add,
             contentDescription = "ポスト",
@@ -1189,3 +1201,34 @@ private fun PostFloatingActionButton(
         )
     }
 }
+
+@Composable
+private fun AppFloatingActionButton(
+    onClick: () -> Unit,
+    content: @Composable () -> Unit,
+) {
+    FloatingActionButton(
+        onClick = onClick,
+        shape = CircleShape,
+        containerColor = MaterialTheme.colorScheme.primaryContainer,
+        contentColor = MaterialTheme.colorScheme.primary,
+        elevation = FloatingActionButtonDefaults.elevation(
+            defaultElevation = 0.dp,
+            pressedElevation = 1.dp,
+            focusedElevation = 0.dp,
+            hoveredElevation = 1.dp,
+        ),
+        content = content,
+    )
+}
+
+@Composable
+private fun appNavigationBarItemColors() = NavigationBarItemDefaults.colors(
+    selectedIconColor = MaterialTheme.colorScheme.primary,
+    selectedTextColor = MaterialTheme.colorScheme.primary,
+    unselectedIconColor = MaterialTheme.colorScheme.onSurfaceVariant,
+    unselectedTextColor = MaterialTheme.colorScheme.onSurfaceVariant,
+    indicatorColor = Color.Transparent,
+)
+
+private val AppNavigationBarHeight = 80.dp

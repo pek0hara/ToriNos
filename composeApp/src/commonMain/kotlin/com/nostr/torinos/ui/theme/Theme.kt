@@ -13,27 +13,35 @@ import torinos.composeapp.generated.resources.Res
 import androidx.compose.ui.graphics.Color
 import org.jetbrains.compose.resources.Font
 
-private val SkyBlue      = Color(0xFF2292FF) // R=34 G=146 B=255
-private val SkyBlueDark  = Color(0xFF005FCC) // より暗いバリアント
-private val SkyBlueLight = Color(0xFF80BFFF) // ダークテーマ用明るいバリアント
+private val BrandBlue = Color(0xFF2292FF)
+private val BrandBlueDark = Color(0xFF005FCC)
+private val BrandBlueLight = Color(0xFF80BFFF)
 
 private val LightColors = lightColorScheme(
-    primary = SkyBlue,
+    primary = BrandBlue,
     onPrimary = Color.White,
     primaryContainer = Color(0xFFD6EAFF),
     onPrimaryContainer = Color(0xFF003A80),
-    secondary = SkyBlueDark,
+    secondary = BrandBlueDark,
     onSecondary = Color.White,
     secondaryContainer = Color(0xFFCCE2FF),
     onSecondaryContainer = Color(0xFF003366),
+    background = Color.White,
+    onBackground = Color(0xFF1D2024),
+    surface = Color.White,
+    onSurface = Color(0xFF1D2024),
+    surfaceVariant = Color(0xFFF2F4F7),
+    onSurfaceVariant = Color(0xFF5F6670),
+    outline = Color(0xFF8D949E),
+    outlineVariant = Color(0xFFD7DCE2),
 )
 
 private val DarkColors = darkColorScheme(
-    primary = SkyBlueLight,
+    primary = BrandBlueLight,
     onPrimary = Color(0xFF003A80),
     primaryContainer = Color(0xFF005FCC),
     onPrimaryContainer = Color(0xFFD6EAFF),
-    secondary = SkyBlueLight,
+    secondary = BrandBlueLight,
     onSecondary = Color(0xFF003366),
     secondaryContainer = Color(0xFF004499),
     onSecondaryContainer = Color(0xFFCCE2FF),

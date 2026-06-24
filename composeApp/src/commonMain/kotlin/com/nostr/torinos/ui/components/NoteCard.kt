@@ -143,13 +143,14 @@ fun NoteCard(
                 if (onNoteClick != null) Modifier.clickable { onNoteClick(event.id) }
                 else Modifier
             )
-            .padding(horizontal = 16.dp, vertical = 12.dp),
-        horizontalArrangement = Arrangement.spacedBy(12.dp),
+            .padding(horizontal = 16.dp, vertical = 8.dp),
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
     ) {
         AvatarCircle(
             pubkey = event.pubkey,
             name = profile?.bestName,
             pictureUrl = profile?.picture,
+            size = 42,
             modifier = Modifier.clickable { onUserClick(event.pubkey) },
         )
 
@@ -288,7 +289,7 @@ fun NoteCard(
                     }
                 }
             }
-            Spacer(modifier = Modifier.height(4.dp))
+            Spacer(modifier = Modifier.height(2.dp))
             if (replyParent != null) {
                 Row(
                     horizontalArrangement = Arrangement.spacedBy(4.dp),
@@ -311,7 +312,7 @@ fun NoteCard(
                             .clickable { onUserClick(replyParent.event.pubkey) },
                     )
                 }
-                Spacer(modifier = Modifier.height(4.dp))
+                Spacer(modifier = Modifier.height(2.dp))
                 QuotePreview(
                     event = replyParent.event,
                     profile = replyParent.profile,

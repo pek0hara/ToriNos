@@ -136,7 +136,10 @@ fun LazyListScope.noteListItems(
                         { reason, detail -> onReport(event.id, reason, detail) }
                     } else null,
                 )
-                HorizontalDivider()
+                HorizontalDivider(
+                    thickness = 0.5.dp,
+                    color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f),
+                )
             }
             if (state.isLoadingMore) {
                 item(contentType = "loadingMore") {
