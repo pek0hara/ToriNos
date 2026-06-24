@@ -104,10 +104,13 @@ fun JournalScreen(
     onUserClick: (pubkey: String) -> Unit = {},
     onOpenArticle: (pubkey: String, identifier: String) -> Unit = { _, _ -> },
     ownPubkey: String? = null,
+    accountKey: String? = ownPubkey,
     ownProfile: NostrProfile? = null,
     onOpenRelaySettings: () -> Unit = {},
     targetPubkey: String? = null,
-    viewModel: JournalViewModel = viewModel(key = targetPubkey?.let { "journal-$it" } ?: "journal") {
+    viewModel: JournalViewModel = viewModel(
+        key = targetPubkey?.let { "journal-$it" } ?: "journal-${accountKey ?: "anonymous"}",
+    ) {
         JournalViewModel(targetPubkey)
     },
 ) {

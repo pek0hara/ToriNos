@@ -88,6 +88,7 @@ fun FeedScreen(
     onOpenReposts: (eventId: String) -> Unit = {},
     onOpenSearch: (query: String) -> Unit = {},
     ownPubkey: String? = null,
+    accountResetKey: Int = 0,
     ownProfile: NostrProfile? = null,
     isAccountLoaded: Boolean = true,
     scrollToTopRequest: Int = 0,
@@ -112,8 +113,10 @@ fun FeedScreen(
     val followedPubkeys by FollowRepository.followedPubkeys.collectAsState()
     val mutedPubkeys by MuteStore.mutedPubkeys.collectAsState()
     var showRelayMenu by remember { mutableStateOf(false) }
-    var feedTab by rememberSaveable { mutableStateOf(FeedTab.Following) }
-    var followingFeedMode by rememberSaveable { mutableStateOf(FollowingFeedMode.Following) }
+    var feedTab by rememberSaveable(accountResetKey, authorPubkey) { mutableStateOf(FeedTab.Following) }
+    var followingFeedMode by rememberSaveable(accountResetKey, authorPubkey) {
+        mutableStateOf(FollowingFeedMode.Following)
+    }
     var handledScrollToTopRequest by remember { mutableStateOf(scrollToTopRequest) }
     val isLoggedOutMainFeed = authorPubkey == null && isAccountLoaded && ownPubkey == null
     val visibleFeedTabs = if (isLoggedOutMainFeed) listOf(FeedTab.Global) else FeedTab.entries

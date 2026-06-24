@@ -148,10 +148,6 @@ actual object KeyStorage {
             ?: return null
 
         val normalized = decryptPrivateKey(activeRecord.second, activeRecord.third)
-        if (normalized == null) {
-            deleteKey()
-            return null
-        }
         return normalized
     }
 
@@ -183,10 +179,7 @@ actual object KeyStorage {
     }
 
     actual suspend fun logout() {
-        migrateLegacyKeyIfNeeded()
-        context.dataStore.edit { prefs ->
-            prefs[PREF_LOGGED_OUT] = true
-        }
+        deleteKey()
     }
 
     actual suspend fun deleteKey() {

@@ -70,6 +70,8 @@ object PrivateMuteListStore {
     private val _syncState = MutableStateFlow(PrivateMuteListSyncState())
     val syncState: StateFlow<PrivateMuteListSyncState> = _syncState.asStateFlow()
 
+    private var accountGeneration = 0L
+
     init {
         scope.launch {
             loadCache()
@@ -117,7 +119,19 @@ object PrivateMuteListStore {
         }.getOrDefault(false)
 
     fun refresh() {
-        scope.launch { refreshFromRelays(updateStatus = true) }
+        scope.launch { refreshFromRelays(updateStatus = true, expectedGeneration = accountGeneration) }
+    }
+
+    fun resetForAccountChange() {
+        accountGeneration++
+        _mutedPubkeys.value = emptySet()
+        _ngWords.value = emptyList()
+        _syncState.value = PrivateMuteListSyncState()
+        val expectedGeneration = accountGeneration
+        scope.launch {
+            clearCache()
+            refreshFromRelays(updateStatus = true, expectedGeneration = expectedGeneration)
+        }
     }
 
     private suspend fun loadCache() {
@@ -170,6 +184,14 @@ object PrivateMuteListStore {
         }
     }
 
+    private suspend fun clearCache() {
+        runCatching {
+            LocalSettingsStorage.putString(CACHE_KEY, null)
+        }.onFailure {
+            appLog("[PrivateMuteListStore] cache clear failed: ${it::class.simpleName}: ${it.message}")
+        }
+    }
+
     private suspend fun saveCache(source: NostrEvent?) {
         val cache = PrivateMuteListCache(
             mutedPubkeys = _mutedPubkeys.value.toList().sorted(),
@@ -185,15 +207,19 @@ object PrivateMuteListStore {
         }
     }
 
-    private suspend fun refreshFromRelays(updateStatus: Boolean = false) {
+    private suspend fun refreshFromRelays(
+        updateStatus: Boolean = false,
+        expectedGeneration: Long = accountGeneration,
+    ) {
         if (updateStatus) {
             _syncState.value = _syncState.value.copy(isRefreshing = true, error = null)
         }
         try {
             val privateKey = KeyStorage.loadPrivateKey() ?: return
             val publicKey = derivePublicKey(privateKey.fromHex()).toHex()
+            if (expectedGeneration != accountGeneration) return
             val event = fetchLatestMuteList(publicKey) ?: run {
-                if (updateStatus) {
+                if (updateStatus && expectedGeneration == accountGeneration) {
                     _syncState.value = _syncState.value.copy(
                         isRefreshing = false,
                         lastSyncedAt = Clock.System.now().epochSeconds,
@@ -202,7 +228,7 @@ object PrivateMuteListStore {
                 return
             }
             val parsed = decodeEventContent(event, privateKey) ?: run {
-                if (updateStatus) {
+                if (updateStatus && expectedGeneration == accountGeneration) {
                     _syncState.value = _syncState.value.copy(
                         isRefreshing = false,
                         error = "リレーのミュートリストを読み込めませんでした",
@@ -210,6 +236,7 @@ object PrivateMuteListStore {
                 }
                 return
             }
+            if (expectedGeneration != accountGeneration) return
             _mutedPubkeys.value = parsed.mutedPubkeys.toSet()
             _ngWords.value = parsed.ngWords
             saveCache(event)
@@ -224,14 +251,14 @@ object PrivateMuteListStore {
             throw e
         } catch (e: Throwable) {
             appLog("[PrivateMuteListStore] refresh failed: ${e::class.simpleName}: ${e.message}")
-            if (updateStatus) {
+            if (updateStatus && expectedGeneration == accountGeneration) {
                 _syncState.value = _syncState.value.copy(
                     isRefreshing = false,
                     error = e.message ?: "リレー同期に失敗しました",
                 )
             }
         } finally {
-            if (updateStatus && _syncState.value.isRefreshing) {
+            if (updateStatus && expectedGeneration == accountGeneration && _syncState.value.isRefreshing) {
                 _syncState.value = _syncState.value.copy(isRefreshing = false)
             }
         }

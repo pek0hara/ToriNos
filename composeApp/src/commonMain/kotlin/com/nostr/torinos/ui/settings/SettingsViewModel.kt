@@ -176,7 +176,7 @@ class SettingsViewModel : SafeViewModel() {
                         accountActionError = null,
                     )
                 }
-                onCleared(null)
+                onCleared(accounts.firstOrNull()?.pubkeyHex)
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Throwable) {

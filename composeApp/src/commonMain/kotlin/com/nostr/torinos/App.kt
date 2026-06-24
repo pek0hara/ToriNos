@@ -67,6 +67,7 @@ import com.nostr.torinos.model.toProfile
 import com.nostr.torinos.network.ChannelCacheStore
 import com.nostr.torinos.network.CustomEmojiStore
 import com.nostr.torinos.network.FollowRepository
+import com.nostr.torinos.network.MuteStore
 import com.nostr.torinos.network.NostrRepository
 import com.nostr.torinos.ui.article.ArticleDetailScreen
 import com.nostr.torinos.ui.article.ArticleHubScreen
@@ -176,9 +177,10 @@ fun App() {
         var notificationsScrollToTopRequest by remember { mutableStateOf(0) }
         var showQuickSettings by remember { mutableStateOf(false) }
         var relaySettingsNavigationRequest by remember { mutableStateOf(0) }
+        var accountStateResetKey by remember { mutableIntStateOf(0) }
         val notificationsDrawerState = rememberDrawerState(DrawerValue.Closed)
-        val followingFeedListState = remember { LazyListState() }
-        val globalFeedListState = remember { LazyListState() }
+        val followingFeedListState = remember(accountStateResetKey) { LazyListState() }
+        val globalFeedListState = remember(accountStateResetKey) { LazyListState() }
         var currentServiceTab by remember { mutableStateOf(ServiceTab.Articles) }
 
         fun navigateTopLevelRoute(route: String) {
@@ -329,6 +331,8 @@ fun App() {
             selectedMemoDeleteAction = null
             localDraft = null
             FollowRepository.reload()
+            MuteStore.resetForAccountChange()
+            accountStateResetKey++
             currentFeedTab = FeedTab.Global
             feedScrollToTopTargetTab = FeedTab.Global
             feedTabChangeRequest++
@@ -359,6 +363,8 @@ fun App() {
             selectedMemoDeleteAction = null
             localDraft = null
             FollowRepository.reload()
+            MuteStore.resetForAccountChange()
+            accountStateResetKey++
             currentFeedTab = FeedTab.Global
             feedScrollToTopTargetTab = FeedTab.Global
             feedTabChangeRequest++
@@ -596,6 +602,7 @@ fun App() {
                             onOpenReposts = { eventId -> nav.navigate(ThreadRoute(eventId, "reposts")) },
                             onOpenSearch = { query -> nav.navigate(SearchRoute(query)) },
                             ownPubkey = ownPubkey,
+                            accountResetKey = accountStateResetKey,
                             ownProfile = ownProfile,
                             isAccountLoaded = isAccountLoaded,
                             scrollToTopRequest = feedScrollToTopRequest,
@@ -752,6 +759,7 @@ fun App() {
                             refreshTodayRequest = memoRefreshTodayRequest,
                             toggleCalendarRequest = journalToggleCalendarRequest,
                             showCalendarRequest = journalShowCalendarRequest,
+                            accountKey = accountStateResetKey.toString(),
                             onNewPost = {
                                 selectedMemo = null
                                 selectedMemoDeleteAction = null
@@ -1085,6 +1093,8 @@ fun App() {
                     ownPubkey = pubkeyHex
                     ownProfile = null
                     FollowRepository.reload()
+                    MuteStore.resetForAccountChange()
+                    accountStateResetKey++
                     when (action) {
                         PendingKeyAction.NewPost -> {
                             selectedMemo = null

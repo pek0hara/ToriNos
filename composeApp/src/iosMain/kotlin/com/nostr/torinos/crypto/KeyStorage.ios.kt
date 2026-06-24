@@ -132,7 +132,6 @@ actual object KeyStorage {
             return synchronizedKey
         }
 
-        deleteKey()
         return null
     }
 
@@ -143,15 +142,6 @@ actual object KeyStorage {
         val defaults = NSUserDefaults.standardUserDefaults
         val activePubkey = defaults.stringForKey(ACTIVE_ACCOUNT_DEFAULTS_KEY)
         val accounts = readAllAccountPubkeys(defaults)
-            .filter { hasPrivateKeyInKeychain(it) }
-        if (accounts != readAccountPubkeys(defaults)) {
-            writeAccountPubkeys(defaults, accounts)
-            runCatching { writeSyncedAccountPubkeys(accounts) }
-                .onFailure { e ->
-                    logException("KeyStorage", e, "Failed to update synced account index while listing accounts")
-                }
-            defaults.synchronize()
-        }
         return accounts
             .map { StoredAccount(pubkeyHex = it, npub = hexToNpub(it)) }
             .sortedBy { if (it.pubkeyHex == activePubkey) 0 else 1 }
@@ -166,10 +156,7 @@ actual object KeyStorage {
     }
 
     actual suspend fun logout() {
-        migrateLegacyKeyIfNeeded()
-        val defaults = NSUserDefaults.standardUserDefaults
-        defaults.setBool(true, forKey = LOGGED_OUT_DEFAULTS_KEY)
-        defaults.synchronize()
+        deleteKey()
     }
 
     actual suspend fun deleteKey() {
@@ -247,10 +234,6 @@ actual object KeyStorage {
 
     private fun readAllAccountPubkeys(defaults: NSUserDefaults): List<String> =
         (readAccountPubkeys(defaults) + readSyncedAccountPubkeys()).distinct()
-
-    private fun hasPrivateKeyInKeychain(pubkeyHex: String): Boolean =
-        loadPrivateKeyFromKeychain(keychainAccount(pubkeyHex)) != null ||
-            loadPrivateKeyFromKeychain(keychainAccount(pubkeyHex), synchronizable = true) != null
 
     private fun writeSyncedAccountPubkeys(pubkeys: List<String>) {
         saveSynchronizableString(KEYCHAIN_ACCOUNTS_INDEX_ACCOUNT, pubkeys.distinct().joinToString(","))

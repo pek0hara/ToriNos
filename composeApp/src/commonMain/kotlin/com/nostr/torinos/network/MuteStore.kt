@@ -20,4 +20,8 @@ object MuteStore {
     fun refresh() {
         PrivateMuteListStore.refresh()
     }
+
+    fun resetForAccountChange() {
+        PrivateMuteListStore.resetForAccountChange()
+    }
 }
