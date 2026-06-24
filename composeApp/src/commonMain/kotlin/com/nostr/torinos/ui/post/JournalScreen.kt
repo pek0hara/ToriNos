@@ -56,6 +56,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -118,14 +119,23 @@ fun JournalScreen(
     val relays by RelayStore.relays.collectAsState(initial = emptyList())
     val selectedRelayUrl by RelayStore.selectedMemoRelayUrl.collectAsState()
     var showRelayMenu by remember { mutableStateOf(false) }
-    var showFilterHeader by remember { mutableStateOf(true) }
-    var selectedFilters by remember { mutableStateOf(emptySet<JournalEntryFilter>()) }
+    var showFilterHeader by rememberSaveable(accountKey, targetPubkey) { mutableStateOf(true) }
+    var selectedFilterNames by rememberSaveable(accountKey, targetPubkey) {
+        mutableStateOf(defaultJournalEntryFilters().map { it.name })
+    }
     val isUserJournal = targetPubkey != null
     val availableFilters = remember(isUserJournal) {
         JournalEntryFilter.entries.filter {
             it != JournalEntryFilter.Article &&
                 (!isUserJournal || it !in setOf(JournalEntryFilter.Like, JournalEntryFilter.Memo))
         }
+    }
+    val selectedFilters = remember(selectedFilterNames, availableFilters) {
+        selectedFilterNames
+            .mapNotNull { name -> JournalEntryFilter.entries.firstOrNull { it.name == name } }
+            .filter { it in availableFilters }
+            .toSet()
+            .ifEmpty { defaultJournalEntryFilters() }
     }
     val baseEntries = if (state.showCalendar) state.selectedEntries else state.monthEntries
     val visibleEntries = remember(baseEntries, selectedFilters) {
@@ -153,6 +163,10 @@ fun JournalScreen(
         val active = selectedRelayUrl?.takeIf { it in relays } ?: relays.firstOrNull()
         delay(JournalInitialLoadDelayMs)
         viewModel.setRelayUrl(active)
+    }
+
+    LaunchedEffect(selectedFilters) {
+        viewModel.setLoadKinds(selectedFilters.mapTo(mutableSetOf()) { it.loadKind })
     }
 
     val headerBackgroundColor = MaterialTheme.colorScheme.background
@@ -285,11 +299,15 @@ fun JournalScreen(
                     filters = availableFilters,
                     selectedFilters = selectedFilters,
                     onToggle = { filter ->
-                        selectedFilters = if (filter in selectedFilters) {
+                        val nextFilters = if (filter in selectedFilters) {
                             selectedFilters - filter
                         } else {
                             selectedFilters + filter
                         }
+                        selectedFilterNames = nextFilters
+                            .ifEmpty { defaultJournalEntryFilters() }
+                            .sortedBy { JournalEntryFilter.entries.indexOf(it) }
+                            .map { it.name }
                     },
                 )
             }
@@ -500,6 +518,19 @@ private enum class JournalEntryFilter(val label: String, val icon: ImageVector) 
     Memo("メモ", Icons.Default.Edit),
     Article("記事", Icons.AutoMirrored.Filled.Article),
 }
+
+private val JournalEntryFilter.loadKind: JournalLoadKind
+    get() = when (this) {
+        JournalEntryFilter.Post -> JournalLoadKind.Post
+        JournalEntryFilter.Reply -> JournalLoadKind.Reply
+        JournalEntryFilter.Repost -> JournalLoadKind.Repost
+        JournalEntryFilter.Like -> JournalLoadKind.Like
+        JournalEntryFilter.Memo -> JournalLoadKind.Memo
+        JournalEntryFilter.Article -> JournalLoadKind.Article
+    }
+
+private fun defaultJournalEntryFilters(): Set<JournalEntryFilter> =
+    setOf(JournalEntryFilter.Post)
 
 private val JournalEntry.filter: JournalEntryFilter
     get() = when (this) {

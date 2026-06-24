@@ -58,6 +58,15 @@ sealed class JournalEntry {
     }
 }
 
+enum class JournalLoadKind {
+    Post,
+    Reply,
+    Repost,
+    Like,
+    Memo,
+    Article,
+}
+
 data class JournalDeleteDialogState(
     val item: JournalItem,
     val isDeleting: Boolean = false,
@@ -77,6 +86,7 @@ data class JournalState(
     val repostCounts: Map<String, Int> = emptyMap(),
     val likedReactions: Map<String, String> = emptyMap(),
     val loadedDates: Set<LocalDate> = emptySet(),
+    val loadedKindsByDate: Map<LocalDate, Set<JournalLoadKind>> = emptyMap(),
     val isLoading: Boolean = false,
     val deleteDialog: JournalDeleteDialogState? = null,
     val error: String? = null,
@@ -122,6 +132,14 @@ class JournalViewModel(private val targetPubkey: String? = null) : SafeViewModel
     private var hasConfiguredRelayUrl = false
     private var ownPublicKeyHex: String? = null
     private var subscriptionSequence = 0L
+    private var activeLoadKinds: Set<JournalLoadKind> = defaultJournalLoadKinds()
+
+    fun setLoadKinds(kinds: Set<JournalLoadKind>) {
+        val normalized = kinds.ifEmpty { defaultJournalLoadKinds() }
+        if (activeLoadKinds == normalized) return
+        activeLoadKinds = normalized
+        loadMonth(_state.value.selectedMonth)
+    }
 
     fun selectDate(date: LocalDate) {
         _state.value = _state.value.copy(selectedDate = date)
@@ -129,11 +147,13 @@ class JournalViewModel(private val targetPubkey: String? = null) : SafeViewModel
     }
 
     fun previousDate() {
-        navigateDate(_state.value.previousJournalDate())
+        _state.value.previousJournalDate(activeLoadKinds, includeLikes = targetPubkey == null)
+            ?.let { navigateDate(it) }
     }
 
     fun nextDate() {
-        _state.value.nextJournalDate()?.let { navigateDate(it) }
+        _state.value.nextJournalDate(activeLoadKinds, includeLikes = targetPubkey == null)
+            ?.let { navigateDate(it) }
     }
 
     fun toggleCalendar() {
@@ -148,13 +168,27 @@ class JournalViewModel(private val targetPubkey: String? = null) : SafeViewModel
 
     fun previousMonth() {
         val previous = _state.value.selectedMonth.previousMonth()
-        loadMonth(previous, selectedDate = _state.value.lastJournalDateInMonthOrEnd(previous))
+        loadMonth(
+            previous,
+            selectedDate = _state.value.lastJournalDateInMonthOrEnd(
+                monthStart = previous,
+                loadKinds = activeLoadKinds,
+                includeLikes = targetPubkey == null,
+            ),
+        )
     }
 
     fun nextMonth() {
         val next = _state.value.selectedMonth.nextMonth()
         if (next <= currentMonth()) {
-            loadMonth(next, selectedDate = _state.value.firstJournalDateInMonthOrStart(next))
+            loadMonth(
+                next,
+                selectedDate = _state.value.firstJournalDateInMonthOrStart(
+                    monthStart = next,
+                    loadKinds = activeLoadKinds,
+                    includeLikes = targetPubkey == null,
+                ),
+            )
         }
     }
 
@@ -328,6 +362,11 @@ class JournalViewModel(private val targetPubkey: String? = null) : SafeViewModel
             refreshMonth -> currentState.loadedDates.filterNot { isSameMonth(it, monthStart) }.toSet()
             else -> currentState.loadedDates
         }
+        val retainedLoadedKindsByDate = when {
+            resetCache -> emptyMap()
+            refreshMonth -> currentState.loadedKindsByDate.filterKeys { !isSameMonth(it, monthStart) }
+            else -> currentState.loadedKindsByDate
+        }
         _state.value = currentState.copy(
             selectedMonth = monthStart,
             selectedDate = nextSelectedDate,
@@ -340,6 +379,7 @@ class JournalViewModel(private val targetPubkey: String? = null) : SafeViewModel
             repostCounts = if (resetCache) emptyMap() else currentState.repostCounts,
             likedReactions = if (resetCache) emptyMap() else currentState.likedReactions,
             loadedDates = retainedLoadedDates,
+            loadedKindsByDate = retainedLoadedKindsByDate,
             error = null,
         )
 
@@ -352,7 +392,9 @@ class JournalViewModel(private val targetPubkey: String? = null) : SafeViewModel
                 } else {
                     fetchProfile(context.publicKeyHex, relayUrl)
                 }
-                val (memoEvents, noteEvents) = if (nextSelectedDate in _state.value.loadedDates) {
+                val loadKinds = activeLoadKinds
+                val missingKinds = missingLoadKinds(nextSelectedDate, loadKinds)
+                val (memoEvents, noteEvents) = if (missingKinds.isEmpty()) {
                     emptyList<NostrEvent>() to emptyList()
                 } else {
                     fetchEvents(
@@ -360,8 +402,7 @@ class JournalViewModel(private val targetPubkey: String? = null) : SafeViewModel
                         since = nextSelectedDate.startOfDayEpochSeconds(),
                         until = nextSelectedDate.plusDays(1).startOfDayEpochSeconds() - 1,
                         relayUrl = relayUrl,
-                        includeMemos = targetPubkey == null,
-                        includeLikes = targetPubkey == null,
+                        loadKinds = missingKinds,
                         limit = JOURNAL_DATE_LIMIT,
                     )
                 }
@@ -380,6 +421,7 @@ class JournalViewModel(private val targetPubkey: String? = null) : SafeViewModel
                     notes = mergeNotes(_state.value.notes, notes),
                     profiles = profiles,
                     loadedDates = _state.value.loadedDates + nextSelectedDate,
+                    loadedKindsByDate = markLoadedKinds(nextSelectedDate, missingKinds),
                     error = null,
                 )
 
@@ -419,14 +461,14 @@ class JournalViewModel(private val targetPubkey: String? = null) : SafeViewModel
 
                 for (date in dates) {
                     if (_state.value.selectedMonth != monthStart) return@launch
-                    if (date in _state.value.loadedDates) continue
+                    val missingKinds = missingLoadKinds(date, activeLoadKinds)
+                    if (missingKinds.isEmpty()) continue
                     val (memoEvents, noteEvents) = fetchEvents(
                         pubkey = context.publicKeyHex,
                         since = date.startOfDayEpochSeconds(),
                         until = date.plusDays(1).startOfDayEpochSeconds() - 1,
                         relayUrl = relayUrl,
-                        includeMemos = targetPubkey == null,
-                        includeLikes = targetPubkey == null,
+                        loadKinds = missingKinds,
                         limit = JOURNAL_MONTH_DAY_LIMIT,
                     )
                     if (_state.value.selectedMonth != monthStart) return@launch
@@ -440,6 +482,7 @@ class JournalViewModel(private val targetPubkey: String? = null) : SafeViewModel
                             .distinctBy { it.id }
                             .sortedByDescending { it.createdAt },
                         loadedDates = _state.value.loadedDates + date,
+                        loadedKindsByDate = markLoadedKinds(date, missingKinds),
                     )
                     fetchReferencedContentNow(noteEvents, memos, relayUrl)
                 }
@@ -453,7 +496,9 @@ class JournalViewModel(private val targetPubkey: String? = null) : SafeViewModel
         referencedContentJob?.cancel()
         engagementJob?.cancel()
         loadJob?.cancel()
-        if (!forceRefresh && date in _state.value.loadedDates) {
+        val loadKinds = activeLoadKinds
+        val missingKinds = if (forceRefresh) loadKinds else missingLoadKinds(date, loadKinds)
+        if (missingKinds.isEmpty()) {
             val notes = notesForDate(date)
             val memos = memosForDate(date)
             _state.value = _state.value.copy(
@@ -483,8 +528,7 @@ class JournalViewModel(private val targetPubkey: String? = null) : SafeViewModel
                     since = date.startOfDayEpochSeconds(),
                     until = date.plusDays(1).startOfDayEpochSeconds() - 1,
                     relayUrl = relayUrl,
-                    includeMemos = targetPubkey == null,
-                    includeLikes = targetPubkey == null,
+                    loadKinds = missingKinds,
                     limit = JOURNAL_DATE_LIMIT,
                 )
                 val memos = decodeMemoEvents(memoEvents, context)
@@ -494,6 +538,7 @@ class JournalViewModel(private val targetPubkey: String? = null) : SafeViewModel
                     memos = mergeMemos(_state.value.memos, memos),
                     notes = mergeNotes(_state.value.notes, notes),
                     loadedDates = _state.value.loadedDates + date,
+                    loadedKindsByDate = markLoadedKinds(date, missingKinds),
                     error = null,
                 )
 
@@ -518,15 +563,11 @@ class JournalViewModel(private val targetPubkey: String? = null) : SafeViewModel
         since: Long,
         until: Long,
         relayUrl: String? = null,
-        includeMemos: Boolean = true,
-        includeLikes: Boolean = true,
+        loadKinds: Set<JournalLoadKind> = defaultJournalLoadKinds(),
         limit: Int = JOURNAL_DATE_LIMIT,
     ): Pair<List<NostrEvent>, List<NostrEvent>> = coroutineScope {
-        val noteKinds = if (includeLikes) {
-            listOf(1, 6, 7, NIP23_ARTICLE_KIND)
-        } else {
-            listOf(1, 6, NIP23_ARTICLE_KIND)
-        }
+        val includeMemos = targetPubkey == null && JournalLoadKind.Memo in loadKinds
+        val noteKinds = noteKindsForLoadKinds(loadKinds, targetPubkey == null)
         val subId = nextSubscriptionId("journal")
         val mutex = Mutex()
         val memoEvents = mutableListOf<NostrEvent>()
@@ -538,15 +579,17 @@ class JournalViewModel(private val targetPubkey: String? = null) : SafeViewModel
                     when {
                         includeMemos && event.kind == MEMO_EVENT_KIND && event.pubkey == pubkey ->
                             mutex.withLock { memoEvents += event }
-                        event.kind in noteKinds && event.pubkey == pubkey ->
+                        event.pubkey == pubkey && event.matchesLoadKinds(loadKinds, targetPubkey == null) ->
                             mutex.withLock { noteEvents += event }
                     }
                 }
             }
+            val kinds = if (includeMemos) listOf(MEMO_EVENT_KIND) + noteKinds else noteKinds
+            if (kinds.isEmpty()) return@coroutineScope Pair(emptyList(), emptyList())
             NostrRepository.subscribe(
                 subId,
                 NostrFilter(
-                    kinds = if (includeMemos) listOf(MEMO_EVENT_KIND) + noteKinds else noteKinds,
+                    kinds = kinds,
                     authors = listOf(pubkey),
                     since = since,
                     until = until,
@@ -714,6 +757,16 @@ class JournalViewModel(private val targetPubkey: String? = null) : SafeViewModel
     private fun notesForDate(date: LocalDate): List<NostrEvent> =
         _state.value.notes.filter { dateOfEpochSeconds(it.createdAt) == date }
 
+    private fun missingLoadKinds(date: LocalDate, requestedKinds: Set<JournalLoadKind>): Set<JournalLoadKind> =
+        requestedKinds - _state.value.loadedKindsByDate[date].orEmpty()
+
+    private fun markLoadedKinds(date: LocalDate, loadedKinds: Set<JournalLoadKind>): Map<LocalDate, Set<JournalLoadKind>> =
+        if (loadedKinds.isEmpty()) {
+            _state.value.loadedKindsByDate
+        } else {
+            _state.value.loadedKindsByDate + (date to (_state.value.loadedKindsByDate[date].orEmpty() + loadedKinds))
+        }
+
     private fun nextSubscriptionId(prefix: String): String {
         subscriptionSequence += 1
         return "$prefix-${Clock.System.now().toEpochMilliseconds()}-${subscriptionSequence}-${Random.nextInt()}"
@@ -841,12 +894,32 @@ private fun NostrEvent.activityTargetId(): String? =
     tags.lastOrNull { it.firstOrNull() == "e" }?.getOrNull(1)
         ?: embeddedRepostTarget()?.id
 
+private fun NostrEvent.matchesLoadKinds(loadKinds: Set<JournalLoadKind>, includeLikes: Boolean): Boolean =
+    when (kind) {
+        1 -> if (replyTargetId() != null) JournalLoadKind.Reply in loadKinds else JournalLoadKind.Post in loadKinds
+        6 -> JournalLoadKind.Repost in loadKinds
+        7 -> includeLikes && JournalLoadKind.Like in loadKinds
+        NIP23_ARTICLE_KIND -> JournalLoadKind.Article in loadKinds
+        else -> false
+    }
+
 private fun NostrEvent.embeddedRepostTarget(): NostrEvent? {
     if (kind != 6 || content.isBlank()) return null
     return runCatching {
         Json.decodeFromString(NostrEvent.serializer(), content)
     }.getOrNull()
 }
+
+private fun noteKindsForLoadKinds(loadKinds: Set<JournalLoadKind>, includeLikes: Boolean): List<Int> =
+    buildList {
+        if (JournalLoadKind.Post in loadKinds || JournalLoadKind.Reply in loadKinds) add(1)
+        if (JournalLoadKind.Repost in loadKinds) add(6)
+        if (includeLikes && JournalLoadKind.Like in loadKinds) add(7)
+        if (JournalLoadKind.Article in loadKinds) add(NIP23_ARTICLE_KIND)
+    }
+
+private fun defaultJournalLoadKinds(): Set<JournalLoadKind> =
+    setOf(JournalLoadKind.Post)
 
 private fun JournalItem.addressTagValue(): String? {
     val d = memo.identifier
@@ -857,9 +930,12 @@ private fun JournalItem.addressTagValue(): String? {
 private fun isSameMonth(date: LocalDate, monthStart: LocalDate): Boolean =
     date.year == monthStart.year && date.month == monthStart.month
 
-private fun JournalState.previousJournalDate(): LocalDate {
+private fun JournalState.previousJournalDate(
+    loadKinds: Set<JournalLoadKind>,
+    includeLikes: Boolean,
+): LocalDate? {
     val currentMonthStart = selectedDate.monthStart()
-    journalEntryDatesInMonth(currentMonthStart)
+    journalEntryDatesInMonth(currentMonthStart, loadKinds, includeLikes)
         .filter { it < selectedDate }
         .maxOrNull()
         ?.let { return it }
@@ -868,17 +944,20 @@ private fun JournalState.previousJournalDate(): LocalDate {
 
     val previousMonthStart = currentMonthStart.previousMonth()
     val previousMonthEnd = monthEnd(previousMonthStart)
-    return journalEntryDatesInMonth(previousMonthStart)
+    return journalEntryDatesInMonth(previousMonthStart, loadKinds, includeLikes)
         .filter { it <= previousMonthEnd }
         .maxOrNull()
         ?: previousMonthEnd
 }
 
-private fun JournalState.nextJournalDate(): LocalDate? {
+private fun JournalState.nextJournalDate(
+    loadKinds: Set<JournalLoadKind>,
+    includeLikes: Boolean,
+): LocalDate? {
     val today = currentDate()
     val currentMonthStart = selectedDate.monthStart()
     val currentMonthEnd = minOf(monthEnd(currentMonthStart), today)
-    journalEntryDatesInMonth(currentMonthStart)
+    journalEntryDatesInMonth(currentMonthStart, loadKinds, includeLikes)
         .filter { it > selectedDate && it <= today }
         .minOrNull()
         ?.let { return it }
@@ -888,29 +967,50 @@ private fun JournalState.nextJournalDate(): LocalDate? {
 
     val nextMonthStart = currentMonthStart.nextMonth()
     val nextMonthEnd = minOf(monthEnd(nextMonthStart), today)
-    return journalEntryDatesInMonth(nextMonthStart)
+    return journalEntryDatesInMonth(nextMonthStart, loadKinds, includeLikes)
         .filter { it <= nextMonthEnd }
         .minOrNull()
         ?: nextMonthStart
 }
 
-private fun JournalState.firstJournalDateInMonthOrStart(monthStart: LocalDate): LocalDate =
-    journalEntryDatesInMonth(monthStart)
+private fun JournalState.firstJournalDateInMonthOrStart(
+    monthStart: LocalDate,
+    loadKinds: Set<JournalLoadKind>,
+    includeLikes: Boolean,
+): LocalDate =
+    journalEntryDatesInMonth(monthStart, loadKinds, includeLikes)
         .filter { it <= minOf(monthEnd(monthStart), currentDate()) }
         .minOrNull()
         ?: monthStart
 
-private fun JournalState.lastJournalDateInMonthOrEnd(monthStart: LocalDate): LocalDate {
+private fun JournalState.lastJournalDateInMonthOrEnd(
+    monthStart: LocalDate,
+    loadKinds: Set<JournalLoadKind>,
+    includeLikes: Boolean,
+): LocalDate {
     val end = minOf(monthEnd(monthStart), currentDate())
-    return journalEntryDatesInMonth(monthStart)
+    return journalEntryDatesInMonth(monthStart, loadKinds, includeLikes)
         .filter { it <= end }
         .maxOrNull()
         ?: end
 }
 
-private fun JournalState.journalEntryDatesInMonth(monthStart: LocalDate): List<LocalDate> =
-    entryCountsByDate.keys
-        .filter { isSameMonth(it, monthStart) && (entryCountsByDate[it] ?: 0) > 0 }
+private fun JournalState.journalEntryDatesInMonth(
+    monthStart: LocalDate,
+    loadKinds: Set<JournalLoadKind>,
+    includeLikes: Boolean,
+): List<LocalDate> =
+    buildSet {
+        if (JournalLoadKind.Memo in loadKinds) {
+            memos
+                .map { dateOfEpochSeconds(it.displayTime) }
+                .filterTo(this) { isSameMonth(it, monthStart) }
+        }
+        notes
+            .filter { it.matchesLoadKinds(loadKinds, includeLikes) }
+            .map { dateOfEpochSeconds(it.createdAt) }
+            .filterTo(this) { isSameMonth(it, monthStart) }
+    }
         .sorted()
 
 private fun monthEnd(monthStart: LocalDate): LocalDate =
