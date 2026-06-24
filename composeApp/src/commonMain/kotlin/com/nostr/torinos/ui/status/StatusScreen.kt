@@ -59,6 +59,7 @@ import com.nostr.torinos.model.NostrProfile
 import com.nostr.torinos.network.RelayStore
 import com.nostr.torinos.ui.components.LinkedText
 import com.nostr.torinos.ui.components.formatTimestamp
+import com.nostr.torinos.ui.components.rememberDismissKeyboard
 import com.nostr.torinos.ui.profile.AvatarCircle
 import com.nostr.torinos.ui.service.ServiceTab
 import com.nostr.torinos.ui.service.ServiceTabRow
@@ -380,6 +381,11 @@ private fun StatusComposerDialog(
     var referenceUrl by remember { mutableStateOf("") }
     var selectedExpiration by remember { mutableStateOf(ExpirationOption.OneHour) }
     var expirationExpanded by remember { mutableStateOf(false) }
+    val dismissKeyboard = rememberDismissKeyboard()
+    val showExpirationMenu = {
+        dismissKeyboard()
+        expirationExpanded = true
+    }
 
     Dialog(
         onDismissRequest = onDismiss,
@@ -441,12 +447,12 @@ private fun StatusComposerDialog(
                                 trailingIcon = { Icon(Icons.Default.ArrowDropDown, contentDescription = null) },
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .clickable { expirationExpanded = true },
+                                    .clickable(onClick = showExpirationMenu),
                             )
                             Box(
                                 modifier = Modifier
                                     .matchParentSize()
-                                    .clickable { expirationExpanded = true },
+                                    .clickable(onClick = showExpirationMenu),
                             )
                             DropdownMenu(
                                 expanded = expirationExpanded,
