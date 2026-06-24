@@ -66,16 +66,23 @@ import com.nostr.torinos.crypto.isIosPlatform
 import com.nostr.torinos.crypto.normalizePrivateKey
 import com.nostr.torinos.crypto.rememberPasswordManagerSaver
 import com.nostr.torinos.crypto.toHex
+import com.nostr.torinos.model.NostrFilter
 import com.nostr.torinos.model.NostrProfile
+import com.nostr.torinos.model.toProfile
+import com.nostr.torinos.network.NostrRepository
+import com.nostr.torinos.network.ProfileCache
 import com.nostr.torinos.ui.components.EditableImage
 import com.nostr.torinos.ui.components.ImageCropperDialog
+import com.nostr.torinos.ui.components.ProfileNameText
 import com.nostr.torinos.ui.components.rememberImagePickerLauncher
+import com.nostr.torinos.ui.components.rememberDismissKeyboard
 import com.nostr.torinos.ui.components.rememberSyncedTextFieldValue
 import com.nostr.torinos.ui.profile.AvatarCircle
 import com.nostr.torinos.ui.profile.EditProfileViewModel
 import com.nostr.torinos.ui.settings.setPlainText
 import com.nostr.torinos.util.loggingExceptionHandler
 import com.nostr.torinos.util.logException
+import kotlinx.coroutines.awaitCancellation
 
 @Composable
 fun KeySetupScreen(onSetupComplete: (pubkeyHex: String) -> Unit, onDismiss: (() -> Unit)? = null) {
@@ -86,6 +93,7 @@ fun KeySetupScreen(onSetupComplete: (pubkeyHex: String) -> Unit, onDismiss: (() 
     var initialProfilePubkey by remember { mutableStateOf<String?>(null) }
     var showUsageConsentDialog by remember { mutableStateOf(false) }
     var storedAccounts by remember { mutableStateOf<List<StoredAccount>>(emptyList()) }
+    var storedProfiles by remember { mutableStateOf<Map<String, NostrProfile>>(emptyMap()) }
     var accountLoginError by remember { mutableStateOf<String?>(null) }
     val scope = rememberCoroutineScope()
     val uiExceptionHandler = remember {
@@ -106,6 +114,32 @@ fun KeySetupScreen(onSetupComplete: (pubkeyHex: String) -> Unit, onDismiss: (() 
                 logException("KeySetupScreen", e, "Failed to load stored accounts")
                 emptyList()
             }
+    }
+
+    LaunchedEffect(Unit) {
+        NostrRepository.events(STORED_ACCOUNT_PROFILES_SUBSCRIPTION_ID).collect { event ->
+            if (event.kind != 0) return@collect
+            event.toProfile()?.let { profile ->
+                ProfileCache.put(event.pubkey, profile, event.createdAt)
+                storedProfiles = storedProfiles + (event.pubkey to profile)
+            }
+        }
+    }
+
+    LaunchedEffect(storedAccounts) {
+        if (storedAccounts.isEmpty()) return@LaunchedEffect
+
+        val pubkeys = storedAccounts.map { it.pubkeyHex }
+        storedProfiles = ProfileCache.getAll(pubkeys)
+        try {
+            NostrRepository.subscribe(
+                STORED_ACCOUNT_PROFILES_SUBSCRIPTION_ID,
+                NostrFilter(kinds = listOf(0), authors = pubkeys),
+            )
+            awaitCancellation()
+        } finally {
+            NostrRepository.closeSuspending(STORED_ACCOUNT_PROFILES_SUBSCRIPTION_ID)
+        }
     }
 
     Box(
@@ -153,6 +187,7 @@ fun KeySetupScreen(onSetupComplete: (pubkeyHex: String) -> Unit, onDismiss: (() 
                 if (generatedInfo == null && storedAccounts.isNotEmpty()) {
                     StoredAccountsSection(
                         accounts = storedAccounts,
+                        profiles = storedProfiles,
                         error = accountLoginError,
                         onAccountClick = { account ->
                             scope.launch(uiExceptionHandler) {
@@ -403,6 +438,7 @@ private fun InitialProfileDialog(
     val state by viewModel.state.collectAsState()
     var displayNameValue by rememberSyncedTextFieldValue(state.displayName)
     var imageToCrop by remember { mutableStateOf<EditableImage?>(null) }
+    val dismissKeyboard = rememberDismissKeyboard()
     val pickImage = rememberImagePickerLauncher { bytes, mime ->
         if (bytes != null && mime != null) imageToCrop = EditableImage(bytes, mime)
     }
@@ -460,7 +496,10 @@ private fun InitialProfileDialog(
                         enabled = !state.isSaving,
                     )
                     IconButton(
-                        onClick = pickImage,
+                        onClick = {
+                            dismissKeyboard()
+                            pickImage()
+                        },
                         enabled = !state.isUploadingImage && !state.isSaving,
                     ) {
                         if (state.isUploadingImage) {
@@ -582,6 +621,7 @@ private fun GeneratedKeyValues(npub: String, nsec: String) {
 @Composable
 private fun StoredAccountsSection(
     accounts: List<StoredAccount>,
+    profiles: Map<String, NostrProfile>,
     error: String?,
     onAccountClick: (StoredAccount) -> Unit,
 ) {
@@ -601,11 +641,37 @@ private fun StoredAccountsSection(
                 color = MaterialTheme.colorScheme.onSurface,
             )
             accounts.forEach { account ->
+                val profile = profiles[account.pubkeyHex]
                 Button(
                     onClick = { onAccountClick(account) },
                     modifier = Modifier.fillMaxWidth(),
                 ) {
-                    Text(shortNpub(account.npub))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    ) {
+                        AvatarCircle(
+                            pubkey = account.pubkeyHex,
+                            name = profile?.bestName,
+                            pictureUrl = profile?.picture,
+                            size = 40,
+                        )
+                        Column(
+                            modifier = Modifier.weight(1f),
+                            horizontalAlignment = Alignment.Start,
+                        ) {
+                            ProfileNameText(
+                                profile = profile,
+                                fallback = account.pubkeyHex.take(8),
+                                style = MaterialTheme.typography.bodyMedium,
+                            )
+                            Text(
+                                text = shortNpub(account.npub),
+                                style = MaterialTheme.typography.bodySmall,
+                            )
+                        }
+                    }
                 }
             }
             error?.let {
@@ -621,6 +687,8 @@ private fun StoredAccountsSection(
 
 private fun shortNpub(npub: String): String =
     if (npub.length <= 24) npub else "${npub.take(14)}...${npub.takeLast(8)}"
+
+private const val STORED_ACCOUNT_PROFILES_SUBSCRIPTION_ID = "setup-stored-account-profiles"
 
 @Composable
 private fun KeyInfoCard(
