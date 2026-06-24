@@ -94,6 +94,7 @@ class FeedViewModel(
     private var lastHistoryBatchReceivedCount = 0
     private var lastHistoryBatchUniqueCount = 0
     private var lastHistoryBatchOldestCreatedAt: Long? = null
+    private var consecutiveEmptyHistoryPages = 0
     private val completedHistoryRelayUrls = mutableSetOf<String>()
     private var expectedEoseCount = 1
     private var initialHistoryRequested = false
@@ -579,6 +580,7 @@ class FeedViewModel(
         // リプライ等がフィルタされても受信件数が上限に達していれば次ページがある
         val hasMore = lastHistoryBatchReceivedCount >= FEED_PAGE_SIZE
         val oldestReceivedAt = lastHistoryBatchOldestCreatedAt
+        val loadedVisibleEvents = lastHistoryBatchUniqueCount > 0
         if (!isGapFill) {
             shouldRetryHistoryPage = false
             nextHistoryUntil = if (hasMore && oldestReceivedAt != null) oldestReceivedAt - 1 else null
@@ -593,6 +595,12 @@ class FeedViewModel(
         currentHistorySubId?.let { subId ->
             if (isGapFill || !hasMore) NostrRepository.close(subId)
         }
+        if (!isGapFill) {
+            continuePastEmptyHistoryPageIfNeeded(
+                hasMore = hasMore,
+                loadedVisibleEvents = loadedVisibleEvents,
+            )
+        }
     }
 
     private fun scheduleHistoryPageTimeout() {
@@ -605,6 +613,7 @@ class FeedViewModel(
             val hasMore = lastHistoryBatchReceivedCount >= FEED_PAGE_SIZE
             val hasIncompleteRelays = completedHistoryRelayUrls.size < expectedEoseCount
             val oldestReceivedAt = lastHistoryBatchOldestCreatedAt
+            val loadedVisibleEvents = lastHistoryBatchUniqueCount > 0
             val canAdvanceFromPartialResponse = hasIncompleteRelays &&
                 lastHistoryBatchReceivedCount > 0 &&
                 oldestReceivedAt != null
@@ -630,6 +639,31 @@ class FeedViewModel(
             currentHistorySubId?.let { subId ->
                 if (isGapFill || !hasMore) NostrRepository.close(subId)
             }
+            if (!isGapFill && !shouldRetryCurrentPage) {
+                continuePastEmptyHistoryPageIfNeeded(
+                    hasMore = hasMore || canAdvanceFromPartialResponse,
+                    loadedVisibleEvents = loadedVisibleEvents,
+                )
+            }
+        }
+    }
+
+    private fun continuePastEmptyHistoryPageIfNeeded(
+        hasMore: Boolean,
+        loadedVisibleEvents: Boolean,
+    ) {
+        if (loadedVisibleEvents) {
+            consecutiveEmptyHistoryPages = 0
+            return
+        }
+        if (!hasMore || nextHistoryUntil == null) {
+            consecutiveEmptyHistoryPages = 0
+            return
+        }
+        consecutiveEmptyHistoryPages++
+        if (consecutiveEmptyHistoryPages > MAX_AUTO_SKIP_EMPTY_HISTORY_PAGES) return
+        launch {
+            requestHistoryPage(until = nextHistoryUntil)
         }
     }
 
@@ -979,6 +1013,7 @@ class FeedViewModel(
         private const val FEED_STATE_EMIT_DELAY_MS = 150L
         private const val LIVE_SUBSCRIPTION_REFRESH_INTERVAL_MS = 60_000L
         private const val LIVE_SUBSCRIPTION_SINCE_OVERLAP_SECONDS = 300L
+        private const val MAX_AUTO_SKIP_EMPTY_HISTORY_PAGES = 5
         private var nextInstanceKeyValue = 0
 
         private fun nextInstanceKey(): Int = ++nextInstanceKeyValue
