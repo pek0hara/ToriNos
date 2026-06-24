@@ -39,7 +39,6 @@ object RelayStore {
         RelayEntry("wss://relay.damus.io", enabled = false),
         RelayEntry("wss://nos.lol", enabled = false),
         RelayEntry("wss://nostr.wine", enabled = false),
-        RelayEntry("wss://search.nos.today", enabled = false),
         RelayEntry("wss://nostr.compile-error.net", enabled = false),
     )
 
