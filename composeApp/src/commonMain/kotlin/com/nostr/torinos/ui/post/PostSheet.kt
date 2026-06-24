@@ -27,6 +27,7 @@ import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.AddPhotoAlternate
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
@@ -57,7 +58,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.Placeholder
 import androidx.compose.ui.text.PlaceholderVerticalAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -78,6 +78,7 @@ import com.nostr.torinos.network.RelayEntry
 import com.nostr.torinos.ui.components.NetworkImage
 import com.nostr.torinos.ui.components.rememberImagePickerLauncher
 import com.nostr.torinos.ui.components.PreviewImage
+import com.nostr.torinos.ui.components.rememberDismissKeyboard
 import com.nostr.torinos.ui.relay.RelaySettingsViewModel
 
 private const val MAX_CHARS = 800
@@ -96,6 +97,7 @@ fun PostSheet(
     initialMemo: PostMemoData? = null,
     initialMemoRestoreMessage: String? = null,
     saveLocalDraftOnCancel: Boolean = true,
+    onOpenCustomEmojiSettings: (PostMemoData?) -> Unit = {},
     viewModel: PostViewModel? = null,
 ) {
     val postViewModel = viewModel ?: remember { PostViewModel() }
@@ -113,6 +115,15 @@ fun PostSheet(
             null
         }
         onCancel(draft)
+    }
+
+    fun openCustomEmojiSettings() {
+        val draft = if (saveLocalDraftOnCancel) {
+            postViewModel.currentMemoSnapshot(replyToId, replyToPubkey, noteContext)
+        } else {
+            null
+        }
+        onOpenCustomEmojiSettings(draft)
     }
 
     LaunchedEffect(state.posted) {
@@ -152,6 +163,7 @@ fun PostSheet(
                     onDeleteMemo = onDeleteMemo,
                     onPickImage = pickImage,
                     onOpenRelaySettings = { showRelaySettingsDialog = true },
+                    onOpenCustomEmojiSettings = ::openCustomEmojiSettings,
                     onTextChange = postViewModel::onTextChange,
                     onRemoveImage = postViewModel::removeImage,
                     onSaveMemo = {
@@ -182,6 +194,7 @@ private fun PostSheetContent(
     onDeleteMemo: (() -> Unit)?,
     onPickImage: () -> Unit,
     onOpenRelaySettings: () -> Unit,
+    onOpenCustomEmojiSettings: () -> Unit,
     onTextChange: (String) -> Unit,
     onRemoveImage: (Int) -> Unit,
     onSaveMemo: () -> Unit,
@@ -189,7 +202,7 @@ private fun PostSheetContent(
 ) {
     var textValue by remember { mutableStateOf(TextFieldValue(state.text)) }
     var showCustomEmojiPicker by remember { mutableStateOf(false) }
-    val keyboardController = LocalSoftwareKeyboardController.current
+    val dismissKeyboard = rememberDismissKeyboard()
 
     LaunchedEffect(state.text) {
         if (state.text != textValue.text) {
@@ -355,7 +368,10 @@ private fun PostSheetContent(
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     IconButton(
-                        onClick = onPickImage,
+                        onClick = {
+                            dismissKeyboard()
+                            onPickImage()
+                        },
                         modifier = Modifier.size(36.dp),
                         enabled = state.images.size < 4,
                     ) {
@@ -371,7 +387,7 @@ private fun PostSheetContent(
                     }
                     IconButton(
                         onClick = {
-                            keyboardController?.hide()
+                            dismissKeyboard()
                             showCustomEmojiPicker = true
                         },
                         modifier = Modifier.size(36.dp),
@@ -383,7 +399,10 @@ private fun PostSheetContent(
                         )
                     }
                     IconButton(
-                        onClick = onOpenRelaySettings,
+                        onClick = {
+                            dismissKeyboard()
+                            onOpenRelaySettings()
+                        },
                         modifier = Modifier.size(36.dp),
                     ) {
                         Icon(
@@ -445,6 +464,7 @@ private fun PostSheetContent(
         CustomEmojiPickerDialog(
             onDismiss = { showCustomEmojiPicker = false },
             onEmojiSelected = ::insertCustomEmoji,
+            onOpenCustomEmojiSettings = onOpenCustomEmojiSettings,
         )
     }
 }
@@ -529,6 +549,7 @@ private data class InputEmojiSegment(
 private fun CustomEmojiPickerDialog(
     onDismiss: () -> Unit,
     onEmojiSelected: (CustomEmoji) -> Unit,
+    onOpenCustomEmojiSettings: () -> Unit,
 ) {
     val emojis by CustomEmojiStore.emojis.collectAsState()
     val emojiLists by CustomEmojiStore.emojiLists.collectAsState()
@@ -612,7 +633,17 @@ private fun CustomEmojiPickerDialog(
                 }
             }
         },
-        confirmButton = {},
+        confirmButton = {
+            TextButton(onClick = onOpenCustomEmojiSettings) {
+                Icon(
+                    Icons.Default.Add,
+                    contentDescription = null,
+                    modifier = Modifier.size(18.dp),
+                )
+                Spacer(modifier = Modifier.size(6.dp))
+                Text("絵文字を追加")
+            }
+        },
         dismissButton = {
             TextButton(onClick = onDismiss) {
                 Text("閉じる")

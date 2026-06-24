@@ -1080,6 +1080,19 @@ fun App() {
                     null
                 },
                 saveLocalDraftOnCancel = selectedMemo == null,
+                onOpenCustomEmojiSettings = { draft ->
+                    if (selectedMemo == null) {
+                        localDraft = draft
+                    }
+                    showPostSheet = false
+                    replyToId = null
+                    replyToPubkey = null
+                    replyToPreview = null
+                    replyNoteContext = NoteContext.Timeline
+                    selectedMemo = null
+                    selectedMemoDeleteAction = null
+                    nav.navigate(CustomEmojiRoute()) { closeProfileRoute() }
+                },
             )
         }
 
