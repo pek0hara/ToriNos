@@ -61,4 +61,38 @@ class UrlExtractionTest {
     fun extractWebUrls_excludesSpotifySearchUri() {
         assertEquals(emptyList(), extractWebUrls("spotify:search:King Gnu"))
     }
+
+    @Test
+    fun countTextWithCustomEmojis_countsRegisteredEmojiCodeAsOneCharacter() {
+        assertEquals(
+            3,
+            countTextWithCustomEmojis("a:torinos:b", setOf("torinos")),
+        )
+    }
+
+    @Test
+    fun countTextWithCustomEmojis_countsUnregisteredEmojiCodeAsRawText() {
+        assertEquals(
+            "a:torinos:b".length,
+            countTextWithCustomEmojis("a:torinos:b", emptySet()),
+        )
+    }
+
+    @Test
+    fun truncateTextPreservingWebUrlsAndCustomEmojis_doesNotTruncateWhenConvertedLengthFits() {
+        val text = "a:torinos:b"
+
+        assertEquals(
+            text,
+            truncateTextPreservingWebUrlsAndCustomEmojis(text, 3, setOf("torinos")),
+        )
+    }
+
+    @Test
+    fun truncateTextPreservingWebUrlsAndCustomEmojis_keepsRegisteredEmojiCodeWhole() {
+        assertEquals(
+            "a:torinos:…",
+            truncateTextPreservingWebUrlsAndCustomEmojis("a:torinos:bc", 2, setOf("torinos")),
+        )
+    }
 }

@@ -41,6 +41,7 @@ import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -66,6 +67,7 @@ import com.nostr.torinos.model.NostrEvent
 import com.nostr.torinos.model.NostrProfile
 import com.nostr.torinos.model.encodeNevent
 import com.nostr.torinos.model.stripNostrEventUris
+import com.nostr.torinos.network.CustomEmojiStore
 import com.nostr.torinos.ui.profile.customEmojiMap
 import com.nostr.torinos.ui.profile.AvatarCircle
 import com.nostr.torinos.ui.settings.setPlainText
@@ -581,9 +583,23 @@ private fun CollapsibleNoteText(
 ) {
     var expanded by remember(text) { mutableStateOf(false) }
     var hasHiddenLines by remember(text) { mutableStateOf(false) }
-    val exceedsCharacterLimit = text.length > CollapsedTextCharacterLimit
+    val savedCustomEmojis by CustomEmojiStore.emojis.collectAsState()
+    val customEmojiShortcodes = remember(savedCustomEmojis, customEmojis) {
+        buildSet {
+            addAll(customEmojis.keys)
+            savedCustomEmojis.forEach { emoji -> add(emoji.shortcode) }
+        }
+    }
+    val collapsedTextLength = remember(text, customEmojiShortcodes) {
+        countTextWithCustomEmojis(text, customEmojiShortcodes)
+    }
+    val exceedsCharacterLimit = collapsedTextLength > CollapsedTextCharacterLimit
     val displayedText = if (!expanded && exceedsCharacterLimit) {
-        truncateTextPreservingWebUrls(text, CollapsedTextCharacterLimit)
+        truncateTextPreservingWebUrlsAndCustomEmojis(
+            text = text,
+            maxLength = CollapsedTextCharacterLimit,
+            customEmojiShortcodes = customEmojiShortcodes,
+        )
     } else {
         text
     }
