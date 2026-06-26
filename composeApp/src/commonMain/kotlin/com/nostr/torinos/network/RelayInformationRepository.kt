@@ -18,6 +18,7 @@ data class RelayInformation(
     val name: String? = null,
     val description: String? = null,
     val pubkey: String? = null,
+    val self: String? = null,
     val contact: String? = null,
     @SerialName("supported_nips")
     val supportedNips: List<Int> = emptyList(),

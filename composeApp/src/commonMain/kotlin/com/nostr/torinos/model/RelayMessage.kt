@@ -12,6 +12,7 @@ private val json = Json { ignoreUnknownKeys = true }
 
 sealed class RelayMessage {
     data class Event(val subscriptionId: String, val event: NostrEvent) : RelayMessage()
+    data class Ok(val eventId: String, val accepted: Boolean, val message: String) : RelayMessage()
     data class EndOfStoredEvents(val subscriptionId: String) : RelayMessage()
     data class Closed(val subscriptionId: String, val message: String) : RelayMessage()
     data class Notice(val message: String) : RelayMessage()
@@ -42,6 +43,11 @@ fun parseRelayMessage(raw: String): RelayMessage = try {
             }
         }
         "EOSE" -> RelayMessage.EndOfStoredEvents(array[1].jsonPrimitive.content)
+        "OK" -> RelayMessage.Ok(
+            eventId = array[1].jsonPrimitive.content,
+            accepted = array[2].jsonPrimitive.content.toBooleanStrictOrNull() ?: false,
+            message = array.getOrNull(3)?.jsonPrimitive?.content ?: "",
+        )
         "CLOSED" -> RelayMessage.Closed(
             subscriptionId = array[1].jsonPrimitive.content,
             message = array.getOrNull(2)?.jsonPrimitive?.content ?: "",

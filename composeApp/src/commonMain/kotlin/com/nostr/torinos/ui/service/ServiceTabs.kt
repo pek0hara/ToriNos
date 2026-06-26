@@ -26,6 +26,7 @@ import androidx.compose.ui.unit.sp
 enum class ServiceTab(val label: String) {
     Articles("記事"),
     Channels("チャンネル"),
+    Groups("グループ"),
     Live("ライブ"),
     Status("ステータス"),
 }
@@ -69,7 +70,7 @@ fun ServiceTabRow(
                         Box(
                             modifier = Modifier
                                 .align(Alignment.BottomCenter)
-                                .width(64.dp)
+                                .width(52.dp)
                                 .height(3.dp)
                                 .background(
                                     color = selectedColor,

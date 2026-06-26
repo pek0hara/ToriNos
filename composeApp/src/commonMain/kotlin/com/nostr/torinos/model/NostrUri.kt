@@ -17,6 +17,13 @@ data class NostrProfileReference(
     val endExclusive: Int = npub.length,
 )
 
+data class NostrAddressReference(
+    val identifier: String,
+    val relayUrls: List<String>,
+    val authorPubkey: String,
+    val kind: Int,
+)
+
 private val nostrUriRegex = Regex(
     pattern = """\b(?:nostr:)?([a-z0-9]+1[qpzry9x8gf2tvdw0s3jn54khce6mua7l]+)""",
     option = RegexOption.IGNORE_CASE,
@@ -117,6 +124,65 @@ fun encodeNevent(
 
     return Bech32.encode("nevent", tlv)
 }
+
+fun encodeNaddr(
+    identifier: String,
+    authorPubkey: String,
+    kind: Int,
+    relayUrls: List<String> = emptyList(),
+): String {
+    require(kind >= 0) { "kind must be non-negative" }
+    val authorBytes = authorPubkey.fromHex()
+    require(authorBytes.size == 32) { "author pubkey must be 32 bytes" }
+    val kindBytes = byteArrayOf(
+        ((kind ushr 24) and 0xff).toByte(),
+        ((kind ushr 16) and 0xff).toByte(),
+        ((kind ushr 8) and 0xff).toByte(),
+        (kind and 0xff).toByte(),
+    )
+    val tlv = buildList {
+        addTlv(type = 0, value = identifier.encodeToByteArray())
+        relayUrls.distinct().forEach { addTlv(type = 1, value = it.encodeToByteArray()) }
+        addTlv(type = 2, value = authorBytes)
+        addTlv(type = 3, value = kindBytes)
+    }.toByteArray()
+    return Bech32.encode("naddr", tlv)
+}
+
+fun decodeNaddr(bech32: String): NostrAddressReference? = runCatching {
+    val (hrp, bytes) = Bech32.decode(bech32.removePrefix("nostr:"))
+    require(hrp == "naddr") { "naddr payload expected" }
+    var index = 0
+    var identifier: String? = null
+    val relays = mutableListOf<String>()
+    var author: String? = null
+    var kind: Int? = null
+    while (index + 2 <= bytes.size) {
+        val type = bytes[index].toInt() and 0xff
+        val length = bytes[index + 1].toInt() and 0xff
+        index += 2
+        require(index + length <= bytes.size) { "invalid TLV length" }
+        val value = bytes.copyOfRange(index, index + length)
+        index += length
+        when (type) {
+            0 -> if (identifier == null) identifier = value.decodeToString()
+            1 -> relays += value.decodeToString()
+            2 -> if (value.size == 32 && author == null) author = value.toHex()
+            3 -> if (value.size == 4 && kind == null) {
+                kind = ((value[0].toInt() and 0xff) shl 24) or
+                    ((value[1].toInt() and 0xff) shl 16) or
+                    ((value[2].toInt() and 0xff) shl 8) or
+                    (value[3].toInt() and 0xff)
+            }
+        }
+    }
+    NostrAddressReference(
+        identifier = requireNotNull(identifier),
+        relayUrls = relays.distinct(),
+        authorPubkey = requireNotNull(author),
+        kind = requireNotNull(kind),
+    )
+}.getOrNull()
 
 private fun MutableList<Byte>.addTlv(type: Int, value: ByteArray) {
     require(type in 0..255) { "TLV type out of range: $type" }

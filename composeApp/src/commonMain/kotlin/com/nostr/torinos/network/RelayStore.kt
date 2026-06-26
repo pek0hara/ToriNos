@@ -25,6 +25,7 @@ object RelayStore {
     private const val SELECTED_STATUS_RELAY_KEY = "selected_status_relay_url"
     private const val SELECTED_ARTICLE_RELAY_KEY = "selected_article_relay_url"
     private const val SELECTED_LIVE_RELAY_KEY = "selected_live_relay_url"
+    private const val SELECTED_GROUP_RELAY_KEY = "selected_group_relay_url"
     private const val SELECTED_MEMO_RELAY_KEY = "selected_memo_relay_url"
     private const val ALL_RELAYS_VALUE = "__all_relays__"
     private val removedRelayUrls = setOf("wss://relay.nostr.band")
@@ -49,6 +50,7 @@ object RelayStore {
     private val _selectedStatusRelayUrl = MutableStateFlow<String?>(null)
     private val _selectedArticleRelayUrl = MutableStateFlow<String?>(null)
     private val _selectedLiveRelayUrl = MutableStateFlow<String?>(null)
+    private val _selectedGroupRelayUrl = MutableStateFlow<String?>(null)
     private val _selectedMemoRelayUrl = MutableStateFlow<String?>(null)
     private val _isLoaded = MutableStateFlow(false)
 
@@ -76,6 +78,9 @@ object RelayStore {
 
     /** ライブ画面で選択中のリレー URL */
     val selectedLiveRelayUrl: StateFlow<String?> = _selectedLiveRelayUrl.asStateFlow()
+
+    /** NIP-29公開グループ探索で選択中のリレー URL */
+    val selectedGroupRelayUrl: StateFlow<String?> = _selectedGroupRelayUrl.asStateFlow()
 
     /** ポストメモ画面で選択中のリレー URL */
     val selectedMemoRelayUrl: StateFlow<String?> = _selectedMemoRelayUrl.asStateFlow()
@@ -177,6 +182,15 @@ object RelayStore {
         )
     }
 
+    fun setSelectedGroupRelayUrl(url: String?) {
+        setSelectedRelayUrl(
+            state = _selectedGroupRelayUrl,
+            url = url,
+            allowAll = false,
+            save = ::saveSelectedGroupRelay,
+        )
+    }
+
     fun setSelectedMemoRelayUrl(url: String?) {
         setSelectedRelayUrl(
             state = _selectedMemoRelayUrl,
@@ -240,6 +254,11 @@ object RelayStore {
             ?: legacySelectedRelayUrl
             ?: enabledRelayUrls().firstOrNull()
 
+        _selectedGroupRelayUrl.value = LocalSettingsStorage.getString(SELECTED_GROUP_RELAY_KEY)
+            ?.takeIf { it in enabledRelayUrls() }
+            ?: legacySelectedRelayUrl
+            ?: enabledRelayUrls().firstOrNull()
+
         _selectedMemoRelayUrl.value = LocalSettingsStorage.getString(SELECTED_MEMO_RELAY_KEY)
             ?.takeIf { it in enabledRelayUrls() }
             ?: legacySelectedRelayUrl
@@ -271,6 +290,10 @@ object RelayStore {
         if (_selectedLiveRelayUrl.value !in enabledUrls) {
             _selectedLiveRelayUrl.value = enabledUrls.firstOrNull()
             saveSelectedLiveRelay()
+        }
+        if (_selectedGroupRelayUrl.value !in enabledUrls) {
+            _selectedGroupRelayUrl.value = enabledUrls.firstOrNull()
+            saveSelectedGroupRelay()
         }
         if (_selectedMemoRelayUrl.value !in enabledUrls) {
             _selectedMemoRelayUrl.value = enabledUrls.firstOrNull()
@@ -345,6 +368,13 @@ object RelayStore {
         val value = _selectedLiveRelayUrl.value
         scope.launch {
             LocalSettingsStorage.putString(SELECTED_LIVE_RELAY_KEY, value)
+        }
+    }
+
+    private fun saveSelectedGroupRelay() {
+        val value = _selectedGroupRelayUrl.value
+        scope.launch {
+            LocalSettingsStorage.putString(SELECTED_GROUP_RELAY_KEY, value)
         }
     }
 

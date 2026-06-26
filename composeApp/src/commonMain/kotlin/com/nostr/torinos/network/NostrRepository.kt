@@ -16,6 +16,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -23,6 +24,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.filterIsInstance
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -32,6 +34,13 @@ sealed interface RelayTarget {
     data object AllEnabled : RelayTarget
     data class Single(val url: String) : RelayTarget
 }
+
+data class PublishResult(
+    val relayUrl: String,
+    val eventId: String,
+    val accepted: Boolean,
+    val message: String,
+)
 
 private fun RelayTarget.urls(enabledRelayUrls: List<String>): List<String> = when (this) {
     RelayTarget.AllEnabled -> enabledRelayUrls
@@ -350,6 +359,95 @@ object NostrRepository {
         }
     }
 
+    /**
+     * 指定した1リレーにだけイベントを送り、NIP-20 OKを待つ。
+     * グループイベントを通常リレーへ誤配信しないため、専用接続を使用する。
+     */
+    suspend fun publishToRelayAwaitOk(
+        event: NostrEvent,
+        relayUrl: String,
+        timeoutMillis: Long = 10_000L,
+    ): PublishResult = coroutineScope {
+        val normalizedUrl = relayUrl.trim()
+        require(normalizedUrl.isNotBlank()) { "リレーURLが空です" }
+        val activeRelay = stateMutex.withLock {
+            activeRelays[normalizedUrl]?.relay ?: temporaryRelays[normalizedUrl]?.relay
+        }
+        if (activeRelay != null) {
+            return@coroutineScope sendAndAwaitOk(
+                relay = activeRelay,
+                event = event,
+                relayUrl = normalizedUrl,
+                timeoutMillis = timeoutMillis,
+            )
+        }
+
+        val relay = NostrRelay(normalizedUrl, httpClient)
+        val response = async(start = CoroutineStart.UNDISPATCHED) {
+            withTimeoutOrNull(timeoutMillis) {
+                relay.messages
+                    .filterIsInstance<RelayMessage.Ok>()
+                    .first { it.eventId == event.id }
+            }
+        }
+        try {
+            relay.connect(this)
+            check(withTimeoutOrNull(timeoutMillis) { relay.connected.first() } != null) {
+                "リレーへの接続がタイムアウトしました"
+            }
+            relay.send(buildEventMessage(event))
+            val ok = response.await()
+                ?: return@coroutineScope PublishResult(
+                    relayUrl = normalizedUrl,
+                    eventId = event.id,
+                    accepted = false,
+                    message = "リレーからOK応答がありません",
+                )
+            PublishResult(
+                relayUrl = normalizedUrl,
+                eventId = event.id,
+                accepted = ok.accepted,
+                message = ok.message,
+            )
+        } finally {
+            response.cancel()
+            relay.disconnect()
+        }
+    }
+
+    private suspend fun sendAndAwaitOk(
+        relay: NostrRelay,
+        event: NostrEvent,
+        relayUrl: String,
+        timeoutMillis: Long,
+    ): PublishResult = coroutineScope {
+        val response = async(start = CoroutineStart.UNDISPATCHED) {
+            withTimeoutOrNull(timeoutMillis) {
+                relay.messages
+                    .filterIsInstance<RelayMessage.Ok>()
+                    .first { it.eventId == event.id }
+            }
+        }
+        try {
+            relay.send(buildEventMessage(event))
+            val ok = response.await()
+                ?: return@coroutineScope PublishResult(
+                    relayUrl = relayUrl,
+                    eventId = event.id,
+                    accepted = false,
+                    message = "リレーからOK応答がありません",
+                )
+            PublishResult(
+                relayUrl = relayUrl,
+                eventId = event.id,
+                accepted = ok.accepted,
+                message = ok.message,
+            )
+        } finally {
+            response.cancel()
+        }
+    }
+
     fun events(subscriptionId: String): Flow<NostrEvent> =
         bus
             .filter { it.message is RelayMessage.Event && it.message.subscriptionId == subscriptionId }
@@ -389,6 +487,11 @@ object NostrRepository {
         bus
             .filter { it.message is RelayMessage.Closed && it.message.subscriptionId == subscriptionId }
             .map { it.message as RelayMessage.Closed }
+
+    fun notices(): Flow<RelayMessage.Notice> =
+        bus
+            .filter { it.message is RelayMessage.Notice }
+            .map { it.message as RelayMessage.Notice }
 }
 
 private data class RelayEnvelope(

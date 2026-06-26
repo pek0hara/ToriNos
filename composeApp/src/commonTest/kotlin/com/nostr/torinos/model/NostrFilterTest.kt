@@ -74,6 +74,12 @@ class NostrFilterTest {
     }
 
     @Test
+    fun buildReqMessage_hTags() {
+        val msg = buildReqMessage("s", NostrFilter(hTags = listOf("group-id")))
+        assertTrue(msg.contains(""""#h":["group-id"]"""))
+    }
+
+    @Test
     fun buildReqMessage_search() {
         val msg = buildReqMessage("s", NostrFilter(search = "nostr"))
         assertTrue(msg.contains(""""search":"nostr""""))

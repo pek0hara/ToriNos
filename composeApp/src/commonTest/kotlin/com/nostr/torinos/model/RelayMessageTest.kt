@@ -36,6 +36,15 @@ class RelayMessageTest {
     }
 
     @Test
+    fun parse_okMessage_returnsPublishResult() {
+        val parsed = parseRelayMessage("""["OK","$zeroId",false,"restricted: not a member"]""")
+        assertIs<RelayMessage.Ok>(parsed)
+        assertEquals(zeroId, parsed.eventId)
+        assertEquals(false, parsed.accepted)
+        assertEquals("restricted: not a member", parsed.message)
+    }
+
+    @Test
     fun parse_closedWithMessage_returnsClosedWithMessage() {
         val parsed = parseRelayMessage("""["CLOSED","sub1","auth-required: please authenticate"]""")
         assertIs<RelayMessage.Closed>(parsed)

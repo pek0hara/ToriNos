@@ -62,6 +62,7 @@ import androidx.lifecycle.viewmodel.viewModelFactory
 import com.nostr.torinos.crypto.isWriteSupported
 import com.nostr.torinos.crypto.loadPublicKey
 import com.nostr.torinos.model.NoteContext
+import com.nostr.torinos.model.GroupRef
 import com.nostr.torinos.model.NostrFilter
 import com.nostr.torinos.model.NostrProfile
 import com.nostr.torinos.model.noteContextForChannel
@@ -80,6 +81,8 @@ import com.nostr.torinos.ui.feed.FeedTab
 import com.nostr.torinos.ui.feed.FeedScreen
 import com.nostr.torinos.ui.live.LiveDetailScreen
 import com.nostr.torinos.ui.live.LiveHubScreen
+import com.nostr.torinos.ui.group.Nip29GroupListScreen
+import com.nostr.torinos.ui.group.Nip29GroupScreen
 import com.nostr.torinos.ui.notification.NotificationsDrawer
 import com.nostr.torinos.ui.notification.NotificationsViewModel
 import com.nostr.torinos.ui.settings.MuteListScreen
@@ -108,6 +111,7 @@ import kotlinx.serialization.Serializable
 
 // 型安全なルート定義（パラメータ付き画面）
 @Serializable data class ChannelRoute(val channelId: String)
+@Serializable data class Nip29GroupRoute(val relayUrl: String, val groupId: String)
 @Serializable data class ProfileRoute(val pubkey: String)
 @Serializable data class UserJournalRoute(val pubkey: String)
 @Serializable data class ArticleRoute(val pubkey: String, val identifier: String)
@@ -649,6 +653,26 @@ fun App() {
                                     onServiceTabSelected = { currentServiceTab = it },
                                 )
                             }
+                            ServiceTab.Groups -> {
+                                Nip29GroupListScreen(
+                                    ownPubkey = ownPubkey,
+                                    ownProfile = ownProfile,
+                                    onGroupClick = { ref ->
+                                        nav.navigate(Nip29GroupRoute(ref.relayUrl, ref.groupId))
+                                    },
+                                    onOpenProfile = {
+                                        runWithPrivateKey(PendingKeyAction.Profile) {
+                                            nav.navigate("myprofile") { launchSingleTop = true }
+                                        }
+                                    },
+                                    onOpenRelaySettings = {
+                                        requestRelaySettings()
+                                    },
+                                    onOpenSettings = { showQuickSettings = true },
+                                    selectedServiceTab = currentServiceTab,
+                                    onServiceTabSelected = { currentServiceTab = it },
+                                )
+                            }
                             ServiceTab.Articles -> {
                                 ArticleHubScreen(
                                     ownPubkey = ownPubkey,
@@ -836,6 +860,16 @@ fun App() {
                                 nav.navigate(ThreadRoute(eventId, "reposts", ThreadSourceChannel, route.channelId))
                             },
                             ownPubkey = ownPubkey,
+                        )
+                    }
+                    composable<Nip29GroupRoute> { backStack ->
+                        val route = backStack.toRoute<Nip29GroupRoute>()
+                        Nip29GroupScreen(
+                            ref = GroupRef.create(route.relayUrl, route.groupId),
+                            ownPubkey = ownPubkey,
+                            onBack = { nav.popBackStack() },
+                            onDeleted = { nav.popBackStack() },
+                            onUserClick = { pubkey -> nav.navigate(ProfileRoute(pubkey)) },
                         )
                     }
                     composable<ThreadRoute> { backStack ->
