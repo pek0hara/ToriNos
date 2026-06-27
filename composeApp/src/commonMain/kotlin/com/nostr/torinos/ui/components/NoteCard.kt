@@ -75,6 +75,7 @@ import kotlinx.coroutines.launch
 import kotlinx.datetime.TimeZone
 import kotlinx.datetime.toLocalDateTime
 import kotlin.math.max
+import kotlin.time.Clock
 import kotlin.time.Instant
 
 @Composable
@@ -204,8 +205,8 @@ fun NoteCard(
                 ) {
                     Text(
                         text = event.clientName
-                            ?.let { "${formatTimestamp(event.createdAt)} · $it" }
-                            ?: formatTimestamp(event.createdAt),
+                            ?.let { "${formatTimestamp(event.createdAt, todayTimeOnly = true)} · $it" }
+                            ?: formatTimestamp(event.createdAt, todayTimeOnly = true),
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -546,7 +547,7 @@ private fun QuotePreview(
                         .clickable { onUserClick(event.pubkey) },
                 )
                 Text(
-                    text = formatTimestamp(event.createdAt),
+                    text = formatTimestamp(event.createdAt, todayTimeOnly = true),
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(start = 8.dp),
@@ -944,9 +945,24 @@ fun EngagementCount(
     }
 }
 
-fun formatTimestamp(epochSeconds: Long): String = try {
+fun formatTimestamp(
+    epochSeconds: Long,
+    todayTimeOnly: Boolean = false,
+    nowEpochSeconds: Long = Clock.System.now().epochSeconds,
+    timeZone: TimeZone = TimeZone.currentSystemDefault(),
+): String = try {
     val local = Instant.fromEpochSeconds(epochSeconds)
-        .toLocalDateTime(TimeZone.currentSystemDefault())
+        .toLocalDateTime(timeZone)
+    if (todayTimeOnly) {
+        val today = Instant.fromEpochSeconds(nowEpochSeconds)
+            .toLocalDateTime(timeZone)
+            .date
+        if (local.date == today) {
+            return local.hour.toString().padStart(2, '0') +
+                ":" +
+                local.minute.toString().padStart(2, '0')
+        }
+    }
     buildString {
         append((local.month.ordinal + 1).toString().padStart(2, '0'))
         append('/')
