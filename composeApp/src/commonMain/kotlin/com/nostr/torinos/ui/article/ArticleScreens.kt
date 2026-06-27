@@ -24,6 +24,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
@@ -49,6 +50,8 @@ import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.AnnotatedString
@@ -395,7 +398,9 @@ fun UserArticleListScreen(
 fun ArticleDetailScreen(
     pubkey: String,
     identifier: String,
+    ownPubkey: String?,
     onBack: () -> Unit,
+    onEditArticle: (pubkey: String, identifier: String) -> Unit,
     onUserClick: (pubkey: String) -> Unit,
     onNoteClick: (eventId: String) -> Unit,
 ) {
@@ -431,6 +436,16 @@ fun ArticleDetailScreen(
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                     )
+                },
+                actions = {
+                    val article = state.article
+                    if (article != null && ownPubkey != null && article.event.pubkey == ownPubkey) {
+                        IconButton(
+                            onClick = { onEditArticle(article.event.pubkey, article.meta.identifier) },
+                        ) {
+                            Icon(Icons.Default.Edit, contentDescription = "記事を編集")
+                        }
+                    }
                 },
             )
         },
@@ -559,6 +574,7 @@ private fun ArticleCard(
     article: ArticleItem,
     onClick: () -> Unit,
 ) {
+    val imageUrl = article.meta.imageUrl?.takeIf { it.isNotBlank() }
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -566,25 +582,54 @@ private fun ArticleCard(
             .padding(horizontal = 16.dp, vertical = 14.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        article.meta.imageUrl?.takeIf { it.isNotBlank() }?.let { imageUrl ->
-            NetworkImage(
-                url = imageUrl,
-                contentDescription = null,
+        imageUrl?.let {
+            Box(
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(160.dp)
                     .clip(RoundedCornerShape(8.dp)),
-                contentScale = ContentScale.Crop,
-                maxDecodeSizePx = 900,
+            ) {
+                NetworkImage(
+                    url = it,
+                    contentDescription = null,
+                    modifier = Modifier.fillMaxSize(),
+                    contentScale = ContentScale.Crop,
+                    maxDecodeSizePx = 900,
+                )
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .background(
+                            Brush.verticalGradient(
+                                colors = listOf(
+                                    Color.Transparent,
+                                    Color.Black.copy(alpha = 0.72f),
+                                ),
+                            ),
+                        ),
+                )
+                Text(
+                    text = article.displayTitle,
+                    color = Color.White,
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier
+                        .align(Alignment.BottomStart)
+                        .padding(horizontal = 16.dp, vertical = 14.dp),
+                )
+            }
+        }
+        if (imageUrl == null) {
+            Text(
+                text = article.displayTitle,
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
             )
         }
-        Text(
-            text = article.displayTitle,
-            style = MaterialTheme.typography.titleMedium,
-            fontWeight = FontWeight.SemiBold,
-            maxLines = 2,
-            overflow = TextOverflow.Ellipsis,
-        )
         if (article.displaySummary.isNotBlank()) {
             Text(
                 text = article.displaySummary,
@@ -778,7 +823,7 @@ private fun Modifier.articleHubSwipe(
 private const val SwipeThresholdPx = 80f
 
 @Composable
-private fun MarkdownBody(
+internal fun MarkdownBody(
     content: String,
     articleQuoteIds: List<String>,
     quotedEvents: Map<String, NostrEvent>,
@@ -793,6 +838,7 @@ private fun MarkdownBody(
             val quoteIds = when (block) {
                 MarkdownBlock.Blank,
                 is MarkdownBlock.Code,
+                is MarkdownBlock.Image,
                 -> emptyList()
                 is MarkdownBlock.Heading -> extractNostrEventReferences(block.text).map { it.eventId }
                 is MarkdownBlock.Quote -> extractNostrEventReferences(block.text).map { it.eventId }
@@ -842,6 +888,16 @@ private fun MarkdownBody(
                     fontFamily = FontFamily.Monospace,
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                is MarkdownBlock.Image -> NetworkImage(
+                    url = block.url,
+                    contentDescription = block.alt.takeIf { it.isNotBlank() },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(220.dp)
+                        .clip(RoundedCornerShape(8.dp)),
+                    contentScale = ContentScale.Fit,
+                    maxDecodeSizePx = 1200,
                 )
                 is MarkdownBlock.Paragraph -> stripNostrEventUris(block.text).takeIf { it.isNotBlank() }?.let { text ->
                     MarkdownInlineText(
@@ -1050,6 +1106,13 @@ private fun parseMarkdownBlocks(content: String): List<MarkdownBlock> {
         when {
             line.trimStart().startsWith("```") -> inCodeBlock = true
             line.isBlank() -> blocks += MarkdownBlock.Blank
+            markdownImageRegex.matchEntire(line.trim()) != null -> {
+                val match = markdownImageRegex.matchEntire(line.trim())!!
+                blocks += MarkdownBlock.Image(
+                    alt = match.groupValues[1],
+                    url = match.groupValues[2],
+                )
+            }
             line.startsWith("### ") -> blocks += MarkdownBlock.Heading(3, line.removePrefix("### "))
             line.startsWith("## ") -> blocks += MarkdownBlock.Heading(2, line.removePrefix("## "))
             line.startsWith("# ") -> blocks += MarkdownBlock.Heading(1, line.removePrefix("# "))
@@ -1073,7 +1136,10 @@ private sealed interface MarkdownBlock {
     data class Quote(val text: String) : MarkdownBlock
     data class ListItem(val text: String) : MarkdownBlock
     data class Code(val text: String) : MarkdownBlock
+    data class Image(val alt: String, val url: String) : MarkdownBlock
 }
+
+private val markdownImageRegex = Regex("""!\[([^]]*)]\((https://[^)\s]+)\)""")
 
 private fun markdownAnnotatedString(
     text: String,

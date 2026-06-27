@@ -27,8 +27,8 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.Chat
 import androidx.compose.material.icons.automirrored.filled.OpenInNew
-import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.AddPhotoAlternate
 import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.Check
@@ -53,6 +53,7 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import com.nostr.torinos.ui.components.AppTopBar
+import com.nostr.torinos.ui.components.AppMessageComposer
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -64,9 +65,11 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalUriHandler
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -100,6 +103,7 @@ fun LiveHubScreen(
     onOpenSettings: () -> Unit,
     onOpenRelaySettings: () -> Unit,
     onLiveClick: (pubkey: String, identifier: String) -> Unit,
+    onLiveChatClick: (pubkey: String, identifier: String) -> Unit,
     onUserClick: (pubkey: String) -> Unit,
     selectedServiceTab: ServiceTab,
     onServiceTabSelected: (ServiceTab) -> Unit,
@@ -261,6 +265,7 @@ fun LiveHubScreen(
                                     activity = activity,
                                     profiles = state.profiles,
                                     onClick = { onLiveClick(activity.event.pubkey, activity.meta.identifier) },
+                                    onChatClick = { onLiveChatClick(activity.event.pubkey, activity.meta.identifier) },
                                     onUserClick = { onLiveClick(activity.event.pubkey, activity.meta.identifier) },
                                 )
                             }
@@ -296,6 +301,7 @@ fun LiveHubScreen(
 fun LiveDetailScreen(
     pubkey: String,
     identifier: String,
+    openChatInitially: Boolean = false,
     ownPubkey: String?,
     onBack: () -> Unit,
     onUserClick: (pubkey: String) -> Unit,
@@ -325,7 +331,9 @@ fun LiveDetailScreen(
     val state by viewModel.state.collectAsState()
     val uriHandler = LocalUriHandler.current
     var chatText by rememberSaveable(pubkey, identifier) { mutableStateOf("") }
-    var isChatExpanded by rememberSaveable(pubkey, identifier) { mutableStateOf(false) }
+    var isChatExpanded by rememberSaveable(pubkey, identifier, openChatInitially) {
+        mutableStateOf(openChatInitially)
+    }
     var showEndDialog by rememberSaveable(pubkey, identifier) { mutableStateOf(false) }
     var showDeleteDialog by rememberSaveable(pubkey, identifier) { mutableStateOf(false) }
     var recordingUrl by rememberSaveable(pubkey, identifier) { mutableStateOf("") }
@@ -401,6 +409,7 @@ fun LiveDetailScreen(
                 text = chatText,
                 enabled = ownPubkey != null && !state.isPublishing,
                 isPublishing = state.isPublishing,
+                error = state.error,
                 onTextChange = clearErrorAndUpdateChatText,
                 onSubmit = submitChat,
             )
@@ -438,6 +447,7 @@ fun LiveDetailScreen(
                                 isDeletingLive = state.isPublishing,
                                 onUserClick = onUserClick,
                                 onOpenUrl = { uriHandler.openUri(it) },
+                                onChatClick = { isChatExpanded = true },
                                 onEndLiveClick = { showEndDialog = true },
                                 onDeleteLiveClick = { showDeleteDialog = true },
                             )
@@ -661,6 +671,7 @@ private fun LiveChatExpandedScreen(
                 text = chatText,
                 enabled = ownPubkey != null && !isPublishing,
                 isPublishing = isPublishing,
+                error = error,
                 onTextChange = onTextChange,
                 onSubmit = onSubmit,
             )
@@ -1009,10 +1020,64 @@ private fun LiveStatusFilterRow(
 }
 
 @Composable
+private fun LiveCoverTitleImage(
+    imageUrl: String,
+    title: String,
+    modifier: Modifier = Modifier,
+    titleStyle: TextStyle,
+    maxDecodeSizePx: Int,
+) {
+    Box(modifier = modifier) {
+        NetworkImage(
+            url = imageUrl,
+            contentDescription = null,
+            modifier = Modifier.fillMaxSize(),
+            contentScale = ContentScale.Crop,
+            maxDecodeSizePx = maxDecodeSizePx,
+        )
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(
+                    Brush.verticalGradient(
+                        colors = listOf(
+                            Color.Transparent,
+                            Color.Black.copy(alpha = 0.72f),
+                        ),
+                    ),
+                ),
+        )
+        Text(
+            text = title,
+            color = Color.White,
+            style = titleStyle,
+            fontWeight = FontWeight.Bold,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier
+                .align(Alignment.BottomStart)
+                .padding(horizontal = 16.dp, vertical = 14.dp),
+        )
+    }
+}
+
+@Composable
+private fun LiveStartTimeText(starts: Long) {
+    Text(
+        text = "開始 ${formatTimestamp(starts)}",
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        style = MaterialTheme.typography.bodySmall,
+        maxLines = 1,
+        overflow = TextOverflow.Ellipsis,
+    )
+}
+
+@Composable
 private fun LiveActivityCard(
     activity: LiveActivityItem,
     profiles: Map<String, NostrProfile>,
     onClick: () -> Unit,
+    onChatClick: () -> Unit,
     onUserClick: () -> Unit,
 ) {
     Card(
@@ -1021,22 +1086,46 @@ private fun LiveActivityCard(
             .padding(horizontal = 12.dp, vertical = 6.dp)
             .clickable(onClick = onClick),
     ) {
+        val imageUrl = activity.meta.imageUrl?.takeIf { it.isNotBlank() }
         Column(modifier = Modifier.fillMaxWidth()) {
-            activity.meta.imageUrl?.takeIf { it.isNotBlank() }?.let { imageUrl ->
-                NetworkImage(
-                    url = imageUrl,
-                    contentDescription = null,
+            imageUrl?.let {
+                Box(
                     modifier = Modifier
                         .fillMaxWidth()
                         .height(168.dp)
                         .clip(RoundedCornerShape(topStart = 8.dp, topEnd = 8.dp)),
-                    contentScale = ContentScale.Crop,
-                    maxDecodeSizePx = 900,
-                )
+                ) {
+                    LiveCoverTitleImage(
+                        imageUrl = it,
+                        title = activity.displayTitle,
+                        modifier = Modifier.fillMaxSize(),
+                        titleStyle = MaterialTheme.typography.titleMedium,
+                        maxDecodeSizePx = 900,
+                    )
+                    IconButton(
+                        onClick = onChatClick,
+                        modifier = Modifier
+                            .align(Alignment.TopEnd)
+                            .padding(10.dp)
+                            .background(
+                                color = MaterialTheme.colorScheme.surface.copy(alpha = 0.86f),
+                                shape = CircleShape,
+                            ),
+                    ) {
+                        Icon(
+                            Icons.AutoMirrored.Filled.Chat,
+                            contentDescription = "チャットを表示",
+                            tint = MaterialTheme.colorScheme.onSurface,
+                        )
+                    }
+                }
             }
             Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     StatusChip(activity.meta.status)
+                    activity.meta.starts?.let { starts ->
+                        LiveStartTimeText(starts = starts)
+                    }
                     activity.meta.currentParticipants?.let {
                         Text(
                             text = "${it}人参加中",
@@ -1045,17 +1134,20 @@ private fun LiveActivityCard(
                         )
                     }
                 }
-                Text(
-                    text = activity.displayTitle,
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.Bold,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis,
-                )
+                if (imageUrl == null) {
+                    Text(
+                        text = activity.displayTitle,
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
                 if (activity.displaySummary.isNotBlank()) {
                     Text(
                         text = activity.displaySummary,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        style = MaterialTheme.typography.bodySmall,
                         maxLines = 2,
                         overflow = TextOverflow.Ellipsis,
                     )
@@ -1083,14 +1175,6 @@ private fun LiveActivityCard(
                         style = MaterialTheme.typography.bodyMedium,
                     )
                 }
-                val starts = activity.meta.starts
-                if (starts != null) {
-                    Text(
-                        text = "開始 ${formatTimestamp(starts)}",
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        style = MaterialTheme.typography.bodySmall,
-                    )
-                }
                 if (activity.meta.topics.isNotEmpty()) {
                     LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                         items(activity.meta.topics.take(8)) { topic ->
@@ -1113,25 +1197,50 @@ private fun LiveDetailHeader(
     isDeletingLive: Boolean,
     onUserClick: (String) -> Unit,
     onOpenUrl: (String) -> Unit,
+    onChatClick: () -> Unit,
     onEndLiveClick: () -> Unit,
     onDeleteLiveClick: () -> Unit,
 ) {
     val item = activity ?: return
+    val imageUrl = item.meta.imageUrl?.takeIf { it.isNotBlank() }
     Column(modifier = Modifier.fillMaxWidth()) {
-        item.meta.imageUrl?.takeIf { it.isNotBlank() }?.let { imageUrl ->
-            NetworkImage(
-                url = imageUrl,
-                contentDescription = null,
+        imageUrl?.let {
+            Box(
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(220.dp),
-                contentScale = ContentScale.Crop,
-                maxDecodeSizePx = 1200,
-            )
+            ) {
+                LiveCoverTitleImage(
+                    imageUrl = it,
+                    title = item.displayTitle,
+                    modifier = Modifier.fillMaxSize(),
+                    titleStyle = MaterialTheme.typography.headlineSmall,
+                    maxDecodeSizePx = 1200,
+                )
+                IconButton(
+                    onClick = onChatClick,
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .padding(12.dp)
+                        .background(
+                            color = MaterialTheme.colorScheme.surface.copy(alpha = 0.86f),
+                            shape = CircleShape,
+                        ),
+                ) {
+                    Icon(
+                        Icons.AutoMirrored.Filled.Chat,
+                        contentDescription = "チャットを表示",
+                        tint = MaterialTheme.colorScheme.onSurface,
+                    )
+                }
+            }
         }
         Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 StatusChip(item.meta.status)
+                item.meta.starts?.let { starts ->
+                    LiveStartTimeText(starts = starts)
+                }
                 item.meta.currentParticipants?.let { current ->
                     val total = item.meta.totalParticipants?.let { " / $it" }.orEmpty()
                     Text(
@@ -1140,13 +1249,19 @@ private fun LiveDetailHeader(
                     )
                 }
             }
-            Text(
-                text = item.displayTitle,
-                style = MaterialTheme.typography.headlineSmall,
-                fontWeight = FontWeight.Bold,
-            )
+            if (imageUrl == null) {
+                Text(
+                    text = item.displayTitle,
+                    style = MaterialTheme.typography.headlineSmall,
+                    fontWeight = FontWeight.Bold,
+                )
+            }
             if (item.displaySummary.isNotBlank()) {
-                LinkedText(text = item.displaySummary)
+                LinkedText(
+                    text = item.displaySummary,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    style = MaterialTheme.typography.bodySmall,
+                )
             }
             Row(
                 modifier = Modifier.clickable { onUserClick(item.event.pubkey) },
@@ -1165,9 +1280,6 @@ private fun LiveDetailHeader(
                     style = MaterialTheme.typography.bodyLarge,
                     fontWeight = FontWeight.Bold,
                 )
-            }
-            item.meta.starts?.let {
-                Text(text = "開始 ${formatTimestamp(it)}", color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
             item.meta.ends?.let {
                 Text(text = "終了 ${formatTimestamp(it)}", color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -1343,56 +1455,19 @@ private fun ChatComposer(
     text: String,
     enabled: Boolean,
     isPublishing: Boolean,
+    error: String?,
     onTextChange: (String) -> Unit,
     onSubmit: () -> Unit,
 ) {
-    var textValue by rememberSyncedTextFieldValue(text)
-
-    SurfaceLikeBar {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 12.dp, vertical = 8.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            OutlinedTextField(
-                value = textValue,
-                onValueChange = {
-                    textValue = it
-                    onTextChange(it.text)
-                },
-                modifier = Modifier.weight(1f),
-                enabled = enabled,
-                placeholder = { Text(if (enabled) "チャットを書く" else "ログインするとチャットできます") },
-                minLines = 1,
-                maxLines = 4,
-            )
-            IconButton(
-                onClick = onSubmit,
-                enabled = enabled && !isPublishing && text.isNotBlank(),
-            ) {
-                if (isPublishing) {
-                    CircularProgressIndicator(modifier = Modifier.size(22.dp), strokeWidth = 2.dp)
-                } else {
-                    Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "送信")
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun SurfaceLikeBar(content: @Composable () -> Unit) {
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .background(MaterialTheme.colorScheme.surface)
-            .navigationBarsPadding(),
-    ) {
-        HorizontalDivider()
-        content()
-    }
+    AppMessageComposer(
+        text = text,
+        onTextChange = onTextChange,
+        onSend = onSubmit,
+        placeholder = if (enabled) "チャットを書く" else "ログインするとチャットできます",
+        enabled = enabled,
+        isSending = isPublishing,
+        error = error,
+    )
 }
 
 @Composable

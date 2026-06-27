@@ -10,8 +10,6 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.WindowInsets
-import androidx.compose.foundation.layout.imePadding
-import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.Spacer
@@ -22,7 +20,6 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -38,6 +35,7 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import com.nostr.torinos.ui.components.AppTopBar
+import com.nostr.torinos.ui.components.AppMessageComposer
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -405,62 +403,15 @@ private fun ChannelMessageInputBar(
     onDraftChange: (String) -> Unit,
     onSend: () -> Unit,
 ) {
-    val text = ready?.draftText ?: ""
-    var textValue by rememberSyncedTextFieldValue(text)
-
-    HorizontalDivider()
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .imePadding()
-            .navigationBarsPadding(),
-    ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 8.dp, vertical = 4.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(4.dp),
-        ) {
-            OutlinedTextField(
-                value = textValue,
-                onValueChange = {
-                    textValue = it
-                    onDraftChange(it.text)
-                },
-                modifier = Modifier.weight(1f),
-                placeholder = { Text("メッセージを入力…") },
-                maxLines = 4,
-                enabled = ready != null && !ready.isPosting,
-            )
-            IconButton(
-                onClick = onSend,
-                enabled = ready != null && ready.draftText.isNotBlank() && !ready.isPosting,
-            ) {
-                if (ready?.isPosting == true) {
-                    CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
-                } else {
-                    Icon(
-                        Icons.AutoMirrored.Filled.Send,
-                        contentDescription = "送信",
-                        tint = if (ready != null && ready.draftText.isNotBlank()) {
-                            MaterialTheme.colorScheme.primary
-                        } else {
-                            MaterialTheme.colorScheme.onSurfaceVariant
-                        },
-                    )
-                }
-            }
-        }
-        if (ready?.postError != null) {
-            Text(
-                text = ready.postError,
-                color = MaterialTheme.colorScheme.error,
-                style = MaterialTheme.typography.labelSmall,
-                modifier = Modifier.padding(horizontal = 12.dp, vertical = 2.dp),
-            )
-        }
-    }
+    AppMessageComposer(
+        text = ready?.draftText.orEmpty(),
+        onTextChange = onDraftChange,
+        onSend = onSend,
+        placeholder = "メッセージを入力…",
+        enabled = ready != null,
+        isSending = ready?.isPosting == true,
+        error = ready?.postError,
+    )
 }
 
 @Composable

@@ -26,7 +26,7 @@ import androidx.compose.ui.unit.sp
 enum class ServiceTab(val label: String) {
     Articles("記事"),
     Channels("チャンネル"),
-    Live("ライブ"),
+    Live("LIVE"),
     Status("ステータス"),
 }
 

@@ -13,8 +13,6 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Apps
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Today
-import androidx.compose.material3.FloatingActionButton
-import androidx.compose.material3.FloatingActionButtonDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.ModalNavigationDrawer
@@ -42,7 +40,6 @@ import kotlinx.coroutines.launch
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.requiredHeight
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
@@ -71,11 +68,14 @@ import com.nostr.torinos.network.CustomEmojiStore
 import com.nostr.torinos.network.FollowRepository
 import com.nostr.torinos.network.MuteStore
 import com.nostr.torinos.network.NostrRepository
+import com.nostr.torinos.network.RelayStore
 import com.nostr.torinos.ui.article.ArticleDetailScreen
+import com.nostr.torinos.ui.article.ArticleEditorScreen
 import com.nostr.torinos.ui.article.ArticleHubScreen
 import com.nostr.torinos.ui.article.UserArticleListScreen
 import com.nostr.torinos.ui.channel.ChannelListScreen
 import com.nostr.torinos.ui.channel.ChannelScreen
+import com.nostr.torinos.ui.components.AppFloatingActionButton
 import com.nostr.torinos.ui.feed.FeedTab
 import com.nostr.torinos.ui.feed.FeedScreen
 import com.nostr.torinos.ui.live.LiveDetailScreen
@@ -111,8 +111,9 @@ import kotlinx.serialization.Serializable
 @Serializable data class ProfileRoute(val pubkey: String)
 @Serializable data class UserJournalRoute(val pubkey: String)
 @Serializable data class ArticleRoute(val pubkey: String, val identifier: String)
+@Serializable data class ArticleEditorRoute(val pubkey: String, val identifier: String)
 @Serializable data class UserArticlesRoute(val pubkey: String)
-@Serializable data class LiveRoute(val pubkey: String, val identifier: String)
+@Serializable data class LiveRoute(val pubkey: String, val identifier: String, val openChat: Boolean = false)
 @Serializable data class FollowingRoute(val pubkey: String)
 @Serializable data class FollowersRoute(val pubkey: String)
 @Serializable data class SearchRoute(val query: String = "")
@@ -128,6 +129,7 @@ private const val ThreadSourceChannel = "channel"
 
 private enum class PendingKeyAction {
     NewPost,
+    Article,
     Reply,
     Profile,
     Status,
@@ -461,29 +463,44 @@ fun App() {
                                 },
                             )
                             "services" -> when (currentServiceTab) {
-                                ServiceTab.Live -> AppFloatingActionButton(onClick = {
-                                    runWithPrivateKey(PendingKeyAction.Live) {
-                                        liveCreateRequest++
-                                    }
-                                }) {
-                                    Icon(Icons.Default.Add, contentDescription = "ライブを投稿")
-                                }
-                                ServiceTab.Status -> AppFloatingActionButton(onClick = {
+                                ServiceTab.Articles -> AppFloatingActionButton(
+                                    onClick = {
+                                        runWithPrivateKey(PendingKeyAction.Article) {
+                                            nav.navigate("article-editor")
+                                        }
+                                    },
+                                    icon = Icons.Default.Add,
+                                    contentDescription = "記事を書く",
+                                )
+                                ServiceTab.Live -> AppFloatingActionButton(
+                                    onClick = {
+                                        runWithPrivateKey(PendingKeyAction.Live) {
+                                            liveCreateRequest++
+                                        }
+                                    },
+                                    icon = Icons.Default.Add,
+                                    contentDescription = "ライブを投稿",
+                                )
+                                ServiceTab.Status -> AppFloatingActionButton(
+                                    onClick = {
+                                        runWithPrivateKey(PendingKeyAction.Status) {
+                                            showStatusComposer = true
+                                        }
+                                    },
+                                    icon = Icons.Default.Add,
+                                    contentDescription = "ステータス追加",
+                                )
+                                else -> Unit
+                            }
+                            "status" -> AppFloatingActionButton(
+                                onClick = {
                                     runWithPrivateKey(PendingKeyAction.Status) {
                                         showStatusComposer = true
                                     }
-                                }) {
-                                    Icon(Icons.Default.Add, contentDescription = "ステータス追加")
-                                }
-                                else -> Unit
-                            }
-                            "status" -> AppFloatingActionButton(onClick = {
-                                runWithPrivateKey(PendingKeyAction.Status) {
-                                    showStatusComposer = true
-                                }
-                            }) {
-                                Icon(Icons.Default.Add, contentDescription = "ステータス追加")
-                            }
+                                },
+                                icon = Icons.Default.Add,
+                                contentDescription = "ステータス追加",
+                            )
                             else -> Unit
                         }
                     }
@@ -688,6 +705,9 @@ fun App() {
                                     onLiveClick = { pubkey, identifier ->
                                         nav.navigate(LiveRoute(pubkey, identifier))
                                     },
+                                    onLiveChatClick = { pubkey, identifier ->
+                                        nav.navigate(LiveRoute(pubkey, identifier, openChat = true))
+                                    },
                                     onUserClick = { pubkey -> nav.navigate(ProfileRoute(pubkey)) },
                                     selectedServiceTab = currentServiceTab,
                                     onServiceTabSelected = { currentServiceTab = it },
@@ -740,9 +760,38 @@ fun App() {
                         ArticleDetailScreen(
                             pubkey = route.pubkey,
                             identifier = route.identifier,
+                            ownPubkey = ownPubkey,
                             onBack = { nav.popBackStack() },
+                            onEditArticle = { pubkey, identifier ->
+                                nav.navigate(ArticleEditorRoute(pubkey, identifier))
+                            },
                             onUserClick = { pubkey -> nav.navigate(ProfileRoute(pubkey)) },
                             onNoteClick = { eventId -> nav.navigate(ThreadRoute(eventId)) },
+                        )
+                    }
+                    composable("article-editor") {
+                        ArticleEditorScreen(
+                            onBack = { nav.popBackStack() },
+                            onPublished = { pubkey, identifier ->
+                                nav.navigate(ArticleRoute(pubkey, identifier)) {
+                                    popUpTo("article-editor") { inclusive = true }
+                                }
+                            },
+                        )
+                    }
+                    composable<ArticleEditorRoute> { backStack ->
+                        val route = backStack.toRoute<ArticleEditorRoute>()
+                        val selectedArticleRelayUrl by RelayStore.selectedArticleRelayUrl.collectAsState()
+                        ArticleEditorScreen(
+                            editPubkey = route.pubkey,
+                            editIdentifier = route.identifier,
+                            relayUrl = selectedArticleRelayUrl,
+                            onBack = { nav.popBackStack() },
+                            onPublished = { pubkey, identifier ->
+                                nav.navigate(ArticleRoute(pubkey, identifier)) {
+                                    popUpTo(ArticleEditorRoute(route.pubkey, route.identifier)) { inclusive = true }
+                                }
+                            },
                         )
                     }
                     composable<LiveRoute> { backStack ->
@@ -750,6 +799,7 @@ fun App() {
                         LiveDetailScreen(
                             pubkey = route.pubkey,
                             identifier = route.identifier,
+                            openChatInitially = route.openChat,
                             ownPubkey = ownPubkey,
                             onBack = { nav.popBackStack() },
                             onUserClick = { pubkey -> nav.navigate(ProfileRoute(pubkey)) },
@@ -1137,6 +1187,10 @@ fun App() {
                             }
                             showPostSheet = true
                         }
+                        PendingKeyAction.Article -> {
+                            currentServiceTab = ServiceTab.Articles
+                            nav.navigate("article-editor")
+                        }
                         PendingKeyAction.Reply -> showPostSheet = true
                         PendingKeyAction.Journal -> {
                             if (currentRoute == "journal") {
@@ -1193,32 +1247,10 @@ fun App() {
 private fun PostFloatingActionButton(
     onPostClick: () -> Unit,
 ) {
-    AppFloatingActionButton(onClick = onPostClick) {
-        Icon(
-            imageVector = Icons.Default.Add,
-            contentDescription = "ポスト",
-            modifier = Modifier.size(24.dp),
-        )
-    }
-}
-
-@Composable
-private fun AppFloatingActionButton(
-    onClick: () -> Unit,
-    content: @Composable () -> Unit,
-) {
-    FloatingActionButton(
-        onClick = onClick,
-        shape = CircleShape,
-        containerColor = MaterialTheme.colorScheme.primaryContainer,
-        contentColor = MaterialTheme.colorScheme.primary,
-        elevation = FloatingActionButtonDefaults.elevation(
-            defaultElevation = 0.dp,
-            pressedElevation = 1.dp,
-            focusedElevation = 0.dp,
-            hoveredElevation = 1.dp,
-        ),
-        content = content,
+    AppFloatingActionButton(
+        onClick = onPostClick,
+        icon = Icons.Default.Add,
+        contentDescription = "ポスト",
     )
 }
 

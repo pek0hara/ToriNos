@@ -305,7 +305,7 @@ private fun CategoryFilterRow(
             FilterChip(
                 selected = category in selectedCategories,
                 onClick = { onToggle(category) },
-                label = { Text(category) },
+                label = { Text(category, style = MaterialTheme.typography.labelSmall) },
             )
         }
     }
@@ -336,7 +336,10 @@ private fun StatusRow(
             verticalArrangement = Arrangement.spacedBy(6.dp),
         ) {
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                AssistChip(onClick = {}, label = { Text(status.statusTag) })
+                AssistChip(
+                    onClick = {},
+                    label = { Text(status.statusTag, style = MaterialTheme.typography.labelSmall) },
+                )
                 LinkedText(
                     text = status.event.content,
                     style = MaterialTheme.typography.bodyLarge,

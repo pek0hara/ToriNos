@@ -37,8 +37,6 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.FloatingActionButton
-import androidx.compose.material3.FloatingActionButtonDefaults
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -48,6 +46,7 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import com.nostr.torinos.ui.components.AppTopBar
+import com.nostr.torinos.ui.components.AppFloatingActionButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -246,20 +245,11 @@ fun ChannelListScreen(
         },
         floatingActionButton = {
             if (state is ChannelListViewModel.UiState.Ready) {
-                FloatingActionButton(
+                AppFloatingActionButton(
                     onClick = viewModel::showCreateDialog,
-                    shape = CircleShape,
-                    containerColor = MaterialTheme.colorScheme.primaryContainer,
-                    contentColor = MaterialTheme.colorScheme.primary,
-                    elevation = FloatingActionButtonDefaults.elevation(
-                        defaultElevation = 0.dp,
-                        pressedElevation = 1.dp,
-                        focusedElevation = 0.dp,
-                        hoveredElevation = 1.dp,
-                    ),
-                ) {
-                    Icon(Icons.Default.Add, contentDescription = "新規チャンネル")
-                }
+                    icon = Icons.Default.Add,
+                    contentDescription = "新規チャンネル",
+                )
             }
         },
     ) { padding ->

@@ -9,7 +9,6 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
@@ -23,13 +22,12 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material.icons.automirrored.filled.Send
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.PrimaryTabRow
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Tab
 import androidx.compose.material3.Text
 import com.nostr.torinos.ui.components.AppTopBar
+import com.nostr.torinos.ui.components.AppMessageComposer
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -124,6 +122,7 @@ fun ThreadScreen(
                 ThreadReplyInputBar(
                     text = state.replyText,
                     isPosting = state.isReplying,
+                    error = state.replyError,
                     onTextChange = viewModel::onReplyTextChange,
                     onSend = viewModel::submitReply,
                 )
@@ -374,47 +373,18 @@ private fun androidx.compose.foundation.lazy.LazyListScope.emptyTabItem(text: St
 private fun ThreadReplyInputBar(
     text: String,
     isPosting: Boolean,
+    error: String?,
     onTextChange: (String) -> Unit,
     onSend: () -> Unit,
 ) {
-    var textValue by rememberSyncedTextFieldValue(text)
-
-    HorizontalDivider()
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .navigationBarsPadding(),
-    ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 8.dp, vertical = 4.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(4.dp),
-        ) {
-            OutlinedTextField(
-                value = textValue,
-                onValueChange = {
-                    textValue = it
-                    onTextChange(it.text)
-                },
-                modifier = Modifier.weight(1f),
-                placeholder = { Text("返信を追加...") },
-                maxLines = 4,
-                enabled = !isPosting,
-            )
-            IconButton(
-                onClick = onSend,
-                enabled = text.isNotBlank() && !isPosting,
-            ) {
-                if (isPosting) {
-                    CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
-                } else {
-                    Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "返信を送信")
-                }
-            }
-        }
-    }
+    AppMessageComposer(
+        text = text,
+        onTextChange = onTextChange,
+        onSend = onSend,
+        placeholder = "返信を追加…",
+        isSending = isPosting,
+        error = error,
+    )
 }
 
 @Composable

@@ -6,7 +6,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Today
-import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.PrimaryTabRow
@@ -27,6 +26,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.nostr.torinos.network.MuteStore
 import com.nostr.torinos.network.RelayStore
 import com.nostr.torinos.ui.components.NoteTimeline
+import com.nostr.torinos.ui.components.AppFloatingActionButton
 import com.nostr.torinos.ui.feed.FeedViewModel
 import kotlinx.coroutines.delay
 
@@ -120,12 +120,11 @@ fun UserProfileScreen(
         snackbarHost = { SnackbarHost(snackbarHostState) },
         floatingActionButton = {
             if (!isOwnProfile && onOpenJournal != null) {
-                FloatingActionButton(onClick = onOpenJournal) {
-                    Icon(
-                        Icons.Default.Today,
-                        contentDescription = "ジャーナル",
-                    )
-                }
+                AppFloatingActionButton(
+                    onClick = onOpenJournal,
+                    icon = Icons.Default.Today,
+                    contentDescription = "ジャーナル",
+                )
             }
         },
     ) { padding ->

@@ -399,7 +399,7 @@ class ArticleDetailViewModel(
     }
 }
 
-private suspend fun fetchLatestArticleByAddress(
+internal suspend fun fetchLatestArticleByAddress(
     pubkey: String,
     identifier: String,
     relayUrl: String?,
