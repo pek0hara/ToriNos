@@ -156,7 +156,10 @@ actual object KeyStorage {
     }
 
     actual suspend fun logout() {
-        deleteKey()
+        migrateLegacyKeyIfNeeded()
+        val defaults = NSUserDefaults.standardUserDefaults
+        defaults.setBool(true, forKey = LOGGED_OUT_DEFAULTS_KEY)
+        defaults.synchronize()
     }
 
     actual suspend fun deleteKey() {

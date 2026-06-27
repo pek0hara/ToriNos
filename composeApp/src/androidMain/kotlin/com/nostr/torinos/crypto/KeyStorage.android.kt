@@ -179,7 +179,10 @@ actual object KeyStorage {
     }
 
     actual suspend fun logout() {
-        deleteKey()
+        migrateLegacyKeyIfNeeded()
+        context.dataStore.edit { prefs ->
+            prefs[PREF_LOGGED_OUT] = true
+        }
     }
 
     actual suspend fun deleteKey() {

@@ -195,7 +195,7 @@ fun SettingsScreen(
     if (showLogoutDialog) {
         ConfirmAccountDialog(
             title = "ログアウト",
-            text = "現在のアカウントからログアウトし、この端末から秘密鍵を削除します。",
+            text = "現在のアカウントからログアウトします。保存済みの秘密鍵はこの端末に残り、次回ログイン時に選択できます。",
             confirmText = "ログアウト",
             isProcessing = state.isAccountActionProcessing,
             onDismiss = { showLogoutDialog = false },
