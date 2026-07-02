@@ -1,0 +1,193 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="ToriNosのプライバシーポリシーです。">
+  <meta name="theme-color" content="#172d25">
+  <title>プライバシーポリシー | ToriNos</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header class="site-header">
+    <a class="brand" href="./" aria-label="ToriNos ホーム">
+      <span class="brand-mark" aria-hidden="true">T</span>
+      <span>ToriNos</span>
+    </a>
+  </header>
+
+  <main class="policy-layout">
+    <aside class="policy-summary">
+      <p class="eyebrow">Privacy Policy</p>
+      <h1>プライバシー<br>ポリシー</h1>
+      <p class="updated">制定日・最終更新日<br><strong>2026年6月14日</strong></p>
+    </aside>
+
+    <article class="policy">
+      <p class="policy-intro">
+        ToriNos（以下「本アプリ」）は、分散型SNSプロトコルであるNostrを利用するクライアントアプリです。
+        本ポリシーでは、本アプリにおける利用者情報の取扱いについて説明します。
+      </p>
+
+      <section>
+        <h2><span>1.</span> 運営者</h2>
+        <p>本アプリはToriNos開発者（以下「運営者」）が提供します。</p>
+      </section>
+
+      <section>
+        <h2><span>2.</span> 本アプリが取り扱う情報</h2>
+
+        <h3>Nostrの公開情報</h3>
+        <p>
+          公開鍵、プロフィール、投稿、返信、リアクション、リポスト、フォロー情報、チャンネル投稿、
+          ステータス、通報イベントなど、利用者がNostr上で公開または送信した情報を取り扱います。
+        </p>
+
+        <h3>秘密鍵</h3>
+        <p>
+          Nostrの秘密鍵は、投稿などへの署名とアカウント管理のために使用します。
+          秘密鍵は端末の安全な保存領域に保存され、運営者のサーバーへ送信されません。
+          利用者がOSのパスワード管理機能や同期機能を使用した場合は、各OS提供者の仕組みに従って保存・同期されることがあります。
+        </p>
+
+        <h3>画像</h3>
+        <p>
+          利用者が投稿またはプロフィールに画像を添付した場合、画像データとNostrによる認証情報が
+          外部の画像ホスティングサービス「nostr.build」へ送信されます。
+        </p>
+
+        <h3>端末内の設定とキャッシュ</h3>
+        <p>
+          リレー設定、ミュート対象、NGワード、カスタム絵文字、表示設定、通知の既読状態、
+          チャンネル情報などを端末内に保存することがあります。
+        </p>
+
+        <h3>通信に伴う情報</h3>
+        <p>
+          Nostrリレー、画像ホスティングサービス、検索リレー、リンク先Webサイトなどへ接続する際、
+          IPアドレス、通信日時、ユーザーエージェント等が接続先により取得される場合があります。
+          リンクプレビューを表示する際は、対象URLへ直接アクセスしてタイトルや画像等を取得します。
+        </p>
+      </section>
+
+      <section>
+        <h2><span>3.</span> 利用目的</h2>
+        <ul>
+          <li>Nostr上のコンテンツの閲覧、投稿、署名および配信</li>
+          <li>プロフィール、フォロー、チャンネル、通知等の機能提供</li>
+          <li>画像のアップロードおよび表示</li>
+          <li>ミュート、NGワード、通報等の安全機能の提供</li>
+          <li>設定の保存、表示の高速化および不具合の調査</li>
+        </ul>
+      </section>
+
+      <section>
+        <h2><span>4.</span> 外部サービスへの送信</h2>
+        <p>本アプリは、機能提供のため次の外部サービス等と通信します。</p>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>送信先</th>
+                <th>主な送信情報</th>
+                <th>目的</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>利用者が選択したNostrリレー</td>
+                <td>公開鍵、プロフィール、投稿、各種Nostrイベント</td>
+                <td>Nostrコンテンツの送受信</td>
+              </tr>
+              <tr>
+                <td>nostr.build</td>
+                <td>選択した画像、署名済み認証イベント</td>
+                <td>画像の保存と公開URLの取得</td>
+              </tr>
+              <tr>
+                <td>検索リレー</td>
+                <td>検索語、検索条件</td>
+                <td>投稿・利用者の検索</td>
+              </tr>
+              <tr>
+                <td>リンク先Webサイト</td>
+                <td>対象URLへのHTTPリクエスト</td>
+                <td>リンクプレビューの取得</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <p>
+          Nostrリレーおよび外部サービスでの情報の取扱いは、各運営者の規約・プライバシーポリシーに従います。
+          公開されたNostrイベントは第三者に保存、複製または再配信される可能性があります。
+        </p>
+      </section>
+
+      <section>
+        <h2><span>5.</span> 広告・アクセス解析</h2>
+        <p>
+          本アプリは、現時点で広告SDK、利用者追跡を目的とするSDK、および第三者のアクセス解析SDKを使用していません。
+          将来これらを導入する場合は、本ポリシーを更新します。
+        </p>
+      </section>
+
+      <section>
+        <h2><span>6.</span> 情報の削除</h2>
+        <p>
+          利用者はアプリ内の設定から、保存したアカウント情報や端末内のキャッシュを削除できます。
+          アカウント削除操作では、選択したNostrリレーへ削除要求を送信した後、端末内の秘密鍵を削除します。
+        </p>
+        <p>
+          Nostrは分散型の仕組みであるため、公開済みの情報がすべてのリレー、第三者のキャッシュ、
+          または複製先から完全に削除されることは保証できません。
+          アプリを削除した場合、OSの仕様に従ってアプリ内のローカルデータは削除されますが、
+          OSのパスワード管理機能等に保存された情報は別途削除が必要な場合があります。
+        </p>
+      </section>
+
+      <section>
+        <h2><span>7.</span> 安全管理</h2>
+        <p>
+          運営者は、本アプリが取り扱う情報への不正アクセス、漏えい、改ざん等を防止するため、
+          合理的な安全管理措置を講じます。秘密鍵を表示またはコピーした後の管理は、利用者自身の責任で行ってください。
+        </p>
+      </section>
+
+      <section>
+        <h2><span>8.</span> 子どもの利用</h2>
+        <p>
+          本アプリは子どもを対象として設計されたものではありません。
+          未成年者が利用する場合は、保護者の同意と管理のもとで利用してください。
+        </p>
+      </section>
+
+      <section>
+        <h2><span>9.</span> ポリシーの変更</h2>
+        <p>
+          法令、サービス内容または情報の取扱い方法の変更に応じて、本ポリシーを改定することがあります。
+          重要な変更がある場合は、本ページまたはアプリ内で案内します。
+        </p>
+      </section>
+
+      <section class="contact">
+        <h2><span>10.</span> お問い合わせ</h2>
+        <p>
+          本ポリシーまたは本アプリに関するお問い合わせは、GitHub Issuesからご連絡ください。
+          Issueは公開されるため、秘密鍵、個人情報、その他の機密情報を記載しないでください。
+        </p>
+        <a class="contact-link" href="https://github.com/pek0hara/ToriNos/issues/new">
+          GitHubで問い合わせを作成
+        </a>
+      </section>
+    </article>
+  </main>
+
+  <footer class="site-footer">
+    <span>&copy; 2026 ToriNos</span>
+    <nav aria-label="フッターナビゲーション">
+      <a href="./">ホーム</a>
+      <a href="https://github.com/pek0hara/ToriNos/issues/new">お問い合わせ</a>
+    </nav>
+  </footer>
+</body>
+</html>
