@@ -152,7 +152,7 @@ fun StatusScreen(
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis,
                             )
-                            IconButton(onClick = { showRelayMenu = true }) {
+                            IconButton(onClick = { showRelayMenu = !showRelayMenu }) {
                                 Icon(
                                     Icons.Default.ArrowDropDown,
                                     contentDescription = "リレー切り替え",
@@ -298,14 +298,16 @@ private fun CategoryFilterRow(
     onToggle: (String) -> Unit,
 ) {
     LazyRow(
+        modifier = Modifier.fillMaxWidth(),
         contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
         horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalAlignment = Alignment.CenterVertically,
     ) {
         items(availableCategories) { category ->
             FilterChip(
                 selected = category in selectedCategories,
                 onClick = { onToggle(category) },
-                label = { Text(category, style = MaterialTheme.typography.labelSmall) },
+                label = { StatusTagText(category) },
             )
         }
     }
@@ -324,22 +326,20 @@ private fun StatusRow(
             .clickable(onClick = onUserClick)
             .padding(horizontal = 16.dp, vertical = 12.dp),
         horizontalArrangement = Arrangement.spacedBy(12.dp),
+        verticalAlignment = Alignment.CenterVertically,
     ) {
         AvatarCircle(
             pubkey = status.event.pubkey,
             name = profile?.bestName,
             pictureUrl = profile?.picture,
-            size = 32,
+            size = 42,
         )
         Column(
             modifier = Modifier.weight(1f),
             verticalArrangement = Arrangement.spacedBy(6.dp),
         ) {
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                AssistChip(
-                    onClick = {},
-                    label = { Text(status.statusTag, style = MaterialTheme.typography.labelSmall) },
-                )
+                StatusTagLabel(status.statusTag)
                 LinkedText(
                     text = status.event.content,
                     style = MaterialTheme.typography.bodyLarge,
@@ -373,21 +373,53 @@ private fun StatusRow(
 }
 
 @Composable
+private fun StatusTagLabel(statusTag: String) {
+    if (statusTag.isDefaultStatusTag()) {
+        StatusTagText(statusTag)
+    } else {
+        AssistChip(
+            onClick = {},
+            label = { StatusTagText(statusTag) },
+        )
+    }
+}
+
+@Composable
+private fun StatusTagText(statusTag: String) {
+    Text(
+        text = statusTag.statusTagDisplayLabel(),
+        style = if (statusTag.isDefaultStatusTag()) {
+            MaterialTheme.typography.bodyLarge
+        } else {
+            MaterialTheme.typography.labelSmall
+        },
+    )
+}
+
+@Composable
 private fun StatusComposerDialog(
     isPublishing: Boolean,
     errorMessage: String?,
     onDismiss: () -> Unit,
     onSubmit: (statusTag: String, content: String, expiration: Long?, referenceUrl: String?) -> Unit,
 ) {
-    var statusTag by remember { mutableStateOf("general") }
+    var selectedStatusTagOption by remember { mutableStateOf(StatusTagOption.General) }
+    var customStatusTag by remember { mutableStateOf("") }
+    var statusTagExpanded by remember { mutableStateOf(false) }
     var content by remember { mutableStateOf("") }
     var referenceUrl by remember { mutableStateOf("") }
-    var selectedExpiration by remember { mutableStateOf(ExpirationOption.OneHour) }
+    var selectedExpiration by remember { mutableStateOf(ExpirationOption.NoExpiration) }
     var expirationExpanded by remember { mutableStateOf(false) }
     val dismissKeyboard = rememberDismissKeyboard()
+    val showStatusTagMenu = {
+        dismissKeyboard()
+        expirationExpanded = false
+        statusTagExpanded = !statusTagExpanded
+    }
     val showExpirationMenu = {
         dismissKeyboard()
-        expirationExpanded = true
+        statusTagExpanded = false
+        expirationExpanded = !expirationExpanded
     }
 
     Dialog(
@@ -420,13 +452,46 @@ private fun StatusComposerDialog(
                             .verticalScroll(rememberScrollState()),
                         verticalArrangement = Arrangement.spacedBy(12.dp),
                     ) {
-                        OutlinedTextField(
-                            value = statusTag,
-                            onValueChange = { statusTag = it },
-                            label = { Text("ステータスタグ") },
-                            singleLine = true,
-                            modifier = Modifier.fillMaxWidth(),
-                        )
+                        Box {
+                            OutlinedTextField(
+                                value = selectedStatusTagOption.label,
+                                onValueChange = {},
+                                label = { Text("ステータスタグ") },
+                                readOnly = true,
+                                trailingIcon = { Icon(Icons.Default.ArrowDropDown, contentDescription = null) },
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable(onClick = showStatusTagMenu),
+                            )
+                            Box(
+                                modifier = Modifier
+                                    .matchParentSize()
+                                    .clickable(onClick = showStatusTagMenu),
+                            )
+                            DropdownMenu(
+                                expanded = statusTagExpanded,
+                                onDismissRequest = { statusTagExpanded = false },
+                            ) {
+                                StatusTagOption.entries.forEach { option ->
+                                    DropdownMenuItem(
+                                        text = { Text(option.label) },
+                                        onClick = {
+                                            selectedStatusTagOption = option
+                                            statusTagExpanded = false
+                                        },
+                                    )
+                                }
+                            }
+                        }
+                        if (selectedStatusTagOption == StatusTagOption.Custom) {
+                            OutlinedTextField(
+                                value = customStatusTag,
+                                onValueChange = { customStatusTag = it },
+                                label = { Text("新しいステータスタグ") },
+                                singleLine = true,
+                                modifier = Modifier.fillMaxWidth(),
+                            )
+                        }
                         OutlinedTextField(
                             value = content,
                             onValueChange = { content = it },
@@ -487,12 +552,14 @@ private fun StatusComposerDialog(
                     ) {
                         TextButton(onClick = onDismiss) { Text("キャンセル") }
                         TextButton(
-                            enabled = !isPublishing && content.isNotBlank(),
+                            enabled = !isPublishing &&
+                                content.isNotBlank() &&
+                                (selectedStatusTagOption != StatusTagOption.Custom || customStatusTag.isNotBlank()),
                             onClick = {
                                 val expiration = selectedExpiration.secondsFromNow?.let {
                                     Clock.System.now().epochSeconds + it
                                 }
-                                onSubmit(statusTag, content, expiration, referenceUrl)
+                                onSubmit(selectedStatusTagOption.tag(customStatusTag), content, expiration, referenceUrl)
                             },
                         ) {
                             Text(if (isPublishing) "投稿中" else "追加")
@@ -503,6 +570,25 @@ private fun StatusComposerDialog(
         }
     }
 }
+
+private enum class StatusTagOption(val label: String, private val fixedTag: String?) {
+    General("💬", "general"),
+    Music("♫", "music"),
+    Custom("その他", null);
+
+    fun tag(customStatusTag: String): String =
+        fixedTag ?: customStatusTag.trim()
+}
+
+private fun String.statusTagDisplayLabel(): String =
+    when {
+        equals("general", ignoreCase = true) -> "💬"
+        equals("music", ignoreCase = true) -> "♫"
+        else -> this
+    }
+
+private fun String.isDefaultStatusTag(): Boolean =
+    equals("general", ignoreCase = true) || equals("music", ignoreCase = true)
 
 private enum class ExpirationOption(val label: String, val secondsFromNow: Long?) {
     FifteenMinutes("15分後", 15 * 60),
