@@ -4,6 +4,8 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.foundation.lazy.LazyListState
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -19,6 +21,7 @@ import androidx.compose.runtime.collectAsState
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.filter
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun NoteTimeline(
     state: FeedViewModel.UiState,
@@ -40,6 +43,8 @@ fun NoteTimeline(
     emptyText: String = "ポストがありません",
     scrollToTopRequest: Int = 0,
     listState: LazyListState? = null,
+    isRefreshing: Boolean = false,
+    onRefresh: (() -> Unit)? = null,
     header: LazyListScope.() -> Unit = {},
 ) {
     val mutedPubkeys by MuteStore.mutedPubkeys.collectAsState()
@@ -68,35 +73,50 @@ fun NoteTimeline(
         }
     }
 
-    LazyColumn(
-        state = timelineListState,
-        modifier = modifier.fillMaxSize(),
-    ) {
-        header()
+    @Composable
+    fun TimelineList(listModifier: Modifier) {
+        LazyColumn(
+            state = timelineListState,
+            modifier = listModifier,
+        ) {
+            header()
 
-        noteListItems(
-            state = state,
-            ownPubkey = ownPubkey,
-            onUserClick = onUserClick,
-            onLike = onLike,
-            onUnlike = onUnlike,
-            onDelete = onDelete,
-            onReply = onReply,
-            onOpenReplies = onOpenReplies,
-            onOpenLikes = onOpenLikes,
-            onOpenReposts = onOpenReposts,
-            onRepost = { eventId, _ ->
-                state.events.find { it.id == eventId }?.let(onRepost)
-            },
-            onUnrepost = onUnrepost,
-            onReport = { eventId, reason, detail ->
-                state.events.find { it.id == eventId }?.let { onReport(it, reason, detail) }
-            },
-            onHashtagClick = onHashtagClick,
-            onMuteUser = MuteStore::mute,
-            onUnmuteUser = MuteStore::unmute,
-            mutedPubkeys = mutedPubkeys,
-            emptyText = emptyText,
-        )
+            noteListItems(
+                state = state,
+                ownPubkey = ownPubkey,
+                onUserClick = onUserClick,
+                onLike = onLike,
+                onUnlike = onUnlike,
+                onDelete = onDelete,
+                onReply = onReply,
+                onOpenReplies = onOpenReplies,
+                onOpenLikes = onOpenLikes,
+                onOpenReposts = onOpenReposts,
+                onRepost = { eventId, _ ->
+                    state.events.find { it.id == eventId }?.let(onRepost)
+                },
+                onUnrepost = onUnrepost,
+                onReport = { eventId, reason, detail ->
+                    state.events.find { it.id == eventId }?.let { onReport(it, reason, detail) }
+                },
+                onHashtagClick = onHashtagClick,
+                onMuteUser = MuteStore::mute,
+                onUnmuteUser = MuteStore::unmute,
+                mutedPubkeys = mutedPubkeys,
+                emptyText = emptyText,
+            )
+        }
+    }
+
+    if (onRefresh != null) {
+        PullToRefreshBox(
+            isRefreshing = isRefreshing,
+            onRefresh = onRefresh,
+            modifier = modifier.fillMaxSize(),
+        ) {
+            TimelineList(Modifier.fillMaxSize())
+        }
+    } else {
+        TimelineList(modifier.fillMaxSize())
     }
 }

@@ -53,6 +53,8 @@ class FeedViewModel(
         val isLoadingMore: Boolean = false,
         /** true = 初回 EOSE 待ち（ローディングスピナー表示） */
         val isInitialLoad: Boolean = true,
+        /** true = 先頭からの手動更新中 */
+        val isRefreshing: Boolean = false,
     )
 
     private val _state = MutableStateFlow(UiState())
@@ -71,6 +73,7 @@ class FeedViewModel(
     private val pendingPubkeys = mutableSetOf<String>()
     private var profileBatchJob: Job? = null
     private var historyPageTimeoutJob: Job? = null
+    private var refreshIndicatorTimeoutJob: Job? = null
     private val watchedEventIds = linkedSetOf<String>()
     private var engagementBatchJob: Job? = null
     private val seenReactionIds = linkedSetOf<String>()
@@ -98,6 +101,7 @@ class FeedViewModel(
     private val completedHistoryRelayUrls = mutableSetOf<String>()
     private var expectedEoseCount = 1
     private var initialHistoryRequested = false
+    private var manualRefreshRequested = false
     private val relayTarget: RelayTarget = relayUrl?.let(RelayTarget::Single) ?: RelayTarget.AllEnabled
     private val shouldRefreshLiveSubscription: Boolean
         get() = authorPubkey == null && authorPubkeys != null
@@ -290,6 +294,17 @@ class FeedViewModel(
         }
     }
 
+    fun refresh() {
+        if (currentFeedState().isRefreshing) return
+        launch {
+            setFeedState(currentFeedState().copy(isRefreshing = true, isLoadingMore = false))
+            scheduleRefreshIndicatorTimeout()
+            manualRefreshRequested = true
+            stopSubscriptions(clearRefreshing = false)
+            startSubscriptions()
+        }
+    }
+
     fun startSubscriptions() {
         if (subscriptionsStarted) return
         subscriptionsStarted = true
@@ -438,6 +453,10 @@ class FeedViewModel(
             if (current.isInitialLoad && current.events.isEmpty() && !initialHistoryRequested) {
                 // 初回のみ履歴ページを取得
                 requestHistoryPage(until = null)
+            } else if (manualRefreshRequested) {
+                manualRefreshRequested = false
+                requestHistoryPage(until = null)
+                resubscribeEngagement()
             } else {
                 // タブ再表示時はライブ購読を再開し、離れていた間のギャップを補完する
                 val nowSec = Clock.System.now().epochSeconds
@@ -451,7 +470,7 @@ class FeedViewModel(
         }
     }
 
-    fun stopSubscriptions() {
+    fun stopSubscriptions(clearRefreshing: Boolean = true) {
         if (!subscriptionsStarted) return
         subscriptionsStarted = false
         val ids = subscriptionIds
@@ -464,6 +483,10 @@ class FeedViewModel(
         engagementBatchJob?.cancel()
         historyPageTimeoutJob?.cancel()
         historyPageTimeoutJob = null
+        if (clearRefreshing) {
+            refreshIndicatorTimeoutJob?.cancel()
+            refreshIndicatorTimeoutJob = null
+        }
         emitFeedStateNow()
         if (loadingMore) {
             loadingMore = false
@@ -472,6 +495,7 @@ class FeedViewModel(
                 isInitialLoad = current.isInitialLoad && current.events.isEmpty(),
                 canLoadMore = current.canLoadMore || current.events.isNotEmpty(),
                 isLoadingMore = false,
+                isRefreshing = if (clearRefreshing) false else current.isRefreshing,
             ))
         }
         if (currentFeedState().isInitialLoad && currentFeedState().events.isEmpty()) {
@@ -504,6 +528,7 @@ class FeedViewModel(
                     isInitialLoad = false,
                     canLoadMore = false,
                     isLoadingMore = false,
+                    isRefreshing = false,
                 )
             }
             return
@@ -591,7 +616,10 @@ class FeedViewModel(
             canLoadMore = if (isGapFill) cur.canLoadMore else hasMore,
             isInitialLoad = false,
             isLoadingMore = false,
+            isRefreshing = false,
         ))
+        refreshIndicatorTimeoutJob?.cancel()
+        refreshIndicatorTimeoutJob = null
         currentHistorySubId?.let { subId ->
             if (isGapFill || !hasMore) NostrRepository.close(subId)
         }
@@ -635,7 +663,10 @@ class FeedViewModel(
                     hasMore || shouldRetryCurrentPage || canAdvanceFromPartialResponse
                 },
                 isLoadingMore = false,
+                isRefreshing = false,
             ))
+            refreshIndicatorTimeoutJob?.cancel()
+            refreshIndicatorTimeoutJob = null
             currentHistorySubId?.let { subId ->
                 if (isGapFill || !hasMore) NostrRepository.close(subId)
             }
@@ -675,6 +706,9 @@ class FeedViewModel(
                 lastHistoryBatchReceivedCount++
                 lastHistoryBatchOldestCreatedAt = minOf(lastHistoryBatchOldestCreatedAt ?: event.createdAt, event.createdAt)
                 lastHistoryBatchUniqueCount += appendFeedEvent(event)
+                if (currentFeedState().isRefreshing && lastHistoryBatchUniqueCount > 0) {
+                    clearRefreshIndicator()
+                }
                 if (currentFeedState().isInitialLoad && currentFeedState().events.isNotEmpty()) {
                     updateFeedState { it.copy(isInitialLoad = false) }
                 }
@@ -688,6 +722,22 @@ class FeedViewModel(
                 }
             }
         }
+    }
+
+    private fun scheduleRefreshIndicatorTimeout() {
+        refreshIndicatorTimeoutJob?.cancel()
+        refreshIndicatorTimeoutJob = launch {
+            delay(REFRESH_INDICATOR_TIMEOUT_MS)
+            clearRefreshIndicator()
+        }
+    }
+
+    private fun clearRefreshIndicator() {
+        val current = currentFeedState()
+        if (!current.isRefreshing) return
+        setFeedState(current.copy(isRefreshing = false))
+        refreshIndicatorTimeoutJob?.cancel()
+        refreshIndicatorTimeoutJob = null
     }
 
     private suspend fun subscribeLiveFeed(since: Long) {
@@ -1011,6 +1061,7 @@ class FeedViewModel(
         private const val PROFILE_FETCH_BATCH_LIMIT = 200
         private const val PROFILE_FETCH_RETRY_INTERVAL_MS = 5_000L
         private const val FEED_STATE_EMIT_DELAY_MS = 150L
+        private const val REFRESH_INDICATOR_TIMEOUT_MS = 2_500L
         private const val LIVE_SUBSCRIPTION_REFRESH_INTERVAL_MS = 60_000L
         private const val LIVE_SUBSCRIPTION_SINCE_OVERLAP_SECONDS = 300L
         private const val MAX_AUTO_SKIP_EMPTY_HISTORY_PAGES = 5

@@ -111,6 +111,7 @@ fun FeedScreen(
     val selectedGlobalRelayUrl by RelayStore.selectedGlobalRelayUrl.collectAsState()
     val effectiveGlobalRelayUrl = selectedGlobalRelayUrl ?: relays.firstOrNull()
     val followedPubkeys by FollowRepository.followedPubkeys.collectAsState()
+    val isFollowListLoaded by FollowRepository.loaded.collectAsState()
     val mutedPubkeys by MuteStore.mutedPubkeys.collectAsState()
     var showRelayMenu by remember { mutableStateOf(false) }
     var feedTab by rememberSaveable(accountResetKey, authorPubkey) { mutableStateOf(FeedTab.Following) }
@@ -481,26 +482,44 @@ fun FeedScreen(
                         FollowingFeedMode.Following -> followedPubkeys.sorted()
                         FollowingFeedMode.Muted -> mutedPubkeys.sorted()
                     }
-                    val ownerKey = ownPubkey ?: "anonymous"
-                    FeedTimelinePane(
-                        viewModelKey = "global-${FeedTab.Following.name}-${followingFeedMode.name}-" +
-                            "${activeRelayUrl ?: "all"}-$ownerKey-${followingAuthors.joinToString(separator = ",")}",
-                        authorPubkey = null,
-                        authorPubkeys = followingAuthors,
-                        relayUrl = activeRelayUrl,
-                        includeRepostsInFeed = followingFeedMode == FollowingFeedMode.Following,
-                        hashtag = null,
-                        filterMutedUsers = followingFeedMode == FollowingFeedMode.Following,
-                        ownPubkey = ownPubkey,
-                        onUserClick = onUserClick,
-                        modifier = timelineModifier,
-                        onReply = onReply,
-                        onOpenReplies = onOpenReplies,
-                        onOpenLikes = onOpenLikes,
-                        onOpenReposts = onOpenReposts,
-                        onHashtagClick = { tag -> onOpenSearch("#$tag") },
-                        listState = followingListState,
-                    )
+                    if (followingFeedMode == FollowingFeedMode.Following && !isFollowListLoaded) {
+                        Box(
+                            modifier = timelineModifier.fillMaxSize(),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Text(
+                                text = "読み込み中...",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onBackground,
+                            )
+                        }
+                    } else {
+                        val ownerKey = ownPubkey ?: "anonymous"
+                        FeedTimelinePane(
+                            viewModelKey = "global-${FeedTab.Following.name}-${followingFeedMode.name}-" +
+                                "${activeRelayUrl ?: "all"}-$ownerKey-${followingAuthors.joinToString(separator = ",")}",
+                            authorPubkey = null,
+                            authorPubkeys = followingAuthors,
+                            relayUrl = activeRelayUrl,
+                            includeRepostsInFeed = followingFeedMode == FollowingFeedMode.Following,
+                            hashtag = null,
+                            filterMutedUsers = followingFeedMode == FollowingFeedMode.Following,
+                            ownPubkey = ownPubkey,
+                            onUserClick = onUserClick,
+                            modifier = timelineModifier,
+                            onReply = onReply,
+                            onOpenReplies = onOpenReplies,
+                            onOpenLikes = onOpenLikes,
+                            onOpenReposts = onOpenReposts,
+                            onHashtagClick = { tag -> onOpenSearch("#$tag") },
+                            listState = followingListState,
+                            onRefresh = {
+                                if (followingFeedMode == FollowingFeedMode.Following) {
+                                    FollowRepository.refresh()
+                                }
+                            },
+                        )
+                    }
                 }
             }
 
@@ -604,6 +623,7 @@ private fun FeedTimelinePane(
     onHashtagClick: ((tag: String) -> Unit)?,
     scrollToTopRequest: Int = 0,
     listState: LazyListState? = null,
+    onRefresh: (() -> Unit)? = null,
 ) {
     val viewModel: FeedViewModel = viewModel(key = viewModelKey) {
         FeedViewModel(
@@ -646,6 +666,11 @@ private fun FeedTimelinePane(
         onHashtagClick = onHashtagClick,
         scrollToTopRequest = scrollToTopRequest,
         listState = listState,
+        isRefreshing = state.isRefreshing,
+        onRefresh = {
+            onRefresh?.invoke()
+            viewModel.refresh()
+        },
     )
 }
 
