@@ -87,9 +87,10 @@ class ThreadViewModel(
             runCatching {
                 val tags = noteContext.replyTags(root.id, root.pubkey) + listOf(listOf("client", "ToriNos"))
                 val event = signEvent(privateKeyHex, text, kind = noteContext.eventKind, tags = tags)
-                seenReplyIds.add(event.id)
                 NostrRepository.publish(event)
-            }.onSuccess {
+                event
+            }.onSuccess { event ->
+                rememberPublishedReply(event)
                 _state.value = _state.value.copy(isReplying = false, replyText = "")
             }.onFailure { e ->
                 _state.value = _state.value.copy(
@@ -391,6 +392,26 @@ class ThreadViewModel(
         extractNpubReferences(text).forEach { reference ->
             scheduleProfileFetch(reference.pubkey)
         }
+    }
+
+    private fun rememberPublishedReply(event: NostrEvent) {
+        if (!seenReplyIds.add(event.id)) return
+        seenReplyCountIds.add(event.id)
+        val cur = _state.value
+        val updatedReplies = if (cur.replies.any { it.id == event.id }) {
+            cur.replies
+        } else {
+            (cur.replies + event).sortedBy { it.createdAt }
+        }
+        _state.value = cur.copy(
+            replies = updatedReplies,
+            replyCounts = cur.replyCounts + (eventId to (cur.replyCounts[eventId] ?: cur.replies.size) + 1),
+            isLoading = false,
+        )
+        scheduleProfileFetch(event.pubkey)
+        scheduleMentionedProfileFetch(event.content)
+        scheduleReplyCountFetch(event.id)
+        scheduleReactionFetch(event.id)
     }
 
     private fun scheduleReplyCountFetch(eventId: String) {

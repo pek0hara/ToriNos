@@ -98,6 +98,7 @@ fun PostSheet(
     initialMemoRestoreMessage: String? = null,
     saveLocalDraftOnCancel: Boolean = true,
     onOpenCustomEmojiSettings: (PostMemoData?) -> Unit = {},
+    onPosted: (eventId: String, replyToId: String?, noteContext: NoteContext) -> Unit = { _, _, _ -> },
     viewModel: PostViewModel? = null,
 ) {
     val postViewModel = viewModel ?: remember { PostViewModel() }
@@ -126,10 +127,12 @@ fun PostSheet(
         onOpenCustomEmojiSettings(draft)
     }
 
-    LaunchedEffect(state.posted) {
-        if (state.posted) {
+    LaunchedEffect(state.posted, state.postedEventId) {
+        val postedEventId = state.postedEventId
+        if (state.posted && postedEventId != null) {
             postViewModel.clearPosted()
             onDismiss()
+            onPosted(postedEventId, replyToId, noteContext)
         }
     }
 

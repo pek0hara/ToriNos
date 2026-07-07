@@ -38,6 +38,7 @@ data class PostState(
     val error: String? = null,
     val memoMessage: String? = null,
     val posted: Boolean = false,
+    val postedEventId: String? = null,
 ) {
     val isUploadingAny: Boolean get() = images.any { it.isUploading }
     val canPost: Boolean get() =
@@ -98,7 +99,13 @@ class PostViewModel : SafeViewModel() {
     private var editingMemoIdentifier: String? = null
 
     fun onTextChange(text: String) {
-        _state.value = _state.value.copy(text = text, error = null, memoMessage = null, posted = false)
+        _state.value = _state.value.copy(
+            text = text,
+            error = null,
+            memoMessage = null,
+            posted = false,
+            postedEventId = null,
+        )
     }
 
     fun uploadAndAppendImage(bytes: ByteArray, mimeType: String) {
@@ -271,8 +278,9 @@ class PostViewModel : SafeViewModel() {
             runCatching {
                 val event = signEvent(privateKeyHex, text, kind = noteContext.eventKind, tags = tags)
                 NostrRepository.publish(event)
-            }.onSuccess {
-                _state.value = PostState(posted = true)
+                event
+            }.onSuccess { event ->
+                _state.value = PostState(posted = true, postedEventId = event.id)
             }.onFailure { e ->
                 _state.value = _state.value.copy(isPosting = false, error = e.message ?: "ポストに失敗しました")
             }
@@ -280,7 +288,7 @@ class PostViewModel : SafeViewModel() {
     }
 
     fun clearPosted() {
-        _state.value = _state.value.copy(posted = false)
+        _state.value = _state.value.copy(posted = false, postedEventId = null)
     }
 
     private fun buildPostContent(text: String, imageUrls: List<String>): String {

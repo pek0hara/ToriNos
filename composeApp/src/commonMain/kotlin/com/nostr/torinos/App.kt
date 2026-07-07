@@ -1155,6 +1155,23 @@ fun App() {
                     selectedMemoDeleteAction = null
                     nav.navigate(CustomEmojiRoute()) { closeProfileRoute() }
                 },
+                onPosted = { eventId, postedReplyToId, postedNoteContext ->
+                    if (postedReplyToId == null) return@PostSheet
+                    when (postedNoteContext) {
+                        is NoteContext.Channel -> {
+                            nav.navigate(
+                                ThreadRoute(
+                                    eventId = eventId,
+                                    source = ThreadSourceChannel,
+                                    channelId = postedNoteContext.channelId,
+                                ),
+                            )
+                        }
+                        NoteContext.Timeline -> {
+                            nav.navigate(ThreadRoute(eventId))
+                        }
+                    }
+                },
             )
         }
 
