@@ -256,6 +256,7 @@ class ArticleEditorViewModel(
                     error("この記事を投稿したアカウントでログインしてください")
                 }
                 NostrRepository.publishToRelays(event, relayUrls)
+                ArticleMemoryCache.publishArticle(event, relayUrls)
                 PublishedArticle(event.pubkey, identifier)
             }.onSuccess { article ->
                 appLog("[ArticleEditor] publish accepted identifier=${article.identifier}")

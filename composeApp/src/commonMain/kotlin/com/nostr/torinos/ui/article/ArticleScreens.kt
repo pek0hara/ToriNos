@@ -17,6 +17,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -24,8 +25,11 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -37,6 +41,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import com.nostr.torinos.ui.components.AppTopBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -50,6 +55,7 @@ import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
@@ -74,6 +80,7 @@ import com.nostr.torinos.model.NostrProfile
 import com.nostr.torinos.model.extractNostrEventReferences
 import com.nostr.torinos.model.quotedEventIds
 import com.nostr.torinos.model.stripNostrEventUris
+import com.nostr.torinos.network.FollowRepository
 import com.nostr.torinos.network.RelayStore
 import com.nostr.torinos.ui.components.LinkedText
 import com.nostr.torinos.ui.components.NetworkImage
@@ -120,15 +127,32 @@ fun ArticleHubScreen(
     }
     val state by viewModel.state.collectAsState()
     var selectedTab by rememberSaveable { mutableStateOf(ArticleHubTab.Articles) }
+    val followedPubkeys by FollowRepository.followedPubkeys.collectAsState()
+    var isMyAuthorsExpanded by rememberSaveable { mutableStateOf(true) }
+    var isFollowingAuthorsExpanded by rememberSaveable { mutableStateOf(true) }
+    var isGlobalAuthorsExpanded by rememberSaveable { mutableStateOf(true) }
     val listState = rememberSaveable(activeRelayUrl, selectedTab, saver = LazyListState.Saver) { LazyListState() }
     val headerBackgroundColor = MaterialTheme.colorScheme.background
     val headerContentColor = MaterialTheme.colorScheme.onBackground
 
-    LaunchedEffect(listState, selectedTab, state.canLoadMore, state.isLoadingMore) {
+    LaunchedEffect(
+        listState,
+        selectedTab,
+        isMyAuthorsExpanded,
+        isFollowingAuthorsExpanded,
+        isGlobalAuthorsExpanded,
+        state.canLoadMore,
+        state.isLoadingMore,
+    ) {
         snapshotFlow {
+            val canAutoLoadMore = selectedTab == ArticleHubTab.Articles ||
+                isMyAuthorsExpanded ||
+                isFollowingAuthorsExpanded ||
+                isGlobalAuthorsExpanded
             val layoutInfo = listState.layoutInfo
             val lastVisible = layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: -1
-            lastVisible >= layoutInfo.totalItemsCount - 4 &&
+            canAutoLoadMore &&
+                lastVisible >= layoutInfo.totalItemsCount - 4 &&
                 state.canLoadMore &&
                 !state.isLoadingMore
         }
@@ -228,6 +252,15 @@ fun ArticleHubScreen(
                 selectedTab = selectedTab,
                 onArticleClick = onArticleClick,
                 onAuthorClick = onAuthorClick,
+                onLoadMore = viewModel::loadMore,
+                ownPubkey = ownPubkey,
+                followedPubkeys = followedPubkeys,
+                isMyAuthorsExpanded = isMyAuthorsExpanded,
+                isFollowingAuthorsExpanded = isFollowingAuthorsExpanded,
+                isGlobalAuthorsExpanded = isGlobalAuthorsExpanded,
+                onToggleMyAuthors = { isMyAuthorsExpanded = !isMyAuthorsExpanded },
+                onToggleFollowingAuthors = { isFollowingAuthorsExpanded = !isFollowingAuthorsExpanded },
+                onToggleGlobalAuthors = { isGlobalAuthorsExpanded = !isGlobalAuthorsExpanded },
                 contentPadding = PaddingValues(top = 48.dp),
                 modifier = Modifier
                     .fillMaxSize()
@@ -387,6 +420,7 @@ fun UserArticleListScreen(
             selectedTab = ArticleHubTab.Articles,
             onArticleClick = onArticleClick,
             onAuthorClick = {},
+            onLoadMore = viewModel::loadMore,
             emptyText = "記事がありません",
             modifier = Modifier.fillMaxSize().padding(padding),
         )
@@ -420,6 +454,14 @@ fun ArticleDetailScreen(
         ArticleDetailViewModel(pubkey, identifier, relayUrl = activeRelayUrl)
     }
     val state by viewModel.state.collectAsState()
+    var showDeleteDialog by rememberSaveable(pubkey, identifier) { mutableStateOf(false) }
+
+    LaunchedEffect(state.deleteCompletedCount) {
+        if (state.deleteCompletedCount > 0) {
+            showDeleteDialog = false
+            onBack()
+        }
+    }
 
     Scaffold(
         contentWindowInsets = WindowInsets(0),
@@ -441,7 +483,14 @@ fun ArticleDetailScreen(
                     val article = state.article
                     if (article != null && ownPubkey != null && article.event.pubkey == ownPubkey) {
                         IconButton(
+                            onClick = { showDeleteDialog = true },
+                            enabled = !state.isDeleting,
+                        ) {
+                            Icon(Icons.Default.Delete, contentDescription = "記事を削除")
+                        }
+                        IconButton(
                             onClick = { onEditArticle(article.event.pubkey, article.meta.identifier) },
+                            enabled = !state.isDeleting,
                         ) {
                             Icon(Icons.Default.Edit, contentDescription = "記事を編集")
                         }
@@ -483,6 +532,65 @@ fun ArticleDetailScreen(
             }
         }
     }
+
+    if (showDeleteDialog) {
+        DeleteArticleDialog(
+            isDeleting = state.isDeleting,
+            error = state.deleteError,
+            onDismiss = {
+                if (!state.isDeleting) showDeleteDialog = false
+            },
+            onConfirm = viewModel::deleteArticle,
+        )
+    }
+}
+
+@Composable
+private fun DeleteArticleDialog(
+    isDeleting: Boolean,
+    error: String?,
+    onDismiss: () -> Unit,
+    onConfirm: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("記事を削除") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("有効なリレーへ削除要求を送信します。対応していないリレーやキャッシュ済みデータからの削除は保証されません。")
+                error?.let {
+                    Text(
+                        text = it,
+                        color = MaterialTheme.colorScheme.error,
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = onConfirm,
+                enabled = !isDeleting,
+            ) {
+                if (isDeleting) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(18.dp),
+                        strokeWidth = 2.dp,
+                    )
+                } else {
+                    Text("削除する")
+                }
+            }
+        },
+        dismissButton = {
+            TextButton(
+                onClick = onDismiss,
+                enabled = !isDeleting,
+            ) {
+                Text("キャンセル")
+            }
+        },
+    )
 }
 
 @Composable
@@ -492,6 +600,15 @@ private fun ArticleListContent(
     selectedTab: ArticleHubTab,
     onArticleClick: (pubkey: String, identifier: String) -> Unit,
     onAuthorClick: (pubkey: String) -> Unit,
+    onLoadMore: () -> Unit,
+    ownPubkey: String? = null,
+    followedPubkeys: Set<String> = emptySet(),
+    isMyAuthorsExpanded: Boolean = true,
+    isFollowingAuthorsExpanded: Boolean = true,
+    isGlobalAuthorsExpanded: Boolean = true,
+    onToggleMyAuthors: () -> Unit = {},
+    onToggleFollowingAuthors: () -> Unit = {},
+    onToggleGlobalAuthors: () -> Unit = {},
     modifier: Modifier = Modifier,
     contentPadding: PaddingValues = PaddingValues(),
     emptyText: String = "記事がありません",
@@ -510,7 +627,9 @@ private fun ArticleListContent(
             )
         }
         selectedTab == ArticleHubTab.Articles && state.articles.isEmpty() -> EmptyArticleList(modifier, emptyText)
-        selectedTab == ArticleHubTab.Users && state.authors.isEmpty() -> EmptyArticleList(modifier, "記事を書いているユーザーが見つかりません")
+        selectedTab == ArticleHubTab.Users && state.authors.isEmpty() && !state.canLoadMore -> {
+            EmptyArticleList(modifier, "記事を書いているユーザーが見つかりません")
+        }
         else -> LazyColumn(
             state = listState,
             modifier = modifier,
@@ -531,17 +650,34 @@ private fun ArticleListContent(
                     }
                 }
                 ArticleHubTab.Users -> {
-                    items(
-                        items = state.authors,
-                        key = { it.pubkey },
-                        contentType = { "author" },
-                    ) { author ->
-                        ArticleAuthorRow(
-                            author = author,
-                            onClick = { onAuthorClick(author.pubkey) },
-                        )
-                        HorizontalDivider()
+                    val myAuthors = state.authors.filter { it.pubkey == ownPubkey }
+                    val followingAuthors = state.authors.filter {
+                        it.pubkey != ownPubkey && it.pubkey in followedPubkeys
                     }
+                    val globalAuthors = state.authors.filter {
+                        it.pubkey != ownPubkey && it.pubkey !in followedPubkeys
+                    }
+                    articleAuthorSection(
+                        title = "自分",
+                        authors = myAuthors,
+                        expanded = isMyAuthorsExpanded,
+                        onToggle = onToggleMyAuthors,
+                        onAuthorClick = onAuthorClick,
+                    )
+                    articleAuthorSection(
+                        title = "フォロー",
+                        authors = followingAuthors,
+                        expanded = isFollowingAuthorsExpanded,
+                        onToggle = onToggleFollowingAuthors,
+                        onAuthorClick = onAuthorClick,
+                    )
+                    articleAuthorSection(
+                        title = "グローバル",
+                        authors = globalAuthors,
+                        expanded = isGlobalAuthorsExpanded,
+                        onToggle = onToggleGlobalAuthors,
+                        onAuthorClick = onAuthorClick,
+                    )
                 }
             }
             if (state.isLoadingMore) {
@@ -551,8 +687,99 @@ private fun ArticleListContent(
                         contentAlignment = Alignment.Center,
                     ) { CircularProgressIndicator() }
                 }
+            } else if (selectedTab == ArticleHubTab.Users && state.canLoadMore) {
+                item(key = "user-load-more", contentType = "load-more") {
+                    Box(
+                        modifier = Modifier.fillMaxWidth().padding(16.dp),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Button(onClick = onLoadMore) {
+                            Text("もっと読み込む")
+                        }
+                    }
+                }
             }
         }
+    }
+}
+
+private fun LazyListScope.articleAuthorSection(
+    title: String,
+    authors: List<ArticleAuthorItem>,
+    expanded: Boolean,
+    onToggle: () -> Unit,
+    onAuthorClick: (pubkey: String) -> Unit,
+) {
+    item(key = "author-section-$title", contentType = "author-section-header") {
+        ArticleAuthorSectionHeader(
+            title = title,
+            count = authors.size,
+            expanded = expanded,
+            onToggle = onToggle,
+        )
+        HorizontalDivider()
+    }
+    if (expanded) {
+        if (authors.isEmpty()) {
+            item(key = "author-section-$title-empty", contentType = "author-section-empty") {
+                Text(
+                    text = "該当するユーザーはいません",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    style = MaterialTheme.typography.bodySmall,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 14.dp),
+                )
+                HorizontalDivider()
+            }
+        } else {
+            items(
+                items = authors,
+                key = { "$title-${it.pubkey}" },
+                contentType = { "author" },
+            ) { author ->
+                ArticleAuthorRow(
+                    author = author,
+                    onClick = { onAuthorClick(author.pubkey) },
+                )
+                HorizontalDivider()
+            }
+        }
+    }
+}
+
+@Composable
+private fun ArticleAuthorSectionHeader(
+    title: String,
+    count: Int,
+    expanded: Boolean,
+    onToggle: () -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onToggle)
+            .padding(horizontal = 16.dp, vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Icon(
+            imageVector = Icons.Default.ArrowDropDown,
+            contentDescription = null,
+            modifier = Modifier.rotate(if (expanded) 0f else -90f),
+            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Text(
+            text = title,
+            style = MaterialTheme.typography.titleSmall,
+            fontWeight = FontWeight.SemiBold,
+            modifier = Modifier.weight(1f),
+        )
+        Text(
+            text = "$count",
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
     }
 }
 

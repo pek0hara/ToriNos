@@ -1,5 +1,7 @@
 package com.nostr.torinos.ui.article
 
+import com.nostr.torinos.crypto.KeyStorage
+import com.nostr.torinos.crypto.signEvent
 import com.nostr.torinos.model.ArticleAuthorItem
 import com.nostr.torinos.model.ArticleItem
 import com.nostr.torinos.model.NIP23_ARTICLE_KIND
@@ -14,6 +16,7 @@ import com.nostr.torinos.model.toArticleMeta
 import com.nostr.torinos.network.MuteStore
 import com.nostr.torinos.network.NostrRepository
 import com.nostr.torinos.network.ProfileCache
+import com.nostr.torinos.network.RelayStore
 import com.nostr.torinos.ui.SafeViewModel
 import kotlin.random.Random
 import kotlin.time.Clock
@@ -25,6 +28,7 @@ import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.drop
@@ -48,9 +52,14 @@ data class ArticleListState(
     val error: String? = null,
 )
 
-private object ArticleMemoryCache {
+internal object ArticleMemoryCache {
     private val articlesByRelayAndAddress = mutableMapOf<String, ArticleItem>()
     private val eventsByRelayAndId = mutableMapOf<String, NostrEvent>()
+    private val localArticleEvents = MutableSharedFlow<LocalArticleEvent>(extraBufferCapacity = 16)
+    private val localArticleDeletions = MutableSharedFlow<LocalArticleDeletion>(extraBufferCapacity = 16)
+
+    val articleEvents = localArticleEvents
+    val articleDeletions = localArticleDeletions
 
     fun putArticles(relayUrl: String?, articles: List<ArticleItem>) {
         articles.forEach { article ->
@@ -62,6 +71,30 @@ private object ArticleMemoryCache {
         eventsByRelayAndId[eventKey(relayUrl, event.id)] = event
     }
 
+    fun publishArticle(event: NostrEvent, relayUrls: Collection<String>) {
+        val meta = event.toArticleMeta() ?: return
+        val article = ArticleItem(event = event, meta = meta)
+        putArticles(null, listOf(article))
+        relayUrls.forEach { relayUrl ->
+            putArticles(relayUrl, listOf(article))
+        }
+        localArticleEvents.tryEmit(LocalArticleEvent(event, relayUrls.toSet()))
+    }
+
+    fun deleteArticle(article: ArticleItem, relayUrls: Collection<String>) {
+        removeArticle(null, article.address)
+        relayUrls.forEach { relayUrl ->
+            removeArticle(relayUrl, article.address)
+        }
+        localArticleDeletions.tryEmit(
+            LocalArticleDeletion(
+                address = article.address,
+                pubkey = article.event.pubkey,
+                relayUrls = relayUrls.toSet(),
+            ),
+        )
+    }
+
     fun article(relayUrl: String?, pubkey: String, identifier: String): ArticleItem? =
         articlesByRelayAndAddress[articleKey(relayUrl, articleAddress(pubkey, identifier))]
 
@@ -70,11 +103,32 @@ private object ArticleMemoryCache {
             eventsByRelayAndId[eventKey(relayUrl, eventId)]?.let { eventId to it }
         }.toMap()
 
+    fun removeArticle(relayUrl: String?, address: String) {
+        articlesByRelayAndAddress.remove(articleKey(relayUrl, address))
+    }
+
     private fun articleKey(relayUrl: String?, address: String): String =
         "${relayUrl.orEmpty()}|$address"
 
     private fun eventKey(relayUrl: String?, eventId: String): String =
         "${relayUrl.orEmpty()}|$eventId"
+}
+
+internal data class LocalArticleEvent(
+    val event: NostrEvent,
+    val relayUrls: Set<String>,
+) {
+    fun matches(relayUrl: String?): Boolean =
+        relayUrl == null || relayUrl in relayUrls
+}
+
+internal data class LocalArticleDeletion(
+    val address: String,
+    val pubkey: String,
+    val relayUrls: Set<String>,
+) {
+    fun matches(relayUrl: String?): Boolean =
+        relayUrl == null || relayUrl in relayUrls
 }
 
 class ArticleHubViewModel(private val relayUrl: String? = null) : SafeViewModel() {
@@ -89,6 +143,21 @@ class ArticleHubViewModel(private val relayUrl: String? = null) : SafeViewModel(
     init {
         launch {
             MuteStore.mutedPubkeys.drop(1).collect { updateStateFromEvents() }
+        }
+        launch {
+            ArticleMemoryCache.articleEvents.collect { localEvent ->
+                if (!localEvent.matches(relayUrl)) return@collect
+                rawEvents[localEvent.event.id] = localEvent.event
+                updateStateFromEvents()
+                fetchMissingProfiles()
+            }
+        }
+        launch {
+            ArticleMemoryCache.articleDeletions.collect { deletion ->
+                if (!deletion.matches(relayUrl)) return@collect
+                removeRawArticle(deletion.address)
+                updateStateFromEvents()
+            }
         }
         refresh()
     }
@@ -162,6 +231,13 @@ class ArticleHubViewModel(private val relayUrl: String? = null) : SafeViewModel(
         )
     }
 
+    private fun removeRawArticle(address: String) {
+        rawEvents.entries.removeAll { (_, event) ->
+            val meta = event.toArticleMeta() ?: return@removeAll false
+            articleAddress(event.pubkey, meta.identifier) == address
+        }
+    }
+
     private suspend fun fetchMissingProfiles() {
         val missing = rawEvents.values
             .map { it.pubkey }
@@ -196,6 +272,21 @@ class UserArticleListViewModel(
     init {
         launch {
             MuteStore.mutedPubkeys.drop(1).collect { updateStateFromEvents() }
+        }
+        launch {
+            ArticleMemoryCache.articleEvents.collect { localEvent ->
+                if (!localEvent.matches(relayUrl) || localEvent.event.pubkey != pubkey) return@collect
+                rawEvents[localEvent.event.id] = localEvent.event
+                updateStateFromEvents()
+                fetchProfile()
+            }
+        }
+        launch {
+            ArticleMemoryCache.articleDeletions.collect { deletion ->
+                if (!deletion.matches(relayUrl) || deletion.pubkey != pubkey) return@collect
+                removeRawArticle(deletion.address)
+                updateStateFromEvents()
+            }
         }
         refresh()
     }
@@ -270,6 +361,13 @@ class UserArticleListViewModel(
         )
     }
 
+    private fun removeRawArticle(address: String) {
+        rawEvents.entries.removeAll { (_, event) ->
+            val meta = event.toArticleMeta() ?: return@removeAll false
+            articleAddress(event.pubkey, meta.identifier) == address
+        }
+    }
+
     private suspend fun fetchProfile() {
         if (pubkey in _state.value.profiles) return
         ProfileCache.get(pubkey)?.let { cachedProfile ->
@@ -291,6 +389,9 @@ data class ArticleDetailState(
     val quotedProfiles: Map<String, NostrProfile> = emptyMap(),
     val loadingQuoteIds: Set<String> = emptySet(),
     val isLoading: Boolean = true,
+    val isDeleting: Boolean = false,
+    val deleteCompletedCount: Int = 0,
+    val deleteError: String? = null,
     val error: String? = null,
 )
 
@@ -345,6 +446,57 @@ class ArticleDetailViewModel(
                 _state.value = ArticleDetailState(
                     isLoading = false,
                     error = e.message ?: "記事を読み込めませんでした",
+                )
+            }
+        }
+    }
+
+    fun deleteArticle() {
+        val article = _state.value.article ?: run {
+            _state.value = _state.value.copy(error = "記事が読み込まれていません")
+            return
+        }
+        if (_state.value.isDeleting) return
+
+        val relayUrls = RelayStore.enabledRelayUrlsSnapshot()
+        if (relayUrls.isEmpty()) {
+            _state.value = _state.value.copy(deleteError = "削除要求の送信先リレーが設定されていません")
+            return
+        }
+
+        _state.value = _state.value.copy(isDeleting = true, deleteError = null)
+        launch {
+            try {
+                val privateKeyHex = KeyStorage.loadPrivateKey()
+                    ?: error("秘密鍵が設定されていません")
+                val deletion = signEvent(
+                    privateKeyHex = privateKeyHex,
+                    content = "記事を削除",
+                    kind = NIP09_DELETION_KIND,
+                    tags = listOf(
+                        listOf("a", article.address),
+                        listOf("e", article.event.id),
+                        listOf("k", NIP23_ARTICLE_KIND.toString()),
+                        listOf("client", "ToriNos"),
+                    ),
+                )
+                if (deletion.pubkey != article.event.pubkey) {
+                    error("この記事を投稿したアカウントでログインしてください")
+                }
+                NostrRepository.publishToRelays(deletion, relayUrls)
+                ArticleMemoryCache.deleteArticle(article, relayUrls)
+                _state.value = _state.value.copy(
+                    article = null,
+                    isDeleting = false,
+                    deleteError = null,
+                    deleteCompletedCount = _state.value.deleteCompletedCount + 1,
+                )
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                _state.value = _state.value.copy(
+                    isDeleting = false,
+                    deleteError = e.message ?: "記事の削除要求を送信できませんでした",
                 )
             }
         }
@@ -547,6 +699,7 @@ private const val ARTICLE_DETAIL_AUTHOR_FALLBACK_LIMIT = 100
 private const val ARTICLE_FETCH_TIMEOUT_MS = 8_000L
 private const val PROFILE_FETCH_TIMEOUT_MS = 5_000L
 private const val PROFILE_FETCH_LIMIT = 200
+private const val NIP09_DELETION_KIND = 5
 
 private fun articleSubscriptionId(prefix: String, key: Any): String =
     "$prefix-${Clock.System.now().toEpochMilliseconds()}-${key.hashCode()}-${Random.nextInt()}"
