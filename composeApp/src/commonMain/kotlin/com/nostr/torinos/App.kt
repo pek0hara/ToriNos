@@ -199,15 +199,23 @@ fun App() {
             }
         }
 
-        fun navigateFeedTab() {
-            feedChromeCollapseFraction = 0f
-            navigateTopLevelRoute("feed")
-        }
-
         fun currentProfileRoute(): String? {
             val route = nav.currentBackStackEntry?.destination?.route ?: currentRoute ?: return null
             val routeName = route.substringBefore("/")
             return route.takeIf { it == "myprofile" || routeName.endsWith("ProfileRoute") }
+        }
+
+        fun navigateFeedTab() {
+            feedChromeCollapseFraction = 0f
+            val profileRoute = currentProfileRoute()
+            if (profileRoute != null) {
+                nav.navigate("feed") {
+                    popUpTo(profileRoute) { inclusive = true }
+                    launchSingleTop = true
+                }
+                return
+            }
+            navigateTopLevelRoute("feed")
         }
 
         fun NavOptionsBuilder.closeProfileRoute() {
