@@ -18,11 +18,9 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.Info
-import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
@@ -58,10 +56,17 @@ fun RelaySettingsScreen(
 ) {
     val entries by viewModel.entries.collectAsState()
     val informationState by viewModel.informationState.collectAsState()
+    val discoveryState by viewModel.discoveryState.collectAsState()
     var input by remember { mutableStateOf("") }
     var showDisabledRelays by remember { mutableStateOf(false) }
-    val enabledEntries = entries.filter { it.enabled }
-    val disabledEntries = entries.filterNot { it.enabled }
+    val searchQuery = input.trim()
+    val isSearching = searchQuery.isNotEmpty()
+    val filteredEntries = entries.filter { entry ->
+        !isSearching || entry.url.contains(searchQuery, ignoreCase = true)
+    }
+    val enabledEntries = filteredEntries.filter { it.enabled }
+    val disabledEntries = filteredEntries.filterNot { it.enabled }
+    val areDisabledRelaysVisible = isSearching || showDisabledRelays
 
     Scaffold(
         contentWindowInsets = WindowInsets(0),
@@ -73,14 +78,6 @@ fun RelaySettingsScreen(
                         Icon(
                             Icons.AutoMirrored.Filled.ArrowBack,
                             contentDescription = "戻る",
-                        )
-                    }
-                },
-                actions = {
-                    IconButton(onClick = { viewModel.resetToDefaults() }) {
-                        Icon(
-                            Icons.Default.Refresh,
-                            contentDescription = "リレー設定をリセット",
                         )
                     }
                 },
@@ -104,7 +101,8 @@ fun RelaySettingsScreen(
                     value = input,
                     onValueChange = { input = it },
                     modifier = Modifier.weight(1f),
-                    label = { Text("wss://relay.example.com") },
+                    label = { Text("リレーを追加・検索") },
+                    placeholder = { Text("wss://relay.example.com") },
                     singleLine = true,
                 )
                 IconButton(
@@ -121,12 +119,53 @@ fun RelaySettingsScreen(
 
             HorizontalDivider()
 
+            when {
+                discoveryState.isLoading -> {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(18.dp),
+                            strokeWidth = 2.dp,
+                        )
+                        Text(
+                            text = "フォロー先のリレーを取得中",
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    }
+                }
+                discoveryState.errorMessage != null -> {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                    ) {
+                        Text(
+                            text = discoveryState.errorMessage.orEmpty(),
+                            color = MaterialTheme.colorScheme.error,
+                            style = MaterialTheme.typography.bodySmall,
+                            modifier = Modifier.weight(1f),
+                        )
+                        TextButton(onClick = viewModel::retryFollowedRelayDiscovery) {
+                            Text("再試行")
+                        }
+                    }
+                }
+                discoveryState.message != null -> {
+                    Text(
+                        text = discoveryState.message.orEmpty(),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+
             LazyColumn(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 items(enabledEntries, key = { it.url }) { entry ->
                     RelayRow(
                         entry = entry,
                         onToggle = { viewModel.setEnabled(entry.url, it) },
-                        onDelete = { viewModel.remove(entry.url) },
                         onShowInformation = { viewModel.showRelayInformation(entry.url) },
                     )
                     HorizontalDivider()
@@ -135,21 +174,31 @@ fun RelaySettingsScreen(
                     item(key = "disabled-relays-header") {
                         DisabledRelaysHeader(
                             count = disabledEntries.size,
-                            expanded = showDisabledRelays,
+                            expanded = areDisabledRelaysVisible,
+                            canToggle = !isSearching,
                             onToggle = { showDisabledRelays = !showDisabledRelays },
                         )
                         HorizontalDivider()
                     }
                 }
-                if (showDisabledRelays) {
+                if (areDisabledRelaysVisible) {
                     items(disabledEntries, key = { it.url }) { entry ->
                         RelayRow(
                             entry = entry,
                             onToggle = { viewModel.setEnabled(entry.url, it) },
-                            onDelete = { viewModel.remove(entry.url) },
                             onShowInformation = { viewModel.showRelayInformation(entry.url) },
                         )
                         HorizontalDivider()
+                    }
+                }
+                if (isSearching && filteredEntries.isEmpty()) {
+                    item(key = "relay-search-empty") {
+                        Text(
+                            text = "一致するリレーはありません",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(vertical = 12.dp),
+                        )
                     }
                 }
             }
@@ -169,6 +218,7 @@ fun RelaySettingsScreen(
 private fun DisabledRelaysHeader(
     count: Int,
     expanded: Boolean,
+    canToggle: Boolean,
     onToggle: () -> Unit,
 ) {
     Row(
@@ -183,11 +233,13 @@ private fun DisabledRelaysHeader(
             style = MaterialTheme.typography.bodyMedium,
             modifier = Modifier.weight(1f),
         )
-        IconButton(onClick = onToggle) {
-            Icon(
-                imageVector = if (expanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
-                contentDescription = if (expanded) "無効なリレーを折りたたむ" else "無効なリレーを表示",
-            )
+        if (canToggle) {
+            IconButton(onClick = onToggle) {
+                Icon(
+                    imageVector = if (expanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+                    contentDescription = if (expanded) "無効なリレーを折りたたむ" else "無効なリレーを表示",
+                )
+            }
         }
     }
 }
@@ -196,7 +248,6 @@ private fun DisabledRelaysHeader(
 private fun RelayRow(
     entry: RelayEntry,
     onToggle: (Boolean) -> Unit,
-    onDelete: () -> Unit,
     onShowInformation: () -> Unit,
 ) {
     Row(
@@ -220,13 +271,6 @@ private fun RelayRow(
             Icon(
                 Icons.Default.Info,
                 contentDescription = "リレー情報",
-            )
-        }
-        IconButton(onClick = onDelete) {
-            Icon(
-                Icons.Default.Delete,
-                contentDescription = "削除",
-                tint = MaterialTheme.colorScheme.error,
             )
         }
     }

@@ -114,10 +114,32 @@ object RelayStore {
         saveEntries()
     }
 
-    fun resetToDefaults() {
-        _entries.value = defaults
+    /**
+     * NIP-65 の公開リレーリストを端末設定へ反映する。
+     *
+     * 公開リストに含まれるリレーを有効化し、それ以外の保存済みリレーは
+     * 再追加しやすいよう無効状態で残す。
+     */
+    suspend fun applyPublishedRelayUrls(urls: List<String>) {
+        val nextEntries = mergeRelayEntriesFromPublishedList(_entries.value, urls)
+        if (nextEntries.isEmpty() || nextEntries == _entries.value) return
+        _entries.value = nextEntries
         ensureSelectedRelay()
-        saveEntries()
+        persistEntries()
+    }
+
+    /**
+     * フォロー先の NIP-65 リレーリストから見つかった URL を無効状態で追加する。
+     *
+     * 既存リレーの並び順と有効状態は変更しない。
+     */
+    suspend fun addDiscoveredRelayUrls(urls: Collection<String>): Int {
+        val nextEntries = mergeDiscoveredRelayEntries(_entries.value, urls)
+        val addedCount = nextEntries.size - _entries.value.size
+        if (addedCount <= 0) return 0
+        _entries.value = nextEntries
+        persistEntries()
+        return addedCount
     }
 
     fun enabledRelayUrlsSnapshot(): List<String> =
@@ -282,10 +304,14 @@ object RelayStore {
         _entries.value.filter { it.enabled }.map { it.url }
 
     private fun saveEntries() {
-        val value = json.encodeToString(ListSerializer(RelayEntry.serializer()), _entries.value)
         scope.launch {
-            LocalSettingsStorage.putString(ENTRIES_KEY, value)
+            persistEntries()
         }
+    }
+
+    private suspend fun persistEntries() {
+        val value = json.encodeToString(ListSerializer(RelayEntry.serializer()), _entries.value)
+        LocalSettingsStorage.putString(ENTRIES_KEY, value)
     }
 
     private fun setSelectedRelayUrl(
@@ -354,4 +380,55 @@ object RelayStore {
             LocalSettingsStorage.putString(SELECTED_MEMO_RELAY_KEY, value)
         }
     }
+}
+
+internal fun mergeRelayEntriesFromPublishedList(
+    currentEntries: List<RelayEntry>,
+    publishedUrls: List<String>,
+): List<RelayEntry> {
+    val normalizedPublishedUrls = publishedUrls
+        .mapNotNull(::normalizeRelayUrl)
+        .distinct()
+    if (normalizedPublishedUrls.isEmpty()) return currentEntries
+
+    val publishedSet = normalizedPublishedUrls.toSet()
+    val existingByUrl = currentEntries
+        .mapNotNull { entry -> normalizeRelayUrl(entry.url)?.let { it to entry } }
+        .toMap()
+
+    return buildList {
+        normalizedPublishedUrls.forEach { url ->
+            add(existingByUrl[url]?.copy(url = url, enabled = true) ?: RelayEntry(url, enabled = true))
+        }
+        currentEntries.forEach { entry ->
+            val normalizedUrl = normalizeRelayUrl(entry.url) ?: return@forEach
+            if (normalizedUrl !in publishedSet) {
+                add(entry.copy(url = normalizedUrl, enabled = false))
+            }
+        }
+    }.distinctBy { it.url }
+}
+
+internal fun normalizeRelayUrl(url: String): String? {
+    val trimmed = url.trim()
+    if (trimmed.isBlank()) return null
+    if (!trimmed.startsWith("wss://", ignoreCase = true) &&
+        !trimmed.startsWith("ws://", ignoreCase = true)
+    ) {
+        return null
+    }
+    return trimmed
+}
+
+internal fun mergeDiscoveredRelayEntries(
+    currentEntries: List<RelayEntry>,
+    discoveredUrls: Collection<String>,
+): List<RelayEntry> {
+    val existingUrls = currentEntries.mapNotNull { normalizeRelayUrl(it.url) }.toSet()
+    val additions = discoveredUrls
+        .mapNotNull(::normalizeRelayUrl)
+        .distinct()
+        .filterNot { it in existingUrls }
+        .map { RelayEntry(url = it, enabled = false) }
+    return currentEntries + additions
 }

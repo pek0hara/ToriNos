@@ -668,13 +668,7 @@ internal fun ProfileRelayListDialog(
                                 overflow = TextOverflow.Ellipsis,
                                 modifier = Modifier.weight(1f),
                             )
-                            if (url in savedRelayUrls) {
-                                Text(
-                                    text = "追加済み",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                )
-                            } else {
+                            if (url !in savedRelayUrls) {
                                 TextButton(onClick = { RelayStore.add(url) }) {
                                     Text("追加")
                                 }

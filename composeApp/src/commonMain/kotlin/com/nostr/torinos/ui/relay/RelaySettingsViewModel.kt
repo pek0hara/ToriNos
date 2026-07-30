@@ -5,11 +5,14 @@ import com.nostr.torinos.crypto.KeyStorage
 import com.nostr.torinos.crypto.isWriteSupported
 import com.nostr.torinos.crypto.signEvent
 import com.nostr.torinos.network.NostrRepository
+import com.nostr.torinos.network.FollowedRelayDiscovery
+import com.nostr.torinos.network.FollowedRelayDiscoveryResult
 import com.nostr.torinos.network.RelayEntry
 import com.nostr.torinos.network.RelayInformation
 import com.nostr.torinos.network.RelayInformationRepository
 import com.nostr.torinos.network.RelayStore
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -23,13 +26,26 @@ data class RelayInformationUiState(
     val errorMessage: String? = null,
 )
 
+data class FollowedRelayDiscoveryUiState(
+    val isLoading: Boolean = false,
+    val message: String? = null,
+    val errorMessage: String? = null,
+)
+
 class RelaySettingsViewModel : SafeViewModel() {
     val entries: StateFlow<List<RelayEntry>> = RelayStore.entries
     private val _informationState = MutableStateFlow(RelayInformationUiState())
     val informationState: StateFlow<RelayInformationUiState> = _informationState.asStateFlow()
+    private val _discoveryState = MutableStateFlow(FollowedRelayDiscoveryUiState())
+    val discoveryState: StateFlow<FollowedRelayDiscoveryUiState> = _discoveryState.asStateFlow()
 
     private var publishRelayListJob: Job? = null
     private var fetchInformationJob: Job? = null
+    private var discoverFollowedRelaysJob: Job? = null
+
+    init {
+        discoverFollowedRelays()
+    }
 
     fun add(url: String) {
         RelayStore.add(url)
@@ -46,11 +62,6 @@ class RelaySettingsViewModel : SafeViewModel() {
         scheduleRelayListPublish()
     }
 
-    fun resetToDefaults() {
-        RelayStore.resetToDefaults()
-        scheduleRelayListPublish()
-    }
-
     fun showRelayInformation(url: String) {
         fetchRelayInformation(url = url, forceRefresh = false)
     }
@@ -64,6 +75,34 @@ class RelaySettingsViewModel : SafeViewModel() {
         fetchInformationJob?.cancel()
         fetchInformationJob = null
         _informationState.value = RelayInformationUiState()
+    }
+
+    fun retryFollowedRelayDiscovery() {
+        discoverFollowedRelays(forceRefresh = true)
+    }
+
+    private fun discoverFollowedRelays(forceRefresh: Boolean = false) {
+        if (discoverFollowedRelaysJob?.isActive == true) return
+        _discoveryState.value = FollowedRelayDiscoveryUiState(isLoading = true)
+        discoverFollowedRelaysJob = launch {
+            try {
+                val result = FollowedRelayDiscovery.discover(forceRefresh)
+                _discoveryState.value = when (result) {
+                    is FollowedRelayDiscoveryResult.Completed -> FollowedRelayDiscoveryUiState(
+                        message = result.addedCount
+                            .takeIf { it > 0 }
+                            ?.let { "フォロー先のリレーをリレー一覧に $it 件追加しました" },
+                    )
+                    FollowedRelayDiscoveryResult.NothingToFetch -> FollowedRelayDiscoveryUiState()
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                _discoveryState.value = FollowedRelayDiscoveryUiState(
+                    errorMessage = e.message ?: "フォロー先のリレーを取得できませんでした",
+                )
+            }
+        }
     }
 
     private fun fetchRelayInformation(url: String, forceRefresh: Boolean) {
