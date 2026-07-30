@@ -54,12 +54,20 @@ fun PreviewImage(
     contentDescription: String?,
     modifier: Modifier = Modifier,
     contentScale: ContentScale = ContentScale.Fit,
+    maxDecodeSizePx: Int? = null,
 ) {
     val context = LocalPlatformContext.current
-    val model = remember(context, data) {
+    val model = remember(context, data, contentScale, maxDecodeSizePx) {
         ImageRequest.Builder(context)
             .data(data)
             .crossfade(false)
+            .apply {
+                if (maxDecodeSizePx != null) {
+                    size(maxDecodeSizePx)
+                    precision(Precision.INEXACT)
+                    scale(contentScale.toCoilScale())
+                }
+            }
             .build()
     }
     AsyncImage(

@@ -4,8 +4,6 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.text.InlineTextContent
-import androidx.compose.foundation.text.appendInlineContent
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -58,15 +56,10 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.text.Placeholder
-import androidx.compose.ui.text.PlaceholderVerticalAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.TextRange
-import androidx.compose.ui.text.TextStyle
-import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.em
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -76,13 +69,12 @@ import com.nostr.torinos.network.CustomEmojiList
 import com.nostr.torinos.network.CustomEmojiStore
 import com.nostr.torinos.network.RelayEntry
 import com.nostr.torinos.ui.components.NetworkImage
-import com.nostr.torinos.ui.components.rememberImagePickerLauncher
 import com.nostr.torinos.ui.components.PreviewImage
 import com.nostr.torinos.ui.components.rememberDismissKeyboard
+import com.nostr.torinos.ui.components.rememberOptimizedImagePickerLauncher
 import com.nostr.torinos.ui.relay.RelaySettingsViewModel
 
 private const val MAX_CHARS = 800
-private val customEmojiCodeRegex = Regex(""":([a-zA-Z0-9_-]+):""")
 
 @Composable
 fun PostSheet(
@@ -105,8 +97,14 @@ fun PostSheet(
     val state by postViewModel.state.collectAsState()
     var showRelaySettingsDialog by remember { mutableStateOf(false) }
 
-    val pickImage = rememberImagePickerLauncher { bytes, mime ->
-        if (bytes != null && mime != null) postViewModel.uploadAndAppendImage(bytes, mime)
+    val pickImage = rememberOptimizedImagePickerLauncher { image ->
+        if (image != null) {
+            postViewModel.uploadAndAppendImage(
+                bytes = image.uploadBytes,
+                mimeType = image.mimeType,
+                previewBytes = image.previewBytes,
+            )
+        }
     }
 
     fun cancelWithOptionalLocalDraft() {
@@ -294,36 +292,21 @@ private fun PostSheetContent(
                 Spacer(modifier = Modifier.height(12.dp))
             }
 
-            Box(
+            OutlinedTextField(
+                value = textValue,
+                onValueChange = {
+                    if (it.text.length <= MAX_CHARS) {
+                        textValue = it
+                        onTextChange(it.text)
+                    }
+                },
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(140.dp),
-            ) {
-                OutlinedTextField(
-                    value = textValue,
-                    onValueChange = {
-                        if (it.text.length <= MAX_CHARS) {
-                            textValue = it
-                            onTextChange(it.text)
-                        }
-                    },
-                    modifier = Modifier.fillMaxSize(),
-                    textStyle = MaterialTheme.typography.bodyLarge.copy(color = Color.Transparent),
-                    placeholder = { Text("今何してる？") },
-                    maxLines = 6,
-                )
-                if (textValue.text.isNotEmpty()) {
-                    CustomEmojiInputPreview(
-                        text = textValue.text,
-                        modifier = Modifier
-                            .matchParentSize()
-                            .padding(horizontal = 16.dp, vertical = 16.dp),
-                        style = MaterialTheme.typography.bodyLarge,
-                        color = MaterialTheme.colorScheme.onSurface,
-                        maxLines = 6,
-                    )
-                }
-            }
+                textStyle = MaterialTheme.typography.bodyLarge,
+                placeholder = { Text("今何してる？") },
+                maxLines = 6,
+            )
 
             if (state.images.isNotEmpty()) {
                 Spacer(modifier = Modifier.height(10.dp))
@@ -471,82 +454,6 @@ private fun PostSheetContent(
         )
     }
 }
-
-@Composable
-private fun CustomEmojiInputPreview(
-    text: String,
-    modifier: Modifier = Modifier,
-    style: TextStyle,
-    color: Color,
-    maxLines: Int,
-) {
-    val emojis by CustomEmojiStore.emojis.collectAsState()
-    val emojiMap = remember(emojis) { emojis.associate { it.shortcode to it.imageUrl } }
-    val emojiSegments = remember(text, emojiMap) {
-        customEmojiCodeRegex.findAll(text)
-            .mapNotNull { match ->
-                val shortcode = match.groupValues[1]
-                val imageUrl = emojiMap[shortcode] ?: return@mapNotNull null
-                InputEmojiSegment(match.range.first, match.range.last + 1, shortcode, imageUrl)
-            }
-            .toList()
-    }
-    val annotated = remember(text, emojiSegments) {
-        buildAnnotatedString {
-            var cursor = 0
-            emojiSegments.forEach { segment ->
-                if (segment.start < cursor) return@forEach
-                if (segment.start > cursor) append(text.substring(cursor, segment.start))
-                appendInlineContent(
-                    id = ":${segment.shortcode}:",
-                    alternateText = ":${segment.shortcode}:",
-                )
-                cursor = segment.end
-            }
-            if (cursor < text.length) append(text.substring(cursor))
-        }
-    }
-    val inlineContent = remember(emojiSegments) {
-        buildMap {
-            emojiSegments.distinctBy { it.shortcode }.forEach { emoji ->
-                put(
-                    ":${emoji.shortcode}:",
-                    InlineTextContent(
-                        Placeholder(
-                            width = 1.2f.em,
-                            height = 1.2f.em,
-                            placeholderVerticalAlign = PlaceholderVerticalAlign.Center,
-                        ),
-                    ) {
-                        NetworkImage(
-                            url = emoji.imageUrl,
-                            contentDescription = ":${emoji.shortcode}:",
-                            contentScale = ContentScale.Fit,
-                            modifier = Modifier.fillMaxSize(),
-                        )
-                    },
-                )
-            }
-        }
-    }
-
-    Text(
-        text = annotated,
-        modifier = modifier,
-        style = style,
-        color = color,
-        inlineContent = inlineContent,
-        maxLines = maxLines,
-        overflow = TextOverflow.Clip,
-    )
-}
-
-private data class InputEmojiSegment(
-    val start: Int,
-    val end: Int,
-    val shortcode: String,
-    val imageUrl: String,
-)
 
 @Composable
 private fun CustomEmojiPickerDialog(
@@ -738,12 +645,13 @@ private fun ImageThumbnail(
             .clip(MaterialTheme.shapes.small)
             .border(1.dp, MaterialTheme.colorScheme.outlineVariant, MaterialTheme.shapes.small),
     ) {
-        val previewData: Any? = attachment.uploadedUrl ?: attachment.previewBytes
+        val previewData: Any? = attachment.previewBytes ?: attachment.uploadedUrl
         if (previewData != null) {
             PreviewImage(
                 data = previewData,
                 contentDescription = null,
                 contentScale = ContentScale.Crop,
+                maxDecodeSizePx = 256,
                 modifier = Modifier.fillMaxSize(),
             )
         }

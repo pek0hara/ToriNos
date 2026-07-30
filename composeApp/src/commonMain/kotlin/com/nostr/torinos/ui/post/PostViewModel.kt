@@ -18,6 +18,8 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
@@ -97,6 +99,7 @@ class PostViewModel : SafeViewModel() {
     val state: StateFlow<PostState> = _state.asStateFlow()
     private var nextImageId = 0
     private var editingMemoIdentifier: String? = null
+    private var editingMemoUpdatedAt: Long? = null
 
     fun onTextChange(text: String) {
         _state.value = _state.value.copy(
@@ -108,17 +111,28 @@ class PostViewModel : SafeViewModel() {
         )
     }
 
-    fun uploadAndAppendImage(bytes: ByteArray, mimeType: String) {
+    fun uploadAndAppendImage(
+        bytes: ByteArray,
+        mimeType: String,
+        previewBytes: ByteArray = bytes,
+    ) {
         if (_state.value.images.size >= MAX_IMAGES) return
         val id = nextImageId++
         _state.update { s ->
             s.copy(
-                images = s.images + ImageAttachment(id = id, previewBytes = bytes, uploadedUrl = null, isUploading = true),
+                images = s.images + ImageAttachment(
+                    id = id,
+                    previewBytes = previewBytes,
+                    uploadedUrl = null,
+                    isUploading = true,
+                ),
                 error = null,
             )
         }
         launch {
-            ImageUploader.upload(bytes, mimeType)
+            withContext(Dispatchers.Default) {
+                ImageUploader.upload(bytes, mimeType)
+            }
                 .onSuccess { url ->
                     _state.update { s ->
                         s.copy(images = s.images.map { if (it.id == id) it.copy(uploadedUrl = url, isUploading = false) else it })
@@ -150,8 +164,9 @@ class PostViewModel : SafeViewModel() {
                     uploadedUrl = url,
                     isUploading = false,
                 )
-            }
+        }
         editingMemoIdentifier = memo.identifier
+        editingMemoUpdatedAt = memo.updatedAt
         _state.value = PostState(
             text = memo.text,
             images = restoredImages,
@@ -201,7 +216,10 @@ class PostViewModel : SafeViewModel() {
                     return@launch
             }
 
-            val updatedAt = Clock.System.now().epochSeconds
+            val updatedAt = nextMemoUpdatedAt(
+                now = Clock.System.now().epochSeconds,
+                previousUpdatedAt = editingMemoUpdatedAt,
+            )
             val identifier = editingMemoIdentifier ?: memoEventIdentifier(replyToId, updatedAt)
             val memo = PostMemoPayload(
                 text = current.text,
@@ -224,10 +242,12 @@ class PostViewModel : SafeViewModel() {
                         listOf("d", identifier),
                         listOf("client", "ToriNos"),
                     ),
+                    createdAt = updatedAt,
                 )
                 NostrRepository.publish(event)
             }.onSuccess {
                 editingMemoIdentifier = identifier
+                editingMemoUpdatedAt = updatedAt
                 _state.value = _state.value.copy(
                     isSavingMemo = false,
                     memoMessage = "ポストメモを保存しました",
@@ -305,3 +325,10 @@ class PostViewModel : SafeViewModel() {
     private fun memoEventIdentifier(replyToId: String?, updatedAt: Long): String =
         "${memoIdentifier(replyToId)}-$updatedAt"
 }
+
+internal fun nextMemoUpdatedAt(now: Long, previousUpdatedAt: Long?): Long =
+    when {
+        previousUpdatedAt == null || previousUpdatedAt < now -> now
+        previousUpdatedAt == Long.MAX_VALUE -> Long.MAX_VALUE
+        else -> previousUpdatedAt + 1
+    }

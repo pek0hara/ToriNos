@@ -38,6 +38,40 @@ actual fun rememberImagePickerLauncher(
     return { launcher.launch("image/*") }
 }
 
+@Composable
+actual fun rememberOptimizedImagePickerLauncher(
+    onResult: (PickedImageData?) -> Unit,
+): () -> Unit {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+
+    val launcher = rememberLauncherForActivityResult(
+        ActivityResultContracts.GetContent()
+    ) { uri ->
+        if (uri == null) {
+            onResult(null)
+            return@rememberLauncherForActivityResult
+        }
+        scope.launch {
+            val result = withContext(Dispatchers.IO) {
+                val (uploadBytes, mimeType) = loadImageBytesForUpload(context, uri)
+                if (uploadBytes == null || mimeType == null) {
+                    null
+                } else {
+                    PickedImageData(
+                        uploadBytes = uploadBytes,
+                        previewBytes = createPreviewBytes(uploadBytes) ?: uploadBytes,
+                        mimeType = mimeType,
+                    )
+                }
+            }
+            onResult(result)
+        }
+    }
+
+    return { launcher.launch("image/*") }
+}
+
 private fun loadImageBytesForUpload(
     context: android.content.Context,
     uri: Uri,
@@ -86,5 +120,26 @@ private fun calculateInSampleSize(options: BitmapFactory.Options, maxDimension: 
     return sampleSize
 }
 
+private fun createPreviewBytes(bytes: ByteArray): ByteArray? = runCatching {
+    val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+    BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
+    if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
+
+    val options = BitmapFactory.Options().apply {
+        inSampleSize = calculateInSampleSize(bounds, PREVIEW_DIMENSION)
+    }
+    val bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.size, options) ?: return null
+    try {
+        ByteArrayOutputStream().use { out ->
+            bitmap.compress(Bitmap.CompressFormat.JPEG, PREVIEW_JPEG_QUALITY, out)
+            out.toByteArray()
+        }
+    } finally {
+        bitmap.recycle()
+    }
+}.getOrNull()
+
 private const val MAX_UPLOAD_DIMENSION = 2_048
+private const val PREVIEW_DIMENSION = 256
 private const val JPEG_QUALITY = 90
+private const val PREVIEW_JPEG_QUALITY = 80

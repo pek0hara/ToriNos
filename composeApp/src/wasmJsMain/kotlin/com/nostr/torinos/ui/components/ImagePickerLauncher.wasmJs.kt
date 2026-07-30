@@ -6,3 +6,8 @@ import androidx.compose.runtime.Composable
 actual fun rememberImagePickerLauncher(
     onResult: (ByteArray?, String?) -> Unit,
 ): () -> Unit = { /* wasmJs 未実装 */ }
+
+@Composable
+actual fun rememberOptimizedImagePickerLauncher(
+    onResult: (PickedImageData?) -> Unit,
+): () -> Unit = { /* wasmJs 未実装 */ }

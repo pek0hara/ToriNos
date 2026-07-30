@@ -30,11 +30,11 @@ fun signEvent(
     content: String,
     kind: Int = 1,
     tags: List<List<String>> = emptyList(),
+    createdAt: Long = Clock.System.now().epochSeconds,
 ): NostrEvent {
     val privateKey = privateKeyHex.fromHex()
     val publicKey = derivePublicKey(privateKey)
     val pubkeyHex = publicKey.toHex()
-    val createdAt = Clock.System.now().epochSeconds
 
     // NIP-01: [0, pubkey, created_at, kind, tags, content]
     val serialized = buildJsonArray {
