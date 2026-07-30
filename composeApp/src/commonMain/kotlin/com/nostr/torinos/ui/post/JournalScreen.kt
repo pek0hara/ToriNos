@@ -406,6 +406,7 @@ fun JournalScreen(
                                             },
                                             replyCount = state.replyCounts[entry.event.id] ?: 0,
                                             reactionCount = state.reactionCounts[entry.event.id] ?: 0,
+                                            customReactions = state.customReactions[entry.event.id].orEmpty(),
                                             repostCount = state.repostCounts[entry.event.id] ?: 0,
                                             isLiked = state.likedReactions.containsKey(entry.event.id),
                                             onUserClick = onUserClick,

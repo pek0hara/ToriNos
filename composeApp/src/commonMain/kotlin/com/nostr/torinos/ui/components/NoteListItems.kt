@@ -72,6 +72,7 @@ fun LazyListScope.noteListItems(
                     replyCount = state.replyCounts[event.id] ?: 0,
                     repostCount = state.repostCounts[event.id] ?: 0,
                     reactionCount = state.reactionCounts[event.id] ?: 0,
+                    customReactions = state.customReactions[event.id].orEmpty(),
                     isLiked = state.likedReactions.containsKey(event.id),
                     isReposted = state.repostedEvents.containsKey(event.id),
                     onUserClick = onUserClick,

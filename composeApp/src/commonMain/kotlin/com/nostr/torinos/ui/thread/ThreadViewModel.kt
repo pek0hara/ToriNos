@@ -8,7 +8,10 @@ import com.nostr.torinos.model.NostrEvent
 import com.nostr.torinos.model.NostrFilter
 import com.nostr.torinos.model.NostrProfile
 import com.nostr.torinos.model.NoteContext
+import com.nostr.torinos.model.CustomReaction
 import com.nostr.torinos.model.extractNpubReferences
+import com.nostr.torinos.model.incrementedWith
+import com.nostr.torinos.model.toCustomReaction
 import com.nostr.torinos.model.toProfile
 import com.nostr.torinos.network.NostrRepository
 import com.nostr.torinos.ui.SafeViewModel
@@ -28,6 +31,7 @@ class ThreadViewModel(
         val profiles: Map<String, NostrProfile> = emptyMap(),
         val replyCounts: Map<String, Int> = emptyMap(),
         val reactionCounts: Map<String, Int> = emptyMap(),
+        val customReactions: Map<String, List<CustomReaction>> = emptyMap(),
         val reactionPubkeys: List<String> = emptyList(),
         val repostPubkeys: List<String> = emptyList(),
         val likedReactions: Map<String, String> = emptyMap(),
@@ -301,6 +305,7 @@ class ThreadViewModel(
                 if (targetId !in watchedReactionEventIds) return@collect
                 val cur = _state.value
                 val isOwn = ownPubkey != null && event.pubkey == ownPubkey
+                val customReaction = event.toCustomReaction()
                 val rootReactionPubkeys = if (
                     targetId == eventId &&
                     event.pubkey !in cur.reactionPubkeys
@@ -311,6 +316,15 @@ class ThreadViewModel(
                 }
                 _state.value = cur.copy(
                     reactionCounts = cur.reactionCounts + (targetId to (cur.reactionCounts[targetId] ?: 0) + 1),
+                    customReactions = if (customReaction != null) {
+                        cur.customReactions + (
+                            targetId to cur.customReactions[targetId]
+                                .orEmpty()
+                                .incrementedWith(customReaction)
+                        )
+                    } else {
+                        cur.customReactions
+                    },
                     reactionPubkeys = rootReactionPubkeys,
                     likedReactions = if (isOwn && !cur.likedReactions.containsKey(targetId)) {
                         cur.likedReactions + (targetId to event.id)

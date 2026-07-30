@@ -8,7 +8,10 @@ import kotlin.reflect.KClass
 import com.nostr.torinos.model.NostrEvent
 import com.nostr.torinos.model.NostrFilter
 import com.nostr.torinos.model.NostrProfile
+import com.nostr.torinos.model.CustomReaction
 import com.nostr.torinos.model.extractNpubReferences
+import com.nostr.torinos.model.incrementedWith
+import com.nostr.torinos.model.toCustomReaction
 import com.nostr.torinos.model.toProfile
 import com.nostr.torinos.network.NostrRepository
 import com.nostr.torinos.util.networkTraceLog
@@ -29,6 +32,7 @@ class SearchViewModel : SafeViewModel() {
             val events: List<NostrEvent> = emptyList(),
             val profiles: Map<String, NostrProfile> = emptyMap(),
             val reactionCounts: Map<String, Int> = emptyMap(),
+            val customReactions: Map<String, List<CustomReaction>> = emptyMap(),
             val replyCounts: Map<String, Int> = emptyMap(),
             val repostCounts: Map<String, Int> = emptyMap(),
             val canLoadMore: Boolean = false,
@@ -53,6 +57,7 @@ class SearchViewModel : SafeViewModel() {
     private var currentEvents = emptyList<NostrEvent>()
     private var currentProfiles = emptyMap<String, NostrProfile>()
     private var currentReactionCounts = emptyMap<String, Int>()
+    private var currentCustomReactions = emptyMap<String, List<CustomReaction>>()
     private var currentReplyCounts = emptyMap<String, Int>()
     private var currentRepostCounts = emptyMap<String, Int>()
     private val watchedEventIds = linkedSetOf<String>()
@@ -97,6 +102,7 @@ class SearchViewModel : SafeViewModel() {
         currentEvents = emptyList()
         currentProfiles = emptyMap()
         currentReactionCounts = emptyMap()
+        currentCustomReactions = emptyMap()
         currentReplyCounts = emptyMap()
         currentRepostCounts = emptyMap()
         watchedEventIds.clear()
@@ -184,6 +190,13 @@ class SearchViewModel : SafeViewModel() {
                     ?: return@collect
                 currentReactionCounts = currentReactionCounts +
                     (targetId to (currentReactionCounts[targetId] ?: 0) + 1)
+                event.toCustomReaction()?.let { reaction ->
+                    currentCustomReactions = currentCustomReactions + (
+                        targetId to currentCustomReactions[targetId]
+                            .orEmpty()
+                            .incrementedWith(reaction)
+                    )
+                }
                 syncReadyState()
             }
         }
@@ -323,6 +336,7 @@ class SearchViewModel : SafeViewModel() {
             events = currentEvents,
             profiles = currentProfiles,
             reactionCounts = currentReactionCounts,
+            customReactions = currentCustomReactions,
             replyCounts = currentReplyCounts,
             repostCounts = currentRepostCounts,
             canLoadMore = canLoadMore,
@@ -336,6 +350,7 @@ class SearchViewModel : SafeViewModel() {
             events = currentEvents,
             profiles = currentProfiles,
             reactionCounts = currentReactionCounts,
+            customReactions = currentCustomReactions,
             replyCounts = currentReplyCounts,
             repostCounts = currentRepostCounts,
             users = currentUsers,

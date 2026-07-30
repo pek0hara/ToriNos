@@ -5,6 +5,7 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.rememberTransformableState
 import androidx.compose.foundation.gestures.transformable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -21,7 +22,9 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Reply
 import androidx.compose.material.icons.filled.Close
@@ -65,6 +68,7 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import com.nostr.torinos.model.NostrEvent
 import com.nostr.torinos.model.NostrProfile
+import com.nostr.torinos.model.CustomReaction
 import com.nostr.torinos.model.encodeNevent
 import com.nostr.torinos.model.stripNostrEventUris
 import com.nostr.torinos.network.CustomEmojiStore
@@ -87,6 +91,7 @@ fun NoteCard(
     profiles: Map<String, NostrProfile> = emptyMap(),
     replyCount: Int,
     reactionCount: Int,
+    customReactions: List<CustomReaction> = emptyList(),
     repostCount: Int = 0,
     isLiked: Boolean = false,
     isReposted: Boolean = false,
@@ -261,7 +266,7 @@ fun NoteCard(
                             if (!isOwnPost) {
                                 if (isMuted) {
                                     DropdownMenuItem(
-                                        text = { Text("ミュートを解除") },
+                                        text = { Text("ブロックを解除") },
                                         onClick = {
                                             showMenu = false
                                             onUnmute?.invoke()
@@ -269,7 +274,7 @@ fun NoteCard(
                                     )
                                 } else if (onMute != null) {
                                     DropdownMenuItem(
-                                        text = { Text("ユーザーをミュート") },
+                                        text = { Text("ユーザーをブロック") },
                                         onClick = {
                                             showMenu = false
                                             onMute()
@@ -355,6 +360,10 @@ fun NoteCard(
                     onNoteClick = onNoteClick,
                 )
             }
+            if (customReactions.isNotEmpty()) {
+                Spacer(modifier = Modifier.height(8.dp))
+                CustomReactionRow(customReactions)
+            }
             Row(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(4.dp),
@@ -382,6 +391,44 @@ fun NoteCard(
                     tint = if (isLiked) Color(0xFFE17055) else MaterialTheme.colorScheme.onSurfaceVariant,
                     onClick = onLike,
                     onCountClick = onOpenLikes,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun CustomReactionRow(reactions: List<CustomReaction>) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .horizontalScroll(rememberScrollState()),
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        reactions.forEach { reaction ->
+            Row(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(16.dp))
+                    .background(MaterialTheme.colorScheme.surfaceVariant)
+                    .border(
+                        width = 1.dp,
+                        color = MaterialTheme.colorScheme.outlineVariant,
+                        shape = RoundedCornerShape(16.dp),
+                    )
+                    .padding(horizontal = 8.dp, vertical = 4.dp),
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                NetworkImage(
+                    url = reaction.imageUrl,
+                    contentDescription = ":${reaction.shortcode}:",
+                    contentScale = ContentScale.Fit,
+                    modifier = Modifier.size(20.dp),
+                )
+                Text(
+                    text = reaction.count.toString(),
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
         }
@@ -437,7 +484,7 @@ private fun ReportDialog(
                 OutlinedTextField(
                     value = detail,
                     onValueChange = { detail = it.take(500) },
-                    label = { Text("補足（任意）") },
+                    label = { Text("補足（任意・通報後このユーザーをブロックします）") },
                     minLines = 2,
                     maxLines = 4,
                     modifier = Modifier.fillMaxWidth(),
@@ -953,17 +1000,21 @@ fun formatTimestamp(
 ): String = try {
     val local = Instant.fromEpochSeconds(epochSeconds)
         .toLocalDateTime(timeZone)
-    if (todayTimeOnly) {
+    val timeOnly = if (todayTimeOnly) {
         val today = Instant.fromEpochSeconds(nowEpochSeconds)
             .toLocalDateTime(timeZone)
             .date
         if (local.date == today) {
-            return local.hour.toString().padStart(2, '0') +
+            local.hour.toString().padStart(2, '0') +
                 ":" +
                 local.minute.toString().padStart(2, '0')
+        } else {
+            null
         }
+    } else {
+        null
     }
-    buildString {
+    timeOnly ?: buildString {
         append((local.month.ordinal + 1).toString().padStart(2, '0'))
         append('/')
         append(local.day.toString().padStart(2, '0'))

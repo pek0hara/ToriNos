@@ -228,6 +228,7 @@ fun SearchScreen(
                                             profiles = s.profiles,
                                             replyCount = s.replyCounts[event.id] ?: 0,
                                             reactionCount = s.reactionCounts[event.id] ?: 0,
+                                            customReactions = s.customReactions[event.id].orEmpty(),
                                             repostCount = s.repostCounts[event.id] ?: 0,
                                             onUserClick = onUserClick,
                                             onOpenReplies = { onOpenReplies(event.id) },

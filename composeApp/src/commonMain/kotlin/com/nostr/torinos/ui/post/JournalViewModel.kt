@@ -10,8 +10,11 @@ import com.nostr.torinos.model.NostrEvent
 import com.nostr.torinos.model.NostrFilter
 import com.nostr.torinos.model.NostrProfile
 import com.nostr.torinos.model.NIP23_ARTICLE_KIND
+import com.nostr.torinos.model.CustomReaction
+import com.nostr.torinos.model.incrementedWith
 import com.nostr.torinos.model.quotedEventIds
 import com.nostr.torinos.model.replyTargetId
+import com.nostr.torinos.model.toCustomReaction
 import com.nostr.torinos.model.toProfile
 import com.nostr.torinos.network.NostrRepository
 import com.nostr.torinos.ui.SafeViewModel
@@ -82,6 +85,7 @@ data class JournalState(
     val profiles: Map<String, NostrProfile> = emptyMap(),
     val quotedEvents: Map<String, NostrEvent> = emptyMap(),
     val reactionCounts: Map<String, Int> = emptyMap(),
+    val customReactions: Map<String, List<CustomReaction>> = emptyMap(),
     val replyCounts: Map<String, Int> = emptyMap(),
     val repostCounts: Map<String, Int> = emptyMap(),
     val likedReactions: Map<String, String> = emptyMap(),
@@ -375,6 +379,7 @@ class JournalViewModel(private val targetPubkey: String? = null) : SafeViewModel
             notes = retainedNotes,
             quotedEvents = if (resetCache) emptyMap() else currentState.quotedEvents,
             reactionCounts = if (resetCache) emptyMap() else currentState.reactionCounts,
+            customReactions = if (resetCache) emptyMap() else currentState.customReactions,
             replyCounts = if (resetCache) emptyMap() else currentState.replyCounts,
             repostCounts = if (resetCache) emptyMap() else currentState.repostCounts,
             likedReactions = if (resetCache) emptyMap() else currentState.likedReactions,
@@ -417,7 +422,7 @@ class JournalViewModel(private val targetPubkey: String? = null) : SafeViewModel
 
                 _state.value = _state.value.copy(
                     isLoading = false,
-                    memos = mergeMemos(_state.value.memos, memos),
+                    memos = mergeJournalMemos(_state.value.memos, memos),
                     notes = mergeNotes(_state.value.notes, notes),
                     profiles = profiles,
                     loadedDates = _state.value.loadedDates + nextSelectedDate,
@@ -475,9 +480,7 @@ class JournalViewModel(private val targetPubkey: String? = null) : SafeViewModel
 
                     val memos = decodeMemoEvents(memoEvents, context)
                     _state.value = _state.value.copy(
-                        memos = (_state.value.memos + memos)
-                            .distinctBy { it.eventId }
-                            .sortedByDescending { it.displayTime },
+                        memos = mergeJournalMemos(_state.value.memos, memos),
                         notes = (_state.value.notes + noteEvents)
                             .distinctBy { it.id }
                             .sortedByDescending { it.createdAt },
@@ -535,7 +538,7 @@ class JournalViewModel(private val targetPubkey: String? = null) : SafeViewModel
                 val notes = noteEvents.sortedByDescending { it.createdAt }
                 _state.value = _state.value.copy(
                     isLoading = false,
-                    memos = mergeMemos(_state.value.memos, memos),
+                    memos = mergeJournalMemos(_state.value.memos, memos),
                     notes = mergeNotes(_state.value.notes, notes),
                     loadedDates = _state.value.loadedDates + date,
                     loadedKindsByDate = markLoadedKinds(date, missingKinds),
@@ -642,6 +645,7 @@ class JournalViewModel(private val targetPubkey: String? = null) : SafeViewModel
             val noteIdSet = noteIds.toHashSet()
             val mutex = Mutex()
             val reactionCounts = mutableMapOf<String, Int>()
+            val customReactions = mutableMapOf<String, List<CustomReaction>>()
             val replyCounts = mutableMapOf<String, Int>()
             val repostCounts = mutableMapOf<String, Int>()
             val likedReactions = mutableMapOf<String, String>()
@@ -656,6 +660,11 @@ class JournalViewModel(private val targetPubkey: String? = null) : SafeViewModel
                             when (event.kind) {
                                 7 -> {
                                     reactionCounts[targetId] = (reactionCounts[targetId] ?: 0) + 1
+                                    event.toCustomReaction()?.let { reaction ->
+                                        customReactions[targetId] = customReactions[targetId]
+                                            .orEmpty()
+                                            .incrementedWith(reaction)
+                                    }
                                     if (event.pubkey == ownPubkey && !likedReactions.containsKey(targetId)) {
                                         likedReactions[targetId] = event.id
                                     }
@@ -674,11 +683,13 @@ class JournalViewModel(private val targetPubkey: String? = null) : SafeViewModel
                 awaitSubscriptionEnd(subId, 8_000L)
                 mutex.withLock {
                     val retainedReactionCounts = _state.value.reactionCounts - noteIdSet
+                    val retainedCustomReactions = _state.value.customReactions - noteIdSet
                     val retainedReplyCounts = _state.value.replyCounts - noteIdSet
                     val retainedRepostCounts = _state.value.repostCounts - noteIdSet
                     val retainedLikedReactions = _state.value.likedReactions - noteIdSet
                     _state.value = _state.value.copy(
                         reactionCounts = retainedReactionCounts + reactionCounts,
+                        customReactions = retainedCustomReactions + customReactions,
                         replyCounts = retainedReplyCounts + replyCounts,
                         repostCounts = retainedRepostCounts + repostCounts,
                         likedReactions = retainedLikedReactions + likedReactions,
@@ -734,14 +745,6 @@ class JournalViewModel(private val targetPubkey: String? = null) : SafeViewModel
             }
         }.sortedByDescending { it.displayTime }
     }
-
-    private fun mergeMemos(
-        current: List<JournalItem>,
-        additions: List<JournalItem>,
-    ): List<JournalItem> =
-        (current + additions)
-            .distinctBy { it.eventId }
-            .sortedByDescending { it.displayTime }
 
     private fun mergeNotes(
         current: List<NostrEvent>,
@@ -889,6 +892,26 @@ class JournalViewModel(private val targetPubkey: String? = null) : SafeViewModel
 
 private fun NostrEvent.memoIdentifier(): String? =
     tags.firstOrNull { it.firstOrNull() == "d" }?.getOrNull(1)
+
+internal fun mergeJournalMemos(
+    current: List<JournalItem>,
+    additions: List<JournalItem>,
+): List<JournalItem> {
+    val latestByAddress = linkedMapOf<String, JournalItem>()
+    (current + additions).forEach { item ->
+        val address = item.memo.identifier
+            ?.let { identifier -> "${item.pubkey}:$identifier" }
+            ?: "event:${item.eventId}"
+        val existing = latestByAddress[address]
+        val shouldReplace = existing == null ||
+            item.createdAt > existing.createdAt ||
+            (item.createdAt == existing.createdAt && item.eventId < existing.eventId)
+        if (shouldReplace) {
+            latestByAddress[address] = item
+        }
+    }
+    return latestByAddress.values.sortedByDescending { it.displayTime }
+}
 
 private fun NostrEvent.activityTargetId(): String? =
     tags.lastOrNull { it.firstOrNull() == "e" }?.getOrNull(1)

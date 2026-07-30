@@ -9,9 +9,12 @@ import com.nostr.torinos.crypto.signEvent
 import com.nostr.torinos.model.NostrEvent
 import com.nostr.torinos.model.NostrFilter
 import com.nostr.torinos.model.NostrProfile
+import com.nostr.torinos.model.CustomReaction
 import com.nostr.torinos.model.extractNpubReferences
+import com.nostr.torinos.model.incrementedWith
 import com.nostr.torinos.model.quotedEventIds
 import com.nostr.torinos.model.replyTargetId
+import com.nostr.torinos.model.toCustomReaction
 import com.nostr.torinos.network.MuteStore
 import com.nostr.torinos.network.NgWordStore
 import com.nostr.torinos.network.NostrRepository
@@ -41,6 +44,7 @@ class FeedViewModel(
         val events: List<NostrEvent> = emptyList(),
         val profiles: Map<String, NostrProfile> = emptyMap(),
         val reactionCounts: Map<String, Int> = emptyMap(),
+        val customReactions: Map<String, List<CustomReaction>> = emptyMap(),
         val replyCounts: Map<String, Int> = emptyMap(),
         val repostCounts: Map<String, Int> = emptyMap(),
         val quotedEvents: Map<String, NostrEvent> = emptyMap(),
@@ -108,6 +112,18 @@ class FeedViewModel(
 
     init {
         if (isWriteSupported) launch { ownPubkey = loadPublicKey() }
+        launch {
+            ProfileCache.observeUpdates().collect { (pubkey, profile) ->
+                if (currentFeedState().profiles[pubkey] == null) return@collect
+                updateFeedState(immediate = false) { state ->
+                    if (state.profiles[pubkey] == profile) {
+                        state
+                    } else {
+                        state.copy(profiles = state.profiles + (pubkey to profile))
+                    }
+                }
+            }
+        }
         if (autoStart) startSubscriptions()
     }
 
@@ -145,8 +161,9 @@ class FeedViewModel(
 
     fun injectProfile(pubkey: String, profile: com.nostr.torinos.model.NostrProfile) {
         ProfileCache.put(pubkey, profile)
-        if (currentFeedState().profiles.containsKey(pubkey)) return
-        updateFeedState { it.copy(profiles = it.profiles + (pubkey to profile)) }
+        val currentProfile = ProfileCache.get(pubkey) ?: profile
+        if (currentFeedState().profiles[pubkey] == currentProfile) return
+        updateFeedState { it.copy(profiles = it.profiles + (pubkey to currentProfile)) }
     }
 
     fun deleteEvent(eventId: String) {
@@ -269,6 +286,8 @@ class FeedViewModel(
     }
 
     fun reportEvent(event: NostrEvent, reason: String, detail: String) {
+        MuteStore.mute(event.pubkey)
+        rebuildFilteredEvents()
         launch {
             val privateKeyHex = KeyStorage.loadPrivateKey() ?: return@launch
             runCatching {
@@ -369,9 +388,19 @@ class FeedViewModel(
                     ?: return@collect
                 val cur = currentFeedState()
                 val isOwn = ownPubkey != null && event.pubkey == ownPubkey
+                val customReaction = event.toCustomReaction()
                 setFeedState(cur.copy(
                     reactionCounts = cur.reactionCounts +
                         (targetId to (cur.reactionCounts[targetId] ?: 0) + 1),
+                    customReactions = if (customReaction != null) {
+                        cur.customReactions + (
+                            targetId to cur.customReactions[targetId]
+                                .orEmpty()
+                                .incrementedWith(customReaction)
+                        )
+                    } else {
+                        cur.customReactions
+                    },
                     likedReactions = if (isOwn && !cur.likedReactions.containsKey(targetId))
                         cur.likedReactions + (targetId to event.id)
                     else cur.likedReactions,
@@ -932,6 +961,7 @@ class FeedViewModel(
             events = visibleEvents,
             profiles = profiles,
             reactionCounts = current.reactionCounts.filterKeys { it in retainedEventIds },
+            customReactions = current.customReactions.filterKeys { it in retainedEventIds },
             replyCounts = current.replyCounts.filterKeys { it in retainedEventIds },
             repostCounts = current.repostCounts.filterKeys { it in retainedEventIds },
             quotedEvents = quotedEvents,

@@ -3,8 +3,8 @@ package com.nostr.torinos.ui.profile
 import com.nostr.torinos.ui.SafeViewModel
 import com.nostr.torinos.model.NostrFilter
 import com.nostr.torinos.model.NostrProfile
-import com.nostr.torinos.model.toProfile
 import com.nostr.torinos.network.NostrRepository
+import com.nostr.torinos.network.ProfileCache
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -100,7 +100,7 @@ class FollowListViewModel(
                 if (event.kind != 3) return@collect
                 val pubkey = event.pubkey
                 if (knownPubkeys.add(pubkey)) {
-                    profileMap[pubkey] = null
+                    profileMap[pubkey] = ProfileCache.get(pubkey)
                     schedulePublishEntries()
                     queueProfileRequests(listOf(pubkey))
                 }
@@ -121,9 +121,10 @@ class FollowListViewModel(
     }
 
     private fun initPubkeys(pubkeys: List<String>) {
+        val cachedProfiles = ProfileCache.getAll(pubkeys)
         pubkeys.forEach { pk ->
             knownPubkeys.add(pk)
-            profileMap[pk] = null
+            profileMap[pk] = cachedProfiles[pk]
         }
         schedulePublishEntries()
     }
@@ -171,8 +172,10 @@ class FollowListViewModel(
             NostrRepository.events(subId).collect { event ->
                 if (event.kind != 0) return@collect
                 if (event.pubkey in knownPubkeys) {
-                    profileMap[event.pubkey] = event.toProfile()
-                    schedulePublishEntries()
+                    ProfileCache.putEvent(event)?.let { profile ->
+                        profileMap[event.pubkey] = profile
+                        schedulePublishEntries()
+                    }
                 }
             }
         }

@@ -6,12 +6,15 @@ import com.nostr.torinos.crypto.KeyStorage
 import com.nostr.torinos.crypto.loadPublicKey
 import com.nostr.torinos.crypto.signEvent
 import com.nostr.torinos.model.ChannelMeta
+import com.nostr.torinos.model.CustomReaction
 import com.nostr.torinos.model.NoteContext
 import com.nostr.torinos.model.NostrEvent
 import com.nostr.torinos.model.NostrFilter
 import com.nostr.torinos.model.NostrProfile
 import com.nostr.torinos.model.extractNpubReferences
+import com.nostr.torinos.model.incrementedWith
 import com.nostr.torinos.model.toChannelMeta
+import com.nostr.torinos.model.toCustomReaction
 import com.nostr.torinos.model.toProfile
 import com.nostr.torinos.network.ChannelCacheStore
 import com.nostr.torinos.network.MuteStore
@@ -42,6 +45,7 @@ class ChannelViewModel(
             val profiles: Map<String, NostrProfile> = emptyMap(),
             val replyCounts: Map<String, Int> = emptyMap(),
             val reactionCounts: Map<String, Int> = emptyMap(),
+            val customReactions: Map<String, List<CustomReaction>> = emptyMap(),
             val repostCounts: Map<String, Int> = emptyMap(),
             val likedReactions: Map<String, String> = emptyMap(),
             val repostedEvents: Map<String, String> = emptyMap(),
@@ -99,6 +103,7 @@ class ChannelViewModel(
     private var currentProfiles = emptyMap<String, NostrProfile>()
     private var currentReplyCounts = emptyMap<String, Int>()
     private var currentReactionCounts = emptyMap<String, Int>()
+    private var currentCustomReactions = emptyMap<String, List<CustomReaction>>()
     private var currentRepostCounts = emptyMap<String, Int>()
     private var currentLikedReactions = emptyMap<String, String>()
     private var currentRepostedEvents = emptyMap<String, String>()
@@ -388,6 +393,13 @@ class ChannelViewModel(
                 val targetId = event.tags.lastOrNull { it.firstOrNull() == "e" }?.getOrNull(1) ?: return@collect
                 if (targetId !in watchedEventIds) return@collect
                 currentReactionCounts = currentReactionCounts + (targetId to (currentReactionCounts[targetId] ?: 0) + 1)
+                event.toCustomReaction()?.let { reaction ->
+                    currentCustomReactions = currentCustomReactions + (
+                        targetId to currentCustomReactions[targetId]
+                            .orEmpty()
+                            .incrementedWith(reaction)
+                    )
+                }
                 if (ownPubkey != null && event.pubkey == ownPubkey && !currentLikedReactions.containsKey(targetId)) {
                     currentLikedReactions = currentLikedReactions + (targetId to event.id)
                 }
@@ -600,6 +612,7 @@ class ChannelViewModel(
             profiles = currentProfiles,
             replyCounts = currentReplyCounts,
             reactionCounts = currentReactionCounts,
+            customReactions = currentCustomReactions,
             repostCounts = currentRepostCounts,
             likedReactions = currentLikedReactions,
             repostedEvents = currentRepostedEvents,
@@ -615,6 +628,7 @@ class ChannelViewModel(
             profiles = currentProfiles,
             replyCounts = currentReplyCounts,
             reactionCounts = currentReactionCounts,
+            customReactions = currentCustomReactions,
             repostCounts = currentRepostCounts,
             likedReactions = currentLikedReactions,
             repostedEvents = currentRepostedEvents,

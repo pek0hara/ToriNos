@@ -196,6 +196,7 @@ fun ChannelScreen(
                                         profiles = s.profiles,
                                         replyCount = s.replyCounts[message.id] ?: 0,
                                         reactionCount = s.reactionCounts[message.id] ?: 0,
+                                        customReactions = s.customReactions[message.id].orEmpty(),
                                         repostCount = s.repostCounts[message.id] ?: 0,
                                         isLiked = s.likedReactions.containsKey(message.id),
                                         isReposted = s.repostedEvents.containsKey(message.id),

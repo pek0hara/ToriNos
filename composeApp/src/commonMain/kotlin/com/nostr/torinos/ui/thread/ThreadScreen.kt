@@ -189,6 +189,7 @@ fun ThreadScreen(
                                 },
                                 replyCount = state.replyCounts[root.id] ?: state.replies.size,
                                 reactionCount = state.reactionCounts[root.id] ?: state.reactionPubkeys.size,
+                                customReactions = state.customReactions[root.id].orEmpty(),
                                 repostCount = state.repostPubkeys.size,
                                 isLiked = state.likedReactions.containsKey(root.id),
                                 isReposted = state.ownRepostEventId != null,
@@ -246,6 +247,7 @@ fun ThreadScreen(
                                             profiles = state.profiles,
                                             replyCount = replyCount,
                                             reactionCount = state.reactionCounts[reply.id] ?: 0,
+                                            customReactions = state.customReactions[reply.id].orEmpty(),
                                             isLiked = state.likedReactions.containsKey(reply.id),
                                             onUserClick = onUserClick,
                                             onLike = if (ownPubkey != null) {

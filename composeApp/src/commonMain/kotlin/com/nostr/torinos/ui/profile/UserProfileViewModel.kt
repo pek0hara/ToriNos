@@ -153,6 +153,14 @@ class UserProfileViewModel(
 
     private fun startCollectors() {
         collectorJobs += launch {
+            ProfileCache.observe(pubkey).collect { profile ->
+                if (profile == null || profile == _state.value.profile) return@collect
+                _state.update { it.copy(profile = profile) }
+                scheduleLinkedProfileFetch(profile.about.orEmpty())
+            }
+        }
+
+        collectorJobs += launch {
             NostrRepository.events(profileSubId).collect { event ->
                 if (event.kind != 0) return@collect
                 val profile = ProfileCache.putEvent(event) ?: return@collect
