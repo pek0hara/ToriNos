@@ -91,7 +91,7 @@ fun KeySetupScreen(onSetupComplete: (pubkeyHex: String) -> Unit, onDismiss: (() 
     var error by remember { mutableStateOf<String?>(null) }
     var generatedInfo by remember { mutableStateOf<Pair<String, String>?>(null) } // priv, pub
     var initialProfilePubkey by remember { mutableStateOf<String?>(null) }
-    var showUsageConsentDialog by remember { mutableStateOf(false) }
+    var pendingUsageConsentAction by remember { mutableStateOf<(() -> Unit)?>(null) }
     var storedAccounts by remember { mutableStateOf<List<StoredAccount>>(emptyList()) }
     var storedProfiles by remember { mutableStateOf<Map<String, NostrProfile>>(emptyMap()) }
     var accountLoginError by remember { mutableStateOf<String?>(null) }
@@ -190,14 +190,16 @@ fun KeySetupScreen(onSetupComplete: (pubkeyHex: String) -> Unit, onDismiss: (() 
                         profiles = storedProfiles,
                         error = accountLoginError,
                         onAccountClick = { account ->
-                            scope.launch(uiExceptionHandler) {
-                                val err = runCatching {
-                                    KeyStorage.switchAccount(account.pubkeyHex)
-                                }.exceptionOrNull()?.let {
-                                    logException("KeySetupScreen", it, "Failed to switch stored account")
-                                    "アカウントを選択できませんでした: ${it.message}"
+                            pendingUsageConsentAction = {
+                                scope.launch(uiExceptionHandler) {
+                                    val err = runCatching {
+                                        KeyStorage.switchAccount(account.pubkeyHex)
+                                    }.exceptionOrNull()?.let {
+                                        logException("KeySetupScreen", it, "Failed to switch stored account")
+                                        "アカウントを選択できませんでした: ${it.message}"
+                                    }
+                                    if (err == null) onSetupComplete(account.pubkeyHex) else accountLoginError = err
                                 }
-                                if (err == null) onSetupComplete(account.pubkeyHex) else accountLoginError = err
                             }
                         },
                     )
@@ -209,7 +211,13 @@ fun KeySetupScreen(onSetupComplete: (pubkeyHex: String) -> Unit, onDismiss: (() 
                 // ---- 新規生成 ----
                 if (generatedInfo == null) {
                     Button(
-                        onClick = { showUsageConsentDialog = true },
+                        onClick = {
+                            pendingUsageConsentAction = {
+                                val kp = generateKeyPair()
+                                error = null
+                                generatedInfo = Pair(kp.privateKeyHex, kp.publicKeyHex)
+                            }
+                        },
                         modifier = Modifier.fillMaxWidth(),
                     ) {
                         Text("新しい鍵を生成する")
@@ -311,9 +319,12 @@ fun KeySetupScreen(onSetupComplete: (pubkeyHex: String) -> Unit, onDismiss: (() 
                                 onClick = {
                                     focusManager.clearFocus()
                                     keyboardController?.hide()
-                                    scope.launch(uiExceptionHandler) {
-                                        val (err, pubkey) = validateAndSave(importKey, saveToPasswordManager)
-                                        if (err == null && pubkey != null) onSetupComplete(pubkey) else error = err
+                                    val keyToImport = importKey
+                                    pendingUsageConsentAction = {
+                                        scope.launch(uiExceptionHandler) {
+                                            val (err, pubkey) = validateAndSave(keyToImport, saveToPasswordManager)
+                                            if (err == null && pubkey != null) onSetupComplete(pubkey) else error = err
+                                        }
                                     }
                                 },
                                 modifier = Modifier.fillMaxWidth(),
@@ -328,14 +339,12 @@ fun KeySetupScreen(onSetupComplete: (pubkeyHex: String) -> Unit, onDismiss: (() 
         }
     }
 
-    if (showUsageConsentDialog) {
+    pendingUsageConsentAction?.let { consentAction ->
         UsageConsentDialog(
-            onDismiss = { showUsageConsentDialog = false },
+            onDismiss = { pendingUsageConsentAction = null },
             onAgree = {
-                showUsageConsentDialog = false
-                val kp = generateKeyPair()
-                error = null
-                generatedInfo = Pair(kp.privateKeyHex, kp.publicKeyHex)
+                pendingUsageConsentAction = null
+                consentAction()
             },
         )
     }
@@ -361,13 +370,16 @@ private fun UsageConsentDialog(
     val consentItems = if (isIosPlatform) {
         "• Apple の標準エンドユーザー使用許諾契約（EULA）に従ってアプリを利用します。\n" +
             "• 投稿、プロフィール、チャンネルなどの公開内容は Nostr リレーへ送信され、第三者から閲覧・保存される場合があります。\n" +
-            "• 違法な内容、権利侵害、嫌がらせ、脅迫、差別、性的または暴力的な不適切コンテンツ、その他の迷惑行為を投稿しません。\n" +
-            "• 不適切なユーザーやコンテンツは、ミュート、NG ワード、削除要求などのアプリ内機能で管理できることを理解します。\n" +
+            "• 違法な内容、権利侵害、嫌がらせ、脅迫、差別、性的または暴力的な不適切コンテンツ、その他の迷惑行為を投稿しません。ToriNos は不適切なコンテンツや迷惑ユーザーを許容しません。\n" +
+            "• 不適切な投稿は通報できます。通報内容は NIP-56 レポートとして送信され、確認できる形で記録されます。\n" +
+            "• 迷惑ユーザーはブロックできます。ブロックしたユーザーの投稿は自分のフィードから直ちに非表示になります。\n" +
+            "• NG ワード設定により、不適切または見たくない語句を含む投稿をフィルタできます。\n" +
             "• 秘密鍵はアカウントの利用に必要な情報であり、自分の責任で安全に保管します。"
     } else {
         "• 投稿、プロフィール、チャンネルなどの公開内容は Nostr リレーへ送信され、第三者から閲覧・保存される場合があります。\n" +
-            "• 違法な内容、権利侵害、嫌がらせ、脅迫、差別、性的または暴力的な不適切コンテンツ、その他の迷惑行為を投稿しません。\n" +
-            "• 不適切なユーザーやコンテンツは、ミュート、NG ワード、削除要求などのアプリ内機能で管理できることを理解します。\n" +
+            "• 違法な内容、権利侵害、嫌がらせ、脅迫、差別、性的または暴力的な不適切コンテンツ、その他の迷惑行為を投稿しません。ToriNos は不適切なコンテンツや迷惑ユーザーを許容しません。\n" +
+            "• 不適切な投稿は通報できます。迷惑ユーザーはブロックでき、投稿は自分のフィードから直ちに非表示になります。\n" +
+            "• NG ワード設定により、不適切または見たくない語句を含む投稿をフィルタできます。\n" +
             "• 秘密鍵はアカウントの利用に必要な情報であり、自分の責任で安全に保管します。"
     }
 
@@ -415,7 +427,7 @@ private fun UsageConsentDialog(
                 onClick = onAgree,
                 enabled = agreed,
             ) {
-                Text("同意して鍵を生成")
+                Text("同意して続ける")
             }
         },
         dismissButton = {

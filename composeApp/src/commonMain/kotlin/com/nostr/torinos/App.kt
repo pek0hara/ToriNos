@@ -13,6 +13,8 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Apps
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Today
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
 import androidx.compose.material3.Icon
 import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.ModalNavigationDrawer
@@ -21,6 +23,8 @@ import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.NavigationBarItemDefaults
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberDrawerState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -52,7 +56,6 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.toRoute
-import androidx.navigation.NavOptionsBuilder
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
@@ -66,8 +69,10 @@ import com.nostr.torinos.model.toProfile
 import com.nostr.torinos.network.ChannelCacheStore
 import com.nostr.torinos.network.CustomEmojiStore
 import com.nostr.torinos.network.FollowRepository
+import com.nostr.torinos.network.LocalSettingsStorage
 import com.nostr.torinos.network.MuteStore
 import com.nostr.torinos.network.NostrRepository
+import com.nostr.torinos.network.RelayListSynchronizer
 import com.nostr.torinos.network.RelayStore
 import com.nostr.torinos.ui.article.ArticleDetailScreen
 import com.nostr.torinos.ui.article.ArticleEditorScreen
@@ -126,6 +131,9 @@ import kotlinx.serialization.Serializable
 )
 
 private const val ThreadSourceChannel = "channel"
+private const val AgeVerificationKey = "age_verification_status_v1"
+private const val AgeVerificationAccepted = "accepted_13_or_older"
+private const val AgeVerificationBlocked = "blocked_under_13"
 
 private enum class PendingKeyAction {
     NewPost,
@@ -182,22 +190,12 @@ fun App() {
         var showQuickSettings by remember { mutableStateOf(false) }
         var relaySettingsNavigationRequest by remember { mutableStateOf(0) }
         var accountStateResetKey by remember { mutableIntStateOf(0) }
+        var ageVerificationStatus by remember { mutableStateOf<String?>(null) }
+        var isAgeVerificationLoaded by remember { mutableStateOf(false) }
         val notificationsDrawerState = rememberDrawerState(DrawerValue.Closed)
         val followingFeedListState = remember(accountStateResetKey) { LazyListState() }
         val globalFeedListState = remember(accountStateResetKey) { LazyListState() }
         var currentServiceTab by remember { mutableStateOf(ServiceTab.Articles) }
-
-        fun navigateTopLevelRoute(route: String) {
-            if (currentRoute == route) return
-            val poppedToFeed = nav.popBackStack(route = "feed", inclusive = true, saveState = true)
-            if (!poppedToFeed) {
-                currentRoute?.let { nav.popBackStack(route = it, inclusive = true, saveState = true) }
-            }
-            nav.navigate(route) {
-                launchSingleTop = true
-                restoreState = true
-            }
-        }
 
         fun currentProfileRoute(): String? {
             val route = nav.currentBackStackEntry?.destination?.route ?: currentRoute ?: return null
@@ -205,22 +203,26 @@ fun App() {
             return route.takeIf { it == "myprofile" || routeName.endsWith("ProfileRoute") }
         }
 
-        fun navigateFeedTab() {
-            feedChromeCollapseFraction = 0f
-            val profileRoute = currentProfileRoute()
-            if (profileRoute != null) {
-                nav.navigate("feed") {
-                    popUpTo(profileRoute) { inclusive = true }
-                    launchSingleTop = true
-                }
-                return
+        fun navigateTopLevelRoute(route: String) {
+            if (currentRoute == route) return
+            currentProfileRoute()?.let { profileRoute ->
+                nav.popBackStack(route = profileRoute, inclusive = true)
             }
-            navigateTopLevelRoute("feed")
+            val activeRoute = nav.currentBackStackEntry?.destination?.route
+            if (activeRoute == route) return
+            val poppedToFeed = nav.popBackStack(route = "feed", inclusive = true, saveState = true)
+            if (!poppedToFeed) {
+                activeRoute?.let { nav.popBackStack(route = it, inclusive = true, saveState = true) }
+            }
+            nav.navigate(route) {
+                launchSingleTop = true
+                restoreState = true
+            }
         }
 
-        fun NavOptionsBuilder.closeProfileRoute() {
-            val route = currentProfileRoute() ?: return
-            popUpTo(route) { inclusive = true }
+        fun navigateFeedTab() {
+            feedChromeCollapseFraction = 0f
+            navigateTopLevelRoute("feed")
         }
 
         fun navigateJournalTab() {
@@ -247,14 +249,26 @@ fun App() {
             if (relaySettingsNavigationRequest <= 0) return@LaunchedEffect
             nav.navigate("relay-settings") {
                 launchSingleTop = true
-                closeProfileRoute()
             }
         }
 
         // 未登録カスタム絵文字タップ → 絵文字設定画面（検索クエリ付き）へ遷移
         LaunchedEffect(Unit) {
             CustomEmojiStore.openSearchEvent.collect { shortcode ->
-                nav.navigate(CustomEmojiRoute(query = shortcode)) { closeProfileRoute() }
+                nav.navigate(CustomEmojiRoute(query = shortcode))
+            }
+        }
+
+        LaunchedEffect(Unit) {
+            try {
+                ageVerificationStatus = LocalSettingsStorage.getString(AgeVerificationKey)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                logException("App", e, "Failed to load age verification status")
+                ageVerificationStatus = null
+            } finally {
+                isAgeVerificationLoaded = true
             }
         }
 
@@ -299,6 +313,18 @@ fun App() {
                 throw e
             } catch (e: Throwable) {
                 logException("App", e, "Failed to load own profile")
+            }
+        }
+
+        // ログイン時に、他クライアントから公開済みの NIP-65 リレーリストを端末設定へ反映する。
+        LaunchedEffect(ownPubkey) {
+            val pk = ownPubkey ?: return@LaunchedEffect
+            try {
+                RelayListSynchronizer.syncFromRelays(pk)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                logException("App", e, "Failed to synchronize relay list")
             }
         }
 
@@ -423,13 +449,13 @@ fun App() {
                 requestRelaySettings()
             },
             onCustomEmojiSettingsClick = {
-                nav.navigate(CustomEmojiRoute()) { closeProfileRoute() }
+                nav.navigate(CustomEmojiRoute())
             },
             onOpenAllSettings = {
-                nav.navigate("settings") { closeProfileRoute() }
+                nav.navigate("settings")
             },
             onUserClick = { pk ->
-                nav.navigate(ProfileRoute(pk)) { closeProfileRoute() }
+                nav.navigate(ProfileRoute(pk))
             },
         )
 
@@ -442,11 +468,11 @@ fun App() {
                     scrollToTopRequest = notificationsScrollToTopRequest,
                     onUserClick = { pubkey ->
                         scope.launch { notificationsDrawerState.close() }
-                        nav.navigate(ProfileRoute(pubkey)) { closeProfileRoute() }
+                        nav.navigate(ProfileRoute(pubkey))
                     },
                     onOpenThread = { eventId ->
                         scope.launch { notificationsDrawerState.close() }
-                        nav.navigate(ThreadRoute(eventId)) { closeProfileRoute() }
+                        nav.navigate(ThreadRoute(eventId))
                     },
                 )
             },
@@ -933,14 +959,14 @@ fun App() {
                             ownPubkey = pubkey,
                             onBack = { nav.popBackStack() },
                             onOpenFollowing = {
-                                nav.navigate(FollowingRoute(pubkey)) { closeProfileRoute() }
+                                nav.navigate(FollowingRoute(pubkey))
                             },
                             onOpenFollowers = {
-                                nav.navigate(FollowersRoute(pubkey)) { closeProfileRoute() }
+                                nav.navigate(FollowersRoute(pubkey))
                             },
                             onOpenSettings = { showQuickSettings = true },
                             onUserClick = { pk ->
-                                nav.navigate(ProfileRoute(pk)) { closeProfileRoute() }
+                                nav.navigate(ProfileRoute(pk))
                             },
                             onReply = { eventId, authorPk, preview ->
                                 replyToId = eventId
@@ -952,13 +978,13 @@ fun App() {
                                 }
                             },
                             onOpenReplies = { eventId ->
-                                nav.navigate(ThreadRoute(eventId)) { closeProfileRoute() }
+                                nav.navigate(ThreadRoute(eventId))
                             },
                             onOpenLikes = { eventId ->
-                                nav.navigate(ThreadRoute(eventId, "likes")) { closeProfileRoute() }
+                                nav.navigate(ThreadRoute(eventId, "likes"))
                             },
                             onOpenReposts = { eventId ->
-                                nav.navigate(ThreadRoute(eventId, "reposts")) { closeProfileRoute() }
+                                nav.navigate(ThreadRoute(eventId, "reposts"))
                             },
                         )
                     }
@@ -1033,13 +1059,13 @@ fun App() {
                             isOwnProfile = isOwnRouteProfile,
                             ownPubkey = ownPubkey,
                             onOpenFollowing = {
-                                nav.navigate(FollowingRoute(route.pubkey)) { closeProfileRoute() }
+                                nav.navigate(FollowingRoute(route.pubkey))
                             },
                             onOpenFollowers = {
-                                nav.navigate(FollowersRoute(route.pubkey)) { closeProfileRoute() }
+                                nav.navigate(FollowersRoute(route.pubkey))
                             },
                             onUserClick = { pk ->
-                                nav.navigate(ProfileRoute(pk)) { closeProfileRoute() }
+                                nav.navigate(ProfileRoute(pk))
                             },
                             onReply = { eventId, authorPk, preview ->
                                 replyToId = eventId
@@ -1051,13 +1077,13 @@ fun App() {
                                 }
                             },
                             onOpenReplies = { eventId ->
-                                nav.navigate(ThreadRoute(eventId)) { closeProfileRoute() }
+                                nav.navigate(ThreadRoute(eventId))
                             },
                             onOpenLikes = { eventId ->
-                                nav.navigate(ThreadRoute(eventId, "likes")) { closeProfileRoute() }
+                                nav.navigate(ThreadRoute(eventId, "likes"))
                             },
                             onOpenReposts = { eventId ->
-                                nav.navigate(ThreadRoute(eventId, "reposts")) { closeProfileRoute() }
+                                nav.navigate(ThreadRoute(eventId, "reposts"))
                             },
                             onOpenJournal = if (!isOwnRouteProfile) {
                                 {
@@ -1096,6 +1122,48 @@ fun App() {
                 }
             }
             }
+        }
+
+        if (isAgeVerificationLoaded && ageVerificationStatus != AgeVerificationAccepted) {
+            AgeVerificationDialog(
+                blocked = ageVerificationStatus == AgeVerificationBlocked,
+                onAccept = {
+                    ageVerificationStatus = AgeVerificationAccepted
+                    scope.launch(uiExceptionHandler) {
+                        try {
+                            LocalSettingsStorage.putString(AgeVerificationKey, AgeVerificationAccepted)
+                        } catch (e: CancellationException) {
+                            throw e
+                        } catch (e: Throwable) {
+                            logException("App", e, "Failed to save age verification acceptance")
+                        }
+                    }
+                },
+                onReject = {
+                    ageVerificationStatus = AgeVerificationBlocked
+                    scope.launch(uiExceptionHandler) {
+                        try {
+                            LocalSettingsStorage.putString(AgeVerificationKey, AgeVerificationBlocked)
+                        } catch (e: CancellationException) {
+                            throw e
+                        } catch (e: Throwable) {
+                            logException("App", e, "Failed to save age verification rejection")
+                        }
+                    }
+                },
+                onRetry = {
+                    ageVerificationStatus = null
+                    scope.launch(uiExceptionHandler) {
+                        try {
+                            LocalSettingsStorage.putString(AgeVerificationKey, null)
+                        } catch (e: CancellationException) {
+                            throw e
+                        } catch (e: Throwable) {
+                            logException("App", e, "Failed to reset age verification status")
+                        }
+                    }
+                },
+            )
         }
 
         if (showPostSheet) {
@@ -1161,7 +1229,7 @@ fun App() {
                     replyNoteContext = NoteContext.Timeline
                     selectedMemo = null
                     selectedMemoDeleteAction = null
-                    nav.navigate(CustomEmojiRoute()) { closeProfileRoute() }
+                    nav.navigate(CustomEmojiRoute())
                 },
                 onPosted = { eventId, postedReplyToId, postedNoteContext ->
                     if (postedReplyToId == null) return@PostSheet
@@ -1266,6 +1334,48 @@ fun App() {
             )
         }
     }
+}
+
+@Composable
+private fun AgeVerificationDialog(
+    blocked: Boolean,
+    onAccept: () -> Unit,
+    onReject: () -> Unit,
+    onRetry: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = {},
+        title = {
+            Text(if (blocked) "利用できません" else "年齢確認")
+        },
+        text = {
+            Text(
+                if (blocked) {
+                    "ToriNos はユーザー投稿を含むソーシャルアプリです。13歳未満の方は利用できません。"
+                } else {
+                    "ToriNos はユーザー投稿を含むソーシャルアプリです。利用を続けるには、13歳以上であることを確認してください。"
+                },
+            )
+        },
+        confirmButton = {
+            if (!blocked) {
+                Button(onClick = onAccept) {
+                    Text("13歳以上です")
+                }
+            }
+        },
+        dismissButton = {
+            if (blocked) {
+                TextButton(onClick = onRetry) {
+                    Text("選択をやり直す")
+                }
+            } else {
+                TextButton(onClick = onReject) {
+                    Text("13歳未満です")
+                }
+            }
+        },
+    )
 }
 
 @Composable

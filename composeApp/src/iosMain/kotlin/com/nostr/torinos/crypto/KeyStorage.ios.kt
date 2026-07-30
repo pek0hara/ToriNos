@@ -140,9 +140,27 @@ actual object KeyStorage {
     actual suspend fun listAccounts(): List<StoredAccount> {
         migrateLegacyKeyIfNeeded()
         val defaults = NSUserDefaults.standardUserDefaults
-        val activePubkey = defaults.stringForKey(ACTIVE_ACCOUNT_DEFAULTS_KEY)
         val accounts = readAllAccountPubkeys(defaults)
-        return accounts
+        val validAccounts = accounts.filter(::hasStoredPrivateKey)
+        if (validAccounts != accounts) {
+            writeAccountPubkeys(defaults, validAccounts)
+            runCatching { writeSyncedAccountPubkeys(validAccounts) }
+                .onFailure { e ->
+                    logException("KeyStorage", e, "Failed to clean stale synced account index")
+                }
+            val activePubkey = defaults.stringForKey(ACTIVE_ACCOUNT_DEFAULTS_KEY)
+            if (activePubkey !in validAccounts) {
+                if (validAccounts.isEmpty()) {
+                    defaults.removeObjectForKey(ACTIVE_ACCOUNT_DEFAULTS_KEY)
+                    defaults.removeObjectForKey(LOGGED_OUT_DEFAULTS_KEY)
+                } else {
+                    defaults.setObject(validAccounts.first(), forKey = ACTIVE_ACCOUNT_DEFAULTS_KEY)
+                }
+            }
+            defaults.synchronize()
+        }
+        val activePubkey = defaults.stringForKey(ACTIVE_ACCOUNT_DEFAULTS_KEY)
+        return validAccounts
             .map { StoredAccount(pubkeyHex = it, npub = hexToNpub(it)) }
             .sortedBy { if (it.pubkeyHex == activePubkey) 0 else 1 }
     }
@@ -239,8 +257,17 @@ actual object KeyStorage {
         (readAccountPubkeys(defaults) + readSyncedAccountPubkeys()).distinct()
 
     private fun writeSyncedAccountPubkeys(pubkeys: List<String>) {
-        saveSynchronizableString(KEYCHAIN_ACCOUNTS_INDEX_ACCOUNT, pubkeys.distinct().joinToString(","))
+        val normalizedPubkeys = pubkeys.distinct()
+        if (normalizedPubkeys.isEmpty()) {
+            deleteKeychainEntries(KEYCHAIN_ACCOUNTS_INDEX_ACCOUNT)
+        } else {
+            saveSynchronizableString(KEYCHAIN_ACCOUNTS_INDEX_ACCOUNT, normalizedPubkeys.joinToString(","))
+        }
     }
+
+    private fun hasStoredPrivateKey(pubkeyHex: String): Boolean =
+        loadPrivateKeyFromKeychain(keychainAccount(pubkeyHex)) != null ||
+            loadPrivateKeyFromKeychain(keychainAccount(pubkeyHex), synchronizable = true) != null
 
     private fun writeAccountPubkeys(defaults: NSUserDefaults, pubkeys: List<String>) {
         if (pubkeys.isEmpty()) {
