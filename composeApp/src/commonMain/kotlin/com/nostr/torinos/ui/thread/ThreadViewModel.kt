@@ -9,9 +9,17 @@ import com.nostr.torinos.model.NostrFilter
 import com.nostr.torinos.model.NostrProfile
 import com.nostr.torinos.model.NoteContext
 import com.nostr.torinos.model.CustomReaction
+import com.nostr.torinos.model.ReactionOption
+import com.nostr.torinos.model.UnicodeReaction
+import com.nostr.torinos.model.decrementedWith
+import com.nostr.torinos.model.decrementedWithUnicodeReaction
+import com.nostr.torinos.model.eventTags
 import com.nostr.torinos.model.extractNpubReferences
 import com.nostr.torinos.model.incrementedWith
+import com.nostr.torinos.model.incrementedWithUnicodeReaction
 import com.nostr.torinos.model.toCustomReaction
+import com.nostr.torinos.model.toUnicodeReaction
+import com.nostr.torinos.model.toReactionOption
 import com.nostr.torinos.model.toProfile
 import com.nostr.torinos.network.NostrRepository
 import com.nostr.torinos.ui.SafeViewModel
@@ -31,10 +39,16 @@ class ThreadViewModel(
         val profiles: Map<String, NostrProfile> = emptyMap(),
         val replyCounts: Map<String, Int> = emptyMap(),
         val reactionCounts: Map<String, Int> = emptyMap(),
+        val likeReactionCounts: Map<String, Int> = emptyMap(),
         val customReactions: Map<String, List<CustomReaction>> = emptyMap(),
+        val unicodeReactions: Map<String, List<UnicodeReaction>> = emptyMap(),
         val reactionPubkeys: List<String> = emptyList(),
+        val rootReactionsByPubkey: Map<String, NostrEvent> = emptyMap(),
         val repostPubkeys: List<String> = emptyList(),
+        val quoteReposts: List<NostrEvent> = emptyList(),
+        val repostCount: Int = 0,
         val likedReactions: Map<String, String> = emptyMap(),
+        val ownEmojiReactionEventIds: Map<String, Map<String, String>> = emptyMap(),
         val ownRepostEventId: String? = null,
         val isLoading: Boolean = true,
         val quotedEvents: Map<String, NostrEvent> = emptyMap(),
@@ -53,6 +67,7 @@ class ThreadViewModel(
     private val replyCountSubId = "thread-count-$shortId"
     private val reactionSubId = "thread-react-$shortId"
     private val repostSubId = "thread-repost-$shortId"
+    private val quoteRepostSubId = "thread-qrepost-$shortId"
     private val replyParentSubId = "thread-parent-$shortId"
 
     private val subscriptionJobs = mutableListOf<Job>()
@@ -60,6 +75,7 @@ class ThreadViewModel(
     private val seenReplyCountIds = linkedSetOf<String>()
     private val seenReactionIds = linkedSetOf<String>()
     private val seenRepostIds = linkedSetOf<String>()
+    private val seenQuoteRepostIds = linkedSetOf<String>()
     private val watchedEventIds = linkedSetOf<String>()
     private val watchedReactionEventIds = linkedSetOf<String>()
     private val pendingPubkeys = linkedSetOf<String>()
@@ -107,10 +123,15 @@ class ThreadViewModel(
 
     fun react(eventId: String, eventPubkey: String) {
         val cur = _state.value
-        if (cur.likedReactions.containsKey(eventId)) return
+        if (
+            cur.likedReactions.containsKey(eventId) ||
+            cur.ownEmojiReactionEventIds[eventId].orEmpty().isNotEmpty()
+        ) return
         _state.value = cur.copy(
             likedReactions = cur.likedReactions + (eventId to ""),
             reactionCounts = cur.reactionCounts + (eventId to (cur.reactionCounts[eventId] ?: 0) + 1),
+            likeReactionCounts = cur.likeReactionCounts +
+                (eventId to (cur.likeReactionCounts[eventId] ?: 0) + 1),
             reactionPubkeys = if (eventId == this.eventId && ownPubkey != null && ownPubkey !in cur.reactionPubkeys) {
                 cur.reactionPubkeys + ownPubkey!!
             } else {
@@ -130,6 +151,11 @@ class ThreadViewModel(
                 NostrRepository.publish(reaction)
                 _state.value = _state.value.copy(
                     likedReactions = _state.value.likedReactions + (eventId to reaction.id),
+                    rootReactionsByPubkey = if (eventId == this@ThreadViewModel.eventId) {
+                        _state.value.rootReactionsByPubkey + (reaction.pubkey to reaction)
+                    } else {
+                        _state.value.rootReactionsByPubkey
+                    },
                 )
             }
         }
@@ -141,12 +167,75 @@ class ThreadViewModel(
         _state.value = cur.copy(
             likedReactions = cur.likedReactions - eventId,
             reactionCounts = cur.reactionCounts + (eventId to maxOf(0, (cur.reactionCounts[eventId] ?: 0) - 1)),
+            likeReactionCounts = cur.likeReactionCounts + (
+                eventId to maxOf(0, (cur.likeReactionCounts[eventId] ?: 0) - 1)
+                ),
             reactionPubkeys = if (eventId == this.eventId && ownPubkey != null) {
                 cur.reactionPubkeys - ownPubkey!!
             } else {
                 cur.reactionPubkeys
             },
+            rootReactionsByPubkey = if (eventId == this.eventId && ownPubkey != null) {
+                cur.rootReactionsByPubkey - ownPubkey!!
+            } else {
+                cur.rootReactionsByPubkey
+            },
         )
+        if (reactionEventId.isEmpty()) return
+        launch {
+            val privateKeyHex = KeyStorage.loadPrivateKey() ?: return@launch
+            runCatching {
+                val deletion = signEvent(
+                    privateKeyHex = privateKeyHex,
+                    content = "",
+                    kind = 5,
+                    tags = listOf(listOf("e", reactionEventId)),
+                )
+                NostrRepository.publish(deletion)
+            }
+        }
+    }
+
+    fun reactWithEmoji(eventId: String, eventPubkey: String, option: ReactionOption) {
+        val cur = _state.value
+        if (
+            cur.likedReactions.containsKey(eventId) ||
+            cur.ownEmojiReactionEventIds[eventId].orEmpty().isNotEmpty()
+        ) return
+        _state.value = cur.withOptimisticEmojiReaction(eventId, option, "")
+        launch {
+            val privateKeyHex = KeyStorage.loadPrivateKey() ?: run {
+                _state.value = _state.value.withoutOptimisticEmojiReaction(eventId, option)
+                return@launch
+            }
+            runCatching {
+                signEvent(
+                    privateKeyHex = privateKeyHex,
+                    content = option.eventContent,
+                    kind = 7,
+                    tags = option.eventTags(eventId, eventPubkey),
+                ).also { reaction ->
+                    seenReactionIds.add(reaction.id)
+                    NostrRepository.publish(reaction)
+                }
+            }.onSuccess { reaction ->
+                val state = _state.value
+                _state.value = state.copy(
+                    ownEmojiReactionEventIds = state.ownEmojiReactionEventIds + (
+                        eventId to state.ownEmojiReactionEventIds[eventId].orEmpty()
+                            .plus(option.key to reaction.id)
+                        ),
+                )
+            }.onFailure {
+                _state.value = _state.value.withoutOptimisticEmojiReaction(eventId, option)
+            }
+        }
+    }
+
+    fun unreactWithEmoji(eventId: String, option: ReactionOption) {
+        val cur = _state.value
+        val reactionEventId = cur.ownEmojiReactionEventIds[eventId]?.get(option.key) ?: return
+        _state.value = cur.withoutOptimisticEmojiReaction(eventId, option)
         if (reactionEventId.isEmpty()) return
         launch {
             val privateKeyHex = KeyStorage.loadPrivateKey() ?: return@launch
@@ -172,6 +261,7 @@ class ThreadViewModel(
             } else {
                 cur.repostPubkeys
             },
+            repostCount = cur.repostCount + 1,
             ownRepostEventId = "",
         )
         launch {
@@ -200,6 +290,7 @@ class ThreadViewModel(
             } else {
                 cur.repostPubkeys
             },
+            repostCount = maxOf(0, cur.repostCount - 1),
             ownRepostEventId = null,
         )
         if (repostEventId.isEmpty()) return
@@ -228,6 +319,10 @@ class ThreadViewModel(
             NostrRepository.subscribe(rootSubId, NostrFilter(ids = listOf(eventId), kinds = listOf(noteContext.eventKind), limit = 1))
             NostrRepository.subscribe(repliesSubId, NostrFilter(kinds = listOf(noteContext.eventKind), eTags = listOf(eventId), limit = 100))
             NostrRepository.subscribe(repostSubId, NostrFilter(kinds = listOf(6), eTags = listOf(eventId), limit = 500))
+            NostrRepository.subscribe(
+                quoteRepostSubId,
+                NostrFilter(kinds = listOf(noteContext.eventKind), qTags = listOf(eventId), limit = 500),
+            )
         }
 
         subscriptionJobs += launch {
@@ -306,6 +401,8 @@ class ThreadViewModel(
                 val cur = _state.value
                 val isOwn = ownPubkey != null && event.pubkey == ownPubkey
                 val customReaction = event.toCustomReaction()
+                val unicodeReaction = event.toUnicodeReaction()
+                val reactionOption = event.toReactionOption()
                 val rootReactionPubkeys = if (
                     targetId == eventId &&
                     event.pubkey !in cur.reactionPubkeys
@@ -314,8 +411,29 @@ class ThreadViewModel(
                 } else {
                     cur.reactionPubkeys
                 }
+                val rootReactionsByPubkey = if (targetId == eventId) {
+                    val previous = cur.rootReactionsByPubkey[event.pubkey]
+                    if (
+                        previous == null ||
+                        event.createdAt > previous.createdAt ||
+                        (event.createdAt == previous.createdAt && event.id > previous.id)
+                    ) {
+                        cur.rootReactionsByPubkey + (event.pubkey to event)
+                    } else {
+                        cur.rootReactionsByPubkey
+                    }
+                } else {
+                    cur.rootReactionsByPubkey
+                }
                 _state.value = cur.copy(
                     reactionCounts = cur.reactionCounts + (targetId to (cur.reactionCounts[targetId] ?: 0) + 1),
+                    likeReactionCounts = if (event.content.trim() == "+") {
+                        cur.likeReactionCounts + (
+                            targetId to (cur.likeReactionCounts[targetId] ?: 0) + 1
+                            )
+                    } else {
+                        cur.likeReactionCounts
+                    },
                     customReactions = if (customReaction != null) {
                         cur.customReactions + (
                             targetId to cur.customReactions[targetId]
@@ -325,11 +443,33 @@ class ThreadViewModel(
                     } else {
                         cur.customReactions
                     },
+                    unicodeReactions = if (unicodeReaction != null) {
+                        cur.unicodeReactions + (
+                            targetId to cur.unicodeReactions[targetId]
+                                .orEmpty()
+                                .incrementedWithUnicodeReaction(unicodeReaction)
+                        )
+                    } else {
+                        cur.unicodeReactions
+                    },
                     reactionPubkeys = rootReactionPubkeys,
-                    likedReactions = if (isOwn && !cur.likedReactions.containsKey(targetId)) {
+                    rootReactionsByPubkey = rootReactionsByPubkey,
+                    likedReactions = if (
+                        isOwn &&
+                        event.content.trim() == "+" &&
+                        !cur.likedReactions.containsKey(targetId)
+                    ) {
                         cur.likedReactions + (targetId to event.id)
                     } else {
                         cur.likedReactions
+                    },
+                    ownEmojiReactionEventIds = if (isOwn && reactionOption != null) {
+                        cur.ownEmojiReactionEventIds + (
+                            targetId to cur.ownEmojiReactionEventIds[targetId].orEmpty()
+                                .plus(reactionOption.key to event.id)
+                            )
+                    } else {
+                        cur.ownEmojiReactionEventIds
                     },
                 )
                 scheduleProfileFetch(event.pubkey)
@@ -346,15 +486,29 @@ class ThreadViewModel(
                 } else {
                     cur.ownRepostEventId
                 }
-                if (event.pubkey in cur.repostPubkeys) {
-                    if (ownRepostEventId != cur.ownRepostEventId) {
-                        _state.value = cur.copy(ownRepostEventId = ownRepostEventId)
-                    }
-                    return@collect
-                }
                 _state.value = cur.copy(
-                    repostPubkeys = cur.repostPubkeys + event.pubkey,
+                    repostPubkeys = if (event.pubkey in cur.repostPubkeys) {
+                        cur.repostPubkeys
+                    } else {
+                        cur.repostPubkeys + event.pubkey
+                    },
+                    repostCount = cur.repostCount + 1,
                     ownRepostEventId = ownRepostEventId,
+                )
+                scheduleProfileFetch(event.pubkey)
+            }
+        }
+
+        subscriptionJobs += launch {
+            NostrRepository.events(quoteRepostSubId).collect { event ->
+                if (!noteContext.matches(event) || !seenQuoteRepostIds.add(event.id)) return@collect
+                if (event.tags.none { it.firstOrNull() == "q" && it.getOrNull(1) == eventId }) return@collect
+                val cur = _state.value
+                _state.value = cur.copy(
+                    quoteReposts = (cur.quoteReposts + event)
+                        .distinctBy { it.id }
+                        .sortedByDescending { it.createdAt },
+                    repostCount = cur.repostCount + 1,
                 )
                 scheduleProfileFetch(event.pubkey)
             }
@@ -382,6 +536,7 @@ class ThreadViewModel(
         NostrRepository.close(replyCountSubId)
         NostrRepository.close(reactionSubId)
         NostrRepository.close(repostSubId)
+        NostrRepository.close(quoteRepostSubId)
         NostrRepository.close(replyParentSubId)
     }
 
@@ -459,4 +614,66 @@ class ThreadViewModel(
     companion object {
         private const val MAX_WATCHED_EVENTS = 100
     }
+}
+
+private fun ThreadViewModel.UiState.withOptimisticEmojiReaction(
+    eventId: String,
+    option: ReactionOption,
+    reactionEventId: String,
+): ThreadViewModel.UiState = copy(
+    reactionCounts = reactionCounts + (eventId to (reactionCounts[eventId] ?: 0) + 1),
+    customReactions = if (option is ReactionOption.Custom) {
+        customReactions + (
+            eventId to customReactions[eventId].orEmpty().incrementedWith(
+                CustomReaction(option.shortcode.trim().trim(':'), option.imageUrl.trim()),
+            )
+            )
+    } else {
+        customReactions
+    },
+    unicodeReactions = if (option is ReactionOption.Unicode) {
+        unicodeReactions + (
+            eventId to unicodeReactions[eventId].orEmpty().incrementedWithUnicodeReaction(
+                UnicodeReaction(option.value.trim()),
+            )
+            )
+    } else {
+        unicodeReactions
+    },
+    ownEmojiReactionEventIds = ownEmojiReactionEventIds + (
+        eventId to ownEmojiReactionEventIds[eventId].orEmpty()
+            .plus(option.key to reactionEventId)
+        ),
+)
+
+private fun ThreadViewModel.UiState.withoutOptimisticEmojiReaction(
+    eventId: String,
+    option: ReactionOption,
+): ThreadViewModel.UiState {
+    val remaining = ownEmojiReactionEventIds[eventId].orEmpty() - option.key
+    return copy(
+        reactionCounts = reactionCounts + (
+            eventId to maxOf(0, (reactionCounts[eventId] ?: 0) - 1)
+            ),
+        customReactions = if (option is ReactionOption.Custom) {
+            customReactions + (
+                eventId to customReactions[eventId].orEmpty().decrementedWith(option)
+                )
+        } else {
+            customReactions
+        },
+        unicodeReactions = if (option is ReactionOption.Unicode) {
+            unicodeReactions + (
+                eventId to unicodeReactions[eventId].orEmpty()
+                    .decrementedWithUnicodeReaction(option)
+                )
+        } else {
+            unicodeReactions
+        },
+        ownEmojiReactionEventIds = if (remaining.isEmpty()) {
+            ownEmojiReactionEventIds - eventId
+        } else {
+            ownEmojiReactionEventIds + (eventId to remaining)
+        },
+    )
 }

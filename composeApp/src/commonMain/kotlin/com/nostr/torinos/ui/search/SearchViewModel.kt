@@ -9,9 +9,12 @@ import com.nostr.torinos.model.NostrEvent
 import com.nostr.torinos.model.NostrFilter
 import com.nostr.torinos.model.NostrProfile
 import com.nostr.torinos.model.CustomReaction
+import com.nostr.torinos.model.UnicodeReaction
 import com.nostr.torinos.model.extractNpubReferences
 import com.nostr.torinos.model.incrementedWith
+import com.nostr.torinos.model.incrementedWithUnicodeReaction
 import com.nostr.torinos.model.toCustomReaction
+import com.nostr.torinos.model.toUnicodeReaction
 import com.nostr.torinos.model.toProfile
 import com.nostr.torinos.network.NostrRepository
 import com.nostr.torinos.util.networkTraceLog
@@ -32,7 +35,9 @@ class SearchViewModel : SafeViewModel() {
             val events: List<NostrEvent> = emptyList(),
             val profiles: Map<String, NostrProfile> = emptyMap(),
             val reactionCounts: Map<String, Int> = emptyMap(),
+            val likeReactionCounts: Map<String, Int> = emptyMap(),
             val customReactions: Map<String, List<CustomReaction>> = emptyMap(),
+            val unicodeReactions: Map<String, List<UnicodeReaction>> = emptyMap(),
             val replyCounts: Map<String, Int> = emptyMap(),
             val repostCounts: Map<String, Int> = emptyMap(),
             val canLoadMore: Boolean = false,
@@ -57,7 +62,9 @@ class SearchViewModel : SafeViewModel() {
     private var currentEvents = emptyList<NostrEvent>()
     private var currentProfiles = emptyMap<String, NostrProfile>()
     private var currentReactionCounts = emptyMap<String, Int>()
+    private var currentLikeReactionCounts = emptyMap<String, Int>()
     private var currentCustomReactions = emptyMap<String, List<CustomReaction>>()
+    private var currentUnicodeReactions = emptyMap<String, List<UnicodeReaction>>()
     private var currentReplyCounts = emptyMap<String, Int>()
     private var currentRepostCounts = emptyMap<String, Int>()
     private val watchedEventIds = linkedSetOf<String>()
@@ -65,6 +72,7 @@ class SearchViewModel : SafeViewModel() {
     private val seenReactionIds = linkedSetOf<String>()
     private val seenReplyIds = linkedSetOf<String>()
     private val seenRepostIds = linkedSetOf<String>()
+    private val seenQuoteRepostIds = linkedSetOf<String>()
 
     private var searchGeneration = 0
     private var activeSearchSubId = "srch-main-0"
@@ -72,6 +80,7 @@ class SearchViewModel : SafeViewModel() {
     private var activeReactionSubId = "sreact-main-0"
     private var activeReplySubId = "sreply-main-0"
     private var activeRepostSubId = "srepost-main-0"
+    private var activeQuoteRepostSubId = "sqrepost-main-0"
     private var activeUserSubId = "suser-main-0"
     private val seenUserIds = linkedSetOf<String>()
     private var currentUsers = emptyList<Pair<String, NostrProfile>>()
@@ -90,6 +99,7 @@ class SearchViewModel : SafeViewModel() {
         activeReactionSubId = "sreact-main-$generation"
         activeReplySubId = "sreply-main-$generation"
         activeRepostSubId = "srepost-main-$generation"
+        activeQuoteRepostSubId = "sqrepost-main-$generation"
         activeUserSubId = "suser-main-$generation"
 
         currentQuery = trimmed
@@ -102,13 +112,16 @@ class SearchViewModel : SafeViewModel() {
         currentEvents = emptyList()
         currentProfiles = emptyMap()
         currentReactionCounts = emptyMap()
+        currentLikeReactionCounts = emptyMap()
         currentCustomReactions = emptyMap()
+        currentUnicodeReactions = emptyMap()
         currentReplyCounts = emptyMap()
         currentRepostCounts = emptyMap()
         watchedEventIds.clear()
         seenReactionIds.clear()
         seenReplyIds.clear()
         seenRepostIds.clear()
+        seenQuoteRepostIds.clear()
         seenUserIds.clear()
         currentUsers = emptyList()
         _state.value = UiState.Loading
@@ -131,6 +144,7 @@ class SearchViewModel : SafeViewModel() {
         val reactionSubId = activeReactionSubId
         val replySubId = activeReplySubId
         val repostSubId = activeRepostSubId
+        val quoteRepostSubId = activeQuoteRepostSubId
         val userSubId = activeUserSubId
         subscriptionJobs += launch {
             NostrRepository.events(searchSubId).collect { event ->
@@ -190,11 +204,23 @@ class SearchViewModel : SafeViewModel() {
                     ?: return@collect
                 currentReactionCounts = currentReactionCounts +
                     (targetId to (currentReactionCounts[targetId] ?: 0) + 1)
+                if (event.content.trim() == "+") {
+                    currentLikeReactionCounts = currentLikeReactionCounts + (
+                        targetId to (currentLikeReactionCounts[targetId] ?: 0) + 1
+                        )
+                }
                 event.toCustomReaction()?.let { reaction ->
                     currentCustomReactions = currentCustomReactions + (
                         targetId to currentCustomReactions[targetId]
                             .orEmpty()
                             .incrementedWith(reaction)
+                    )
+                }
+                event.toUnicodeReaction()?.let { reaction ->
+                    currentUnicodeReactions = currentUnicodeReactions + (
+                        targetId to currentUnicodeReactions[targetId]
+                            .orEmpty()
+                            .incrementedWithUnicodeReaction(reaction)
                     )
                 }
                 syncReadyState()
@@ -221,6 +247,23 @@ class SearchViewModel : SafeViewModel() {
                     ?: return@collect
                 currentRepostCounts = currentRepostCounts +
                     (targetId to (currentRepostCounts[targetId] ?: 0) + 1)
+                syncReadyState()
+            }
+        }
+
+        subscriptionJobs += launch {
+            NostrRepository.events(quoteRepostSubId).collect { event ->
+                if (event.kind != 1) return@collect
+                val targetIds = event.tags
+                    .filter { it.firstOrNull() == "q" }
+                    .mapNotNull { it.getOrNull(1) }
+                    .distinct()
+                    .filter { it in watchedEventIds }
+                    .filter { rememberSeenId(seenQuoteRepostIds, "${event.id}:$it") }
+                if (targetIds.isEmpty()) return@collect
+                val counts = currentRepostCounts.toMutableMap()
+                targetIds.forEach { targetId -> counts[targetId] = (counts[targetId] ?: 0) + 1 }
+                currentRepostCounts = counts
                 syncReadyState()
             }
         }
@@ -255,6 +298,7 @@ class SearchViewModel : SafeViewModel() {
         NostrRepository.close(activeReactionSubId)
         NostrRepository.close(activeReplySubId)
         NostrRepository.close(activeRepostSubId)
+        NostrRepository.close(activeQuoteRepostSubId)
     }
 
     override fun onCleared() {
@@ -336,7 +380,9 @@ class SearchViewModel : SafeViewModel() {
             events = currentEvents,
             profiles = currentProfiles,
             reactionCounts = currentReactionCounts,
+            likeReactionCounts = currentLikeReactionCounts,
             customReactions = currentCustomReactions,
+            unicodeReactions = currentUnicodeReactions,
             replyCounts = currentReplyCounts,
             repostCounts = currentRepostCounts,
             canLoadMore = canLoadMore,
@@ -350,7 +396,9 @@ class SearchViewModel : SafeViewModel() {
             events = currentEvents,
             profiles = currentProfiles,
             reactionCounts = currentReactionCounts,
+            likeReactionCounts = currentLikeReactionCounts,
             customReactions = currentCustomReactions,
+            unicodeReactions = currentUnicodeReactions,
             replyCounts = currentReplyCounts,
             repostCounts = currentRepostCounts,
             users = currentUsers,
@@ -391,6 +439,7 @@ class SearchViewModel : SafeViewModel() {
             NostrRepository.subscribe(activeReactionSubId, NostrFilter(kinds = listOf(7), eTags = ids))
             NostrRepository.subscribe(activeReplySubId, NostrFilter(kinds = listOf(1), eTags = ids))
             NostrRepository.subscribe(activeRepostSubId, NostrFilter(kinds = listOf(6), eTags = ids))
+            NostrRepository.subscribe(activeQuoteRepostSubId, NostrFilter(kinds = listOf(1), qTags = ids))
         }
     }
 

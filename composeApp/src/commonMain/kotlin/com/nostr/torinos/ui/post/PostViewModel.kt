@@ -266,10 +266,11 @@ class PostViewModel : SafeViewModel() {
         replyToId: String? = null,
         replyToPubkey: String? = null,
         noteContext: NoteContext = NoteContext.Timeline,
+        quoteReference: String? = null,
     ) {
         val current = _state.value
         val uploadedUrls = current.images.mapNotNull { it.uploadedUrl }
-        val text = buildPostContent(current.text, uploadedUrls)
+        val text = buildPostContent(current.text, uploadedUrls, quoteReference)
         if (text.isBlank()) return
 
         _state.value = _state.value.copy(isPosting = true, error = null)
@@ -311,12 +312,19 @@ class PostViewModel : SafeViewModel() {
         _state.value = _state.value.copy(posted = false, postedEventId = null)
     }
 
-    private fun buildPostContent(text: String, imageUrls: List<String>): String {
+    private fun buildPostContent(
+        text: String,
+        imageUrls: List<String>,
+        quoteReference: String? = null,
+    ): String {
         val body = text.trim()
-        val urls = imageUrls.filter { it.isNotBlank() }
-        if (urls.isEmpty()) return body
-        val urlBlock = urls.joinToString("\n")
-        return if (body.isBlank()) urlBlock else "$body\n$urlBlock"
+        val attachments = buildList {
+            addAll(imageUrls.filter { it.isNotBlank() })
+            quoteReference?.takeIf { it.isNotBlank() }?.let(::add)
+        }
+        if (attachments.isEmpty()) return body
+        val attachmentBlock = attachments.joinToString("\n")
+        return if (body.isBlank()) attachmentBlock else "$body\n$attachmentBlock"
     }
 
     private fun memoIdentifier(replyToId: String?): String =

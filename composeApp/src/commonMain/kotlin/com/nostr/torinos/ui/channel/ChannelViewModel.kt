@@ -7,14 +7,22 @@ import com.nostr.torinos.crypto.loadPublicKey
 import com.nostr.torinos.crypto.signEvent
 import com.nostr.torinos.model.ChannelMeta
 import com.nostr.torinos.model.CustomReaction
+import com.nostr.torinos.model.ReactionOption
+import com.nostr.torinos.model.UnicodeReaction
+import com.nostr.torinos.model.decrementedWith
+import com.nostr.torinos.model.decrementedWithUnicodeReaction
+import com.nostr.torinos.model.eventTags
 import com.nostr.torinos.model.NoteContext
 import com.nostr.torinos.model.NostrEvent
 import com.nostr.torinos.model.NostrFilter
 import com.nostr.torinos.model.NostrProfile
 import com.nostr.torinos.model.extractNpubReferences
 import com.nostr.torinos.model.incrementedWith
+import com.nostr.torinos.model.incrementedWithUnicodeReaction
 import com.nostr.torinos.model.toChannelMeta
 import com.nostr.torinos.model.toCustomReaction
+import com.nostr.torinos.model.toUnicodeReaction
+import com.nostr.torinos.model.toReactionOption
 import com.nostr.torinos.model.toProfile
 import com.nostr.torinos.network.ChannelCacheStore
 import com.nostr.torinos.network.MuteStore
@@ -45,9 +53,12 @@ class ChannelViewModel(
             val profiles: Map<String, NostrProfile> = emptyMap(),
             val replyCounts: Map<String, Int> = emptyMap(),
             val reactionCounts: Map<String, Int> = emptyMap(),
+            val likeReactionCounts: Map<String, Int> = emptyMap(),
             val customReactions: Map<String, List<CustomReaction>> = emptyMap(),
+            val unicodeReactions: Map<String, List<UnicodeReaction>> = emptyMap(),
             val repostCounts: Map<String, Int> = emptyMap(),
             val likedReactions: Map<String, String> = emptyMap(),
+            val ownEmojiReactionEventIds: Map<String, Map<String, String>> = emptyMap(),
             val repostedEvents: Map<String, String> = emptyMap(),
             val canLoadMore: Boolean = false,
             val draftText: String = "",
@@ -77,11 +88,13 @@ class ChannelViewModel(
     private val replyCountSubId = "ch-reply-count-$shortId-$relayKey"
     private val reactionSubId = "ch-react-$shortId-$relayKey"
     private val repostSubId = "ch-repost-$shortId-$relayKey"
+    private val quoteRepostSubId = "ch-qrepost-$shortId-$relayKey"
 
     private val seenIds = linkedSetOf<String>()
     private val seenReplyIds = linkedSetOf<String>()
     private val seenReactionIds = linkedSetOf<String>()
     private val seenRepostIds = linkedSetOf<String>()
+    private val seenQuoteRepostIds = linkedSetOf<String>()
     private val watchedEventIds = linkedSetOf<String>()
     private val pendingPubkeys = mutableSetOf<String>()
     private var profileBatchJob: Job? = null
@@ -103,9 +116,12 @@ class ChannelViewModel(
     private var currentProfiles = emptyMap<String, NostrProfile>()
     private var currentReplyCounts = emptyMap<String, Int>()
     private var currentReactionCounts = emptyMap<String, Int>()
+    private var currentLikeReactionCounts = emptyMap<String, Int>()
     private var currentCustomReactions = emptyMap<String, List<CustomReaction>>()
+    private var currentUnicodeReactions = emptyMap<String, List<UnicodeReaction>>()
     private var currentRepostCounts = emptyMap<String, Int>()
     private var currentLikedReactions = emptyMap<String, String>()
+    private var currentOwnEmojiReactionEventIds = emptyMap<String, Map<String, String>>()
     private var currentRepostedEvents = emptyMap<String, String>()
     private var ownPubkey: String? = null
     private val noteContext = NoteContext.Channel(channelId)
@@ -155,9 +171,15 @@ class ChannelViewModel(
     }
 
     fun react(eventId: String, eventPubkey: String) {
-        if (currentLikedReactions.containsKey(eventId)) return
+        if (
+            currentLikedReactions.containsKey(eventId) ||
+            currentOwnEmojiReactionEventIds[eventId].orEmpty().isNotEmpty()
+        ) return
         currentLikedReactions = currentLikedReactions + (eventId to "")
         currentReactionCounts = currentReactionCounts + (eventId to (currentReactionCounts[eventId] ?: 0) + 1)
+        currentLikeReactionCounts = currentLikeReactionCounts + (
+            eventId to (currentLikeReactionCounts[eventId] ?: 0) + 1
+            )
         syncReadyState()
         launch {
             val privateKeyHex = KeyStorage.loadPrivateKey() ?: return@launch
@@ -180,6 +202,64 @@ class ChannelViewModel(
         val reactionEventId = currentLikedReactions[eventId] ?: return
         currentLikedReactions = currentLikedReactions - eventId
         currentReactionCounts = currentReactionCounts + (eventId to maxOf(0, (currentReactionCounts[eventId] ?: 0) - 1))
+        currentLikeReactionCounts = currentLikeReactionCounts + (
+            eventId to maxOf(0, (currentLikeReactionCounts[eventId] ?: 0) - 1)
+            )
+        syncReadyState()
+        if (reactionEventId.isEmpty()) return
+        launch {
+            val privateKeyHex = KeyStorage.loadPrivateKey() ?: return@launch
+            runCatching {
+                val deletion = signEvent(
+                    privateKeyHex = privateKeyHex,
+                    content = "",
+                    kind = 5,
+                    tags = listOf(listOf("e", reactionEventId)),
+                )
+                NostrRepository.publish(deletion)
+            }
+        }
+    }
+
+    fun reactWithEmoji(eventId: String, eventPubkey: String, option: ReactionOption) {
+        if (
+            currentLikedReactions.containsKey(eventId) ||
+            currentOwnEmojiReactionEventIds[eventId].orEmpty().isNotEmpty()
+        ) return
+        addOptimisticEmojiReaction(eventId, option, "")
+        syncReadyState()
+        launch {
+            val privateKeyHex = KeyStorage.loadPrivateKey() ?: run {
+                removeOptimisticEmojiReaction(eventId, option)
+                syncReadyState()
+                return@launch
+            }
+            runCatching {
+                signEvent(
+                    privateKeyHex = privateKeyHex,
+                    content = option.eventContent,
+                    kind = 7,
+                    tags = option.eventTags(eventId, eventPubkey),
+                ).also { reaction ->
+                    seenReactionIds.add(reaction.id)
+                    NostrRepository.publish(reaction)
+                }
+            }.onSuccess { reaction ->
+                currentOwnEmojiReactionEventIds = currentOwnEmojiReactionEventIds + (
+                    eventId to currentOwnEmojiReactionEventIds[eventId].orEmpty()
+                        .plus(option.key to reaction.id)
+                    )
+                syncReadyState()
+            }.onFailure {
+                removeOptimisticEmojiReaction(eventId, option)
+                syncReadyState()
+            }
+        }
+    }
+
+    fun unreactWithEmoji(eventId: String, option: ReactionOption) {
+        val reactionEventId = currentOwnEmojiReactionEventIds[eventId]?.get(option.key) ?: return
+        removeOptimisticEmojiReaction(eventId, option)
         syncReadyState()
         if (reactionEventId.isEmpty()) return
         launch {
@@ -393,6 +473,11 @@ class ChannelViewModel(
                 val targetId = event.tags.lastOrNull { it.firstOrNull() == "e" }?.getOrNull(1) ?: return@collect
                 if (targetId !in watchedEventIds) return@collect
                 currentReactionCounts = currentReactionCounts + (targetId to (currentReactionCounts[targetId] ?: 0) + 1)
+                if (event.content.trim() == "+") {
+                    currentLikeReactionCounts = currentLikeReactionCounts + (
+                        targetId to (currentLikeReactionCounts[targetId] ?: 0) + 1
+                        )
+                }
                 event.toCustomReaction()?.let { reaction ->
                     currentCustomReactions = currentCustomReactions + (
                         targetId to currentCustomReactions[targetId]
@@ -400,8 +485,28 @@ class ChannelViewModel(
                             .incrementedWith(reaction)
                     )
                 }
-                if (ownPubkey != null && event.pubkey == ownPubkey && !currentLikedReactions.containsKey(targetId)) {
+                event.toUnicodeReaction()?.let { reaction ->
+                    currentUnicodeReactions = currentUnicodeReactions + (
+                        targetId to currentUnicodeReactions[targetId]
+                            .orEmpty()
+                            .incrementedWithUnicodeReaction(reaction)
+                    )
+                }
+                if (
+                    ownPubkey != null &&
+                    event.pubkey == ownPubkey &&
+                    event.content.trim() == "+" &&
+                    !currentLikedReactions.containsKey(targetId)
+                ) {
                     currentLikedReactions = currentLikedReactions + (targetId to event.id)
+                }
+                if (ownPubkey != null && event.pubkey == ownPubkey) {
+                    event.toReactionOption()?.let { option ->
+                        currentOwnEmojiReactionEventIds = currentOwnEmojiReactionEventIds + (
+                            targetId to currentOwnEmojiReactionEventIds[targetId].orEmpty()
+                                .plus(option.key to event.id)
+                            )
+                    }
                 }
                 syncReadyState()
                 scheduleProfileFetch(event.pubkey)
@@ -419,6 +524,23 @@ class ChannelViewModel(
                 }
                 syncReadyState()
                 scheduleProfileFetch(event.pubkey)
+            }
+        }
+
+        jobs += launch {
+            NostrRepository.events(quoteRepostSubId).collect { event ->
+                if (!noteContext.matches(event)) return@collect
+                val targetIds = event.tags
+                    .filter { it.firstOrNull() == "q" }
+                    .mapNotNull { it.getOrNull(1) }
+                    .distinct()
+                    .filter { it in watchedEventIds }
+                    .filter { seenQuoteRepostIds.add("${event.id}:$it") }
+                if (targetIds.isEmpty()) return@collect
+                val counts = currentRepostCounts.toMutableMap()
+                targetIds.forEach { targetId -> counts[targetId] = (counts[targetId] ?: 0) + 1 }
+                currentRepostCounts = counts
+                syncReadyState()
             }
         }
 
@@ -604,6 +726,56 @@ class ChannelViewModel(
         return list
     }
 
+    private fun addOptimisticEmojiReaction(
+        eventId: String,
+        option: ReactionOption,
+        reactionEventId: String,
+    ) {
+        currentReactionCounts = currentReactionCounts + (
+            eventId to (currentReactionCounts[eventId] ?: 0) + 1
+            )
+        if (option is ReactionOption.Custom) {
+            currentCustomReactions = currentCustomReactions + (
+                eventId to currentCustomReactions[eventId].orEmpty().incrementedWith(
+                    CustomReaction(option.shortcode.trim().trim(':'), option.imageUrl.trim()),
+                )
+                )
+        }
+        if (option is ReactionOption.Unicode) {
+            currentUnicodeReactions = currentUnicodeReactions + (
+                eventId to currentUnicodeReactions[eventId].orEmpty()
+                    .incrementedWithUnicodeReaction(UnicodeReaction(option.value.trim()))
+                )
+        }
+        currentOwnEmojiReactionEventIds = currentOwnEmojiReactionEventIds + (
+            eventId to currentOwnEmojiReactionEventIds[eventId].orEmpty()
+                .plus(option.key to reactionEventId)
+            )
+    }
+
+    private fun removeOptimisticEmojiReaction(eventId: String, option: ReactionOption) {
+        currentReactionCounts = currentReactionCounts + (
+            eventId to maxOf(0, (currentReactionCounts[eventId] ?: 0) - 1)
+            )
+        if (option is ReactionOption.Custom) {
+            currentCustomReactions = currentCustomReactions + (
+                eventId to currentCustomReactions[eventId].orEmpty().decrementedWith(option)
+                )
+        }
+        if (option is ReactionOption.Unicode) {
+            currentUnicodeReactions = currentUnicodeReactions + (
+                eventId to currentUnicodeReactions[eventId].orEmpty()
+                    .decrementedWithUnicodeReaction(option)
+                )
+        }
+        val remaining = currentOwnEmojiReactionEventIds[eventId].orEmpty() - option.key
+        currentOwnEmojiReactionEventIds = if (remaining.isEmpty()) {
+            currentOwnEmojiReactionEventIds - eventId
+        } else {
+            currentOwnEmojiReactionEventIds + (eventId to remaining)
+        }
+    }
+
     private fun readyState(canLoadMore: Boolean): UiState.Ready =
         UiState.Ready(
             channelMeta = currentChannelMeta,
@@ -612,9 +784,12 @@ class ChannelViewModel(
             profiles = currentProfiles,
             replyCounts = currentReplyCounts,
             reactionCounts = currentReactionCounts,
+            likeReactionCounts = currentLikeReactionCounts,
             customReactions = currentCustomReactions,
+            unicodeReactions = currentUnicodeReactions,
             repostCounts = currentRepostCounts,
             likedReactions = currentLikedReactions,
+            ownEmojiReactionEventIds = currentOwnEmojiReactionEventIds,
             repostedEvents = currentRepostedEvents,
             canLoadMore = canLoadMore,
         )
@@ -628,9 +803,12 @@ class ChannelViewModel(
             profiles = currentProfiles,
             replyCounts = currentReplyCounts,
             reactionCounts = currentReactionCounts,
+            likeReactionCounts = currentLikeReactionCounts,
             customReactions = currentCustomReactions,
+            unicodeReactions = currentUnicodeReactions,
             repostCounts = currentRepostCounts,
             likedReactions = currentLikedReactions,
+            ownEmojiReactionEventIds = currentOwnEmojiReactionEventIds,
             repostedEvents = currentRepostedEvents,
         )
     }
@@ -698,6 +876,11 @@ class ChannelViewModel(
                 NostrFilter(kinds = listOf(6), eTags = ids, limit = 500),
                 relayUrl = relayUrl,
             )
+            NostrRepository.subscribe(
+                quoteRepostSubId,
+                NostrFilter(kinds = listOf(noteContext.eventKind), qTags = ids, limit = 500),
+                relayUrl = relayUrl,
+            )
         }
     }
 
@@ -715,6 +898,7 @@ class ChannelViewModel(
         NostrRepository.close(replyCountSubId)
         NostrRepository.close(reactionSubId)
         NostrRepository.close(repostSubId)
+        NostrRepository.close(quoteRepostSubId)
     }
 
     companion object {

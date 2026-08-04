@@ -196,9 +196,12 @@ fun ChannelScreen(
                                         profiles = s.profiles,
                                         replyCount = s.replyCounts[message.id] ?: 0,
                                         reactionCount = s.reactionCounts[message.id] ?: 0,
+                                        likeReactionCount = s.likeReactionCounts[message.id] ?: 0,
                                         customReactions = s.customReactions[message.id].orEmpty(),
+                                        unicodeReactions = s.unicodeReactions[message.id].orEmpty(),
                                         repostCount = s.repostCounts[message.id] ?: 0,
                                         isLiked = s.likedReactions.containsKey(message.id),
+                                        ownEmojiReactionEventIds = s.ownEmojiReactionEventIds[message.id].orEmpty(),
                                         isReposted = s.repostedEvents.containsKey(message.id),
                                         onUserClick = onUserClick,
                                         onLike = if (ownPubkey != null) {
@@ -209,6 +212,12 @@ fun ChannelScreen(
                                                     viewModel.react(message.id, message.pubkey)
                                                 }
                                             }
+                                        } else null,
+                                        onEmojiReact = if (ownPubkey != null) {
+                                            { option -> viewModel.reactWithEmoji(message.id, message.pubkey, option) }
+                                        } else null,
+                                        onEmojiUnreact = if (ownPubkey != null) {
+                                            { option -> viewModel.unreactWithEmoji(message.id, option) }
                                         } else null,
                                         onReply = if (ownPubkey != null && onReply != null) {
                                             { onReply(message.id, message.pubkey, message.content.replyPreviewText(), channelId) }

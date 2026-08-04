@@ -210,6 +210,8 @@ fun MyProfileScreen(
                 onLoadMore = postsViewModel::loadMore,
                 onLike = postsViewModel::react,
                 onUnlike = postsViewModel::unreact,
+                onEmojiReact = postsViewModel::reactWithEmoji,
+                onEmojiUnreact = postsViewModel::unreactWithEmoji,
                 onDelete = postsViewModel::deleteEvent,
                 modifier = Modifier
                     .fillMaxSize()
@@ -234,6 +236,8 @@ fun MyProfileScreen(
                 onLoadMore = postsAndRepliesViewModel::loadMore,
                 onLike = postsAndRepliesViewModel::react,
                 onUnlike = postsAndRepliesViewModel::unreact,
+                onEmojiReact = postsAndRepliesViewModel::reactWithEmoji,
+                onEmojiUnreact = postsAndRepliesViewModel::unreactWithEmoji,
                 onDelete = postsAndRepliesViewModel::deleteEvent,
                 modifier = Modifier
                     .fillMaxSize()

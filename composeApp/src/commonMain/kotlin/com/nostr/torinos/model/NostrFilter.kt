@@ -14,6 +14,7 @@ data class NostrFilter(
     val until: Long? = null,
     val limit: Int? = null,
     @SerialName("#e") val eTags: List<String>? = null,
+    @SerialName("#q") val qTags: List<String>? = null,
     @SerialName("#p") val pTags: List<String>? = null,
     @SerialName("#a") val aTags: List<String>? = null,
     @SerialName("#d") val dTags: List<String>? = null,

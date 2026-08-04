@@ -38,6 +38,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -46,6 +47,8 @@ import androidx.compose.runtime.collectAsState
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.nostr.torinos.model.noteContextForChannel
 import com.nostr.torinos.model.stripNostrEventUris
+import com.nostr.torinos.model.toCustomReaction
+import com.nostr.torinos.ui.components.NetworkImage
 import com.nostr.torinos.ui.components.NoteCard
 import com.nostr.torinos.ui.components.ProfileNameText
 import com.nostr.torinos.ui.components.QuotedEvent
@@ -57,7 +60,7 @@ import com.nostr.torinos.ui.profile.AvatarCircle
 @Composable
 fun ThreadScreen(
     eventId: String,
-    initialTab: String = "replies",
+    initialTab: String = "auto",
     channelId: String? = null,
     onBack: () -> Unit = {},
     onUserClick: (pubkey: String) -> Unit = {},
@@ -73,6 +76,7 @@ fun ThreadScreen(
     val noteContext = remember(channelId) { noteContextForChannel(channelId) }
     val state by viewModel.state.collectAsState()
     var selectedTab by remember(initialTab) { mutableStateOf(ThreadTab.fromRouteValue(initialTab)) }
+    var didSelectTabManually by remember(eventId) { mutableStateOf(false) }
     val listState = rememberSaveable(eventId, saver = LazyListState.Saver) { LazyListState() }
     var didApplyInitialBottomScroll by remember(eventId) { mutableStateOf(false) }
     var previousRepliesBottomIndex by remember(eventId) { mutableStateOf<Int?>(null) }
@@ -80,6 +84,22 @@ fun ThreadScreen(
     DisposableEffect(viewModel) {
         viewModel.startSubscriptions()
         onDispose { viewModel.stopSubscriptions() }
+    }
+
+    LaunchedEffect(
+        initialTab,
+        didSelectTabManually,
+        state.replies.size,
+        state.repostCount,
+        state.reactionPubkeys.size,
+    ) {
+        if (initialTab == AutoTabRouteValue && !didSelectTabManually) {
+            selectedTab = preferredThreadTab(
+                replyCount = state.replies.size,
+                repostCount = state.repostCount,
+                reactionCount = state.reactionPubkeys.size,
+            )
+        }
     }
 
     LaunchedEffect(eventId, selectedTab, state.root?.id, state.replies.size) {
@@ -169,7 +189,10 @@ fun ThreadScreen(
                             .fillMaxSize()
                             .threadTabSwipe(
                                 currentTab = selectedTab,
-                                onTabChange = { selectedTab = it },
+                                onTabChange = {
+                                    didSelectTabManually = true
+                                    selectedTab = it
+                                },
                             ),
                     ) {
                         item {
@@ -189,9 +212,12 @@ fun ThreadScreen(
                                 },
                                 replyCount = state.replyCounts[root.id] ?: state.replies.size,
                                 reactionCount = state.reactionCounts[root.id] ?: state.reactionPubkeys.size,
+                                likeReactionCount = state.likeReactionCounts[root.id] ?: 0,
                                 customReactions = state.customReactions[root.id].orEmpty(),
-                                repostCount = state.repostPubkeys.size,
+                                unicodeReactions = state.unicodeReactions[root.id].orEmpty(),
+                                repostCount = state.repostCount,
                                 isLiked = state.likedReactions.containsKey(root.id),
+                                ownEmojiReactionEventIds = state.ownEmojiReactionEventIds[root.id].orEmpty(),
                                 isReposted = state.ownRepostEventId != null,
                                 onUserClick = onUserClick,
                                 onLike = if (ownPubkey != null) {
@@ -203,12 +229,27 @@ fun ThreadScreen(
                                         }
                                     }
                                 } else null,
+                                onEmojiReact = if (ownPubkey != null) {
+                                    { option -> viewModel.reactWithEmoji(root.id, root.pubkey, option) }
+                                } else null,
+                                onEmojiUnreact = if (ownPubkey != null) {
+                                    { option -> viewModel.unreactWithEmoji(root.id, option) }
+                                } else null,
                                 onReply = if (ownPubkey != null && onReply != null) {
                                     { onReply(root.id, root.pubkey, root.content.replyPreviewText(), channelId) }
                                 } else null,
-                                onOpenReplies = { selectedTab = ThreadTab.Replies },
-                                onOpenLikes = { selectedTab = ThreadTab.Likes },
-                                onOpenReposts = { selectedTab = ThreadTab.Reposts },
+                                onOpenReplies = {
+                                    didSelectTabManually = true
+                                    selectedTab = ThreadTab.Replies
+                                },
+                                onOpenLikes = {
+                                    didSelectTabManually = true
+                                    selectedTab = ThreadTab.Likes
+                                },
+                                onOpenReposts = {
+                                    didSelectTabManually = true
+                                    selectedTab = ThreadTab.Reposts
+                                },
                                 onRepost = if (ownPubkey != null) {
                                     {
                                         if (state.ownRepostEventId != null) {
@@ -227,7 +268,10 @@ fun ThreadScreen(
                                 ThreadTab.entries.forEach { tab ->
                                     Tab(
                                         selected = selectedTab == tab,
-                                        onClick = { selectedTab = tab },
+                                        onClick = {
+                                            didSelectTabManually = true
+                                            selectedTab = tab
+                                        },
                                         text = { Text(tab.label) },
                                     )
                                 }
@@ -247,8 +291,11 @@ fun ThreadScreen(
                                             profiles = state.profiles,
                                             replyCount = replyCount,
                                             reactionCount = state.reactionCounts[reply.id] ?: 0,
+                                            likeReactionCount = state.likeReactionCounts[reply.id] ?: 0,
                                             customReactions = state.customReactions[reply.id].orEmpty(),
+                                            unicodeReactions = state.unicodeReactions[reply.id].orEmpty(),
                                             isLiked = state.likedReactions.containsKey(reply.id),
+                                            ownEmojiReactionEventIds = state.ownEmojiReactionEventIds[reply.id].orEmpty(),
                                             onUserClick = onUserClick,
                                             onLike = if (ownPubkey != null) {
                                                 {
@@ -258,6 +305,12 @@ fun ThreadScreen(
                                                         viewModel.react(reply.id, reply.pubkey)
                                                     }
                                                 }
+                                            } else null,
+                                            onEmojiReact = if (ownPubkey != null) {
+                                                { option -> viewModel.reactWithEmoji(reply.id, reply.pubkey, option) }
+                                            } else null,
+                                            onEmojiUnreact = if (ownPubkey != null) {
+                                                { option -> viewModel.unreactWithEmoji(reply.id, option) }
                                             } else null,
                                             onReply = if (ownPubkey != null && onReply != null) {
                                                 { onReply(reply.id, reply.pubkey, reply.content.replyPreviewText(), channelId) }
@@ -279,6 +332,8 @@ fun ThreadScreen(
                                         ReactionUserRow(
                                             pubkey = pubkey,
                                             profile = state.profiles[pubkey],
+                                            reaction = state.rootReactionsByPubkey[pubkey],
+                                            showReaction = true,
                                             onClick = { onUserClick(pubkey) },
                                         )
                                         HorizontalDivider()
@@ -286,7 +341,7 @@ fun ThreadScreen(
                                 }
                             }
                             ThreadTab.Reposts -> {
-                                if (state.repostPubkeys.isEmpty()) {
+                                if (state.repostPubkeys.isEmpty() && state.quoteReposts.isEmpty()) {
                                     emptyTabItem("リポストはまだありません")
                                 } else {
                                     items(state.repostPubkeys, key = { it }) { pubkey ->
@@ -294,6 +349,42 @@ fun ThreadScreen(
                                             pubkey = pubkey,
                                             profile = state.profiles[pubkey],
                                             onClick = { onUserClick(pubkey) },
+                                        )
+                                        HorizontalDivider()
+                                    }
+                                    items(state.quoteReposts, key = { it.id }) { quoteRepost ->
+                                        val quotedRoot = state.root?.let { root ->
+                                            QuotedEvent(
+                                                event = root,
+                                                profile = state.profiles[root.pubkey],
+                                            )
+                                        }
+                                        NoteCard(
+                                            event = quoteRepost,
+                                            profile = state.profiles[quoteRepost.pubkey],
+                                            profiles = state.profiles,
+                                            replyCount = state.replyCounts[quoteRepost.id] ?: 0,
+                                            reactionCount = state.reactionCounts[quoteRepost.id] ?: 0,
+                                            likeReactionCount = state.likeReactionCounts[quoteRepost.id] ?: 0,
+                                            customReactions = state.customReactions[quoteRepost.id].orEmpty(),
+                                            unicodeReactions = state.unicodeReactions[quoteRepost.id].orEmpty(),
+                                            quotedEvents = listOfNotNull(quotedRoot),
+                                            onUserClick = onUserClick,
+                                            onReply = if (ownPubkey != null && onReply != null) {
+                                                {
+                                                    onReply(
+                                                        quoteRepost.id,
+                                                        quoteRepost.pubkey,
+                                                        quoteRepost.content.replyPreviewText(),
+                                                        channelId,
+                                                    )
+                                                }
+                                            } else null,
+                                            onOpenReplies = { onOpenThread(quoteRepost.id) },
+                                            onOpenLikes = { onOpenLikes(quoteRepost.id) },
+                                            onOpenReposts = { onOpenReposts(quoteRepost.id) },
+                                            onNoteClick = onOpenThread,
+                                            ownPubkey = ownPubkey,
                                         )
                                         HorizontalDivider()
                                     }
@@ -316,6 +407,17 @@ private enum class ThreadTab(val routeValue: String, val label: String) {
         fun fromRouteValue(value: String): ThreadTab =
             entries.firstOrNull { it.routeValue == value } ?: Replies
     }
+}
+
+private fun preferredThreadTab(
+    replyCount: Int,
+    repostCount: Int,
+    reactionCount: Int,
+): ThreadTab = when {
+    replyCount > 0 -> ThreadTab.Replies
+    repostCount > 0 -> ThreadTab.Reposts
+    reactionCount > 0 -> ThreadTab.Likes
+    else -> ThreadTab.Replies
 }
 
 private fun Modifier.threadTabSwipe(
@@ -354,6 +456,7 @@ private fun String.replyPreviewText(): String =
         .take(160)
 
 private const val SwipeThresholdPx = 80f
+private const val AutoTabRouteValue = "auto"
 private const val RootItemCount = 1
 private const val TabRowItemCount = 1
 
@@ -393,6 +496,8 @@ private fun ThreadReplyInputBar(
 private fun ReactionUserRow(
     pubkey: String,
     profile: com.nostr.torinos.model.NostrProfile?,
+    reaction: com.nostr.torinos.model.NostrEvent? = null,
+    showReaction: Boolean = false,
     onClick: () -> Unit,
 ) {
     Row(
@@ -409,7 +514,10 @@ private fun ReactionUserRow(
             pictureUrl = profile?.picture,
             size = 44,
         )
-        Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        Column(
+            modifier = Modifier.weight(1f),
+            verticalArrangement = Arrangement.spacedBy(2.dp),
+        ) {
             ProfileNameText(
                 profile = profile,
                 fallback = pubkey.take(8) + "…" + pubkey.takeLast(8),
@@ -427,5 +535,36 @@ private fun ReactionUserRow(
                 )
             }
         }
+        if (reaction != null) {
+            ReactionValue(reaction)
+        } else if (showReaction) {
+            Text(
+                text = "❤️",
+                style = MaterialTheme.typography.titleMedium,
+            )
+        }
+    }
+}
+
+@Composable
+private fun ReactionValue(reaction: com.nostr.torinos.model.NostrEvent) {
+    val customReaction = remember(reaction.id) { reaction.toCustomReaction() }
+    if (customReaction != null) {
+        NetworkImage(
+            url = customReaction.imageUrl,
+            contentDescription = ":${customReaction.shortcode}:",
+            contentScale = ContentScale.Fit,
+            modifier = Modifier.size(28.dp),
+        )
+    } else {
+        Text(
+            text = when (val content = reaction.content.trim()) {
+                "", "+" -> "❤️"
+                "-" -> "👎"
+                else -> content
+            },
+            style = MaterialTheme.typography.titleMedium,
+            maxLines = 1,
+        )
     }
 }

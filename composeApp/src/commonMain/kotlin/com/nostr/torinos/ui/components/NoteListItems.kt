@@ -13,6 +13,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import com.nostr.torinos.model.quotedEventIds
+import com.nostr.torinos.model.ReactionOption
 import com.nostr.torinos.model.replyTargetId
 import com.nostr.torinos.model.stripNostrEventUris
 import com.nostr.torinos.ui.feed.FeedViewModel
@@ -23,6 +24,8 @@ fun LazyListScope.noteListItems(
     onUserClick: (String) -> Unit,
     onLike: (eventId: String, authorPubkey: String) -> Unit,
     onUnlike: (eventId: String) -> Unit,
+    onEmojiReact: (eventId: String, authorPubkey: String, option: ReactionOption) -> Unit,
+    onEmojiUnreact: (eventId: String, option: ReactionOption) -> Unit,
     onDelete: (eventId: String) -> Unit,
     onReply: ((eventId: String, authorPubkey: String, preview: String) -> Unit)? = null,
     onOpenReplies: ((eventId: String) -> Unit)? = null,
@@ -70,10 +73,14 @@ fun LazyListScope.noteListItems(
                     repostedByProfile = repostedByPubkey?.let { state.profiles[it] },
                     profiles = state.profiles,
                     replyCount = state.replyCounts[event.id] ?: 0,
+                    replies = state.replies[event.id].orEmpty(),
                     repostCount = state.repostCounts[event.id] ?: 0,
                     reactionCount = state.reactionCounts[event.id] ?: 0,
+                    likeReactionCount = state.likeReactionCounts[event.id] ?: 0,
                     customReactions = state.customReactions[event.id].orEmpty(),
+                    unicodeReactions = state.unicodeReactions[event.id].orEmpty(),
                     isLiked = state.likedReactions.containsKey(event.id),
+                    ownEmojiReactionEventIds = state.ownEmojiReactionEventIds[event.id].orEmpty(),
                     isReposted = state.repostedEvents.containsKey(event.id),
                     onUserClick = onUserClick,
                     onLike = if (ownPubkey != null) {
@@ -83,6 +90,12 @@ fun LazyListScope.noteListItems(
                             else
                                 onLike(event.id, event.pubkey)
                         }
+                    } else null,
+                    onEmojiReact = if (ownPubkey != null) {
+                        { option -> onEmojiReact(event.id, event.pubkey, option) }
+                    } else null,
+                    onEmojiUnreact = if (ownPubkey != null) {
+                        { option -> onEmojiUnreact(event.id, option) }
                     } else null,
                     onReply = if (ownPubkey != null && onReply != null) {
                         { onReply(event.id, event.pubkey, event.content.replyPreviewText()) }

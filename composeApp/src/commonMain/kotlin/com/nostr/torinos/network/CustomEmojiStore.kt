@@ -29,10 +29,22 @@ data class CustomEmojiList(
     val emojis: List<CustomEmoji>,
 )
 
+@Serializable
+data class RecentReaction(
+    val kind: String,
+    val value: String,
+) {
+    companion object {
+        const val UnicodeKind = "unicode"
+        const val CustomKind = "custom"
+    }
+}
+
 object CustomEmojiStore {
     private const val EMOJIS_KEY = "custom_emojis"
     private const val EMOJI_LISTS_KEY = "custom_emoji_lists"
     private const val RECENT_EMOJIS_KEY = "recent_custom_emojis"
+    private const val RECENT_REACTIONS_KEY = "recent_reactions"
     private const val MAX_RECENT_EMOJIS = 24
     private const val MANUAL_LIST_ID = "manual"
 
@@ -41,11 +53,13 @@ object CustomEmojiStore {
     private val _emojis = MutableStateFlow<List<CustomEmoji>>(emptyList())
     private val _emojiLists = MutableStateFlow<List<CustomEmojiList>>(emptyList())
     private val _recentEmojiShortcodes = MutableStateFlow<List<String>>(emptyList())
+    private val _recentReactions = MutableStateFlow<List<RecentReaction>>(emptyList())
     private val _openSearchEvent = MutableSharedFlow<String>(extraBufferCapacity = 1)
 
     val emojis: StateFlow<List<CustomEmoji>> = _emojis.asStateFlow()
     val emojiLists: StateFlow<List<CustomEmojiList>> = _emojiLists.asStateFlow()
     val recentEmojiShortcodes: StateFlow<List<String>> = _recentEmojiShortcodes.asStateFlow()
+    val recentReactions: StateFlow<List<RecentReaction>> = _recentReactions.asStateFlow()
     val openSearchEvent: SharedFlow<String> = _openSearchEvent.asSharedFlow()
 
     fun requestOpenSearch(shortcode: String) {
@@ -86,6 +100,24 @@ object CustomEmojiStore {
             (listOf(normalizedShortcode) + current.filterNot { it == normalizedShortcode })
                 .take(MAX_RECENT_EMOJIS)
         }
+        saveRecent()
+    }
+
+    fun markCustomReactionUsed(shortcode: String) {
+        val normalizedShortcode = shortcode.trim().trim(':')
+        if (normalizedShortcode.isBlank()) return
+        _recentEmojiShortcodes.update { current ->
+            (listOf(normalizedShortcode) + current.filterNot { it == normalizedShortcode })
+                .take(MAX_RECENT_EMOJIS)
+        }
+        markReactionUsed(RecentReaction(RecentReaction.CustomKind, normalizedShortcode))
+        saveRecent()
+    }
+
+    fun markUnicodeUsed(value: String) {
+        val normalizedValue = value.trim()
+        if (normalizedValue.isBlank()) return
+        markReactionUsed(RecentReaction(RecentReaction.UnicodeKind, normalizedValue))
         saveRecent()
     }
 
@@ -244,6 +276,24 @@ object CustomEmojiStore {
                     .distinct()
                     .take(MAX_RECENT_EMOJIS)
             }
+        val savedRecentReactions = LocalSettingsStorage.getString(RECENT_REACTIONS_KEY)
+            ?.let { saved ->
+                runCatching {
+                    json.decodeFromString(ListSerializer(RecentReaction.serializer()), saved)
+                }.getOrNull()
+            }
+            .orEmpty()
+            .filter {
+                it.value.isNotBlank() &&
+                    (it.kind == RecentReaction.UnicodeKind || it.kind == RecentReaction.CustomKind)
+            }
+            .distinctBy { it.kind to it.value }
+            .take(MAX_RECENT_EMOJIS)
+        _recentReactions.value = savedRecentReactions.ifEmpty {
+            _recentEmojiShortcodes.value.map {
+                RecentReaction(RecentReaction.CustomKind, it)
+            }
+        }
     }
 
     private fun save() {
@@ -257,8 +307,21 @@ object CustomEmojiStore {
 
     private fun saveRecent() {
         val value = json.encodeToString(ListSerializer(String.serializer()), _recentEmojiShortcodes.value)
+        val reactionsValue = json.encodeToString(
+            ListSerializer(RecentReaction.serializer()),
+            _recentReactions.value,
+        )
         scope.launch {
             LocalSettingsStorage.putString(RECENT_EMOJIS_KEY, value)
+            LocalSettingsStorage.putString(RECENT_REACTIONS_KEY, reactionsValue)
+        }
+    }
+
+    private fun markReactionUsed(reaction: RecentReaction) {
+        _recentReactions.update { current ->
+            (listOf(reaction) + current.filterNot {
+                it.kind == reaction.kind && it.value == reaction.value
+            }).take(MAX_RECENT_EMOJIS)
         }
     }
 

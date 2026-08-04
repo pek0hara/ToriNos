@@ -11,10 +11,18 @@ import com.nostr.torinos.model.NostrFilter
 import com.nostr.torinos.model.NostrProfile
 import com.nostr.torinos.model.NIP23_ARTICLE_KIND
 import com.nostr.torinos.model.CustomReaction
+import com.nostr.torinos.model.ReactionOption
+import com.nostr.torinos.model.UnicodeReaction
+import com.nostr.torinos.model.decrementedWith
+import com.nostr.torinos.model.decrementedWithUnicodeReaction
+import com.nostr.torinos.model.eventTags
 import com.nostr.torinos.model.incrementedWith
+import com.nostr.torinos.model.incrementedWithUnicodeReaction
 import com.nostr.torinos.model.quotedEventIds
 import com.nostr.torinos.model.replyTargetId
 import com.nostr.torinos.model.toCustomReaction
+import com.nostr.torinos.model.toUnicodeReaction
+import com.nostr.torinos.model.toReactionOption
 import com.nostr.torinos.model.toProfile
 import com.nostr.torinos.network.NostrRepository
 import com.nostr.torinos.ui.SafeViewModel
@@ -23,6 +31,8 @@ import kotlin.time.Clock
 import kotlin.time.Instant
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -49,6 +59,68 @@ data class JournalItem(
     val createdAt: Long,
 ) {
     val displayTime: Long get() = memo.updatedAt.takeIf { it > 0 } ?: createdAt
+}
+
+private fun JournalState.withOptimisticEmojiReaction(
+    eventId: String,
+    option: ReactionOption,
+    reactionEventId: String,
+): JournalState = copy(
+    reactionCounts = reactionCounts + (eventId to (reactionCounts[eventId] ?: 0) + 1),
+    customReactions = if (option is ReactionOption.Custom) {
+        customReactions + (
+            eventId to customReactions[eventId].orEmpty().incrementedWith(
+                CustomReaction(option.shortcode.trim().trim(':'), option.imageUrl.trim()),
+            )
+            )
+    } else {
+        customReactions
+    },
+    unicodeReactions = if (option is ReactionOption.Unicode) {
+        unicodeReactions + (
+            eventId to unicodeReactions[eventId].orEmpty().incrementedWithUnicodeReaction(
+                UnicodeReaction(option.value.trim()),
+            )
+            )
+    } else {
+        unicodeReactions
+    },
+    ownEmojiReactionEventIds = ownEmojiReactionEventIds + (
+        eventId to ownEmojiReactionEventIds[eventId].orEmpty()
+            .plus(option.key to reactionEventId)
+        ),
+)
+
+private fun JournalState.withoutOptimisticEmojiReaction(
+    eventId: String,
+    option: ReactionOption,
+): JournalState {
+    val remaining = ownEmojiReactionEventIds[eventId].orEmpty() - option.key
+    return copy(
+        reactionCounts = reactionCounts + (
+            eventId to maxOf(0, (reactionCounts[eventId] ?: 0) - 1)
+            ),
+        customReactions = if (option is ReactionOption.Custom) {
+            customReactions + (
+                eventId to customReactions[eventId].orEmpty().decrementedWith(option)
+                )
+        } else {
+            customReactions
+        },
+        unicodeReactions = if (option is ReactionOption.Unicode) {
+            unicodeReactions + (
+                eventId to unicodeReactions[eventId].orEmpty()
+                    .decrementedWithUnicodeReaction(option)
+                )
+        } else {
+            unicodeReactions
+        },
+        ownEmojiReactionEventIds = if (remaining.isEmpty()) {
+            ownEmojiReactionEventIds - eventId
+        } else {
+            ownEmojiReactionEventIds + (eventId to remaining)
+        },
+    )
 }
 
 sealed class JournalEntry {
@@ -85,10 +157,13 @@ data class JournalState(
     val profiles: Map<String, NostrProfile> = emptyMap(),
     val quotedEvents: Map<String, NostrEvent> = emptyMap(),
     val reactionCounts: Map<String, Int> = emptyMap(),
+    val likeReactionCounts: Map<String, Int> = emptyMap(),
     val customReactions: Map<String, List<CustomReaction>> = emptyMap(),
+    val unicodeReactions: Map<String, List<UnicodeReaction>> = emptyMap(),
     val replyCounts: Map<String, Int> = emptyMap(),
     val repostCounts: Map<String, Int> = emptyMap(),
     val likedReactions: Map<String, String> = emptyMap(),
+    val ownEmojiReactionEventIds: Map<String, Map<String, String>> = emptyMap(),
     val loadedDates: Set<LocalDate> = emptySet(),
     val loadedKindsByDate: Map<LocalDate, Set<JournalLoadKind>> = emptyMap(),
     val isLoading: Boolean = false,
@@ -233,10 +308,15 @@ class JournalViewModel(private val targetPubkey: String? = null) : SafeViewModel
 
     fun react(eventId: String, eventPubkey: String) {
         val cur = _state.value
-        if (cur.likedReactions.containsKey(eventId)) return
+        if (
+            cur.likedReactions.containsKey(eventId) ||
+            cur.ownEmojiReactionEventIds[eventId].orEmpty().isNotEmpty()
+        ) return
         _state.value = cur.copy(
             likedReactions = cur.likedReactions + (eventId to ""),
             reactionCounts = cur.reactionCounts + (eventId to (cur.reactionCounts[eventId] ?: 0) + 1),
+            likeReactionCounts = cur.likeReactionCounts +
+                (eventId to (cur.likeReactionCounts[eventId] ?: 0) + 1),
         )
         launch {
             val privateKeyHex = KeyStorage.loadPrivateKey() ?: return@launch
@@ -261,7 +341,62 @@ class JournalViewModel(private val targetPubkey: String? = null) : SafeViewModel
         _state.value = cur.copy(
             likedReactions = cur.likedReactions - eventId,
             reactionCounts = cur.reactionCounts + (eventId to maxOf(0, (cur.reactionCounts[eventId] ?: 0) - 1)),
+            likeReactionCounts = cur.likeReactionCounts + (
+                eventId to maxOf(0, (cur.likeReactionCounts[eventId] ?: 0) - 1)
+                ),
         )
+        if (reactionEventId.isEmpty()) return
+        launch {
+            val privateKeyHex = KeyStorage.loadPrivateKey() ?: return@launch
+            runCatching {
+                val deletion = signEvent(
+                    privateKeyHex = privateKeyHex,
+                    content = "",
+                    kind = 5,
+                    tags = listOf(listOf("e", reactionEventId)),
+                )
+                NostrRepository.publish(deletion)
+            }
+        }
+    }
+
+    fun reactWithEmoji(eventId: String, eventPubkey: String, option: ReactionOption) {
+        val cur = _state.value
+        if (
+            cur.likedReactions.containsKey(eventId) ||
+            cur.ownEmojiReactionEventIds[eventId].orEmpty().isNotEmpty()
+        ) return
+        _state.value = cur.withOptimisticEmojiReaction(eventId, option, "")
+        launch {
+            val privateKeyHex = KeyStorage.loadPrivateKey() ?: run {
+                _state.value = _state.value.withoutOptimisticEmojiReaction(eventId, option)
+                return@launch
+            }
+            runCatching {
+                signEvent(
+                    privateKeyHex = privateKeyHex,
+                    content = option.eventContent,
+                    kind = 7,
+                    tags = option.eventTags(eventId, eventPubkey),
+                ).also { NostrRepository.publish(it) }
+            }.onSuccess { reaction ->
+                val state = _state.value
+                _state.value = state.copy(
+                    ownEmojiReactionEventIds = state.ownEmojiReactionEventIds + (
+                        eventId to state.ownEmojiReactionEventIds[eventId].orEmpty()
+                            .plus(option.key to reaction.id)
+                        ),
+                )
+            }.onFailure {
+                _state.value = _state.value.withoutOptimisticEmojiReaction(eventId, option)
+            }
+        }
+    }
+
+    fun unreactWithEmoji(eventId: String, option: ReactionOption) {
+        val cur = _state.value
+        val reactionEventId = cur.ownEmojiReactionEventIds[eventId]?.get(option.key) ?: return
+        _state.value = cur.withoutOptimisticEmojiReaction(eventId, option)
         if (reactionEventId.isEmpty()) return
         launch {
             val privateKeyHex = KeyStorage.loadPrivateKey() ?: return@launch
@@ -379,10 +514,17 @@ class JournalViewModel(private val targetPubkey: String? = null) : SafeViewModel
             notes = retainedNotes,
             quotedEvents = if (resetCache) emptyMap() else currentState.quotedEvents,
             reactionCounts = if (resetCache) emptyMap() else currentState.reactionCounts,
+            likeReactionCounts = if (resetCache) emptyMap() else currentState.likeReactionCounts,
             customReactions = if (resetCache) emptyMap() else currentState.customReactions,
+            unicodeReactions = if (resetCache) emptyMap() else currentState.unicodeReactions,
             replyCounts = if (resetCache) emptyMap() else currentState.replyCounts,
             repostCounts = if (resetCache) emptyMap() else currentState.repostCounts,
             likedReactions = if (resetCache) emptyMap() else currentState.likedReactions,
+            ownEmojiReactionEventIds = if (resetCache) {
+                emptyMap()
+            } else {
+                currentState.ownEmojiReactionEventIds
+            },
             loadedDates = retainedLoadedDates,
             loadedKindsByDate = retainedLoadedKindsByDate,
             error = null,
@@ -642,14 +784,19 @@ class JournalViewModel(private val targetPubkey: String? = null) : SafeViewModel
         engagementJob?.cancel()
         engagementJob = launch {
             val subId = nextSubscriptionId("memo-engage")
+            val quoteRepostSubId = nextSubscriptionId("memo-qrepost")
             val noteIdSet = noteIds.toHashSet()
             val mutex = Mutex()
             val reactionCounts = mutableMapOf<String, Int>()
+            val likeReactionCounts = mutableMapOf<String, Int>()
             val customReactions = mutableMapOf<String, List<CustomReaction>>()
+            val unicodeReactions = mutableMapOf<String, List<UnicodeReaction>>()
             val replyCounts = mutableMapOf<String, Int>()
             val repostCounts = mutableMapOf<String, Int>()
             val likedReactions = mutableMapOf<String, String>()
+            val ownEmojiReactionEventIds = mutableMapOf<String, Map<String, String>>()
             var collector: Job? = null
+            var quoteRepostCollector: Job? = null
             try {
                 collector = launch {
                     NostrRepository.events(subId).collect { event ->
@@ -660,13 +807,33 @@ class JournalViewModel(private val targetPubkey: String? = null) : SafeViewModel
                             when (event.kind) {
                                 7 -> {
                                     reactionCounts[targetId] = (reactionCounts[targetId] ?: 0) + 1
+                                    if (event.content.trim() == "+") {
+                                        likeReactionCounts[targetId] =
+                                            (likeReactionCounts[targetId] ?: 0) + 1
+                                    }
                                     event.toCustomReaction()?.let { reaction ->
                                         customReactions[targetId] = customReactions[targetId]
                                             .orEmpty()
                                             .incrementedWith(reaction)
                                     }
-                                    if (event.pubkey == ownPubkey && !likedReactions.containsKey(targetId)) {
+                                    event.toUnicodeReaction()?.let { reaction ->
+                                        unicodeReactions[targetId] = unicodeReactions[targetId]
+                                            .orEmpty()
+                                            .incrementedWithUnicodeReaction(reaction)
+                                    }
+                                    if (
+                                        event.pubkey == ownPubkey &&
+                                        event.content.trim() == "+" &&
+                                        !likedReactions.containsKey(targetId)
+                                    ) {
                                         likedReactions[targetId] = event.id
+                                    }
+                                    if (event.pubkey == ownPubkey) {
+                                        event.toReactionOption()?.let { option ->
+                                            ownEmojiReactionEventIds[targetId] =
+                                                ownEmojiReactionEventIds[targetId].orEmpty() +
+                                                    (option.key to event.id)
+                                        }
                                     }
                                 }
                                 1 -> replyCounts[targetId] = (replyCounts[targetId] ?: 0) + 1
@@ -675,31 +842,65 @@ class JournalViewModel(private val targetPubkey: String? = null) : SafeViewModel
                         }
                     }
                 }
+                quoteRepostCollector = launch {
+                    NostrRepository.events(quoteRepostSubId).collect { event ->
+                        if (event.kind != 1) return@collect
+                        val targetIds = event.tags
+                            .filter { it.firstOrNull() == "q" }
+                            .mapNotNull { it.getOrNull(1) }
+                            .distinct()
+                            .filter { it in noteIdSet }
+                        mutex.withLock {
+                            targetIds.forEach { targetId ->
+                                repostCounts[targetId] = (repostCounts[targetId] ?: 0) + 1
+                            }
+                        }
+                    }
+                }
+                val completionWaiters = listOf(
+                    async { awaitSubscriptionEnd(subId, 8_000L) },
+                    async { awaitSubscriptionEnd(quoteRepostSubId, 8_000L) },
+                )
                 NostrRepository.subscribe(
                     subId,
                     NostrFilter(kinds = listOf(1, 6, 7), eTags = noteIds, limit = 500),
                     relayUrl = relayUrl,
                 )
-                awaitSubscriptionEnd(subId, 8_000L)
+                NostrRepository.subscribe(
+                    quoteRepostSubId,
+                    NostrFilter(kinds = listOf(1), qTags = noteIds, limit = 500),
+                    relayUrl = relayUrl,
+                )
+                completionWaiters.awaitAll()
                 mutex.withLock {
                     val retainedReactionCounts = _state.value.reactionCounts - noteIdSet
+                    val retainedLikeReactionCounts = _state.value.likeReactionCounts - noteIdSet
                     val retainedCustomReactions = _state.value.customReactions - noteIdSet
+                    val retainedUnicodeReactions = _state.value.unicodeReactions - noteIdSet
                     val retainedReplyCounts = _state.value.replyCounts - noteIdSet
                     val retainedRepostCounts = _state.value.repostCounts - noteIdSet
                     val retainedLikedReactions = _state.value.likedReactions - noteIdSet
+                    val retainedOwnEmojiReactions =
+                        _state.value.ownEmojiReactionEventIds - noteIdSet
                     _state.value = _state.value.copy(
                         reactionCounts = retainedReactionCounts + reactionCounts,
+                        likeReactionCounts = retainedLikeReactionCounts + likeReactionCounts,
                         customReactions = retainedCustomReactions + customReactions,
+                        unicodeReactions = retainedUnicodeReactions + unicodeReactions,
                         replyCounts = retainedReplyCounts + replyCounts,
                         repostCounts = retainedRepostCounts + repostCounts,
                         likedReactions = retainedLikedReactions + likedReactions,
+                        ownEmojiReactionEventIds =
+                            retainedOwnEmojiReactions + ownEmojiReactionEventIds,
                     )
                 }
             } catch (e: CancellationException) {
                 throw e
             } finally {
                 runCatching { NostrRepository.close(subId) }
+                runCatching { NostrRepository.close(quoteRepostSubId) }
                 collector?.cancelAndJoin()
+                quoteRepostCollector?.cancelAndJoin()
             }
         }
     }

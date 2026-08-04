@@ -62,6 +62,12 @@ class NostrFilterTest {
     }
 
     @Test
+    fun buildReqMessage_qTags() {
+        val msg = buildReqMessage("s", NostrFilter(qTags = listOf("ev1", "ev2")))
+        assertTrue(msg.contains(""""#q":["ev1","ev2"]"""))
+    }
+
+    @Test
     fun buildReqMessage_pTags() {
         val msg = buildReqMessage("s", NostrFilter(pTags = listOf("pub1")))
         assertTrue(msg.contains(""""#p":["pub1"]"""))

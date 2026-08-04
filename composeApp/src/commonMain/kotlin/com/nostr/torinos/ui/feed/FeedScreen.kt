@@ -654,6 +654,8 @@ private fun FeedTimelinePane(
         onLoadMore = viewModel::loadMore,
         onLike = viewModel::react,
         onUnlike = viewModel::unreact,
+        onEmojiReact = viewModel::reactWithEmoji,
+        onEmojiUnreact = viewModel::unreactWithEmoji,
         onDelete = viewModel::deleteEvent,
         modifier = modifier,
         onReply = onReply,

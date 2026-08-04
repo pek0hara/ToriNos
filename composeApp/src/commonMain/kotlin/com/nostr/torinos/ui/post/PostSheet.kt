@@ -64,6 +64,7 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.nostr.torinos.model.NoteContext
+import com.nostr.torinos.model.encodeNevent
 import com.nostr.torinos.network.CustomEmoji
 import com.nostr.torinos.network.CustomEmojiList
 import com.nostr.torinos.network.CustomEmojiStore
@@ -85,6 +86,9 @@ fun PostSheet(
     replyToId: String? = null,
     replyToPubkey: String? = null,
     replyToPreview: String? = null,
+    quoteToId: String? = null,
+    quoteToPubkey: String? = null,
+    quoteToPreview: String? = null,
     noteContext: NoteContext = NoteContext.Timeline,
     initialMemo: PostMemoData? = null,
     initialMemoRestoreMessage: String? = null,
@@ -96,6 +100,11 @@ fun PostSheet(
     val postViewModel = viewModel ?: remember { PostViewModel() }
     val state by postViewModel.state.collectAsState()
     var showRelaySettingsDialog by remember { mutableStateOf(false) }
+    val quoteReference = remember(quoteToId, quoteToPubkey) {
+        quoteToId?.let {
+            "nostr:${encodeNevent(eventId = it, authorPubkey = quoteToPubkey)}"
+        }
+    }
 
     val pickImage = rememberOptimizedImagePickerLauncher { image ->
         if (image != null) {
@@ -158,8 +167,14 @@ fun PostSheet(
             ) {
                 PostSheetContent(
                     state = state,
-                    title = if (replyToId != null) "返信" else "新しいポスト",
+                    title = when {
+                        replyToId != null -> "返信"
+                        quoteReference != null -> "投稿を引用"
+                        else -> "新しいポスト"
+                    },
                     replyToPreview = replyToPreview,
+                    quoteToPreview = quoteToPreview,
+                    hasQuote = quoteReference != null,
                     onDismiss = ::cancelWithOptionalLocalDraft,
                     onDeleteMemo = onDeleteMemo,
                     onPickImage = pickImage,
@@ -173,7 +188,9 @@ fun PostSheet(
                             onMemoSaved()
                         }
                     },
-                    onPost = { postViewModel.post(replyToId, replyToPubkey, noteContext) },
+                    onPost = {
+                        postViewModel.post(replyToId, replyToPubkey, noteContext, quoteReference)
+                    },
                 )
             }
         }
@@ -191,6 +208,8 @@ private fun PostSheetContent(
     state: PostState,
     title: String,
     replyToPreview: String?,
+    quoteToPreview: String?,
+    hasQuote: Boolean,
     onDismiss: () -> Unit,
     onDeleteMemo: (() -> Unit)?,
     onPickImage: () -> Unit,
@@ -264,6 +283,34 @@ private fun PostSheetContent(
                 .weight(1f, fill = false)
                 .verticalScroll(rememberScrollState()),
         ) {
+            quoteToPreview?.takeIf { it.isNotBlank() }?.let { preview ->
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .border(
+                            width = 1.dp,
+                            color = MaterialTheme.colorScheme.outlineVariant,
+                            shape = MaterialTheme.shapes.small,
+                        )
+                        .padding(10.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
+                    Text(
+                        text = "引用",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Text(
+                        text = preview,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurface,
+                        maxLines = 3,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+                Spacer(modifier = Modifier.height(12.dp))
+            }
+
             replyToPreview?.takeIf { it.isNotBlank() }?.let { preview ->
                 Column(
                     modifier = Modifier
@@ -434,7 +481,8 @@ private fun PostSheetContent(
                 }
                 Button(
                     onClick = onPost,
-                    enabled = state.canPost,
+                    enabled = state.canPost ||
+                        (hasQuote && !state.isPosting && !state.isUploadingAny),
                 ) {
                     if (state.isPosting) {
                         CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)

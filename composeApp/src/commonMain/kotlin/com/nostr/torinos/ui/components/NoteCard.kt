@@ -3,9 +3,12 @@ package com.nostr.torinos.ui.components
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.rememberTransformableState
 import androidx.compose.foundation.gestures.transformable
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.items as lazyRowItems
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -14,12 +17,17 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.GridItemSpan
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.rememberScrollState
@@ -29,22 +37,29 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Reply
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Favorite
+import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.MailOutline
 import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Repeat
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -53,25 +68,34 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.FilterQuality
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalClipboard
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import com.nostr.torinos.model.NostrEvent
 import com.nostr.torinos.model.NostrProfile
 import com.nostr.torinos.model.CustomReaction
-import com.nostr.torinos.model.encodeNevent
+import com.nostr.torinos.model.ReactionOption
+import com.nostr.torinos.model.UnicodeReaction
 import com.nostr.torinos.model.stripNostrEventUris
 import com.nostr.torinos.network.CustomEmojiStore
+import com.nostr.torinos.network.RecentReaction
 import com.nostr.torinos.ui.profile.customEmojiMap
 import com.nostr.torinos.ui.profile.AvatarCircle
 import com.nostr.torinos.ui.settings.setPlainText
@@ -82,6 +106,8 @@ import kotlin.math.max
 import kotlin.time.Clock
 import kotlin.time.Instant
 
+val LocalQuotePostHandler = compositionLocalOf<((NostrEvent) -> Unit)?> { null }
+
 @Composable
 fun NoteCard(
     event: NostrEvent,
@@ -90,13 +116,19 @@ fun NoteCard(
     repostedByProfile: NostrProfile? = null,
     profiles: Map<String, NostrProfile> = emptyMap(),
     replyCount: Int,
+    replies: List<NostrEvent> = emptyList(),
     reactionCount: Int,
+    likeReactionCount: Int? = null,
     customReactions: List<CustomReaction> = emptyList(),
+    unicodeReactions: List<UnicodeReaction> = emptyList(),
     repostCount: Int = 0,
     isLiked: Boolean = false,
     isReposted: Boolean = false,
+    ownEmojiReactionEventIds: Map<String, String> = emptyMap(),
     onUserClick: (pubkey: String) -> Unit = {},
     onLike: (() -> Unit)? = null,
+    onEmojiReact: ((ReactionOption) -> Unit)? = null,
+    onEmojiUnreact: ((ReactionOption) -> Unit)? = null,
     onReply: (() -> Unit)? = null,
     onOpenReplies: (() -> Unit)? = null,
     onOpenLikes: (() -> Unit)? = null,
@@ -113,12 +145,37 @@ fun NoteCard(
     onReport: ((reason: String, detail: String) -> Unit)? = null,
     onNoteClick: ((eventId: String) -> Unit)? = null,
 ) {
+    val onQuote = LocalQuotePostHandler.current
     var showMenu by remember { mutableStateOf(false) }
     var showReportDialog by remember { mutableStateOf(false) }
+    var showHeartReactionMenu by remember { mutableStateOf(false) }
+    var showStandardEmojiPicker by remember { mutableStateOf(false) }
     var expandedImageState by remember { mutableStateOf<ExpandedImageState?>(null) }
+    var repliesExpanded by remember(event.id) { mutableStateOf(false) }
     val clipboard = LocalClipboard.current
     val coroutineScope = rememberCoroutineScope()
     val isOwnPost = ownPubkey != null && event.pubkey == ownPubkey
+    val hasOwnReaction = isLiked || ownEmojiReactionEventIds.isNotEmpty()
+    val canExpandReplies = replyCount > 0 && replies.isNotEmpty()
+    val ownEmojiReaction = remember(
+        customReactions,
+        unicodeReactions,
+        ownEmojiReactionEventIds,
+    ) {
+        customReactions
+            .asSequence()
+            .map { ReactionOption.Custom(it.shortcode, it.imageUrl) }
+            .plus(unicodeReactions.asSequence().map { ReactionOption.Unicode(it.content) })
+            .firstOrNull { ownEmojiReactionEventIds.containsKey(it.key) }
+    }
+    val onHeartClick: (() -> Unit)? = when {
+        isLiked -> onLike
+        ownEmojiReaction != null && onEmojiUnreact != null -> {
+            { onEmojiUnreact(ownEmojiReaction) }
+        }
+        !hasOwnReaction -> onLike
+        else -> null
+    }
     val hasMenu = true
     val parsedContent = remember(event.content) {
         parseNoteContent(event.content)
@@ -175,10 +232,12 @@ fun NoteCard(
                         modifier = Modifier.size(14.dp),
                         tint = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
-                    Text(
+                    LinkedText(
                         text = "${repostedByProfile?.bestName ?: shortPubkey(repostedByPubkey)} がリポスト",
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        customEmojis = repostedByProfile?.customEmojis.orEmpty(),
+                        enableWebLinks = false,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                         modifier = Modifier.weight(1f),
@@ -240,20 +299,15 @@ fun NoteCard(
                                     }
                                 },
                             )
-                            DropdownMenuItem(
-                                text = { Text("投稿IDをコピー") },
-                                onClick = {
-                                    showMenu = false
-                                    coroutineScope.launch {
-                                        clipboard.setPlainText(
-                                            encodeNevent(
-                                                eventId = event.id,
-                                                authorPubkey = event.pubkey,
-                                            ),
-                                        )
-                                    }
-                                },
-                            )
+                            if (onQuote != null) {
+                                DropdownMenuItem(
+                                    text = { Text("投稿を引用") },
+                                    onClick = {
+                                        showMenu = false
+                                        onQuote(event)
+                                    },
+                                )
+                            }
                             if (isOwnPost && onDelete != null) {
                                 DropdownMenuItem(
                                     text = { Text("削除", color = MaterialTheme.colorScheme.error) },
@@ -360,9 +414,20 @@ fun NoteCard(
                     onNoteClick = onNoteClick,
                 )
             }
-            if (customReactions.isNotEmpty()) {
+            if (reactionCount > 0) {
                 Spacer(modifier = Modifier.height(8.dp))
-                CustomReactionRow(customReactions)
+                ReactionSummaryRow(
+                    totalReactionCount = reactionCount,
+                    explicitLikeCount = likeReactionCount,
+                    isLiked = isLiked,
+                    customReactions = customReactions,
+                    unicodeReactions = unicodeReactions,
+                    ownEmojiReactionEventIds = ownEmojiReactionEventIds,
+                    onLike = onLike,
+                    onEmojiReact = onEmojiReact,
+                    onEmojiUnreact = onEmojiUnreact,
+                    onOpenStandardEmojiPicker = { showStandardEmojiPicker = true },
+                )
             }
             Row(
                 verticalAlignment = Alignment.CenterVertically,
@@ -372,9 +437,18 @@ fun NoteCard(
                     icon = Icons.Default.MailOutline,
                     contentDescription = "返信",
                     count = replyCount,
+                    countText = if (canExpandReplies) {
+                        "$replyCount${if (repliesExpanded) "⌃" else "⌄"}"
+                    } else {
+                        replyCount.toString()
+                    },
                     tint = MaterialTheme.colorScheme.onSurfaceVariant,
                     onClick = onReply,
-                    onCountClick = onOpenReplies,
+                    onCountClick = if (canExpandReplies) {
+                        { repliesExpanded = !repliesExpanded }
+                    } else {
+                        onOpenReplies
+                    },
                 )
                 EngagementCount(
                     icon = Icons.Default.Repeat,
@@ -384,13 +458,212 @@ fun NoteCard(
                     onClick = onRepost,
                     onCountClick = onOpenReposts,
                 )
-                EngagementCount(
-                    icon = Icons.Default.Favorite,
-                    contentDescription = "いいね",
-                    count = reactionCount,
-                    tint = if (isLiked) Color(0xFFE17055) else MaterialTheme.colorScheme.onSurfaceVariant,
-                    onClick = onLike,
-                    onCountClick = onOpenLikes,
+                Box {
+                    EngagementCount(
+                        icon = Icons.Default.Favorite,
+                        contentDescription = if (hasOwnReaction) "リアクションを解除" else "いいね",
+                        count = reactionCount,
+                        tint = if (hasOwnReaction) Color(0xFFE17055) else MaterialTheme.colorScheme.onSurfaceVariant,
+                        onClick = onHeartClick,
+                        onLongClick = if (onEmojiReact != null && !hasOwnReaction) {
+                            { showHeartReactionMenu = true }
+                        } else {
+                            null
+                        },
+                        onCountClick = onOpenLikes,
+                    )
+                    QuickReactionMenu(
+                        expanded = showHeartReactionMenu,
+                        selectedReactionKeys = ownEmojiReactionEventIds.keys,
+                        onDismiss = { showHeartReactionMenu = false },
+                        onSelect = { option ->
+                            showHeartReactionMenu = false
+                            if (ownEmojiReactionEventIds.containsKey(option.key)) {
+                                onEmojiUnreact?.invoke(option)
+                            } else {
+                                onEmojiReact?.invoke(option)
+                            }
+                        },
+                        onOpenStandardEmojiPicker = {
+                            showHeartReactionMenu = false
+                            showStandardEmojiPicker = true
+                        },
+                    )
+                }
+            }
+            if (repliesExpanded && replies.isNotEmpty()) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = 4.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    replies.forEach { reply ->
+                        QuotePreview(
+                            event = reply,
+                            profile = profiles[reply.pubkey],
+                            profiles = profiles,
+                            onUserClick = onUserClick,
+                            onImageClick = { urls, index ->
+                                expandedImageState = ExpandedImageState(urls, index)
+                            },
+                            onNoteClick = onNoteClick,
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    if (showStandardEmojiPicker && !hasOwnReaction) {
+        StandardEmojiPickerSheet(
+            onDismiss = { showStandardEmojiPicker = false },
+            onSelect = { option ->
+                showStandardEmojiPicker = false
+                markReactionUsed(option)
+                onEmojiReact?.invoke(option)
+            },
+        )
+    }
+}
+
+@Composable
+private fun ReactionSummaryRow(
+    totalReactionCount: Int,
+    explicitLikeCount: Int?,
+    isLiked: Boolean,
+    customReactions: List<CustomReaction>,
+    unicodeReactions: List<UnicodeReaction>,
+    ownEmojiReactionEventIds: Map<String, String>,
+    onLike: (() -> Unit)?,
+    onEmojiReact: ((ReactionOption) -> Unit)?,
+    onEmojiUnreact: ((ReactionOption) -> Unit)?,
+    onOpenStandardEmojiPicker: () -> Unit,
+) {
+    val emojiReactionCount = customReactions.sumOf { it.count } + unicodeReactions.sumOf { it.count }
+    val likeCount = explicitLikeCount
+        ?: (totalReactionCount - emojiReactionCount).coerceAtLeast(if (isLiked) 1 else 0)
+    val hasOwnReaction = isLiked || ownEmojiReactionEventIds.isNotEmpty()
+    var showQuickMenu by remember { mutableStateOf(false) }
+
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .horizontalScroll(rememberScrollState()),
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        if (likeCount > 0) {
+            ReactionChip(
+                selected = isLiked,
+                enabled = !hasOwnReaction || isLiked,
+                contentDescription = "いいね、${likeCount}件",
+                onClick = if (!hasOwnReaction || isLiked) onLike else null,
+                emoji = {
+                    Text(
+                        text = "❤️",
+                        modifier = Modifier.widthIn(min = 28.dp),
+                        fontSize = 18.sp,
+                        textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                        maxLines = 1,
+                    )
+                },
+                count = likeCount,
+            )
+        }
+        customReactions.forEach { reaction ->
+            val option = ReactionOption.Custom(reaction.shortcode, reaction.imageUrl)
+            val selected = ownEmojiReactionEventIds.containsKey(option.key)
+            ReactionChip(
+                selected = selected,
+                enabled = !hasOwnReaction || selected,
+                contentDescription = ":${reaction.shortcode}:、${reaction.count}件",
+                onClick = if (onEmojiReact != null && (!hasOwnReaction || selected)) {
+                    {
+                        if (selected) {
+                            onEmojiUnreact?.invoke(option)
+                        } else {
+                            onEmojiReact(option)
+                        }
+                    }
+                } else null,
+                emoji = {
+                    Box(
+                    modifier = Modifier.size(width = 28.dp, height = 32.dp),
+                    contentAlignment = Alignment.Center,
+                    ) {
+                        NetworkImage(
+                            url = reaction.imageUrl,
+                            contentDescription = null,
+                            contentScale = ContentScale.Fit,
+                            modifier = Modifier.size(20.dp),
+                        )
+                    }
+                },
+                count = reaction.count,
+            )
+        }
+        unicodeReactions.forEach { reaction ->
+            val option = ReactionOption.Unicode(reaction.content)
+            val selected = ownEmojiReactionEventIds.containsKey(option.key)
+            ReactionChip(
+                selected = selected,
+                enabled = !hasOwnReaction || selected,
+                contentDescription = "${reaction.content}、${reaction.count}件",
+                onClick = if (onEmojiReact != null && (!hasOwnReaction || selected)) {
+                    {
+                        if (selected) {
+                            onEmojiUnreact?.invoke(option)
+                        } else {
+                            onEmojiReact(option)
+                        }
+                    }
+                } else null,
+                emoji = {
+                    Text(
+                        text = reaction.content,
+                        modifier = Modifier.widthIn(min = 28.dp),
+                        fontSize = 18.sp,
+                        textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                        maxLines = 1,
+                    )
+                },
+                count = reaction.count,
+            )
+        }
+        if (onEmojiReact != null && !hasOwnReaction) {
+            Box {
+                Box(
+                    modifier = Modifier
+                        .size(32.dp)
+                        .clip(CircleShape)
+                        .background(MaterialTheme.colorScheme.surfaceVariant)
+                        .border(1.dp, MaterialTheme.colorScheme.outlineVariant, CircleShape)
+                        .clickable { showQuickMenu = true },
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Add,
+                        contentDescription = "リアクションを追加",
+                        modifier = Modifier.size(18.dp),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                QuickReactionMenu(
+                    expanded = showQuickMenu,
+                    selectedReactionKeys = ownEmojiReactionEventIds.keys,
+                    onDismiss = { showQuickMenu = false },
+                    onSelect = { option ->
+                        showQuickMenu = false
+                        if (ownEmojiReactionEventIds.containsKey(option.key)) {
+                            onEmojiUnreact?.invoke(option)
+                        } else {
+                            onEmojiReact(option)
+                        }
+                    },
+                    onOpenStandardEmojiPicker = {
+                        showQuickMenu = false
+                        onOpenStandardEmojiPicker()
+                    },
                 )
             }
         }
@@ -398,42 +671,794 @@ fun NoteCard(
 }
 
 @Composable
-private fun CustomReactionRow(reactions: List<CustomReaction>) {
+private fun ReactionChip(
+    selected: Boolean,
+    enabled: Boolean = true,
+    contentDescription: String,
+    onClick: (() -> Unit)?,
+    emoji: @Composable () -> Unit,
+    count: Int,
+) {
+    val shape = RoundedCornerShape(16.dp)
     Row(
         modifier = Modifier
-            .fillMaxWidth()
-            .horizontalScroll(rememberScrollState()),
-        horizontalArrangement = Arrangement.spacedBy(6.dp),
+            .alpha(if (enabled) 1f else 0.55f)
+            .clip(shape)
+            .background(
+                if (selected) {
+                    MaterialTheme.colorScheme.primaryContainer
+                } else {
+                    MaterialTheme.colorScheme.surfaceVariant
+                },
+            )
+            .border(
+                width = 1.dp,
+                color = if (selected) {
+                    MaterialTheme.colorScheme.primary
+                } else {
+                    MaterialTheme.colorScheme.outlineVariant
+                },
+                shape = shape,
+            )
+            .height(32.dp)
+            .clickable(enabled = enabled && onClick != null) { onClick?.invoke() }
+            .semantics { this.contentDescription = contentDescription }
+            .padding(horizontal = 8.dp),
+        horizontalArrangement = Arrangement.spacedBy(2.dp),
+        verticalAlignment = Alignment.CenterVertically,
     ) {
-        reactions.forEach { reaction ->
-            Row(
-                modifier = Modifier
-                    .clip(RoundedCornerShape(16.dp))
-                    .background(MaterialTheme.colorScheme.surfaceVariant)
-                    .border(
-                        width = 1.dp,
-                        color = MaterialTheme.colorScheme.outlineVariant,
-                        shape = RoundedCornerShape(16.dp),
-                    )
-                    .padding(horizontal = 8.dp, vertical = 4.dp),
-                horizontalArrangement = Arrangement.spacedBy(4.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                NetworkImage(
-                    url = reaction.imageUrl,
-                    contentDescription = ":${reaction.shortcode}:",
-                    contentScale = ContentScale.Fit,
-                    modifier = Modifier.size(20.dp),
-                )
+        emoji()
+        Text(
+            text = count.toString(),
+            style = MaterialTheme.typography.labelMedium,
+            color = if (selected) {
+                MaterialTheme.colorScheme.onPrimaryContainer
+            } else {
+                MaterialTheme.colorScheme.onSurfaceVariant
+            },
+        )
+    }
+}
+
+@Composable
+private fun QuickReactionMenu(
+    expanded: Boolean,
+    selectedReactionKeys: Set<String>,
+    onDismiss: () -> Unit,
+    onSelect: (ReactionOption) -> Unit,
+    onOpenStandardEmojiPicker: () -> Unit,
+) {
+    val savedCustomEmojis by CustomEmojiStore.emojis.collectAsState()
+    val recentReactions by CustomEmojiStore.recentReactions.collectAsState()
+    val savedEmojiMap = remember(savedCustomEmojis) { savedCustomEmojis.associateBy { it.shortcode } }
+    val recentOptions = remember(recentReactions, savedEmojiMap) {
+        recentReactions.mapNotNull { recent ->
+            when (recent.kind) {
+                RecentReaction.UnicodeKind -> ReactionOption.Unicode(recent.value)
+                RecentReaction.CustomKind -> savedEmojiMap[recent.value]?.let {
+                    ReactionOption.Custom(it.shortcode, it.imageUrl)
+                }
+                else -> null
+            }
+        }.distinctBy { it.key }.take(8)
+    }
+
+    DropdownMenu(
+        expanded = expanded,
+        onDismissRequest = onDismiss,
+    ) {
+        Column(
+            modifier = Modifier
+                .widthIn(min = 280.dp, max = 320.dp)
+                .padding(horizontal = 12.dp, vertical = 8.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Text(
+                text = "最近使ったリアクション",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            if (recentOptions.isEmpty()) {
                 Text(
-                    text = reaction.count.toString(),
-                    style = MaterialTheme.typography.labelMedium,
+                    text = "まだありません",
+                    style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
+            } else {
+                Row(
+                    modifier = Modifier.horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
+                    recentOptions.forEach { option ->
+                        ReactionPickerTile(
+                            option = option,
+                            selected = option.key in selectedReactionKeys,
+                            onClick = {
+                                markReactionUsed(option)
+                                onSelect(option)
+                            },
+                        )
+                    }
+                }
+            }
+
+            TextButton(
+                onClick = onOpenStandardEmojiPicker,
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Text("絵文字を選ぶ")
             }
         }
     }
 }
+
+@Composable
+private fun ReactionPickerTile(
+    option: ReactionOption?,
+    selected: Boolean = false,
+    contentDescription: String? = null,
+    onClick: () -> Unit,
+) {
+    Box(
+        modifier = Modifier
+            .size(40.dp)
+            .clip(CircleShape)
+            .background(
+                if (selected) {
+                    MaterialTheme.colorScheme.primaryContainer
+                } else {
+                    Color.Transparent
+                },
+            )
+            .clickable(onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) {
+        when (option) {
+            null -> Text(
+                text = "❤️",
+                fontSize = 22.sp,
+                modifier = Modifier.semantics {
+                    this.contentDescription = contentDescription ?: "いいね"
+                },
+            )
+            is ReactionOption.Unicode -> Text(
+                text = option.value,
+                fontSize = 22.sp,
+                modifier = Modifier.semantics {
+                    this.contentDescription = option.value
+                },
+            )
+            is ReactionOption.Custom -> NetworkImage(
+                url = option.imageUrl,
+                contentDescription = ":${option.shortcode}:",
+                contentScale = ContentScale.Fit,
+                modifier = Modifier.size(26.dp),
+            )
+        }
+    }
+}
+
+private fun markReactionUsed(option: ReactionOption) {
+    when (option) {
+        is ReactionOption.Unicode -> CustomEmojiStore.markUnicodeUsed(option.value)
+        is ReactionOption.Custom -> CustomEmojiStore.markCustomReactionUsed(option.shortcode)
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun StandardEmojiPickerSheet(
+    onDismiss: () -> Unit,
+    onSelect: (ReactionOption) -> Unit,
+) {
+    val savedCustomEmojis by CustomEmojiStore.emojis.collectAsState()
+    val recentReactions by CustomEmojiStore.recentReactions.collectAsState()
+    var query by remember { mutableStateOf("") }
+    var selectedCategory by remember { mutableStateOf<StandardEmojiCategory?>(null) }
+    var customOnly by remember { mutableStateOf(false) }
+    val normalizedQuery = query.trim().lowercase()
+    val customOptions = remember(savedCustomEmojis) {
+        savedCustomEmojis.map { ReactionOption.Custom(it.shortcode, it.imageUrl) }
+    }
+    val recentOptions = remember(recentReactions, savedCustomEmojis) {
+        val customEmojiMap = savedCustomEmojis.associateBy { it.shortcode }
+        recentReactions
+            .asSequence()
+            .mapNotNull { recent ->
+                when (recent.kind) {
+                    RecentReaction.UnicodeKind -> ReactionOption.Unicode(recent.value)
+                    RecentReaction.CustomKind -> customEmojiMap[recent.value]?.let {
+                        ReactionOption.Custom(it.shortcode, it.imageUrl)
+                    }
+                    else -> null
+                }
+            }
+            .distinctBy { it.key }
+            .take(16)
+            .toList()
+    }
+    val visibleSections = remember(normalizedQuery, selectedCategory, customOnly, customOptions) {
+        when {
+            normalizedQuery.isNotBlank() -> {
+                val unicodeMatches = STANDARD_EMOJI_CATEGORIES.flatMap { category ->
+                    category.emojis.filter { emoji ->
+                        normalizedQuery in emoji ||
+                            normalizedQuery in category.label.lowercase() ||
+                            EMOJI_SEARCH_KEYWORDS[emoji].orEmpty().any { normalizedQuery in it }
+                    }
+                }.distinct().map { ReactionOption.Unicode(it) }
+                val customMatches = customOptions.filter {
+                    normalizedQuery in it.shortcode.lowercase()
+                }
+                listOf(EmojiPickerSection("検索結果", customMatches + unicodeMatches))
+            }
+            customOnly -> listOf(EmojiPickerSection("カスタム絵文字", customOptions))
+            selectedCategory != null -> listOf(
+                EmojiPickerSection(
+                    selectedCategory!!.label,
+                    selectedCategory!!.emojis.map { ReactionOption.Unicode(it) },
+                ),
+            )
+            else -> if (customOptions.isNotEmpty()) {
+                listOf(EmojiPickerSection("カスタム絵文字", customOptions))
+            } else {
+                emptyList()
+            } + STANDARD_EMOJI_CATEGORIES.map { category ->
+                EmojiPickerSection(
+                    category.label,
+                    category.emojis.map { ReactionOption.Unicode(it) },
+                )
+            }
+        }
+    }
+
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        containerColor = MaterialTheme.colorScheme.surface,
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .fillMaxHeight(0.78f)
+                .padding(horizontal = 16.dp),
+        ) {
+            OutlinedTextField(
+                value = query,
+                onValueChange = { query = it },
+                modifier = Modifier.fillMaxWidth(),
+                placeholder = { Text("検索") },
+                leadingIcon = {
+                    Icon(
+                        imageVector = Icons.Default.Search,
+                        contentDescription = null,
+                    )
+                },
+                trailingIcon = if (query.isNotEmpty()) {
+                    {
+                        IconButton(onClick = { query = "" }) {
+                            Icon(
+                                imageVector = Icons.Default.Close,
+                                contentDescription = "検索文字を消去",
+                            )
+                        }
+                    }
+                } else {
+                    null
+                },
+                singleLine = true,
+                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                shape = RoundedCornerShape(14.dp),
+            )
+            Spacer(modifier = Modifier.height(10.dp))
+
+            LazyVerticalGrid(
+                columns = GridCells.Adaptive(minSize = 42.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .weight(1f),
+                horizontalArrangement = Arrangement.SpaceEvenly,
+                verticalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                if (
+                    normalizedQuery.isBlank() &&
+                    selectedCategory == null &&
+                    !customOnly &&
+                    recentOptions.isNotEmpty()
+                ) {
+                    item(span = { GridItemSpan(maxLineSpan) }) {
+                        EmojiPickerSectionTitle("よく使う項目")
+                    }
+                    items(recentOptions, key = { "recent-${it.key}" }) { option ->
+                        EmojiPickerGridTile(option = option, onSelect = onSelect)
+                    }
+                }
+
+                visibleSections.forEach { section ->
+                    item(
+                        key = "title-${section.title}",
+                        span = { GridItemSpan(maxLineSpan) },
+                    ) {
+                        EmojiPickerSectionTitle(section.title)
+                    }
+                    items(
+                        items = section.options,
+                        key = { "${section.title}-${it.key}" },
+                    ) { option ->
+                        EmojiPickerGridTile(option = option, onSelect = onSelect)
+                    }
+                }
+
+                if (visibleSections.all { it.options.isEmpty() }) {
+                    item(span = { GridItemSpan(maxLineSpan) }) {
+                        Text(
+                            text = "一致する絵文字はありません",
+                            modifier = Modifier.padding(vertical = 24.dp),
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            style = MaterialTheme.typography.bodyMedium,
+                        )
+                    }
+                }
+            }
+
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState())
+                    .padding(vertical = 8.dp),
+                horizontalArrangement = Arrangement.spacedBy(2.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                EmojiCategoryButton(
+                    icon = "",
+                    iconVector = Icons.Default.History,
+                    label = "すべてとよく使う項目",
+                    selected = selectedCategory == null && !customOnly,
+                    onClick = {
+                        query = ""
+                        selectedCategory = null
+                        customOnly = false
+                    },
+                )
+                EmojiCategoryButton(
+                    icon = "✦",
+                    customImageUrl = savedCustomEmojis.firstOrNull()?.imageUrl,
+                    label = "カスタム絵文字",
+                    selected = customOnly,
+                    onClick = {
+                        query = ""
+                        selectedCategory = null
+                        customOnly = true
+                    },
+                )
+                STANDARD_EMOJI_CATEGORIES.forEach { category ->
+                    EmojiCategoryButton(
+                        icon = category.icon,
+                        label = category.label,
+                        selected = selectedCategory == category,
+                        onClick = {
+                            query = ""
+                            selectedCategory = category
+                            customOnly = false
+                        },
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun EmojiPickerSectionTitle(title: String) {
+    Text(
+        text = title,
+        modifier = Modifier.padding(top = 8.dp, bottom = 4.dp),
+        style = MaterialTheme.typography.titleSmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
+}
+
+@Composable
+private fun EmojiPickerGridTile(
+    option: ReactionOption,
+    onSelect: (ReactionOption) -> Unit,
+) {
+    Box(
+        modifier = Modifier
+            .size(42.dp)
+            .clip(RoundedCornerShape(10.dp))
+            .clickable { onSelect(option) }
+            .semantics {
+                contentDescription = when (option) {
+                    is ReactionOption.Unicode -> option.value
+                    is ReactionOption.Custom -> ":${option.shortcode}:"
+                }
+            },
+        contentAlignment = Alignment.Center,
+    ) {
+        when (option) {
+            is ReactionOption.Unicode -> Text(text = option.value, fontSize = 27.sp)
+            is ReactionOption.Custom -> NetworkImage(
+                url = option.imageUrl,
+                contentDescription = null,
+                contentScale = ContentScale.Fit,
+                modifier = Modifier.size(30.dp),
+            )
+        }
+    }
+}
+
+@Composable
+private fun EmojiCategoryButton(
+    icon: String,
+    iconVector: ImageVector? = null,
+    customImageUrl: String? = null,
+    label: String,
+    selected: Boolean,
+    onClick: () -> Unit,
+) {
+    Box(
+        modifier = Modifier
+            .size(38.dp)
+            .clip(CircleShape)
+            .background(
+                if (selected) MaterialTheme.colorScheme.secondaryContainer
+                else Color.Transparent,
+            )
+            .clickable(onClick = onClick)
+            .semantics { contentDescription = label },
+        contentAlignment = Alignment.Center,
+    ) {
+        if (iconVector != null) {
+            Icon(
+                imageVector = iconVector,
+                contentDescription = null,
+                modifier = Modifier.size(24.dp),
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        } else if (customImageUrl != null) {
+            NetworkImage(
+                url = customImageUrl,
+                contentDescription = null,
+                contentScale = ContentScale.Fit,
+                modifier = Modifier.size(24.dp),
+            )
+        } else {
+            Text(
+                text = icon,
+                fontSize = 21.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+}
+
+@Composable
+private fun AllReactionPickerDialog(
+    isLiked: Boolean,
+    selectedReactionKeys: Set<String>,
+    onDismiss: () -> Unit,
+    onSelect: (ReactionOption) -> Unit,
+    onSelectLike: () -> Unit,
+) {
+    val savedCustomEmojis by CustomEmojiStore.emojis.collectAsState()
+    val recentReactions by CustomEmojiStore.recentReactions.collectAsState()
+    var query by remember { mutableStateOf("") }
+    var filter by remember { mutableStateOf(ReactionSearchFilter.All) }
+    val normalizedQuery = remember(query) {
+        query.trim().trim(':').lowercase()
+    }
+    val unicodeEntries = remember(normalizedQuery, filter) {
+        if (filter == ReactionSearchFilter.Custom) return@remember emptyList()
+        UNICODE_REACTION_CATALOG
+            .filter { entry ->
+                normalizedQuery.isBlank() ||
+                    normalizedQuery in entry.value.lowercase() ||
+                    entry.keywords.any { normalizedQuery in it }
+            }
+    }
+    val customOptions = remember(savedCustomEmojis, normalizedQuery, filter) {
+        if (filter == ReactionSearchFilter.Unicode) return@remember emptyList()
+        savedCustomEmojis
+            .filter {
+                normalizedQuery.isBlank() ||
+                    normalizedQuery in it.shortcode.lowercase()
+            }
+            .map { ReactionOption.Custom(it.shortcode, it.imageUrl) }
+    }
+    val recentOptions = remember(savedCustomEmojis, recentReactions, filter) {
+        val savedEmojiMap = savedCustomEmojis.associateBy { it.shortcode }
+        recentReactions
+            .mapNotNull { recent ->
+                when (recent.kind) {
+                    RecentReaction.UnicodeKind -> ReactionOption.Unicode(recent.value)
+                        .takeUnless { filter == ReactionSearchFilter.Custom }
+                    RecentReaction.CustomKind -> savedEmojiMap[recent.value]?.let {
+                        ReactionOption.Custom(it.shortcode, it.imageUrl)
+                    }?.takeUnless { filter == ReactionSearchFilter.Unicode }
+                    else -> null
+                }
+            }
+            .take(8)
+    }
+    val resultCount = unicodeEntries.size + customOptions.size +
+        if (
+            filter != ReactionSearchFilter.Custom &&
+            (normalizedQuery.isBlank() || "いいね".contains(normalizedQuery))
+        ) 1 else 0
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("リアクションを探す") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                OutlinedTextField(
+                    value = query,
+                    onValueChange = { query = it },
+                    placeholder = { Text("名前や :shortcode: で検索") },
+                    leadingIcon = {
+                        Icon(
+                            imageVector = Icons.Default.Search,
+                            contentDescription = null,
+                        )
+                    },
+                    trailingIcon = if (query.isNotEmpty()) {
+                        {
+                            IconButton(onClick = { query = "" }) {
+                                Icon(
+                                    imageVector = Icons.Default.Close,
+                                    contentDescription = "検索文字を消去",
+                                )
+                            }
+                        }
+                    } else {
+                        null
+                    },
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                    modifier = Modifier.fillMaxWidth(),
+                )
+
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    ReactionSearchFilter.entries.forEach { item ->
+                        FilterChip(
+                            selected = filter == item,
+                            onClick = { filter = item },
+                            label = { Text(item.label) },
+                        )
+                    }
+                }
+
+                if (normalizedQuery.isBlank() && recentOptions.isNotEmpty()) {
+                    Text(
+                        text = "最近使ったリアクション",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        lazyRowItems(
+                            items = recentOptions,
+                            key = { "recent-${it.key}" },
+                        ) { option ->
+                            ReactionSearchResultTile(
+                                option = option,
+                                selected = option.key in selectedReactionKeys,
+                                label = when (option) {
+                                    is ReactionOption.Unicode -> option.value
+                                    is ReactionOption.Custom -> option.shortcode
+                                },
+                                onClick = {
+                                    markReactionUsed(option)
+                                    onSelect(option)
+                                },
+                            )
+                        }
+                    }
+                }
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        text = if (normalizedQuery.isBlank()) "すべての候補" else "検索結果",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Text(
+                        text = "${resultCount}件",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+
+                LazyVerticalGrid(
+                    columns = GridCells.Adaptive(minSize = 68.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(min = 160.dp, max = 330.dp),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    if (
+                        filter != ReactionSearchFilter.Custom &&
+                        (normalizedQuery.isBlank() || "いいね".contains(normalizedQuery))
+                    ) {
+                        item(key = "default-like") {
+                            ReactionSearchResultTile(
+                                option = null,
+                                selected = isLiked,
+                                label = "いいね",
+                                onClick = onSelectLike,
+                            )
+                        }
+                    }
+                    items(
+                        items = unicodeEntries,
+                        key = { "unicode-${it.value}" },
+                    ) { entry ->
+                        val option = ReactionOption.Unicode(entry.value)
+                        ReactionSearchResultTile(
+                            option = option,
+                            selected = option.key in selectedReactionKeys,
+                            label = entry.keywords.firstOrNull() ?: entry.value,
+                            onClick = {
+                                markReactionUsed(option)
+                                onSelect(option)
+                            },
+                        )
+                    }
+                    items(
+                        items = customOptions,
+                        key = { it.key },
+                    ) { option ->
+                        ReactionSearchResultTile(
+                            option = option,
+                            selected = option.key in selectedReactionKeys,
+                            label = option.shortcode,
+                            onClick = {
+                                markReactionUsed(option)
+                                onSelect(option)
+                            },
+                        )
+                    }
+                }
+                if (resultCount == 0) {
+                    Text(
+                        text = if (normalizedQuery.isBlank()) {
+                            "この種類のリアクションはまだありません"
+                        } else {
+                            "「${query.trim()}」に一致するリアクションはありません\n名前や :shortcode: を変えてお試しください"
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) {
+                Text("閉じる")
+            }
+        },
+    )
+}
+
+@Composable
+private fun ReactionSearchResultTile(
+    option: ReactionOption?,
+    selected: Boolean,
+    label: String,
+    onClick: () -> Unit,
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(72.dp)
+            .clip(RoundedCornerShape(12.dp))
+            .background(
+                if (selected) {
+                    MaterialTheme.colorScheme.primaryContainer
+                } else {
+                    MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f)
+                },
+            )
+            .clickable(onClick = onClick)
+            .padding(horizontal = 4.dp, vertical = 7.dp)
+            .semantics {
+                contentDescription = when (option) {
+                    null -> "いいね"
+                    is ReactionOption.Unicode -> label
+                    is ReactionOption.Custom -> ":${option.shortcode}:"
+                }
+            },
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(5.dp),
+    ) {
+        when (option) {
+            null -> Text(text = "❤️", fontSize = 24.sp)
+            is ReactionOption.Unicode -> Text(text = option.value, fontSize = 24.sp)
+            is ReactionOption.Custom -> NetworkImage(
+                url = option.imageUrl,
+                contentDescription = null,
+                contentScale = ContentScale.Fit,
+                modifier = Modifier.size(30.dp),
+            )
+        }
+        Text(
+            text = if (option is ReactionOption.Custom) ":$label:" else label,
+            style = MaterialTheme.typography.labelSmall,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+    }
+}
+
+private enum class ReactionSearchFilter(val label: String) {
+    All("すべて"),
+    Unicode("標準絵文字"),
+    Custom("カスタム"),
+}
+
+private data class UnicodeReactionEntry(
+    val value: String,
+    val keywords: List<String>,
+)
+
+private data class EmojiPickerSection(
+    val title: String,
+    val options: List<ReactionOption>,
+)
+
+private val EMOJI_SEARCH_KEYWORDS by lazy {
+    UNICODE_REACTION_CATALOG.associate { it.value to it.keywords }
+}
+
+private val UNICODE_REACTION_CATALOG = listOf(
+    UnicodeReactionEntry("😀", listOf("笑顔", "うれしい")),
+    UnicodeReactionEntry("😃", listOf("笑顔", "うれしい")),
+    UnicodeReactionEntry("👍", listOf("いいね", "賛成", "good")),
+    UnicodeReactionEntry("👎", listOf("よくない", "反対", "bad")),
+    UnicodeReactionEntry("😂", listOf("笑う", "爆笑", "笑顔")),
+    UnicodeReactionEntry("🤣", listOf("笑う", "爆笑")),
+    UnicodeReactionEntry("😊", listOf("笑顔", "うれしい")),
+    UnicodeReactionEntry("🥰", listOf("好き", "笑顔")),
+    UnicodeReactionEntry("😍", listOf("好き", "ハート")),
+    UnicodeReactionEntry("🤔", listOf("考える", "疑問")),
+    UnicodeReactionEntry("😮", listOf("驚く", "びっくり")),
+    UnicodeReactionEntry("😢", listOf("悲しい", "泣く")),
+    UnicodeReactionEntry("😭", listOf("悲しい", "泣く")),
+    UnicodeReactionEntry("😡", listOf("怒る")),
+    UnicodeReactionEntry("🥳", listOf("お祝い", "パーティー")),
+    UnicodeReactionEntry("🤩", listOf("すごい", "感動")),
+    UnicodeReactionEntry("🫡", listOf("了解", "敬礼")),
+    UnicodeReactionEntry("🫠", listOf("溶ける")),
+    UnicodeReactionEntry("🙌", listOf("万歳", "お祝い")),
+    UnicodeReactionEntry("👏", listOf("拍手", "すごい")),
+    UnicodeReactionEntry("🙏", listOf("お願い", "ありがとう", "感謝")),
+    UnicodeReactionEntry("💪", listOf("がんばれ", "力")),
+    UnicodeReactionEntry("🤝", listOf("握手", "同意")),
+    UnicodeReactionEntry("👌", listOf("了解", "ok")),
+    UnicodeReactionEntry("✌️", listOf("平和", "ピース")),
+    UnicodeReactionEntry("👀", listOf("見る", "注目")),
+    UnicodeReactionEntry("🎉", listOf("お祝い", "おめでとう")),
+    UnicodeReactionEntry("✨", listOf("きらきら", "素敵")),
+    UnicodeReactionEntry("🔥", listOf("炎", "熱い", "最高")),
+    UnicodeReactionEntry("💯", listOf("満点", "最高")),
+    UnicodeReactionEntry("💡", listOf("アイデア", "ひらめき")),
+    UnicodeReactionEntry("✅", listOf("完了", "確認")),
+    UnicodeReactionEntry("🚀", listOf("ロケット", "開始")),
+    UnicodeReactionEntry("🐦", listOf("鳥", "とり")),
+    UnicodeReactionEntry("🐣", listOf("ひよこ", "鳥")),
+    UnicodeReactionEntry("🍣", listOf("寿司", "食べ物")),
+    UnicodeReactionEntry("🍺", listOf("ビール", "乾杯")),
+    UnicodeReactionEntry("☕", listOf("コーヒー", "休憩")),
+)
 
 data class QuotedEvent(
     val event: NostrEvent,
@@ -956,8 +1981,10 @@ fun EngagementCount(
     icon: androidx.compose.ui.graphics.vector.ImageVector,
     contentDescription: String,
     count: Int,
+    countText: String = count.toString(),
     tint: androidx.compose.ui.graphics.Color,
     onClick: (() -> Unit)? = null,
+    onLongClick: (() -> Unit)? = null,
     onCountClick: (() -> Unit)? = null,
 ) {
     Row(
@@ -968,7 +1995,10 @@ fun EngagementCount(
             modifier = if (onClick != null) {
                 Modifier
                     .size(36.dp)
-                    .clickable { onClick() }
+                    .combinedClickable(
+                        onClick = onClick,
+                        onLongClick = onLongClick,
+                    )
             } else {
                 Modifier.size(36.dp)
             },
@@ -982,7 +2012,7 @@ fun EngagementCount(
             )
         }
         Text(
-            text = count.toString(),
+            text = countText,
             style = MaterialTheme.typography.labelMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier

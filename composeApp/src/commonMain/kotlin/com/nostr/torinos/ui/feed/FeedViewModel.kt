@@ -10,11 +10,19 @@ import com.nostr.torinos.model.NostrEvent
 import com.nostr.torinos.model.NostrFilter
 import com.nostr.torinos.model.NostrProfile
 import com.nostr.torinos.model.CustomReaction
+import com.nostr.torinos.model.ReactionOption
+import com.nostr.torinos.model.UnicodeReaction
+import com.nostr.torinos.model.decrementedWith
+import com.nostr.torinos.model.decrementedWithUnicodeReaction
+import com.nostr.torinos.model.eventTags
 import com.nostr.torinos.model.extractNpubReferences
 import com.nostr.torinos.model.incrementedWith
+import com.nostr.torinos.model.incrementedWithUnicodeReaction
 import com.nostr.torinos.model.quotedEventIds
 import com.nostr.torinos.model.replyTargetId
 import com.nostr.torinos.model.toCustomReaction
+import com.nostr.torinos.model.toUnicodeReaction
+import com.nostr.torinos.model.toReactionOption
 import com.nostr.torinos.network.MuteStore
 import com.nostr.torinos.network.NgWordStore
 import com.nostr.torinos.network.NostrRepository
@@ -44,13 +52,18 @@ class FeedViewModel(
         val events: List<NostrEvent> = emptyList(),
         val profiles: Map<String, NostrProfile> = emptyMap(),
         val reactionCounts: Map<String, Int> = emptyMap(),
+        val likeReactionCounts: Map<String, Int> = emptyMap(),
         val customReactions: Map<String, List<CustomReaction>> = emptyMap(),
+        val unicodeReactions: Map<String, List<UnicodeReaction>> = emptyMap(),
         val replyCounts: Map<String, Int> = emptyMap(),
+        val replies: Map<String, List<NostrEvent>> = emptyMap(),
         val repostCounts: Map<String, Int> = emptyMap(),
         val quotedEvents: Map<String, NostrEvent> = emptyMap(),
         val repostedByPubkeys: Map<String, String> = emptyMap(),
         /** postId → 自分のリアクションイベントID */
         val likedReactions: Map<String, String> = emptyMap(),
+        /** postId → (絵文字リアクションキー → 自分のリアクションイベントID) */
+        val ownEmojiReactionEventIds: Map<String, Map<String, String>> = emptyMap(),
         /** postId → 自分のリポストイベントID */
         val repostedEvents: Map<String, String> = emptyMap(),
         val canLoadMore: Boolean = false,
@@ -83,6 +96,7 @@ class FeedViewModel(
     private val seenReactionIds = linkedSetOf<String>()
     private val seenReplyIds = linkedSetOf<String>()
     private val seenRepostIds = linkedSetOf<String>()
+    private val seenQuoteRepostIds = linkedSetOf<String>()
     private val seenEventIds = linkedSetOf<String>()
     private val rawEvents = linkedMapOf<String, NostrEvent>()
     private val canonicalEvents = linkedMapOf<String, NostrEvent>()
@@ -189,11 +203,16 @@ class FeedViewModel(
 
     fun react(eventId: String, eventPubkey: String) {
         val cur = currentFeedState()
-        if (cur.likedReactions.containsKey(eventId)) return
+        if (
+            cur.likedReactions.containsKey(eventId) ||
+            cur.ownEmojiReactionEventIds[eventId].orEmpty().isNotEmpty()
+        ) return
         // 楽観的UI更新（reactionEventIdは署名後に確定）
         setFeedState(cur.copy(
             likedReactions = cur.likedReactions + (eventId to ""),
             reactionCounts = cur.reactionCounts + (eventId to (cur.reactionCounts[eventId] ?: 0) + 1),
+            likeReactionCounts = cur.likeReactionCounts +
+                (eventId to (cur.likeReactionCounts[eventId] ?: 0) + 1),
         ))
         launch {
             val privateKeyHex = KeyStorage.loadPrivateKey() ?: return@launch
@@ -221,7 +240,68 @@ class FeedViewModel(
         setFeedState(cur.copy(
             likedReactions = cur.likedReactions - eventId,
             reactionCounts = cur.reactionCounts + (eventId to maxOf(0, (cur.reactionCounts[eventId] ?: 0) - 1)),
+            likeReactionCounts = cur.likeReactionCounts + (
+                eventId to maxOf(0, (cur.likeReactionCounts[eventId] ?: 0) - 1)
+                ),
         ))
+        if (reactionEventId.isEmpty()) return
+        launch {
+            val privateKeyHex = KeyStorage.loadPrivateKey() ?: return@launch
+            runCatching {
+                val deletion = signEvent(
+                    privateKeyHex = privateKeyHex,
+                    content = "",
+                    kind = 5,
+                    tags = listOf(listOf("e", reactionEventId)),
+                )
+                NostrRepository.publish(deletion)
+            }
+        }
+    }
+
+    fun reactWithEmoji(eventId: String, eventPubkey: String, option: ReactionOption) {
+        val cur = currentFeedState()
+        if (
+            cur.likedReactions.containsKey(eventId) ||
+            cur.ownEmojiReactionEventIds[eventId].orEmpty().isNotEmpty()
+        ) return
+        setFeedState(
+            cur.withOptimisticEmojiReaction(eventId, option, eventIdValue = ""),
+        )
+        launch {
+            val privateKeyHex = KeyStorage.loadPrivateKey() ?: run {
+                updateFeedState { it.withoutOptimisticEmojiReaction(eventId, option) }
+                return@launch
+            }
+            runCatching {
+                signEvent(
+                    privateKeyHex = privateKeyHex,
+                    content = option.eventContent,
+                    kind = 7,
+                    tags = option.eventTags(eventId, eventPubkey),
+                ).also { reaction ->
+                    rememberSeenId(seenReactionIds, reaction.id)
+                    NostrRepository.publish(reaction)
+                }
+            }.onSuccess { reaction ->
+                updateFeedState {
+                    it.copy(
+                        ownEmojiReactionEventIds = it.ownEmojiReactionEventIds + (
+                            eventId to it.ownEmojiReactionEventIds[eventId].orEmpty()
+                                .plus(option.key to reaction.id)
+                            ),
+                    )
+                }
+            }.onFailure {
+                updateFeedState { it.withoutOptimisticEmojiReaction(eventId, option) }
+            }
+        }
+    }
+
+    fun unreactWithEmoji(eventId: String, option: ReactionOption) {
+        val cur = currentFeedState()
+        val reactionEventId = cur.ownEmojiReactionEventIds[eventId]?.get(option.key) ?: return
+        setFeedState(cur.withoutOptimisticEmojiReaction(eventId, option))
         if (reactionEventId.isEmpty()) return
         launch {
             val privateKeyHex = KeyStorage.loadPrivateKey() ?: return@launch
@@ -346,7 +426,7 @@ class FeedViewModel(
         }
 
         // エンゲージメント購読が CLOSED されたら再購読
-        for (subId in listOf(ids.reaction, ids.reply, ids.repost)) {
+        for (subId in listOf(ids.reaction, ids.reply, ids.repost, ids.quoteRepost)) {
             subscriptionJobs += launch {
                 NostrRepository.closed(subId).collect {
                     if (!subscriptionsStarted) return@collect
@@ -389,9 +469,18 @@ class FeedViewModel(
                 val cur = currentFeedState()
                 val isOwn = ownPubkey != null && event.pubkey == ownPubkey
                 val customReaction = event.toCustomReaction()
+                val unicodeReaction = event.toUnicodeReaction()
+                val reactionOption = event.toReactionOption()
                 setFeedState(cur.copy(
                     reactionCounts = cur.reactionCounts +
                         (targetId to (cur.reactionCounts[targetId] ?: 0) + 1),
+                    likeReactionCounts = if (event.content.trim() == "+") {
+                        cur.likeReactionCounts + (
+                            targetId to (cur.likeReactionCounts[targetId] ?: 0) + 1
+                            )
+                    } else {
+                        cur.likeReactionCounts
+                    },
                     customReactions = if (customReaction != null) {
                         cur.customReactions + (
                             targetId to cur.customReactions[targetId]
@@ -401,9 +490,30 @@ class FeedViewModel(
                     } else {
                         cur.customReactions
                     },
-                    likedReactions = if (isOwn && !cur.likedReactions.containsKey(targetId))
+                    unicodeReactions = if (unicodeReaction != null) {
+                        cur.unicodeReactions + (
+                            targetId to cur.unicodeReactions[targetId]
+                                .orEmpty()
+                                .incrementedWithUnicodeReaction(unicodeReaction)
+                        )
+                    } else {
+                        cur.unicodeReactions
+                    },
+                    likedReactions = if (
+                        isOwn &&
+                        event.content.trim() == "+" &&
+                        !cur.likedReactions.containsKey(targetId)
+                    )
                         cur.likedReactions + (targetId to event.id)
                     else cur.likedReactions,
+                    ownEmojiReactionEventIds = if (isOwn && reactionOption != null) {
+                        cur.ownEmojiReactionEventIds + (
+                            targetId to cur.ownEmojiReactionEventIds[targetId].orEmpty()
+                                .plus(reactionOption.key to event.id)
+                            )
+                    } else {
+                        cur.ownEmojiReactionEventIds
+                    },
                 ), immediate = false)
             }
         }
@@ -415,10 +525,19 @@ class FeedViewModel(
                 if (!rememberSeenId(seenReplyIds, event.id)) return@collect
                 val targetId = event.tags.lastOrNull { it.firstOrNull() == "e" }?.getOrNull(1)
                     ?: return@collect
+                scheduleProfileFetch(event.pubkey)
+                scheduleMentionedProfileFetch(event.content)
                 val cur = currentFeedState()
+                val replies = cur.replies[targetId].orEmpty()
+                val updatedReplies = if (replies.any { it.id == event.id }) {
+                    replies
+                } else {
+                    (replies + event).sortedBy { it.createdAt }
+                }
                 setFeedState(cur.copy(
                     replyCounts = cur.replyCounts +
                         (targetId to (cur.replyCounts[targetId] ?: 0) + 1),
+                    replies = cur.replies + (targetId to updatedReplies),
                 ), immediate = false)
             }
         }
@@ -439,6 +558,24 @@ class FeedViewModel(
                         cur.repostedEvents + (targetId to event.id)
                     else cur.repostedEvents,
                 ), immediate = false)
+            }
+        }
+
+        // 引用リポスト受信（kind:1 with q-tag）。リポスト済み状態は kind:6 のみで管理する。
+        subscriptionJobs += launch {
+            NostrRepository.events(ids.quoteRepost).collect { event ->
+                if (event.kind != 1) return@collect
+                val targetIds = event.tags
+                    .filter { it.firstOrNull() == "q" }
+                    .mapNotNull { it.getOrNull(1) }
+                    .distinct()
+                    .filter { it in watchedEventIds }
+                    .filter { rememberSeenId(seenQuoteRepostIds, "${event.id}:$it") }
+                if (targetIds.isEmpty()) return@collect
+                val cur = currentFeedState()
+                val counts = cur.repostCounts.toMutableMap()
+                targetIds.forEach { targetId -> counts[targetId] = (counts[targetId] ?: 0) + 1 }
+                setFeedState(cur.copy(repostCounts = counts), immediate = false)
             }
         }
 
@@ -538,6 +675,7 @@ class FeedViewModel(
             NostrRepository.close(it.reaction)
             NostrRepository.close(it.reply)
             NostrRepository.close(it.repost)
+            NostrRepository.close(it.quoteRepost)
             NostrRepository.close(it.repostTarget)
             NostrRepository.close(it.quote)
         }
@@ -946,9 +1084,20 @@ class FeedViewModel(
             visibleEvents.flatMap { quotedEventIds(it) }
         val current = currentFeedState()
         val quotedEvents = current.quotedEvents.filterKeys { it in retainedEventIds }
+        val replies = current.replies.filterKeys { it in visibleEventIds }
         val retainedPubkeys = buildSet {
-            visibleEvents.forEach { add(it.pubkey) }
-            quotedEvents.values.forEach { add(it.pubkey) }
+            visibleEvents.forEach { event ->
+                add(event.pubkey)
+                extractNpubReferences(event.content).forEach { add(it.pubkey) }
+            }
+            quotedEvents.values.forEach { event ->
+                add(event.pubkey)
+                extractNpubReferences(event.content).forEach { add(it.pubkey) }
+            }
+            replies.values.flatten().forEach { event ->
+                add(event.pubkey)
+                extractNpubReferences(event.content).forEach { add(it.pubkey) }
+            }
             current.repostedByPubkeys.forEach { (eventId, pubkey) ->
                 if (eventId in visibleEventIds) add(pubkey)
             }
@@ -961,12 +1110,17 @@ class FeedViewModel(
             events = visibleEvents,
             profiles = profiles,
             reactionCounts = current.reactionCounts.filterKeys { it in retainedEventIds },
+            likeReactionCounts = current.likeReactionCounts.filterKeys { it in retainedEventIds },
             customReactions = current.customReactions.filterKeys { it in retainedEventIds },
+            unicodeReactions = current.unicodeReactions.filterKeys { it in retainedEventIds },
             replyCounts = current.replyCounts.filterKeys { it in retainedEventIds },
+            replies = replies,
             repostCounts = current.repostCounts.filterKeys { it in retainedEventIds },
             quotedEvents = quotedEvents,
             repostedByPubkeys = current.repostedByPubkeys.filterKeys { it in visibleEventIds },
             likedReactions = current.likedReactions.filterKeys { it in retainedEventIds },
+            ownEmojiReactionEventIds = current.ownEmojiReactionEventIds
+                .filterKeys { it in retainedEventIds },
             repostedEvents = current.repostedEvents.filterKeys { it in retainedEventIds },
         ), immediate = immediate)
     }
@@ -1030,6 +1184,7 @@ class FeedViewModel(
         NostrRepository.subscribe(subIds.reaction, NostrFilter(kinds = listOf(7), eTags = ids), target = relayTarget)
         NostrRepository.subscribe(subIds.reply,    NostrFilter(kinds = listOf(1), eTags = ids), target = relayTarget)
         NostrRepository.subscribe(subIds.repost,   NostrFilter(kinds = listOf(6), eTags = ids), target = relayTarget)
+        NostrRepository.subscribe(subIds.quoteRepost, NostrFilter(kinds = listOf(1), qTags = ids), target = relayTarget)
     }
 
     private fun scheduleEngagementFetch(eventId: String) {
@@ -1045,6 +1200,7 @@ class FeedViewModel(
             NostrRepository.subscribe(subIds.reaction, NostrFilter(kinds = listOf(7), eTags = ids), target = relayTarget)
             NostrRepository.subscribe(subIds.reply, NostrFilter(kinds = listOf(1), eTags = ids), target = relayTarget)
             NostrRepository.subscribe(subIds.repost, NostrFilter(kinds = listOf(6), eTags = ids), target = relayTarget)
+            NostrRepository.subscribe(subIds.quoteRepost, NostrFilter(kinds = listOf(1), qTags = ids), target = relayTarget)
         }
     }
 
@@ -1073,6 +1229,7 @@ class FeedViewModel(
             reaction = "reac-$suffix",
             reply = "repl-$suffix",
             repost = "repo-$suffix",
+            quoteRepost = "qrep-$suffix",
             repostTarget = "rpt-$suffix",
             quote = "quot-$suffix",
         )
@@ -1101,6 +1258,67 @@ class FeedViewModel(
     }
 }
 
+private fun FeedViewModel.UiState.withOptimisticEmojiReaction(
+    eventId: String,
+    option: ReactionOption,
+    eventIdValue: String,
+): FeedViewModel.UiState = copy(
+    reactionCounts = reactionCounts + (eventId to (reactionCounts[eventId] ?: 0) + 1),
+    customReactions = if (option is ReactionOption.Custom) {
+        customReactions + (
+            eventId to customReactions[eventId].orEmpty().incrementedWith(
+                CustomReaction(option.shortcode.trim().trim(':'), option.imageUrl.trim()),
+            )
+            )
+    } else {
+        customReactions
+    },
+    unicodeReactions = if (option is ReactionOption.Unicode) {
+        unicodeReactions + (
+            eventId to unicodeReactions[eventId].orEmpty().incrementedWithUnicodeReaction(
+                UnicodeReaction(option.value.trim()),
+            )
+            )
+    } else {
+        unicodeReactions
+    },
+    ownEmojiReactionEventIds = ownEmojiReactionEventIds + (
+        eventId to ownEmojiReactionEventIds[eventId].orEmpty().plus(option.key to eventIdValue)
+        ),
+)
+
+private fun FeedViewModel.UiState.withoutOptimisticEmojiReaction(
+    eventId: String,
+    option: ReactionOption,
+): FeedViewModel.UiState {
+    val remainingOwnReactions = ownEmojiReactionEventIds[eventId].orEmpty() - option.key
+    return copy(
+        reactionCounts = reactionCounts + (
+            eventId to maxOf(0, (reactionCounts[eventId] ?: 0) - 1)
+            ),
+        customReactions = if (option is ReactionOption.Custom) {
+            customReactions + (
+                eventId to customReactions[eventId].orEmpty().decrementedWith(option)
+                )
+        } else {
+            customReactions
+        },
+        unicodeReactions = if (option is ReactionOption.Unicode) {
+            unicodeReactions + (
+                eventId to unicodeReactions[eventId].orEmpty()
+                    .decrementedWithUnicodeReaction(option)
+                )
+        } else {
+            unicodeReactions
+        },
+        ownEmojiReactionEventIds = if (remainingOwnReactions.isEmpty()) {
+            ownEmojiReactionEventIds - eventId
+        } else {
+            ownEmojiReactionEventIds + (eventId to remainingOwnReactions)
+        },
+    )
+}
+
 private data class PendingRepostTarget(
     val repostedAt: Long,
     val reposterPubkey: String,
@@ -1113,6 +1331,7 @@ private data class SubscriptionIds(
     val reaction: String,
     val reply: String,
     val repost: String,
+    val quoteRepost: String,
     val repostTarget: String,
     val quote: String,
 )

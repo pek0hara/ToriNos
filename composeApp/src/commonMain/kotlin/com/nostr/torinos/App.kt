@@ -27,6 +27,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberDrawerState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import kotlin.coroutines.cancellation.CancellationException
@@ -62,6 +63,7 @@ import androidx.lifecycle.viewmodel.viewModelFactory
 import com.nostr.torinos.crypto.isWriteSupported
 import com.nostr.torinos.crypto.loadPublicKey
 import com.nostr.torinos.model.NoteContext
+import com.nostr.torinos.model.NostrEvent
 import com.nostr.torinos.model.NostrFilter
 import com.nostr.torinos.model.NostrProfile
 import com.nostr.torinos.model.noteContextForChannel
@@ -81,6 +83,7 @@ import com.nostr.torinos.ui.article.UserArticleListScreen
 import com.nostr.torinos.ui.channel.ChannelListScreen
 import com.nostr.torinos.ui.channel.ChannelScreen
 import com.nostr.torinos.ui.components.AppFloatingActionButton
+import com.nostr.torinos.ui.components.LocalQuotePostHandler
 import com.nostr.torinos.ui.feed.FeedTab
 import com.nostr.torinos.ui.feed.FeedScreen
 import com.nostr.torinos.ui.live.LiveDetailScreen
@@ -125,7 +128,7 @@ import kotlinx.serialization.Serializable
 @Serializable data class CustomEmojiRoute(val query: String = "")
 @Serializable data class ThreadRoute(
     val eventId: String,
-    val initialTab: String = "replies",
+    val initialTab: String = "auto",
     val source: String = "",
     val channelId: String = "",
 )
@@ -139,6 +142,7 @@ private enum class PendingKeyAction {
     NewPost,
     Article,
     Reply,
+    Quote,
     Profile,
     Status,
     Journal,
@@ -156,6 +160,9 @@ fun App() {
         var replyToId by remember { mutableStateOf<String?>(null) }
         var replyToPubkey by remember { mutableStateOf<String?>(null) }
         var replyToPreview by remember { mutableStateOf<String?>(null) }
+        var quoteToId by remember { mutableStateOf<String?>(null) }
+        var quoteToPubkey by remember { mutableStateOf<String?>(null) }
+        var quoteToPreview by remember { mutableStateOf<String?>(null) }
         var replyNoteContext by remember { mutableStateOf<NoteContext>(NoteContext.Timeline) }
         var selectedMemo by remember { mutableStateOf<PostMemoData?>(null) }
         var selectedMemoDeleteAction by remember { mutableStateOf<(() -> Unit)?>(null) }
@@ -364,6 +371,9 @@ fun App() {
             replyToId = null
             replyToPubkey = null
             replyToPreview = null
+            quoteToId = null
+            quoteToPubkey = null
+            quoteToPreview = null
             replyNoteContext = NoteContext.Timeline
             selectedMemo = null
             selectedMemoDeleteAction = null
@@ -396,6 +406,9 @@ fun App() {
             replyToId = null
             replyToPubkey = null
             replyToPreview = null
+            quoteToId = null
+            quoteToPubkey = null
+            quoteToPreview = null
             replyNoteContext = NoteContext.Timeline
             selectedMemo = null
             selectedMemoDeleteAction = null
@@ -459,6 +472,23 @@ fun App() {
             },
         )
 
+        CompositionLocalProvider(
+            LocalQuotePostHandler provides { event: NostrEvent ->
+                selectedMemo = null
+                selectedMemoDeleteAction = null
+                localDraft = null
+                replyToId = null
+                replyToPubkey = null
+                replyToPreview = null
+                replyNoteContext = NoteContext.Timeline
+                quoteToId = event.id
+                quoteToPubkey = event.pubkey
+                quoteToPreview = event.content.ifBlank { "投稿 ${event.id.take(8)}" }
+                runWithPrivateKey(PendingKeyAction.Quote) {
+                    showPostSheet = true
+                }
+            },
+        ) {
         ModalNavigationDrawer(
             drawerState = notificationsDrawerState,
             drawerContent = {
@@ -1123,6 +1153,7 @@ fun App() {
             }
             }
         }
+        }
 
         if (isAgeVerificationLoaded && ageVerificationStatus != AgeVerificationAccepted) {
             AgeVerificationDialog(
@@ -1174,6 +1205,9 @@ fun App() {
                     replyToId = null
                     replyToPubkey = null
                     replyToPreview = null
+                    quoteToId = null
+                    quoteToPubkey = null
+                    quoteToPreview = null
                     replyNoteContext = NoteContext.Timeline
                     selectedMemo = null
                     selectedMemoDeleteAction = null
@@ -1186,6 +1220,9 @@ fun App() {
                     replyToId = null
                     replyToPubkey = null
                     replyToPreview = null
+                    quoteToId = null
+                    quoteToPubkey = null
+                    quoteToPreview = null
                     replyNoteContext = NoteContext.Timeline
                     selectedMemo = null
                     selectedMemoDeleteAction = null
@@ -1210,6 +1247,9 @@ fun App() {
                 replyToId = replyToId,
                 replyToPubkey = replyToPubkey,
                 replyToPreview = replyToPreview,
+                quoteToId = quoteToId,
+                quoteToPubkey = quoteToPubkey,
+                quoteToPreview = quoteToPreview,
                 noteContext = replyNoteContext,
                 initialMemo = selectedMemo ?: localDraft,
                 initialMemoRestoreMessage = if (selectedMemo == null && localDraft != null) {
@@ -1226,6 +1266,9 @@ fun App() {
                     replyToId = null
                     replyToPubkey = null
                     replyToPreview = null
+                    quoteToId = null
+                    quoteToPubkey = null
+                    quoteToPreview = null
                     replyNoteContext = NoteContext.Timeline
                     selectedMemo = null
                     selectedMemoDeleteAction = null
@@ -1285,6 +1328,7 @@ fun App() {
                             nav.navigate("article-editor")
                         }
                         PendingKeyAction.Reply -> showPostSheet = true
+                        PendingKeyAction.Quote -> showPostSheet = true
                         PendingKeyAction.Journal -> {
                             if (currentRoute == "journal") {
                                 journalToggleCalendarRequest++
@@ -1326,6 +1370,9 @@ fun App() {
                     replyToId = null
                     replyToPubkey = null
                     replyToPreview = null
+                    quoteToId = null
+                    quoteToPubkey = null
+                    quoteToPreview = null
                     replyNoteContext = NoteContext.Timeline
                     selectedMemo = null
                     selectedMemoDeleteAction = null

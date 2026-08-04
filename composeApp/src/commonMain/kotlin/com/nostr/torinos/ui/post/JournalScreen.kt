@@ -406,9 +406,14 @@ fun JournalScreen(
                                             },
                                             replyCount = state.replyCounts[entry.event.id] ?: 0,
                                             reactionCount = state.reactionCounts[entry.event.id] ?: 0,
+                                            likeReactionCount =
+                                                state.likeReactionCounts[entry.event.id] ?: 0,
                                             customReactions = state.customReactions[entry.event.id].orEmpty(),
+                                            unicodeReactions = state.unicodeReactions[entry.event.id].orEmpty(),
                                             repostCount = state.repostCounts[entry.event.id] ?: 0,
                                             isLiked = state.likedReactions.containsKey(entry.event.id),
+                                            ownEmojiReactionEventIds =
+                                                state.ownEmojiReactionEventIds[entry.event.id].orEmpty(),
                                             onUserClick = onUserClick,
                                             onLike = if (ownPubkey != null) {
                                                 {
@@ -417,6 +422,20 @@ fun JournalScreen(
                                                     } else {
                                                         viewModel.react(entry.event.id, entry.event.pubkey)
                                                     }
+                                                }
+                                            } else null,
+                                            onEmojiReact = if (ownPubkey != null) {
+                                                { option ->
+                                                    viewModel.reactWithEmoji(
+                                                        entry.event.id,
+                                                        entry.event.pubkey,
+                                                        option,
+                                                    )
+                                                }
+                                            } else null,
+                                            onEmojiUnreact = if (ownPubkey != null) {
+                                                { option ->
+                                                    viewModel.unreactWithEmoji(entry.event.id, option)
                                                 }
                                             } else null,
                                             onReply = if (ownPubkey != null && onReply != null) {

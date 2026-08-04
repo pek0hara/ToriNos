@@ -15,6 +15,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Modifier
 import com.nostr.torinos.model.NostrEvent
+import com.nostr.torinos.model.ReactionOption
 import com.nostr.torinos.network.MuteStore
 import com.nostr.torinos.ui.feed.FeedViewModel
 import androidx.compose.runtime.collectAsState
@@ -30,6 +31,8 @@ fun NoteTimeline(
     onLoadMore: () -> Unit,
     onLike: (eventId: String, authorPubkey: String) -> Unit,
     onUnlike: (eventId: String) -> Unit,
+    onEmojiReact: (eventId: String, authorPubkey: String, option: ReactionOption) -> Unit,
+    onEmojiUnreact: (eventId: String, option: ReactionOption) -> Unit,
     onDelete: (eventId: String) -> Unit,
     modifier: Modifier = Modifier,
     onReply: ((eventId: String, authorPubkey: String, preview: String) -> Unit)? = null,
@@ -87,6 +90,8 @@ fun NoteTimeline(
                 onUserClick = onUserClick,
                 onLike = onLike,
                 onUnlike = onUnlike,
+                onEmojiReact = onEmojiReact,
+                onEmojiUnreact = onEmojiUnreact,
                 onDelete = onDelete,
                 onReply = onReply,
                 onOpenReplies = onOpenReplies,
