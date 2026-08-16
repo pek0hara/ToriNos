@@ -55,45 +55,32 @@ fun UserProfileScreen(
     val viewModel: UserProfileViewModel = viewModel(key = "profile-$pubkey-${contentRelayUrl ?: "all"}-$ownerKey") {
         UserProfileViewModel(pubkey, deferredRelayUrl = contentRelayUrl)
     }
-    val postsViewModel: FeedViewModel = viewModel(key = "user-feed-$pubkey-${contentRelayUrl ?: "all"}-$ownerKey-posts") {
+    var showRelayList by remember(pubkey) { mutableStateOf(false) }
+    var selectedTab by remember(pubkey) { mutableStateOf(ProfileTimelineTab.Posts) }
+    val feedViewModel: FeedViewModel = viewModel(
+        key = "user-feed-$pubkey-${contentRelayUrl ?: "all"}-$ownerKey-${selectedTab.name}",
+    ) {
         FeedViewModel(
             authorPubkey = pubkey,
             relayUrl = contentRelayUrl,
             autoStart = false,
             includeRepostsInFeed = true,
-            includeRepliesInFeed = false,
-            filterMutedUsers = false,
-        )
-    }
-    val postsAndRepliesViewModel: FeedViewModel = viewModel(key = "user-feed-$pubkey-${contentRelayUrl ?: "all"}-$ownerKey-posts-replies") {
-        FeedViewModel(
-            authorPubkey = pubkey,
-            relayUrl = contentRelayUrl,
-            autoStart = false,
-            includeRepostsInFeed = true,
-            includeRepliesInFeed = true,
+            includeRepliesInFeed = selectedTab == ProfileTimelineTab.PostsAndReplies,
             filterMutedUsers = false,
         )
     }
     val state by viewModel.state.collectAsState()
-    val postsState by postsViewModel.state.collectAsState()
-    val postsAndRepliesState by postsAndRepliesViewModel.state.collectAsState()
+    val feedState by feedViewModel.state.collectAsState()
     val mutedPubkeys by MuteStore.mutedPubkeys.collectAsState()
     val isMuted = mutedPubkeys.contains(pubkey)
     val snackbarHostState = remember { SnackbarHostState() }
     var deferredContentStarted by remember(pubkey) { mutableStateOf(false) }
-    var showRelayList by remember(pubkey) { mutableStateOf(false) }
-    var selectedTab by remember(pubkey) { mutableStateOf(ProfileTimelineTab.Posts) }
 
     LaunchedEffect(state.profile) {
         val profile = state.profile ?: return@LaunchedEffect
-        postsViewModel.injectProfile(pubkey, profile)
-        postsAndRepliesViewModel.injectProfile(pubkey, profile)
         if (!deferredContentStarted) {
             deferredContentStarted = true
             viewModel.loadFollowingCount()
-            postsViewModel.startSubscriptions()
-            postsAndRepliesViewModel.startSubscriptions()
         }
     }
 
@@ -102,9 +89,12 @@ fun UserProfileScreen(
         if (!deferredContentStarted) {
             deferredContentStarted = true
             viewModel.loadFollowingCount()
-            postsViewModel.startSubscriptions()
-            postsAndRepliesViewModel.startSubscriptions()
         }
+    }
+
+    LaunchedEffect(feedViewModel, state.profile, deferredContentStarted) {
+        state.profile?.let { feedViewModel.injectProfile(pubkey, it) }
+        if (deferredContentStarted) feedViewModel.startSubscriptions()
     }
 
     LaunchedEffect(state.followError) {
@@ -191,56 +181,48 @@ fun UserProfileScreen(
 
         when (selectedTab) {
             ProfileTimelineTab.Posts -> NoteTimeline(
-                state = postsState,
+                state = feedState,
                 ownPubkey = ownPubkey,
                 onUserClick = onUserClick,
-                onLoadMore = postsViewModel::loadMore,
-                onLike = postsViewModel::react,
-                onUnlike = postsViewModel::unreact,
-                onEmojiReact = postsViewModel::reactWithEmoji,
-                onEmojiUnreact = postsViewModel::unreactWithEmoji,
-                onDelete = postsViewModel::deleteEvent,
+                onLoadMore = feedViewModel::loadMore,
+                onLike = feedViewModel::react,
+                onUnlike = feedViewModel::unreact,
+                onEmojiReact = feedViewModel::reactWithEmoji,
+                onEmojiUnreact = feedViewModel::unreactWithEmoji,
+                onDelete = feedViewModel::deleteEvent,
                 modifier = Modifier
                     .fillMaxSize()
-                    .padding(padding)
-                    .profileTimelineTabSwipe(
-                        currentTab = selectedTab,
-                        onTabChange = { selectedTab = it },
-                    ),
+                    .padding(padding),
                 onReply = onReply,
                 onOpenReplies = onOpenReplies,
                 onOpenLikes = onOpenLikes,
                 onOpenReposts = onOpenReposts,
-                onRepost = postsViewModel::repost,
-                onUnrepost = postsViewModel::unrepost,
-                onReport = postsViewModel::reportEvent,
+                onRepost = feedViewModel::repost,
+                onUnrepost = feedViewModel::unrepost,
+                onReport = feedViewModel::reportEvent,
                 emptyText = "このユーザーのポストはありません",
                 header = profileHeader,
             )
             ProfileTimelineTab.PostsAndReplies -> NoteTimeline(
-                state = postsAndRepliesState,
+                state = feedState,
                 ownPubkey = ownPubkey,
                 onUserClick = onUserClick,
-                onLoadMore = postsAndRepliesViewModel::loadMore,
-                onLike = postsAndRepliesViewModel::react,
-                onUnlike = postsAndRepliesViewModel::unreact,
-                onEmojiReact = postsAndRepliesViewModel::reactWithEmoji,
-                onEmojiUnreact = postsAndRepliesViewModel::unreactWithEmoji,
-                onDelete = postsAndRepliesViewModel::deleteEvent,
+                onLoadMore = feedViewModel::loadMore,
+                onLike = feedViewModel::react,
+                onUnlike = feedViewModel::unreact,
+                onEmojiReact = feedViewModel::reactWithEmoji,
+                onEmojiUnreact = feedViewModel::unreactWithEmoji,
+                onDelete = feedViewModel::deleteEvent,
                 modifier = Modifier
                     .fillMaxSize()
-                    .padding(padding)
-                    .profileTimelineTabSwipe(
-                        currentTab = selectedTab,
-                        onTabChange = { selectedTab = it },
-                    ),
+                    .padding(padding),
                 onReply = onReply,
                 onOpenReplies = onOpenReplies,
                 onOpenLikes = onOpenLikes,
                 onOpenReposts = onOpenReposts,
-                onRepost = postsAndRepliesViewModel::repost,
-                onUnrepost = postsAndRepliesViewModel::unrepost,
-                onReport = postsAndRepliesViewModel::reportEvent,
+                onRepost = feedViewModel::repost,
+                onUnrepost = feedViewModel::unrepost,
+                onReport = feedViewModel::reportEvent,
                 emptyText = "このユーザーのポストと返信はありません",
                 header = profileHeader,
             )

@@ -57,7 +57,9 @@ class EditProfileViewModel : SafeViewModel() {
 
             // リレーが応答しない場合に無限待機しないようタイムアウトを設定
             val event = withTimeoutOrNull(10_000) {
-                NostrRepository.events(subId).firstOrNull { it.kind == 0 }
+                NostrRepository.events(subId).firstOrNull {
+                    it.kind == 0 && it.pubkey == pubkey
+                }
             }
             NostrRepository.close(subId)
 

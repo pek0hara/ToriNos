@@ -524,14 +524,12 @@ private fun FollowActionRow(
         horizontalArrangement = Arrangement.spacedBy(8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        if (isFollowLoading) {
-            CircularProgressIndicator(modifier = Modifier.size(24.dp), strokeWidth = 2.dp)
-        } else if (isFollowing == true) {
-            OutlinedButton(onClick = onUnfollow) {
+        if (isFollowing == true) {
+            OutlinedButton(onClick = onUnfollow, enabled = !isFollowLoading) {
                 Text("フォロー中")
             }
         } else if (isFollowing == false) {
-            Button(onClick = onFollow) {
+            Button(onClick = onFollow, enabled = !isFollowLoading) {
                 Text("フォロー")
             }
         }

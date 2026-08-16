@@ -5,6 +5,8 @@ import com.nostr.torinos.model.NostrFilter
 import com.nostr.torinos.model.NostrProfile
 import com.nostr.torinos.network.NostrRepository
 import com.nostr.torinos.network.ProfileCache
+import com.nostr.torinos.network.RelayTarget
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -14,6 +16,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 
 enum class FollowListMode { FOLLOWING, FOLLOWERS }
 
@@ -61,6 +64,9 @@ class FollowListViewModel(
     private suspend fun loadFollowing() {
         var latestAt = -1L
         var latestPubkeys: List<String> = emptyList()
+        val targetRelayUrls = NostrRepository.targetRelayUrls(RelayTarget.AllEnabled)
+        val completedRelayUrls = mutableSetOf<String>()
+        val allRelaysComplete = CompletableDeferred<Unit>()
 
         collectorJobs += launch(start = CoroutineStart.UNDISPATCHED) {
             NostrRepository.events(followingListSubId).collect { event ->
@@ -71,27 +77,37 @@ class FollowListViewModel(
                         .filter { it.size >= 2 && it[0] == "p" }
                         .map { it[1] }
                         .distinct()
+                    replaceFollowingPubkeys(latestPubkeys)
                 }
             }
         }
 
-        collectorJobs += launch(start = CoroutineStart.UNDISPATCHED) {
-            NostrRepository.eose(followingListSubId).collect {
-                NostrRepository.close(followingListSubId)
-                val pubkeys = latestPubkeys
-                if (pubkeys.isEmpty()) {
-                    _state.update { it.copy(isLoading = false) }
-                    return@collect
+        val eoseJob = launch(start = CoroutineStart.UNDISPATCHED) {
+            NostrRepository.eoseRelays(followingListSubId).collect { relayUrl ->
+                completedRelayUrls.add(relayUrl)
+                if (hasCompletedAllFollowRelays(targetRelayUrls, completedRelayUrls)) {
+                    allRelaysComplete.complete(Unit)
                 }
-                initPubkeys(pubkeys)
-                queueProfileRequests(pubkeys)
             }
         }
+        collectorJobs += eoseJob
 
-        NostrRepository.subscribe(
-            followingListSubId,
-            NostrFilter(kinds = listOf(3), authors = listOf(ownPubkey), limit = 1),
-        )
+        try {
+            NostrRepository.subscribe(
+                followingListSubId,
+                NostrFilter(kinds = listOf(3), authors = listOf(ownPubkey), limit = 1),
+            )
+            withTimeoutOrNull(FOLLOWING_LIST_TIMEOUT_MS) {
+                allRelaysComplete.await()
+            }
+        } finally {
+            eoseJob.cancel()
+            NostrRepository.close(followingListSubId)
+        }
+
+        if (latestAt < 0L || latestPubkeys.isEmpty()) {
+            _state.update { it.copy(isLoading = false) }
+        }
     }
 
     private suspend fun loadFollowers() {
@@ -124,9 +140,26 @@ class FollowListViewModel(
         val cachedProfiles = ProfileCache.getAll(pubkeys)
         pubkeys.forEach { pk ->
             knownPubkeys.add(pk)
-            profileMap[pk] = cachedProfiles[pk]
+            if (pk !in profileMap) {
+                profileMap[pk] = cachedProfiles[pk]
+            }
         }
         schedulePublishEntries()
+    }
+
+    private fun replaceFollowingPubkeys(pubkeys: List<String>) {
+        val pubkeySet = pubkeys.toSet()
+        profileMap.keys.retainAll(pubkeySet)
+        queuedProfilePubkeys.retainAll(pubkeySet)
+        requestedProfilePubkeys.retainAll(pubkeySet)
+
+        knownPubkeys.clear()
+        initPubkeys(pubkeys)
+        queueProfileRequests(pubkeys)
+
+        if (pubkeys.isEmpty()) {
+            _state.update { it.copy(isLoading = false) }
+        }
     }
 
     private fun queueProfileRequests(pubkeys: List<String>) {
@@ -228,5 +261,11 @@ class FollowListViewModel(
         private const val PROFILE_BATCH_SIZE = 100
         private const val PROFILE_BATCH_DELAY_MS = 120L
         private const val PUBLISH_DELAY_MS = 180L
+        private const val FOLLOWING_LIST_TIMEOUT_MS = 10_000L
     }
 }
+
+internal fun hasCompletedAllFollowRelays(
+    targetRelayUrls: Set<String>,
+    completedRelayUrls: Set<String>,
+): Boolean = targetRelayUrls.isEmpty() || completedRelayUrls.containsAll(targetRelayUrls)

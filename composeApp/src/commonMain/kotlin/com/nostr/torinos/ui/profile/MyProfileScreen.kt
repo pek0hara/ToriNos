@@ -65,15 +65,15 @@ fun MyProfileScreen(
     val state by viewModel.state.collectAsState()
     val postsState by postsViewModel.state.collectAsState()
     val postsAndRepliesState by postsAndRepliesViewModel.state.collectAsState()
-    var showRelayList by remember { mutableStateOf(false) }
-    var showBannerEdit by remember { mutableStateOf(false) }
-    var showAvatarEdit by remember { mutableStateOf(false) }
-    var showNameEdit by remember { mutableStateOf(false) }
-    var showAboutEdit by remember { mutableStateOf(false) }
-    var showStatusEdit by remember { mutableStateOf(false) }
+    var showRelayList by remember(ownPubkey) { mutableStateOf(false) }
+    var showBannerEdit by remember(ownPubkey) { mutableStateOf(false) }
+    var showAvatarEdit by remember(ownPubkey) { mutableStateOf(false) }
+    var showNameEdit by remember(ownPubkey) { mutableStateOf(false) }
+    var showAboutEdit by remember(ownPubkey) { mutableStateOf(false) }
+    var showStatusEdit by remember(ownPubkey) { mutableStateOf(false) }
     var selectedTab by remember(ownPubkey) { mutableStateOf(ProfileTimelineTab.Posts) }
     val editProfileViewModel = viewModel<EditProfileViewModel>(
-        key = "editProfile",
+        key = "edit-profile-$ownPubkey",
         factory = viewModelFactory { initializer { EditProfileViewModel() } },
     )
 
@@ -215,11 +215,7 @@ fun MyProfileScreen(
                 onDelete = postsViewModel::deleteEvent,
                 modifier = Modifier
                     .fillMaxSize()
-                    .padding(padding)
-                    .profileTimelineTabSwipe(
-                        currentTab = selectedTab,
-                        onTabChange = { selectedTab = it },
-                    ),
+                    .padding(padding),
                 onReply = onReply,
                 onOpenReplies = onOpenReplies,
                 onOpenLikes = onOpenLikes,
@@ -241,11 +237,7 @@ fun MyProfileScreen(
                 onDelete = postsAndRepliesViewModel::deleteEvent,
                 modifier = Modifier
                     .fillMaxSize()
-                    .padding(padding)
-                    .profileTimelineTabSwipe(
-                        currentTab = selectedTab,
-                        onTabChange = { selectedTab = it },
-                    ),
+                    .padding(padding),
                 onReply = onReply,
                 onOpenReplies = onOpenReplies,
                 onOpenLikes = onOpenLikes,

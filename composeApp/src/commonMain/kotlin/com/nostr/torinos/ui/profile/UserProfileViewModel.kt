@@ -69,7 +69,13 @@ class UserProfileViewModel(
                 Pair(follows, loaded)
             }.collect { (follows, loaded) ->
                 if (loaded) {
-                    _state.update { it.copy(isFollowing = follows.contains(pubkey), canFollow = true) }
+                    _state.update { current ->
+                        if (current.isFollowLoading) {
+                            current.copy(canFollow = true)
+                        } else {
+                            current.copy(isFollowing = follows.contains(pubkey), canFollow = true)
+                        }
+                    }
                 } else {
                     _state.update { it.copy(isFollowing = null, canFollow = false) }
                 }
@@ -78,22 +84,34 @@ class UserProfileViewModel(
     }
 
     fun follow() {
-        if (_state.value.isFollowLoading) return
-        _state.update { it.copy(isFollowLoading = true, followError = null) }
+        if (_state.value.isFollowLoading || !_state.value.canFollow) return
+        _state.update {
+            it.copy(isFollowing = true, isFollowLoading = true, followError = null)
+        }
         launch {
             FollowRepository.follow(pubkey)
                 .onSuccess { _state.update { it.copy(isFollowLoading = false) } }
-                .onFailure { e -> _state.update { it.copy(isFollowLoading = false, followError = e.message) } }
+                .onFailure { e ->
+                    _state.update {
+                        it.copy(isFollowing = false, isFollowLoading = false, followError = e.message)
+                    }
+                }
         }
     }
 
     fun unfollow() {
-        if (_state.value.isFollowLoading) return
-        _state.update { it.copy(isFollowLoading = true, followError = null) }
+        if (_state.value.isFollowLoading || !_state.value.canFollow) return
+        _state.update {
+            it.copy(isFollowing = false, isFollowLoading = true, followError = null)
+        }
         launch {
             FollowRepository.unfollow(pubkey)
                 .onSuccess { _state.update { it.copy(isFollowLoading = false) } }
-                .onFailure { e -> _state.update { it.copy(isFollowLoading = false, followError = e.message) } }
+                .onFailure { e ->
+                    _state.update {
+                        it.copy(isFollowing = true, isFollowLoading = false, followError = e.message)
+                    }
+                }
         }
     }
 
