@@ -36,14 +36,18 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
 import com.nostr.torinos.model.NostrEvent
 import com.nostr.torinos.model.NostrProfile
 import com.nostr.torinos.model.stripNostrEventUris
+import com.nostr.torinos.model.toCustomReaction
+import com.nostr.torinos.ui.components.NetworkImage
 import com.nostr.torinos.ui.components.ProfileNameText
 import com.nostr.torinos.ui.components.formatTimestamp
 import com.nostr.torinos.ui.components.stripImageUrls
@@ -205,7 +209,15 @@ private fun NotificationRow(
                     horizontalArrangement = Arrangement.spacedBy(6.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    NotificationIcon(icon = icon, tint = accent)
+                    if (item.type == NotificationType.Like) {
+                        NotificationReactionIcon(
+                            event = item.event,
+                            fallbackIcon = icon,
+                            tint = accent,
+                        )
+                    } else {
+                        NotificationIcon(icon = icon, tint = accent)
+                    }
                     ProfileNameText(
                         profile = actorProfile,
                         fallback = shortPubkey(item.actorPubkey),
@@ -250,6 +262,37 @@ private fun NotificationRow(
                 )
             }
         }
+    }
+}
+
+@Composable
+private fun NotificationReactionIcon(
+    event: NostrEvent?,
+    fallbackIcon: ImageVector,
+    tint: Color,
+) {
+    val customReaction = event?.toCustomReaction()
+    val reactionContent = event?.content?.trim().orEmpty()
+    when {
+        customReaction != null -> NetworkImage(
+            url = customReaction.imageUrl,
+            contentDescription = ":${customReaction.shortcode}:",
+            contentScale = ContentScale.Fit,
+            modifier = Modifier.size(18.dp),
+        )
+        reactionContent == "-" -> Text(
+            text = "👎",
+            fontSize = 18.sp,
+            lineHeight = 18.sp,
+            maxLines = 1,
+        )
+        reactionContent.isNotEmpty() && reactionContent != "+" -> Text(
+            text = reactionContent,
+            fontSize = 18.sp,
+            lineHeight = 18.sp,
+            maxLines = 1,
+        )
+        else -> NotificationIcon(icon = fallbackIcon, tint = tint)
     }
 }
 

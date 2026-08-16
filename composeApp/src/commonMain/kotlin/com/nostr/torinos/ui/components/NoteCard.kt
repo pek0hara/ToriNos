@@ -7,6 +7,7 @@ import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.rememberTransformableState
 import androidx.compose.foundation.gestures.transformable
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items as lazyRowItems
 import androidx.compose.foundation.layout.Arrangement
@@ -540,6 +541,7 @@ private fun ReactionSummaryRow(
     onEmojiUnreact: ((ReactionOption) -> Unit)?,
     onOpenStandardEmojiPicker: () -> Unit,
 ) {
+    val reactionChipColors = reactionChipColors(isSystemInDarkTheme())
     val emojiReactionCount = customReactions.sumOf { it.count } + unicodeReactions.sumOf { it.count }
     val likeCount = explicitLikeCount
         ?: (totalReactionCount - emojiReactionCount).coerceAtLeast(if (isLiked) 1 else 0)
@@ -636,8 +638,8 @@ private fun ReactionSummaryRow(
                     modifier = Modifier
                         .size(32.dp)
                         .clip(CircleShape)
-                        .background(MaterialTheme.colorScheme.surfaceVariant)
-                        .border(1.dp, MaterialTheme.colorScheme.outlineVariant, CircleShape)
+                        .background(reactionChipColors.background)
+                        .border(1.dp, reactionChipColors.border, CircleShape)
                         .clickable { showQuickMenu = true },
                     contentAlignment = Alignment.Center,
                 ) {
@@ -645,7 +647,7 @@ private fun ReactionSummaryRow(
                         imageVector = Icons.Default.Add,
                         contentDescription = "リアクションを追加",
                         modifier = Modifier.size(18.dp),
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        tint = reactionChipColors.content,
                     )
                 }
                 QuickReactionMenu(
@@ -679,6 +681,7 @@ private fun ReactionChip(
     emoji: @Composable () -> Unit,
     count: Int,
 ) {
+    val colors = reactionChipColors(isSystemInDarkTheme())
     val shape = RoundedCornerShape(16.dp)
     Row(
         modifier = Modifier
@@ -686,17 +689,17 @@ private fun ReactionChip(
             .clip(shape)
             .background(
                 if (selected) {
-                    MaterialTheme.colorScheme.primaryContainer
+                    colors.selectedBackground
                 } else {
-                    MaterialTheme.colorScheme.surfaceVariant
+                    colors.background
                 },
             )
             .border(
                 width = 1.dp,
                 color = if (selected) {
-                    MaterialTheme.colorScheme.primary
+                    colors.selectedBorder
                 } else {
-                    MaterialTheme.colorScheme.outlineVariant
+                    colors.border
                 },
                 shape = shape,
             )
@@ -712,13 +715,43 @@ private fun ReactionChip(
             text = count.toString(),
             style = MaterialTheme.typography.labelMedium,
             color = if (selected) {
-                MaterialTheme.colorScheme.onPrimaryContainer
+                colors.selectedContent
             } else {
-                MaterialTheme.colorScheme.onSurfaceVariant
+                colors.content
             },
         )
     }
 }
+
+private data class ReactionChipColors(
+    val background: Color,
+    val content: Color,
+    val border: Color,
+    val selectedBackground: Color,
+    val selectedContent: Color,
+    val selectedBorder: Color,
+)
+
+private fun reactionChipColors(darkTheme: Boolean): ReactionChipColors =
+    if (darkTheme) {
+        ReactionChipColors(
+            background = Color(0xFF353A40),
+            content = Color(0xFFD7DCE2),
+            border = Color(0xFF50565E),
+            selectedBackground = Color(0xFF34495E),
+            selectedContent = Color(0xFFD6EAFF),
+            selectedBorder = Color(0xFF6887A6),
+        )
+    } else {
+        ReactionChipColors(
+            background = Color(0xFFF2F4F7),
+            content = Color(0xFF5F6670),
+            border = Color(0xFFD7DCE2),
+            selectedBackground = Color(0xFFD6EAFF),
+            selectedContent = Color(0xFF003A80),
+            selectedBorder = Color(0xFF2292FF),
+        )
+    }
 
 @Composable
 private fun QuickReactionMenu(
@@ -1717,13 +1750,13 @@ private fun ImagePreviewGrid(
             NetworkImage(
                 url = imageUrls.first(),
                 contentDescription = null,
-                contentScale = ContentScale.Crop,
+                contentScale = ContentScale.Fit,
+                alignment = Alignment.CenterStart,
                 maxDecodeSizePx = TimelineImageMaxDecodeSizePx,
                 filterQuality = FilterQuality.Low,
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(imageHeight)
-                    .clip(MaterialTheme.shapes.small)
                     .clickable { onImageClick(imageUrls, 0) },
             )
         }
@@ -1733,8 +1766,7 @@ private fun ImagePreviewGrid(
     Box(
         modifier = Modifier
             .fillMaxWidth()
-            .aspectRatio(16f / 9f)
-            .clip(MaterialTheme.shapes.small),
+            .aspectRatio(16f / 9f),
     ) {
         when (imageUrls.size) {
             2 -> TwoImageGrid(imageUrls, onImageClick)
@@ -1838,7 +1870,8 @@ private fun GridImage(
     NetworkImage(
         url = url,
         contentDescription = null,
-        contentScale = ContentScale.Crop,
+        contentScale = ContentScale.Fit,
+        alignment = Alignment.CenterStart,
         maxDecodeSizePx = TimelineImageMaxDecodeSizePx,
         filterQuality = FilterQuality.Low,
         modifier = modifier

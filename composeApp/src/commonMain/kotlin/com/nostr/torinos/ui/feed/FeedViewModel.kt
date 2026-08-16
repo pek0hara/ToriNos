@@ -98,6 +98,8 @@ class FeedViewModel(
     private val seenRepostIds = linkedSetOf<String>()
     private val seenQuoteRepostIds = linkedSetOf<String>()
     private val seenEventIds = linkedSetOf<String>()
+    private val receivedReactionEvents = linkedMapOf<String, NostrEvent>()
+    private val receivedRepostEvents = linkedMapOf<String, NostrEvent>()
     private val rawEvents = linkedMapOf<String, NostrEvent>()
     private val canonicalEvents = linkedMapOf<String, NostrEvent>()
     private val eventSortTimes = mutableMapOf<String, Long>()
@@ -125,7 +127,12 @@ class FeedViewModel(
         get() = authorPubkey == null && authorPubkeys != null
 
     init {
-        if (isWriteSupported) launch { ownPubkey = loadPublicKey() }
+        if (isWriteSupported) {
+            launch {
+                ownPubkey = loadPublicKey()
+                reconcileOwnEngagement()
+            }
+        }
         launch {
             ProfileCache.observeUpdates().collect { (pubkey, profile) ->
                 if (currentFeedState().profiles[pubkey] == null) return@collect
@@ -215,7 +222,10 @@ class FeedViewModel(
                 (eventId to (cur.likeReactionCounts[eventId] ?: 0) + 1),
         ))
         launch {
-            val privateKeyHex = KeyStorage.loadPrivateKey() ?: return@launch
+            val privateKeyHex = KeyStorage.loadPrivateKey() ?: run {
+                updateFeedState { it.withoutOptimisticLike(eventId) }
+                return@launch
+            }
             runCatching {
                 val reaction = signEvent(
                     privateKeyHex = privateKeyHex,
@@ -229,6 +239,8 @@ class FeedViewModel(
                 updateFeedState { state ->
                     state.copy(likedReactions = state.likedReactions + (eventId to reaction.id))
                 }
+            }.onFailure {
+                updateFeedState { it.withoutOptimisticLike(eventId) }
             }
         }
     }
@@ -464,6 +476,7 @@ class FeedViewModel(
             NostrRepository.events(ids.reaction).collect { event ->
                 if (event.kind != 7) return@collect
                 if (!rememberSeenId(seenReactionIds, event.id)) return@collect
+                rememberReceivedEvent(receivedReactionEvents, event)
                 val targetId = event.tags.lastOrNull { it.firstOrNull() == "e" }?.getOrNull(1)
                     ?: return@collect
                 val cur = currentFeedState()
@@ -547,6 +560,7 @@ class FeedViewModel(
             NostrRepository.events(ids.repost).collect { event ->
                 if (event.kind != 6) return@collect
                 if (!rememberSeenId(seenRepostIds, event.id)) return@collect
+                rememberReceivedEvent(receivedRepostEvents, event)
                 val targetId = event.tags.lastOrNull { it.firstOrNull() == "e" }?.getOrNull(1)
                     ?: return@collect
                 val cur = currentFeedState()
@@ -995,6 +1009,7 @@ class FeedViewModel(
 
     private fun appendRepostedEvent(repost: NostrEvent): Int {
         if (!includeRepostsInFeed || !rememberSeenId(seenRepostIds, repost.id)) return 0
+        rememberReceivedEvent(receivedRepostEvents, repost)
         val targetId = repost.tags.lastOrNull { it.firstOrNull() == "e" }?.getOrNull(1)
         val targetEvent = runCatching {
             Json.decodeFromString(NostrEvent.serializer(), repost.content)
@@ -1131,6 +1146,39 @@ class FeedViewModel(
         return true
     }
 
+    private fun rememberReceivedEvent(events: LinkedHashMap<String, NostrEvent>, event: NostrEvent) {
+        events[event.id] = event
+        while (events.size > MAX_SEEN_IDS) events.remove(events.keys.first())
+    }
+
+    private fun reconcileOwnEngagement() {
+        val pubkey = ownPubkey ?: return
+        val current = currentFeedState()
+        var likedReactions = current.likedReactions
+        var ownEmojiReactionEventIds = current.ownEmojiReactionEventIds
+        var repostedEvents = current.repostedEvents
+        receivedReactionEvents.values.filter { it.pubkey == pubkey }.forEach { event ->
+            val targetId = event.tags.lastOrNull { it.firstOrNull() == "e" }?.getOrNull(1)
+                ?: return@forEach
+            if (event.content.trim() == "+") likedReactions = likedReactions + (targetId to event.id)
+            event.toReactionOption()?.let { option ->
+                ownEmojiReactionEventIds = ownEmojiReactionEventIds + (
+                    targetId to ownEmojiReactionEventIds[targetId].orEmpty().plus(option.key to event.id)
+                )
+            }
+        }
+        receivedRepostEvents.values.filter { it.pubkey == pubkey }.forEach { event ->
+            val targetId = event.tags.lastOrNull { it.firstOrNull() == "e" }?.getOrNull(1)
+                ?: return@forEach
+            repostedEvents = repostedEvents + (targetId to event.id)
+        }
+        setFeedState(current.copy(
+            likedReactions = likedReactions,
+            ownEmojiReactionEventIds = ownEmojiReactionEventIds,
+            repostedEvents = repostedEvents,
+        ))
+    }
+
     private fun scheduleProfileFetch(pubkey: String) {
         if (pubkey in currentFeedState().profiles) return
         ProfileCache.get(pubkey)?.let { cachedProfile ->
@@ -1256,6 +1304,19 @@ class FeedViewModel(
 
         private fun nextInstanceKey(): Int = ++nextInstanceKeyValue
     }
+}
+
+private fun FeedViewModel.UiState.withoutOptimisticLike(eventId: String): FeedViewModel.UiState {
+    if (likedReactions[eventId] != "") return this
+    return copy(
+        likedReactions = likedReactions - eventId,
+        reactionCounts = reactionCounts + (
+            eventId to maxOf(0, (reactionCounts[eventId] ?: 0) - 1)
+            ),
+        likeReactionCounts = likeReactionCounts + (
+            eventId to maxOf(0, (likeReactionCounts[eventId] ?: 0) - 1)
+            ),
+    )
 }
 
 private fun FeedViewModel.UiState.withOptimisticEmojiReaction(

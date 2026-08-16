@@ -36,6 +36,7 @@ class ThreadViewModel(
     data class UiState(
         val root: NostrEvent? = null,
         val replies: List<NostrEvent> = emptyList(),
+        val repliesByEventId: Map<String, List<NostrEvent>> = emptyMap(),
         val profiles: Map<String, NostrProfile> = emptyMap(),
         val replyCounts: Map<String, Int> = emptyMap(),
         val reactionCounts: Map<String, Int> = emptyMap(),
@@ -76,6 +77,8 @@ class ThreadViewModel(
     private val seenReactionIds = linkedSetOf<String>()
     private val seenRepostIds = linkedSetOf<String>()
     private val seenQuoteRepostIds = linkedSetOf<String>()
+    private val receivedReactionEvents = linkedMapOf<String, NostrEvent>()
+    private val receivedRepostEvents = linkedMapOf<String, NostrEvent>()
     private val watchedEventIds = linkedSetOf<String>()
     private val watchedReactionEventIds = linkedSetOf<String>()
     private val pendingPubkeys = linkedSetOf<String>()
@@ -86,7 +89,12 @@ class ThreadViewModel(
     private var ownPubkey: String? = null
 
     init {
-        if (isWriteSupported) launch { ownPubkey = loadPublicKey() }
+        if (isWriteSupported) {
+            launch {
+                ownPubkey = loadPublicKey()
+                reconcileOwnEngagement()
+            }
+        }
         startSubscriptions()
     }
 
@@ -139,7 +147,10 @@ class ThreadViewModel(
             },
         )
         launch {
-            val privateKeyHex = KeyStorage.loadPrivateKey() ?: return@launch
+            val privateKeyHex = KeyStorage.loadPrivateKey() ?: run {
+                _state.value = _state.value.withoutOptimisticLike(eventId, ownPubkey)
+                return@launch
+            }
             runCatching {
                 val reaction = signEvent(
                     privateKeyHex = privateKeyHex,
@@ -157,6 +168,8 @@ class ThreadViewModel(
                         _state.value.rootReactionsByPubkey
                     },
                 )
+            }.onFailure {
+                _state.value = _state.value.withoutOptimisticLike(eventId, ownPubkey)
             }
         }
     }
@@ -364,9 +377,6 @@ class ThreadViewModel(
                     isLoading = false,
                 )
                 scheduleProfileFetch(event.pubkey)
-                scheduleMentionedProfileFetch(event.content)
-                scheduleReplyCountFetch(event.id)
-                scheduleReactionFetch(event.id)
             }
         }
 
@@ -386,15 +396,25 @@ class ThreadViewModel(
                 if (!noteContext.matches(event) || !seenReplyCountIds.add(event.id)) return@collect
                 val targetId = noteContext.replyTargetId(event) ?: return@collect
                 val cur = _state.value
+                val targetReplies = cur.repliesByEventId[targetId].orEmpty()
+                val updatedTargetReplies = if (targetReplies.any { it.id == event.id }) {
+                    targetReplies
+                } else {
+                    (targetReplies + event).sortedBy { it.createdAt }
+                }
                 _state.value = cur.copy(
                     replyCounts = cur.replyCounts + (targetId to (cur.replyCounts[targetId] ?: 0) + 1),
+                    repliesByEventId = cur.repliesByEventId + (targetId to updatedTargetReplies),
                 )
+                scheduleProfileFetch(event.pubkey)
+                scheduleMentionedProfileFetch(event.content)
             }
         }
 
         subscriptionJobs += launch {
             NostrRepository.events(reactionSubId).collect { event ->
                 if (event.kind != 7 || !seenReactionIds.add(event.id)) return@collect
+                rememberReceivedEvent(receivedReactionEvents, event)
                 val targetId = event.tags.lastOrNull { it.firstOrNull() == "e" }?.getOrNull(1)
                     ?: return@collect
                 if (targetId !in watchedReactionEventIds) return@collect
@@ -479,6 +499,7 @@ class ThreadViewModel(
         subscriptionJobs += launch {
             NostrRepository.events(repostSubId).collect { event ->
                 if (event.kind != 6 || !seenRepostIds.add(event.id)) return@collect
+                rememberReceivedEvent(receivedRepostEvents, event)
                 if (event.tags.lastOrNull { it.firstOrNull() == "e" }?.getOrNull(1) != eventId) return@collect
                 val cur = _state.value
                 val ownRepostEventId = if (ownPubkey != null && event.pubkey == ownPubkey) {
@@ -511,6 +532,9 @@ class ThreadViewModel(
                     repostCount = cur.repostCount + 1,
                 )
                 scheduleProfileFetch(event.pubkey)
+                scheduleMentionedProfileFetch(event.content)
+                scheduleReplyCountFetch(event.id)
+                scheduleReactionFetch(event.id)
             }
         }
 
@@ -538,6 +562,40 @@ class ThreadViewModel(
         NostrRepository.close(repostSubId)
         NostrRepository.close(quoteRepostSubId)
         NostrRepository.close(replyParentSubId)
+    }
+
+    private fun rememberReceivedEvent(events: LinkedHashMap<String, NostrEvent>, event: NostrEvent) {
+        events[event.id] = event
+        while (events.size > MAX_RECEIVED_ENGAGEMENT_EVENTS) events.remove(events.keys.first())
+    }
+
+    private fun reconcileOwnEngagement() {
+        val pubkey = ownPubkey ?: return
+        val current = _state.value
+        var likedReactions = current.likedReactions
+        var ownEmojiReactionEventIds = current.ownEmojiReactionEventIds
+        receivedReactionEvents.values.filter { it.pubkey == pubkey }.forEach { event ->
+            val targetId = event.tags.lastOrNull { it.firstOrNull() == "e" }?.getOrNull(1)
+                ?: return@forEach
+            if (event.content.trim() == "+") likedReactions = likedReactions + (targetId to event.id)
+            event.toReactionOption()?.let { option ->
+                ownEmojiReactionEventIds = ownEmojiReactionEventIds + (
+                    targetId to ownEmojiReactionEventIds[targetId].orEmpty().plus(option.key to event.id)
+                )
+            }
+        }
+        val ownRepostEventId = receivedRepostEvents.values
+            .lastOrNull { event ->
+                event.pubkey == pubkey &&
+                    event.tags.lastOrNull { it.firstOrNull() == "e" }?.getOrNull(1) == eventId
+            }
+            ?.id
+            ?: current.ownRepostEventId
+        _state.value = current.copy(
+            likedReactions = likedReactions,
+            ownEmojiReactionEventIds = ownEmojiReactionEventIds,
+            ownRepostEventId = ownRepostEventId,
+        )
     }
 
     override fun onCleared() {
@@ -612,8 +670,30 @@ class ThreadViewModel(
     }
 
     companion object {
+        private const val MAX_RECEIVED_ENGAGEMENT_EVENTS = 2_000
         private const val MAX_WATCHED_EVENTS = 100
     }
+}
+
+private fun ThreadViewModel.UiState.withoutOptimisticLike(
+    eventId: String,
+    ownPubkey: String?,
+): ThreadViewModel.UiState {
+    if (likedReactions[eventId] != "") return this
+    return copy(
+        likedReactions = likedReactions - eventId,
+        reactionCounts = reactionCounts + (
+            eventId to maxOf(0, (reactionCounts[eventId] ?: 0) - 1)
+            ),
+        likeReactionCounts = likeReactionCounts + (
+            eventId to maxOf(0, (likeReactionCounts[eventId] ?: 0) - 1)
+            ),
+        reactionPubkeys = if (eventId == root?.id && ownPubkey != null) {
+            reactionPubkeys - ownPubkey
+        } else {
+            reactionPubkeys
+        },
+    )
 }
 
 private fun ThreadViewModel.UiState.withOptimisticEmojiReaction(

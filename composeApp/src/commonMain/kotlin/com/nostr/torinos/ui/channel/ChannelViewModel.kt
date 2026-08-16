@@ -95,6 +95,8 @@ class ChannelViewModel(
     private val seenReactionIds = linkedSetOf<String>()
     private val seenRepostIds = linkedSetOf<String>()
     private val seenQuoteRepostIds = linkedSetOf<String>()
+    private val receivedReactionEvents = linkedMapOf<String, NostrEvent>()
+    private val receivedRepostEvents = linkedMapOf<String, NostrEvent>()
     private val watchedEventIds = linkedSetOf<String>()
     private val pendingPubkeys = mutableSetOf<String>()
     private var profileBatchJob: Job? = null
@@ -127,7 +129,10 @@ class ChannelViewModel(
     private val noteContext = NoteContext.Channel(channelId)
 
     init {
-        launch { ownPubkey = loadPublicKey() }
+        launch {
+            ownPubkey = loadPublicKey()
+            reconcileOwnEngagement()
+        }
         start()
     }
 
@@ -182,7 +187,11 @@ class ChannelViewModel(
             )
         syncReadyState()
         launch {
-            val privateKeyHex = KeyStorage.loadPrivateKey() ?: return@launch
+            val privateKeyHex = KeyStorage.loadPrivateKey() ?: run {
+                removeOptimisticLike(eventId)
+                syncReadyState()
+                return@launch
+            }
             runCatching {
                 val reaction = signEvent(
                     privateKeyHex = privateKeyHex,
@@ -193,6 +202,9 @@ class ChannelViewModel(
                 seenReactionIds.add(reaction.id)
                 NostrRepository.publish(reaction)
                 currentLikedReactions = currentLikedReactions + (eventId to reaction.id)
+                syncReadyState()
+            }.onFailure {
+                removeOptimisticLike(eventId)
                 syncReadyState()
             }
         }
@@ -470,6 +482,7 @@ class ChannelViewModel(
         jobs += launch {
             NostrRepository.events(reactionSubId).collect { event ->
                 if (event.kind != 7 || !seenReactionIds.add(event.id)) return@collect
+                rememberReceivedEvent(receivedReactionEvents, event)
                 val targetId = event.tags.lastOrNull { it.firstOrNull() == "e" }?.getOrNull(1) ?: return@collect
                 if (targetId !in watchedEventIds) return@collect
                 currentReactionCounts = currentReactionCounts + (targetId to (currentReactionCounts[targetId] ?: 0) + 1)
@@ -516,6 +529,7 @@ class ChannelViewModel(
         jobs += launch {
             NostrRepository.events(repostSubId).collect { event ->
                 if (event.kind != 6 || !seenRepostIds.add(event.id)) return@collect
+                rememberReceivedEvent(receivedRepostEvents, event)
                 val targetId = event.tags.lastOrNull { it.firstOrNull() == "e" }?.getOrNull(1) ?: return@collect
                 if (targetId !in watchedEventIds) return@collect
                 currentRepostCounts = currentRepostCounts + (targetId to (currentRepostCounts[targetId] ?: 0) + 1)
@@ -753,6 +767,17 @@ class ChannelViewModel(
             )
     }
 
+    private fun removeOptimisticLike(eventId: String) {
+        if (currentLikedReactions[eventId] != "") return
+        currentLikedReactions = currentLikedReactions - eventId
+        currentReactionCounts = currentReactionCounts + (
+            eventId to maxOf(0, (currentReactionCounts[eventId] ?: 0) - 1)
+            )
+        currentLikeReactionCounts = currentLikeReactionCounts + (
+            eventId to maxOf(0, (currentLikeReactionCounts[eventId] ?: 0) - 1)
+            )
+    }
+
     private fun removeOptimisticEmojiReaction(eventId: String, option: ReactionOption) {
         currentReactionCounts = currentReactionCounts + (
             eventId to maxOf(0, (currentReactionCounts[eventId] ?: 0) - 1)
@@ -899,6 +924,33 @@ class ChannelViewModel(
         NostrRepository.close(reactionSubId)
         NostrRepository.close(repostSubId)
         NostrRepository.close(quoteRepostSubId)
+    }
+
+    private fun rememberReceivedEvent(events: LinkedHashMap<String, NostrEvent>, event: NostrEvent) {
+        events[event.id] = event
+        while (events.size > MAX_SEEN_IDS) events.remove(events.keys.first())
+    }
+
+    private fun reconcileOwnEngagement() {
+        val pubkey = ownPubkey ?: return
+        receivedReactionEvents.values.filter { it.pubkey == pubkey }.forEach { event ->
+            val targetId = event.tags.lastOrNull { it.firstOrNull() == "e" }?.getOrNull(1)
+                ?: return@forEach
+            if (event.content.trim() == "+") {
+                currentLikedReactions = currentLikedReactions + (targetId to event.id)
+            }
+            event.toReactionOption()?.let { option ->
+                currentOwnEmojiReactionEventIds = currentOwnEmojiReactionEventIds + (
+                    targetId to currentOwnEmojiReactionEventIds[targetId].orEmpty().plus(option.key to event.id)
+                )
+            }
+        }
+        receivedRepostEvents.values.filter { it.pubkey == pubkey }.forEach { event ->
+            val targetId = event.tags.lastOrNull { it.firstOrNull() == "e" }?.getOrNull(1)
+                ?: return@forEach
+            currentRepostedEvents = currentRepostedEvents + (targetId to event.id)
+        }
+        syncReadyState()
     }
 
     companion object {

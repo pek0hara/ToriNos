@@ -211,6 +211,7 @@ fun ThreadScreen(
                                     }
                                 },
                                 replyCount = state.replyCounts[root.id] ?: state.replies.size,
+                                replies = state.replies,
                                 reactionCount = state.reactionCounts[root.id] ?: state.reactionPubkeys.size,
                                 likeReactionCount = state.likeReactionCounts[root.id] ?: 0,
                                 customReactions = state.customReactions[root.id].orEmpty(),
@@ -290,6 +291,7 @@ fun ThreadScreen(
                                             profile = state.profiles[reply.pubkey],
                                             profiles = state.profiles,
                                             replyCount = replyCount,
+                                            replies = state.repliesByEventId[reply.id].orEmpty(),
                                             reactionCount = state.reactionCounts[reply.id] ?: 0,
                                             likeReactionCount = state.likeReactionCounts[reply.id] ?: 0,
                                             customReactions = state.customReactions[reply.id].orEmpty(),
@@ -364,6 +366,7 @@ fun ThreadScreen(
                                             profile = state.profiles[quoteRepost.pubkey],
                                             profiles = state.profiles,
                                             replyCount = state.replyCounts[quoteRepost.id] ?: 0,
+                                            replies = state.repliesByEventId[quoteRepost.id].orEmpty(),
                                             reactionCount = state.reactionCounts[quoteRepost.id] ?: 0,
                                             likeReactionCount = state.likeReactionCounts[quoteRepost.id] ?: 0,
                                             customReactions = state.customReactions[quoteRepost.id].orEmpty(),
