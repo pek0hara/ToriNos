@@ -91,6 +91,19 @@ private fun JournalState.withOptimisticEmojiReaction(
         ),
 )
 
+private fun JournalState.withoutOptimisticLike(eventId: String): JournalState {
+    if (likedReactions[eventId] != "") return this
+    return copy(
+        likedReactions = likedReactions - eventId,
+        reactionCounts = reactionCounts + (
+            eventId to maxOf(0, (reactionCounts[eventId] ?: 0) - 1)
+            ),
+        likeReactionCounts = likeReactionCounts + (
+            eventId to maxOf(0, (likeReactionCounts[eventId] ?: 0) - 1)
+            ),
+    )
+}
+
 private fun JournalState.withoutOptimisticEmojiReaction(
     eventId: String,
     option: ReactionOption,
@@ -148,6 +161,12 @@ data class JournalDeleteDialogState(
     val error: String? = null,
 )
 
+data class JournalNoteDeleteDialogState(
+    val event: NostrEvent,
+    val isDeleting: Boolean = false,
+    val error: String? = null,
+)
+
 data class JournalState(
     val selectedMonth: LocalDate = currentMonth(),
     val selectedDate: LocalDate = currentDate(),
@@ -168,6 +187,7 @@ data class JournalState(
     val loadedKindsByDate: Map<LocalDate, Set<JournalLoadKind>> = emptyMap(),
     val isLoading: Boolean = false,
     val deleteDialog: JournalDeleteDialogState? = null,
+    val noteDeleteDialog: JournalNoteDeleteDialogState? = null,
     val error: String? = null,
 ) {
     private val memosByDate: Map<LocalDate, List<JournalItem>> =
@@ -319,7 +339,10 @@ class JournalViewModel(private val targetPubkey: String? = null) : SafeViewModel
                 (eventId to (cur.likeReactionCounts[eventId] ?: 0) + 1),
         )
         launch {
-            val privateKeyHex = KeyStorage.loadPrivateKey() ?: return@launch
+            val privateKeyHex = KeyStorage.loadPrivateKey() ?: run {
+                _state.value = _state.value.withoutOptimisticLike(eventId)
+                return@launch
+            }
             runCatching {
                 val reaction = signEvent(
                     privateKeyHex = privateKeyHex,
@@ -331,6 +354,8 @@ class JournalViewModel(private val targetPubkey: String? = null) : SafeViewModel
                 _state.value = _state.value.copy(
                     likedReactions = _state.value.likedReactions + (eventId to reaction.id),
                 )
+            }.onFailure {
+                _state.value = _state.value.withoutOptimisticLike(eventId)
             }
         }
     }
@@ -462,6 +487,71 @@ class JournalViewModel(private val targetPubkey: String? = null) : SafeViewModel
                     deleteDialog = _state.value.deleteDialog?.copy(
                         isDeleting = false,
                         error = e.message ?: "ポストメモの削除要求を送信できませんでした",
+                    ),
+                )
+            }
+        }
+    }
+
+    fun showNoteDeleteDialog(event: NostrEvent) {
+        _state.value = _state.value.copy(
+            noteDeleteDialog = JournalNoteDeleteDialogState(event = event),
+        )
+    }
+
+    fun dismissNoteDeleteDialog() {
+        if (_state.value.noteDeleteDialog?.isDeleting == true) return
+        _state.value = _state.value.copy(noteDeleteDialog = null)
+    }
+
+    fun deleteSelectedNote() {
+        val dialog = _state.value.noteDeleteDialog ?: return
+        _state.value = _state.value.copy(
+            noteDeleteDialog = dialog.copy(isDeleting = true, error = null),
+        )
+        launch {
+            val privateKeyHex = KeyStorage.loadPrivateKey() ?: run {
+                _state.value = _state.value.copy(
+                    noteDeleteDialog = _state.value.noteDeleteDialog?.copy(
+                        isDeleting = false,
+                        error = "秘密鍵が設定されていません",
+                    ),
+                )
+                return@launch
+            }
+            val signerPubkey = derivePublicKey(privateKeyHex.fromHex()).toHex()
+            if (dialog.event.pubkey != signerPubkey) {
+                _state.value = _state.value.copy(
+                    noteDeleteDialog = _state.value.noteDeleteDialog?.copy(
+                        isDeleting = false,
+                        error = "自分の投稿だけ削除できます",
+                    ),
+                )
+                return@launch
+            }
+
+            runCatching {
+                val deletion = signEvent(
+                    privateKeyHex = privateKeyHex,
+                    content = "",
+                    kind = 5,
+                    tags = listOf(
+                        listOf("e", dialog.event.id),
+                        listOf("k", dialog.event.kind.toString()),
+                        listOf("client", "ToriNos"),
+                    ),
+                )
+                NostrRepository.publish(deletion)
+            }.onSuccess {
+                _state.value = _state.value.copy(
+                    notes = _state.value.notes.filterNot { it.id == dialog.event.id },
+                    noteDeleteDialog = null,
+                )
+            }.onFailure { e ->
+                _state.value = _state.value.copy(
+                    noteDeleteDialog = _state.value.noteDeleteDialog?.copy(
+                        isDeleting = false,
+                        error = e.message ?: "投稿の削除要求を送信できませんでした",
                     ),
                 )
             }

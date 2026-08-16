@@ -415,6 +415,10 @@ fun JournalScreen(
                                             ownEmojiReactionEventIds =
                                                 state.ownEmojiReactionEventIds[entry.event.id].orEmpty(),
                                             onUserClick = onUserClick,
+                                            ownPubkey = ownPubkey,
+                                            onDelete = if (entry.event.pubkey == ownPubkey) {
+                                                { viewModel.showNoteDeleteDialog(entry.event) }
+                                            } else null,
                                             onLike = if (ownPubkey != null) {
                                                 {
                                                     if (state.likedReactions.containsKey(entry.event.id)) {
@@ -519,6 +523,52 @@ fun JournalScreen(
             dismissButton = {
                 TextButton(
                     onClick = viewModel::dismissDeleteDialog,
+                    enabled = !dialog.isDeleting,
+                ) {
+                    Text("キャンセル")
+                }
+            },
+        )
+    }
+
+    state.noteDeleteDialog?.let { dialog ->
+        AlertDialog(
+            onDismissRequest = viewModel::dismissNoteDeleteDialog,
+            title = { Text("投稿を削除") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("この投稿の削除要求をリレーへ送信します。対応していないリレーやキャッシュ済みデータからの削除は保証されません。")
+                    Text(
+                        text = dialog.event.content,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 3,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    dialog.error?.let { error ->
+                        Text(
+                            text = error,
+                            color = MaterialTheme.colorScheme.error,
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = viewModel::deleteSelectedNote,
+                    enabled = !dialog.isDeleting,
+                ) {
+                    if (dialog.isDeleting) {
+                        CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+                    } else {
+                        Text("削除", color = MaterialTheme.colorScheme.error)
+                    }
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = viewModel::dismissNoteDeleteDialog,
                     enabled = !dialog.isDeleting,
                 ) {
                     Text("キャンセル")
