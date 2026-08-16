@@ -1,11 +1,13 @@
 package com.nostr.torinos
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.material.icons.Icons
@@ -15,14 +17,21 @@ import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Today
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
+import androidx.compose.material3.DrawerState
 import androidx.compose.material3.DrawerValue
+import androidx.compose.material3.ModalDrawerSheet
 import androidx.compose.material3.ModalNavigationDrawer
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.NavigationBarItemDefaults
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Snackbar
+import androidx.compose.material3.SnackbarDuration
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberDrawerState
@@ -42,6 +51,8 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.requiredHeight
 import androidx.compose.foundation.layout.size
@@ -51,6 +62,8 @@ import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalLayoutDirection
+import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
@@ -75,6 +88,7 @@ import com.nostr.torinos.network.LocalSettingsStorage
 import com.nostr.torinos.network.MuteStore
 import com.nostr.torinos.network.NostrRepository
 import com.nostr.torinos.network.RelayListSynchronizer
+import com.nostr.torinos.network.RelayPublishResult
 import com.nostr.torinos.network.RelayStore
 import com.nostr.torinos.ui.article.ArticleDetailScreen
 import com.nostr.torinos.ui.article.ArticleEditorScreen
@@ -174,6 +188,9 @@ fun App() {
         var showKeySetup by remember { mutableStateOf(false) }
         var pendingKeyAction by remember { mutableStateOf<PendingKeyAction?>(null) }
         val scope = rememberCoroutineScope()
+        val snackbarHostState = remember { SnackbarHostState() }
+        var snackbarFailedRelays by remember { mutableStateOf<List<String>>(emptyList()) }
+        var publishFailureDialogRelays by remember { mutableStateOf<List<String>?>(null) }
         val uiExceptionHandler = remember {
             loggingExceptionHandler("App", "Uncaught UI coroutine exception")
         }
@@ -200,9 +217,43 @@ fun App() {
         var ageVerificationStatus by remember { mutableStateOf<String?>(null) }
         var isAgeVerificationLoaded by remember { mutableStateOf(false) }
         val notificationsDrawerState = rememberDrawerState(DrawerValue.Closed)
+        val profileDrawerState = rememberDrawerState(DrawerValue.Closed)
+        var profileDrawerPubkey by remember { mutableStateOf<String?>(null) }
+        var profileDrawerContentReady by remember { mutableStateOf(false) }
+        var hasProfileDrawerOpened by remember { mutableStateOf(false) }
+        val drawerTransitionMutex = remember { Mutex() }
         val followingFeedListState = remember(accountStateResetKey) { LazyListState() }
         val globalFeedListState = remember(accountStateResetKey) { LazyListState() }
         var currentServiceTab by remember { mutableStateOf(ServiceTab.Articles) }
+
+        fun openProfileDrawer(pubkey: String) {
+            scope.launch {
+                drawerTransitionMutex.withLock {
+                    profileDrawerContentReady = false
+                    notificationsDrawerState.close()
+                    profileDrawerState.close()
+                    profileDrawerPubkey = pubkey
+                    profileDrawerState.open()
+                    profileDrawerContentReady = true
+                }
+            }
+        }
+
+        fun openNotificationsDrawer() {
+            scope.launch {
+                drawerTransitionMutex.withLock {
+                    profileDrawerState.close()
+                    notificationsDrawerState.open()
+                }
+            }
+        }
+
+        fun closeProfileDrawerAndThen(action: () -> Unit) {
+            scope.launch {
+                profileDrawerState.close()
+                action()
+            }
+        }
 
         fun currentProfileRoute(): String? {
             val route = nav.currentBackStackEntry?.destination?.route ?: currentRoute ?: return null
@@ -303,29 +354,36 @@ fun App() {
         // ownPubkey が確定したらプロフィールを購読（ログイン後の再実行にも対応）
         LaunchedEffect(ownPubkey) {
             val pk = ownPubkey ?: return@LaunchedEffect
+            val subscriptionId = "app-self-profile-${pk.take(16)}"
             ownProfile = null
             try {
                 coroutineScope {
                     val profileEvent = async(start = CoroutineStart.UNDISPATCHED) {
-                        NostrRepository.events("app-self-profile").first { it.kind == 0 }
+                        NostrRepository.events(subscriptionId).first {
+                            it.kind == 0 && it.pubkey == pk
+                        }
                     }
                     NostrRepository.subscribe(
-                        "app-self-profile",
+                        subscriptionId,
                         NostrFilter(kinds = listOf(0), authors = listOf(pk), limit = 1),
                     )
                     ownProfile = profileEvent.await().toProfile()
-                    NostrRepository.close("app-self-profile")
                 }
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Throwable) {
                 logException("App", e, "Failed to load own profile")
+            } finally {
+                NostrRepository.close(subscriptionId)
             }
         }
 
         // ログイン時に、他クライアントから公開済みの NIP-65 リレーリストを端末設定へ反映する。
+        // まずアカウント別キャッシュを即時表示し、リレー設定の同期後にもう一度取得する。
         LaunchedEffect(ownPubkey) {
-            val pk = ownPubkey ?: return@LaunchedEffect
+            FollowRepository.reload()
+            val pk = ownPubkey
+            if (pk == null) return@LaunchedEffect
             try {
                 RelayListSynchronizer.syncFromRelays(pk)
             } catch (e: CancellationException) {
@@ -333,6 +391,7 @@ fun App() {
             } catch (e: Throwable) {
                 logException("App", e, "Failed to synchronize relay list")
             }
+            FollowRepository.refresh()
         }
 
         fun runWithPrivateKey(
@@ -359,7 +418,40 @@ fun App() {
             }
         }
 
+        fun requestOwnProfile() {
+            runWithPrivateKey(PendingKeyAction.Profile, ::openProfileDrawer)
+        }
+
+        fun requestNotifications() {
+            openNotificationsDrawer()
+        }
+
+        LaunchedEffect(profileDrawerState.currentValue, profileDrawerState.targetValue) {
+            when {
+                profileDrawerState.currentValue == DrawerValue.Open -> {
+                    hasProfileDrawerOpened = true
+                }
+                profileDrawerState.currentValue == DrawerValue.Closed &&
+                    profileDrawerState.targetValue == DrawerValue.Closed &&
+                    hasProfileDrawerOpened -> {
+                    hasProfileDrawerOpened = false
+                    profileDrawerContentReady = false
+                    profileDrawerPubkey = null
+                }
+            }
+        }
+
+        LaunchedEffect(notificationsDrawerState.currentValue) {
+            if (notificationsDrawerState.currentValue == DrawerValue.Open) {
+                notificationsViewModel?.markAllRead()
+                notificationsScrollToTopRequest++
+            }
+        }
+
         fun clearLocalAccountState() {
+            scope.launch { profileDrawerState.close() }
+            profileDrawerContentReady = false
+            profileDrawerPubkey = null
             ownPubkey = null
             ownProfile = null
             isAccountLoaded = true
@@ -378,7 +470,6 @@ fun App() {
             selectedMemo = null
             selectedMemoDeleteAction = null
             localDraft = null
-            FollowRepository.reload()
             MuteStore.resetForAccountChange()
             accountStateResetKey++
             currentFeedTab = FeedTab.Global
@@ -395,6 +486,9 @@ fun App() {
                 clearLocalAccountState()
                 return
             }
+            scope.launch { profileDrawerState.close() }
+            profileDrawerContentReady = false
+            profileDrawerPubkey = null
             ownPubkey = pubkey
             ownProfile = null
             isAccountLoaded = true
@@ -413,7 +507,6 @@ fun App() {
             selectedMemo = null
             selectedMemoDeleteAction = null
             localDraft = null
-            FollowRepository.reload()
             MuteStore.resetForAccountChange()
             accountStateResetKey++
             currentFeedTab = FeedTab.Global
@@ -468,7 +561,7 @@ fun App() {
                 nav.navigate("settings")
             },
             onUserClick = { pk ->
-                nav.navigate(ProfileRoute(pk))
+                openProfileDrawer(pk)
             },
         )
 
@@ -489,27 +582,129 @@ fun App() {
                 }
             },
         ) {
-        ModalNavigationDrawer(
-            drawerState = notificationsDrawerState,
+        AppModalNavigationDrawer(
+            drawerState = profileDrawerState,
+            endDrawer = false,
+            gesturesEnabled = profileDrawerState.currentValue != DrawerValue.Closed ||
+                profileDrawerState.targetValue != DrawerValue.Closed,
             drawerContent = {
-                NotificationsDrawer(
-                    ownPubkey = ownPubkey,
-                    isOpen = notificationsDrawerState.currentValue == DrawerValue.Open,
-                    scrollToTopRequest = notificationsScrollToTopRequest,
-                    onUserClick = { pubkey ->
-                        scope.launch { notificationsDrawerState.close() }
-                        nav.navigate(ProfileRoute(pubkey))
-                    },
-                    onOpenThread = { eventId ->
-                        scope.launch { notificationsDrawerState.close() }
-                        nav.navigate(ThreadRoute(eventId))
-                    },
-                )
+                ModalDrawerSheet(
+                    modifier = Modifier
+                        .fillMaxHeight()
+                        .fillMaxWidth(ProfileDrawerWidthFraction),
+                    drawerContainerColor = MaterialTheme.colorScheme.background,
+                ) {
+                        val drawerPubkey = profileDrawerPubkey
+                        when {
+                            drawerPubkey == null -> Unit
+                            drawerPubkey == ownPubkey -> MyProfileScreen(
+                            ownPubkey = drawerPubkey,
+                            onBack = { scope.launch { profileDrawerState.close() } },
+                            onOpenFollowing = {
+                                closeProfileDrawerAndThen { nav.navigate(FollowingRoute(drawerPubkey)) }
+                            },
+                            onOpenFollowers = {
+                                closeProfileDrawerAndThen { nav.navigate(FollowersRoute(drawerPubkey)) }
+                            },
+                            onOpenSettings = {
+                                closeProfileDrawerAndThen { showQuickSettings = true }
+                            },
+                            onUserClick = ::openProfileDrawer,
+                            onReply = { eventId, authorPk, preview ->
+                                closeProfileDrawerAndThen {
+                                    replyToId = eventId
+                                    replyToPubkey = authorPk
+                                    replyToPreview = preview
+                                    replyNoteContext = NoteContext.Timeline
+                                    runWithPrivateKey(PendingKeyAction.Reply) { showPostSheet = true }
+                                }
+                            },
+                            onOpenReplies = { eventId ->
+                                closeProfileDrawerAndThen { nav.navigate(ThreadRoute(eventId)) }
+                            },
+                            onOpenLikes = { eventId ->
+                                closeProfileDrawerAndThen { nav.navigate(ThreadRoute(eventId, "likes")) }
+                            },
+                            onOpenReposts = { eventId ->
+                                closeProfileDrawerAndThen { nav.navigate(ThreadRoute(eventId, "reposts")) }
+                            },
+                        )
+                            !profileDrawerContentReady -> Box(
+                                modifier = Modifier.fillMaxSize(),
+                                contentAlignment = Alignment.Center,
+                            ) {
+                                CircularProgressIndicator()
+                            }
+                            else -> UserProfileScreen(
+                            pubkey = drawerPubkey,
+                            onBack = { scope.launch { profileDrawerState.close() } },
+                            isOwnProfile = false,
+                            ownPubkey = ownPubkey,
+                            onOpenFollowing = {
+                                closeProfileDrawerAndThen { nav.navigate(FollowingRoute(drawerPubkey)) }
+                            },
+                            onOpenFollowers = {
+                                closeProfileDrawerAndThen { nav.navigate(FollowersRoute(drawerPubkey)) }
+                            },
+                            onUserClick = ::openProfileDrawer,
+                            onReply = { eventId, authorPk, preview ->
+                                closeProfileDrawerAndThen {
+                                    replyToId = eventId
+                                    replyToPubkey = authorPk
+                                    replyToPreview = preview
+                                    replyNoteContext = NoteContext.Timeline
+                                    runWithPrivateKey(PendingKeyAction.Reply) { showPostSheet = true }
+                                }
+                            },
+                            onOpenReplies = { eventId ->
+                                closeProfileDrawerAndThen { nav.navigate(ThreadRoute(eventId)) }
+                            },
+                            onOpenLikes = { eventId ->
+                                closeProfileDrawerAndThen { nav.navigate(ThreadRoute(eventId, "likes")) }
+                            },
+                            onOpenReposts = { eventId ->
+                                closeProfileDrawerAndThen { nav.navigate(ThreadRoute(eventId, "reposts")) }
+                            },
+                            onOpenJournal = {
+                                closeProfileDrawerAndThen { nav.navigate(UserJournalRoute(drawerPubkey)) }
+                            },
+                            )
+                        }
+                    }
             },
         ) {
+            AppModalNavigationDrawer(
+                drawerState = notificationsDrawerState,
+                endDrawer = true,
+                gesturesEnabled = true,
+                drawerContent = {
+                    NotificationsDrawer(
+                        ownPubkey = ownPubkey,
+                        isOpen = notificationsDrawerState.currentValue == DrawerValue.Open,
+                        scrollToTopRequest = notificationsScrollToTopRequest,
+                        onUserClick = ::openProfileDrawer,
+                        onOpenThread = { eventId ->
+                            scope.launch { notificationsDrawerState.close() }
+                            nav.navigate(ThreadRoute(eventId))
+                        },
+                    )
+                },
+            ) {
             Scaffold(
                 contentWindowInsets = WindowInsets(0),
                 containerColor = MaterialTheme.colorScheme.background,
+                snackbarHost = {
+                    SnackbarHost(snackbarHostState) { data ->
+                        Snackbar(
+                            modifier = Modifier.clickable(enabled = snackbarFailedRelays.isNotEmpty()) {
+                                publishFailureDialogRelays = snackbarFailedRelays
+                                data.dismiss()
+                            },
+                        ) {
+                            Text(data.visuals.message)
+                        }
+                    }
+                },
                 floatingActionButton = {
                     if (isWriteSupported) {
                         when (currentRoute) {
@@ -671,15 +866,11 @@ fun App() {
                                 requestRelaySettings()
                             },
                             onOpenNotifications = {
-                                notificationsViewModel?.markAllRead()
-                                notificationsScrollToTopRequest++
-                                scope.launch { notificationsDrawerState.open() }
+                                requestNotifications()
                             },
-                            onUserClick = { pubkey -> nav.navigate(ProfileRoute(pubkey)) },
+                            onUserClick = ::openProfileDrawer,
                             onOpenProfile = {
-                                runWithPrivateKey(PendingKeyAction.Profile) {
-                                    nav.navigate("myprofile") { launchSingleTop = true }
-                                }
+                                requestOwnProfile()
                             },
                             onReply = { eventId, authorPk, preview ->
                                 replyToId = eventId
@@ -718,9 +909,7 @@ fun App() {
                                     ownPubkey = ownPubkey,
                                     ownProfile = ownProfile,
                                     onOpenProfile = {
-                                        runWithPrivateKey(PendingKeyAction.Profile) {
-                                            nav.navigate("myprofile") { launchSingleTop = true }
-                                        }
+                                        requestOwnProfile()
                                     },
                                     onOpenRelaySettings = {
                                         requestRelaySettings()
@@ -735,9 +924,7 @@ fun App() {
                                     ownPubkey = ownPubkey,
                                     ownProfile = ownProfile,
                                     onOpenProfile = {
-                                        runWithPrivateKey(PendingKeyAction.Profile) {
-                                            nav.navigate("myprofile") { launchSingleTop = true }
-                                        }
+                                        requestOwnProfile()
                                     },
                                     onOpenSettings = { showQuickSettings = true },
                                     onOpenRelaySettings = {
@@ -758,9 +945,7 @@ fun App() {
                                     ownPubkey = ownPubkey,
                                     ownProfile = ownProfile,
                                     onOpenProfile = {
-                                        runWithPrivateKey(PendingKeyAction.Profile) {
-                                            nav.navigate("myprofile") { launchSingleTop = true }
-                                        }
+                                        requestOwnProfile()
                                     },
                                     onOpenSettings = { showQuickSettings = true },
                                     onOpenRelaySettings = {
@@ -772,7 +957,7 @@ fun App() {
                                     onLiveChatClick = { pubkey, identifier ->
                                         nav.navigate(LiveRoute(pubkey, identifier, openChat = true))
                                     },
-                                    onUserClick = { pubkey -> nav.navigate(ProfileRoute(pubkey)) },
+                                    onUserClick = ::openProfileDrawer,
                                     selectedServiceTab = currentServiceTab,
                                     onServiceTabSelected = { currentServiceTab = it },
                                     createLiveRequest = liveCreateRequest,
@@ -785,11 +970,9 @@ fun App() {
                                     ownProfile = ownProfile,
                                     showComposer = showStatusComposer,
                                     onComposerShown = { showStatusComposer = false },
-                                    onUserClick = { pk -> nav.navigate(ProfileRoute(pk)) },
+                                    onUserClick = ::openProfileDrawer,
                                     onOpenProfile = {
-                                        runWithPrivateKey(PendingKeyAction.Profile) {
-                                            nav.navigate("myprofile") { launchSingleTop = true }
-                                        }
+                                        requestOwnProfile()
                                     },
                                     onOpenRelaySettings = {
                                         requestRelaySettings()
@@ -829,7 +1012,7 @@ fun App() {
                             onEditArticle = { pubkey, identifier ->
                                 nav.navigate(ArticleEditorRoute(pubkey, identifier))
                             },
-                            onUserClick = { pubkey -> nav.navigate(ProfileRoute(pubkey)) },
+                            onUserClick = ::openProfileDrawer,
                             onNoteClick = { eventId -> nav.navigate(ThreadRoute(eventId)) },
                         )
                     }
@@ -866,7 +1049,7 @@ fun App() {
                             openChatInitially = route.openChat,
                             ownPubkey = ownPubkey,
                             onBack = { nav.popBackStack() },
-                            onUserClick = { pubkey -> nav.navigate(ProfileRoute(pubkey)) },
+                            onUserClick = ::openProfileDrawer,
                         )
                     }
                     composable<UserArticlesRoute> { backStack ->
@@ -916,7 +1099,7 @@ fun App() {
                                     showPostSheet = true
                                 }
                             },
-                            onUserClick = { pubkey -> nav.navigate(ProfileRoute(pubkey)) },
+                            onUserClick = ::openProfileDrawer,
                             onOpenArticle = { pubkey, identifier -> nav.navigate(ArticleRoute(pubkey, identifier)) },
                             ownPubkey = ownPubkey,
                             ownProfile = ownProfile,
@@ -930,7 +1113,7 @@ fun App() {
                         ChannelScreen(
                             channelId = route.channelId,
                             onBack = { nav.popBackStack() },
-                            onUserClick = { pubkey -> nav.navigate(ProfileRoute(pubkey)) },
+                            onUserClick = ::openProfileDrawer,
                             onReply = { eventId, authorPk, preview, chId ->
                                 replyToId = eventId
                                 replyToPubkey = authorPk
@@ -959,7 +1142,7 @@ fun App() {
                             initialTab = route.initialTab,
                             channelId = route.channelId.takeIf { it.isNotBlank() },
                             onBack = { nav.popBackStack() },
-                            onUserClick = { pubkey -> nav.navigate(ProfileRoute(pubkey)) },
+                            onUserClick = ::openProfileDrawer,
                             onReply = { eventId, authorPk, preview, chId ->
                                 replyToId = eventId
                                 replyToPubkey = authorPk
@@ -996,7 +1179,7 @@ fun App() {
                             },
                             onOpenSettings = { showQuickSettings = true },
                             onUserClick = { pk ->
-                                nav.navigate(ProfileRoute(pk))
+                                openProfileDrawer(pk)
                             },
                             onReply = { eventId, authorPk, preview ->
                                 replyToId = eventId
@@ -1035,7 +1218,7 @@ fun App() {
                     composable("mute-list") {
                         MuteListScreen(
                             onBack = { nav.popBackStack() },
-                            onUserClick = { pk -> nav.navigate(ProfileRoute(pk)) },
+                            onUserClick = ::openProfileDrawer,
                         )
                     }
                     composable("ng-words") {
@@ -1056,7 +1239,7 @@ fun App() {
                         SearchScreen(
                             initialQuery = route.query,
                             onBack = { nav.popBackStack() },
-                            onUserClick = { pk -> nav.navigate(ProfileRoute(pk)) },
+                            onUserClick = ::openProfileDrawer,
                             onOpenReplies = { eventId -> nav.navigate(ThreadRoute(eventId)) },
                             onOpenLikes = { eventId -> nav.navigate(ThreadRoute(eventId, "likes")) },
                             onOpenReposts = { eventId -> nav.navigate(ThreadRoute(eventId, "reposts")) },
@@ -1068,7 +1251,7 @@ fun App() {
                             mode = FollowListMode.FOLLOWING,
                             ownPubkey = route.pubkey,
                             onBack = { nav.popBackStack() },
-                            onUserClick = { pk -> nav.navigate(ProfileRoute(pk)) },
+                            onUserClick = ::openProfileDrawer,
                         )
                     }
                     composable<FollowersRoute> { backStack ->
@@ -1077,7 +1260,7 @@ fun App() {
                             mode = FollowListMode.FOLLOWERS,
                             ownPubkey = route.pubkey,
                             onBack = { nav.popBackStack() },
-                            onUserClick = { pk -> nav.navigate(ProfileRoute(pk)) },
+                            onUserClick = ::openProfileDrawer,
                         )
                     }
                     composable<ProfileRoute> { backStack ->
@@ -1095,7 +1278,7 @@ fun App() {
                                 nav.navigate(FollowersRoute(route.pubkey))
                             },
                             onUserClick = { pk ->
-                                nav.navigate(ProfileRoute(pk))
+                                openProfileDrawer(pk)
                             },
                             onReply = { eventId, authorPk, preview ->
                                 replyToId = eventId
@@ -1139,7 +1322,7 @@ fun App() {
                                     showPostSheet = true
                                 }
                             },
-                            onUserClick = { pk -> nav.navigate(ProfileRoute(pk)) },
+                            onUserClick = ::openProfileDrawer,
                             onOpenArticle = { pubkey, identifier -> nav.navigate(ArticleRoute(pubkey, identifier)) },
                             ownPubkey = ownPubkey,
                             ownProfile = ownProfile,
@@ -1152,6 +1335,7 @@ fun App() {
                 }
             }
             }
+        }
         }
         }
 
@@ -1257,6 +1441,7 @@ fun App() {
                 } else {
                     null
                 },
+                autoFocus = selectedMemo == null && replyToId == null && quoteToId == null,
                 saveLocalDraftOnCancel = selectedMemo == null,
                 onOpenCustomEmojiSettings = { draft ->
                     if (selectedMemo == null) {
@@ -1274,23 +1459,44 @@ fun App() {
                     selectedMemoDeleteAction = null
                     nav.navigate(CustomEmojiRoute())
                 },
-                onPosted = { eventId, postedReplyToId, postedNoteContext ->
-                    if (postedReplyToId == null) return@PostSheet
-                    when (postedNoteContext) {
-                        is NoteContext.Channel -> {
-                            nav.navigate(
-                                ThreadRoute(
-                                    eventId = eventId,
-                                    source = ThreadSourceChannel,
-                                    channelId = postedNoteContext.channelId,
-                                ),
-                            )
-                        }
-                        NoteContext.Timeline -> {
-                            nav.navigate(ThreadRoute(eventId))
+                onPosted = { eventId, postedReplyToId, postedNoteContext, publishResult ->
+                    scope.launch {
+                        snackbarHostState.currentSnackbarData?.dismiss()
+                        snackbarFailedRelays = publishResult.failedRelays.keys.toList()
+                        snackbarHostState.showSnackbar(
+                            message = publishResult.snackbarMessage(),
+                            duration = if (publishResult.failureCount > 0) {
+                                SnackbarDuration.Long
+                            } else {
+                                SnackbarDuration.Short
+                            },
+                        )
+                        snackbarFailedRelays = emptyList()
+                    }
+                    if (postedReplyToId != null) {
+                        when (postedNoteContext) {
+                            is NoteContext.Channel -> {
+                                nav.navigate(
+                                    ThreadRoute(
+                                        eventId = eventId,
+                                        source = ThreadSourceChannel,
+                                        channelId = postedNoteContext.channelId,
+                                    ),
+                                )
+                            }
+                            NoteContext.Timeline -> {
+                                nav.navigate(ThreadRoute(eventId))
+                            }
                         }
                     }
                 },
+            )
+        }
+
+        publishFailureDialogRelays?.let { failedRelays ->
+            PublishFailureDialog(
+                failedRelays = failedRelays,
+                onDismiss = { publishFailureDialogRelays = null },
             )
         }
 
@@ -1303,7 +1509,6 @@ fun App() {
                     // 保存直後に導出済みの公開鍵を直接セット（Keychain 再読み込み不要）
                     ownPubkey = pubkeyHex
                     ownProfile = null
-                    FollowRepository.reload()
                     MuteStore.resetForAccountChange()
                     accountStateResetKey++
                     when (action) {
@@ -1345,6 +1550,7 @@ fun App() {
                                 popUpTo("feed") { inclusive = true }
                                 launchSingleTop = true
                             }
+                            openProfileDrawer(pubkeyHex)
                         }
                         PendingKeyAction.Status -> {
                             navigateServiceTab(ServiceTab.Status)
@@ -1425,6 +1631,32 @@ private fun AgeVerificationDialog(
     )
 }
 
+private fun RelayPublishResult.snackbarMessage(): String =
+    if (failureCount == 0) {
+        "すべてのリレーに送信成功しました。"
+    } else {
+        "送信しました。成功${successCount}リレー 失敗${failureCount}リレー"
+    }
+
+@Composable
+private fun PublishFailureDialog(
+    failedRelays: List<String>,
+    onDismiss: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("送信に失敗したリレー") },
+        text = {
+            Text(failedRelays.joinToString(separator = "\n"))
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) {
+                Text("閉じる")
+            }
+        },
+    )
+}
+
 @Composable
 private fun PostFloatingActionButton(
     onPostClick: () -> Unit,
@@ -1437,6 +1669,34 @@ private fun PostFloatingActionButton(
 }
 
 @Composable
+private fun AppModalNavigationDrawer(
+    drawerState: DrawerState,
+    endDrawer: Boolean,
+    gesturesEnabled: Boolean,
+    drawerContent: @Composable () -> Unit,
+    content: @Composable () -> Unit,
+) {
+    val contentLayoutDirection = LocalLayoutDirection.current
+    val drawerLayoutDirection = if (endDrawer) LayoutDirection.Rtl else LayoutDirection.Ltr
+    CompositionLocalProvider(LocalLayoutDirection provides drawerLayoutDirection) {
+        ModalNavigationDrawer(
+            drawerState = drawerState,
+            gesturesEnabled = gesturesEnabled,
+            drawerContent = {
+                CompositionLocalProvider(LocalLayoutDirection provides contentLayoutDirection) {
+                    drawerContent()
+                }
+            },
+            content = {
+                CompositionLocalProvider(LocalLayoutDirection provides contentLayoutDirection) {
+                    content()
+                }
+            },
+        )
+    }
+}
+
+@Composable
 private fun appNavigationBarItemColors() = NavigationBarItemDefaults.colors(
     selectedIconColor = MaterialTheme.colorScheme.primary,
     selectedTextColor = MaterialTheme.colorScheme.primary,
@@ -1446,3 +1706,4 @@ private fun appNavigationBarItemColors() = NavigationBarItemDefaults.colors(
 )
 
 private val AppNavigationBarHeight = 80.dp
+private const val ProfileDrawerWidthFraction = 0.92f
