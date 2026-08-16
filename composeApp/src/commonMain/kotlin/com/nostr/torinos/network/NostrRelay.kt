@@ -13,6 +13,7 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.channels.Channel
@@ -66,6 +67,7 @@ class NostrRelay(
                                             networkTraceLog { "[Relay] send to $url: $msg" }
                                             try {
                                                 outgoing.send(Frame.Text(msg))
+                                                pending.completion?.complete(Unit)
                                             } catch (e: Throwable) {
                                                 pendingMutex.withLock {
                                                     pendingMessages.add(0, pending)
@@ -107,7 +109,25 @@ class NostrRelay(
     }
 
     suspend fun send(message: String) {
-        val pending = PendingMessage(message, subscriptionQueueKey(message))
+        enqueue(PendingMessage(message, subscriptionQueueKey(message)))
+    }
+
+    /** WebSocket へフレームを書き込むまで待つ。投稿結果の判定に使用する。 */
+    suspend fun sendAndAwait(message: String) {
+        val completion = CompletableDeferred<Unit>()
+        val pending = PendingMessage(message, subscriptionQueueKey(message), completion)
+        enqueue(pending)
+        try {
+            completion.await()
+        } catch (e: CancellationException) {
+            pendingMutex.withLock {
+                pendingMessages.remove(pending)
+            }
+            throw e
+        }
+    }
+
+    private suspend fun enqueue(pending: PendingMessage) {
         pendingMutex.withLock {
             pending.key?.let { key ->
                 pendingMessages.removeAll { it.key == key }
@@ -126,6 +146,7 @@ class NostrRelay(
 private data class PendingMessage(
     val text: String,
     val key: String?,
+    val completion: CompletableDeferred<Unit>? = null,
 )
 
 private val relayMessageJson = Json { ignoreUnknownKeys = true }

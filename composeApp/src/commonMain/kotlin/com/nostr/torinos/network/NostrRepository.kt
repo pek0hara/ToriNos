@@ -15,6 +15,8 @@ import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
@@ -31,6 +33,15 @@ import kotlinx.coroutines.withTimeoutOrNull
 sealed interface RelayTarget {
     data object AllEnabled : RelayTarget
     data class Single(val url: String) : RelayTarget
+}
+
+data class RelayPublishResult(
+    val succeededRelays: Set<String>,
+    val failedRelays: Map<String, String>,
+) {
+    val successCount: Int get() = succeededRelays.size
+    val failureCount: Int get() = failedRelays.size
+    val totalCount: Int get() = successCount + failureCount
 }
 
 private fun RelayTarget.urls(enabledRelayUrls: List<String>): List<String> = when (this) {
@@ -305,49 +316,73 @@ object NostrRepository {
     suspend fun targetRelayUrls(target: RelayTarget): Set<String> =
         stateMutex.withLock { target.urls(enabledRelayUrls).toSet() }
 
-    /** 署名済みイベントを全リレーに送信 */
-    suspend fun publish(event: NostrEvent) {
-        val message = buildEventMessage(event)
-        networkTraceLog { "[Repo] publish event id=${event.id.take(8)}" }
-        val targets = stateMutex.withLock {
-            activeRelays.values.map { it.relay }
+    /** 署名済みイベントを有効な全リレーに送信する。 */
+    suspend fun publish(event: NostrEvent): RelayPublishResult {
+        val targets = targetRelayUrls(RelayTarget.AllEnabled)
+        check(targets.isNotEmpty()) { "有効なリレーがありません" }
+        val result = publishToRelaysWithResult(event, targets)
+        check(result.succeededRelays.isNotEmpty()) {
+            "すべてのリレーへの送信に失敗しました: ${result.failedRelays.keys.joinToString()}"
         }
-        targets.forEach { it.send(message) }
+        return result
     }
 
     /** 署名済みイベントを指定リレーにだけ送信する。未接続リレーは一時接続して送る。 */
-    suspend fun publishToRelays(event: NostrEvent, relayUrls: Collection<String>) = coroutineScope {
+    suspend fun publishToRelays(event: NostrEvent, relayUrls: Collection<String>) {
+        val result = publishToRelaysWithResult(event, relayUrls)
+        check(result.failedRelays.isEmpty()) {
+            "接続できないリレーがあります: ${result.failedRelays.keys.joinToString()}"
+        }
+    }
+
+    internal suspend fun publishToRelaysWithResult(
+        event: NostrEvent,
+        relayUrls: Collection<String>,
+    ): RelayPublishResult = coroutineScope {
         val targets = relayUrls.map { it.trim() }.filter { it.isNotBlank() }.distinct()
-        if (targets.isEmpty()) return@coroutineScope
+        if (targets.isEmpty()) {
+            return@coroutineScope RelayPublishResult(emptySet(), emptyMap())
+        }
 
         val message = buildEventMessage(event)
         networkTraceLog { "[Repo] publish event id=${event.id.take(8)} to ${targets.size} relays" }
 
-        val failedRelays = mutableListOf<String>()
-        targets.forEach { url ->
-            val activeRelay = stateMutex.withLock { activeRelays[url]?.relay }
-            if (activeRelay != null) {
-                activeRelay.send(message)
-            } else {
-                val relay = NostrRelay(url, httpClient)
-                relay.connect(this)
-                val connected = withTimeoutOrNull(10_000L) {
-                    relay.connected.first()
-                } != null
-                if (connected) {
-                    relay.send(message)
-                    delay(500L)
-                } else {
-                    appLog("[Repo] timeout connecting to relay for targeted publish: $url")
-                    failedRelays += url
+        val results = targets.map { url ->
+            async {
+                url to runCatching {
+                    val activeRelay = stateMutex.withLock { activeRelays[url]?.relay }
+                    if (activeRelay != null) {
+                        check(withTimeoutOrNull(PUBLISH_TIMEOUT_MS) {
+                            activeRelay.sendAndAwait(message)
+                            true
+                        } == true) { "送信がタイムアウトしました" }
+                    } else {
+                        val relay = NostrRelay(url, httpClient)
+                        try {
+                            relay.connect(this)
+                            check(withTimeoutOrNull(PUBLISH_TIMEOUT_MS) {
+                                relay.connected.first()
+                                relay.sendAndAwait(message)
+                                true
+                            } == true) { "接続または送信がタイムアウトしました" }
+                        } finally {
+                            relay.disconnect()
+                        }
+                    }
+                }.onFailure { error ->
+                    appLog("[Repo] publish failed for $url: ${error::class.simpleName}: ${error.message}")
                 }
-                relay.disconnect()
             }
-        }
+        }.awaitAll()
 
-        check(failedRelays.isEmpty()) {
-            "接続できないリレーがあります: ${failedRelays.joinToString()}"
-        }
+        RelayPublishResult(
+            succeededRelays = results.filter { it.second.isSuccess }.mapTo(linkedSetOf()) { it.first },
+            failedRelays = results.mapNotNull { (url, result) ->
+                result.exceptionOrNull()?.let { error ->
+                    url to (error.message ?: "送信に失敗しました")
+                }
+            }.toMap(),
+        )
     }
 
     fun events(subscriptionId: String): Flow<NostrEvent> =
@@ -389,6 +424,8 @@ object NostrRepository {
         bus
             .filter { it.message is RelayMessage.Closed && it.message.subscriptionId == subscriptionId }
             .map { it.message as RelayMessage.Closed }
+
+    private const val PUBLISH_TIMEOUT_MS = 10_000L
 }
 
 private data class RelayEnvelope(

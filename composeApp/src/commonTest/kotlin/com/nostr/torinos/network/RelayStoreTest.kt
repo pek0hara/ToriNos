@@ -2,8 +2,24 @@ package com.nostr.torinos.network
 
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 
 class RelayStoreTest {
+    @Test
+    fun updateStopsWhenPreviouslyFoundRelayListCannotBeFetchedAgain() {
+        assertFailsWith<IllegalStateException> {
+            checkExistingPublishedRelayListWasFetched(
+                requireExistingEvent = true,
+                latestEventExists = false,
+            )
+        }
+
+        checkExistingPublishedRelayListWasFetched(
+            requireExistingEvent = false,
+            latestEventExists = false,
+        )
+    }
+
     @Test
     fun publishedRelayListEnablesPublishedUrlsAndDisablesOthers() {
         val current = listOf(
@@ -76,4 +92,42 @@ class RelayStoreTest {
             ),
         )
     }
+
+    @Test
+    fun relayListChangesPreserveUntouchedTagsAndReadWriteMarkers() {
+        val currentTags = listOf(
+            listOf("r", "wss://read.example", "read"),
+            listOf("r", "wss://remove.example", "write"),
+            listOf("alt", "relay list metadata"),
+        )
+
+        val result = applyRelayListChanges(
+            currentTags = currentTags,
+            additions = setOf("wss://new.example"),
+            removals = setOf("wss://remove.example"),
+        )
+
+        assertEquals(
+            listOf(
+                listOf("r", "wss://read.example", "read"),
+                listOf("alt", "relay list metadata"),
+                listOf("r", "wss://new.example"),
+            ),
+            result,
+        )
+    }
+
+    @Test
+    fun relayListChangesAreIdempotentAndRemovalWins() {
+        val currentTags = listOf(listOf("r", "wss://existing.example"))
+
+        val result = applyRelayListChanges(
+            currentTags = currentTags,
+            additions = setOf("wss://existing.example", "wss://same.example"),
+            removals = setOf("wss://same.example"),
+        )
+
+        assertEquals(currentTags, result)
+    }
+
 }

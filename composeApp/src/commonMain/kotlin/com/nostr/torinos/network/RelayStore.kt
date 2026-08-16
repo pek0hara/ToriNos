@@ -142,6 +142,34 @@ object RelayStore {
         return addedCount
     }
 
+    /** UIで確定された差分だけを一括反映し、編集中に外部追加されたリレーは保持する。 */
+    suspend fun applyEntryChanges(
+        changedUrls: Set<String>,
+        draftEntries: List<RelayEntry>,
+    ): List<RelayEntry> {
+        if (changedUrls.isEmpty()) return _entries.value
+        val draftByUrl = draftEntries.associateBy { it.url }
+        val currentUrls = _entries.value.mapTo(hashSetOf()) { it.url }
+        val nextEntries = buildList {
+            _entries.value.forEach { current ->
+                if (current.url in changedUrls) {
+                    draftByUrl[current.url]?.let(::add)
+                } else {
+                    add(current)
+                }
+            }
+            draftEntries.forEach { draft ->
+                if (draft.url in changedUrls && draft.url !in currentUrls) {
+                    add(draft)
+                }
+            }
+        }.distinctBy { it.url }
+        _entries.value = nextEntries
+        ensureSelectedRelay()
+        persistEntries()
+        return nextEntries
+    }
+
     fun enabledRelayUrlsSnapshot(): List<String> =
         enabledRelayUrls()
 

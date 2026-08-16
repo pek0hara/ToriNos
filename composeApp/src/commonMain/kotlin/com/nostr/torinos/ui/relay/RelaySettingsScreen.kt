@@ -21,7 +21,9 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.Remove
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -57,6 +59,7 @@ fun RelaySettingsScreen(
     val entries by viewModel.entries.collectAsState()
     val informationState by viewModel.informationState.collectAsState()
     val discoveryState by viewModel.discoveryState.collectAsState()
+    val publishedRelayListState by viewModel.publishedRelayListState.collectAsState()
     var input by remember { mutableStateOf("") }
     var showDisabledRelays by remember { mutableStateOf(false) }
     val searchQuery = input.trim()
@@ -104,6 +107,7 @@ fun RelaySettingsScreen(
                     label = { Text("リレーを追加・検索") },
                     placeholder = { Text("wss://relay.example.com") },
                     singleLine = true,
+                    enabled = !publishedRelayListState.isPublishing,
                 )
                 IconButton(
                     onClick = {
@@ -112,12 +116,76 @@ fun RelaySettingsScreen(
                             input = ""
                         }
                     },
+                    enabled = !publishedRelayListState.isPublishing,
                 ) {
                     Icon(Icons.Default.Add, contentDescription = "追加")
                 }
             }
 
             HorizontalDivider()
+
+            if (publishedRelayListState.hasChanges) {
+                PublishedRelayDiff(
+                    additions = publishedRelayListState.pendingAdditions,
+                    removals = publishedRelayListState.pendingRemovals,
+                    isPublishing = publishedRelayListState.isPublishing,
+                    canUpdate = publishedRelayListState.canPublishChanges,
+                    onCancel = viewModel::cancelRelayListChanges,
+                    onUpdate = viewModel::publishRelayListChanges,
+                )
+                HorizontalDivider()
+            }
+
+            when {
+                publishedRelayListState.isAwaitingFirstResponse -> {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(18.dp),
+                            strokeWidth = 2.dp,
+                        )
+                        Text(
+                            text = "公開リレーを取得中",
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    }
+                }
+                publishedRelayListState.errorMessage != null -> {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                    ) {
+                        Text(
+                            text = publishedRelayListState.errorMessage.orEmpty(),
+                            color = MaterialTheme.colorScheme.error,
+                            style = MaterialTheme.typography.bodySmall,
+                            modifier = Modifier.weight(1f),
+                        )
+                        TextButton(onClick = viewModel::refreshPublishedRelayList) {
+                            Text("再試行")
+                        }
+                    }
+                }
+                publishedRelayListState.message != null -> {
+                    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                        Text(
+                            text = publishedRelayListState.message.orEmpty(),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        if (publishedRelayListState.failedRelayUrls.isNotEmpty()) {
+                            Text(
+                                text = publishedRelayListState.failedRelayUrls.joinToString(separator = "\n"),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.error,
+                            )
+                        }
+                    }
+                }
+            }
 
             when {
                 discoveryState.isLoading -> {
@@ -161,11 +229,15 @@ fun RelaySettingsScreen(
                 }
             }
 
-            LazyColumn(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            LazyColumn(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
                 items(enabledEntries, key = { it.url }) { entry ->
                     RelayRow(
                         entry = entry,
                         onToggle = { viewModel.setEnabled(entry.url, it) },
+                        enabled = !publishedRelayListState.isPublishing,
                         onShowInformation = { viewModel.showRelayInformation(entry.url) },
                     )
                     HorizontalDivider()
@@ -186,6 +258,7 @@ fun RelaySettingsScreen(
                         RelayRow(
                             entry = entry,
                             onToggle = { viewModel.setEnabled(entry.url, it) },
+                            enabled = !publishedRelayListState.isPublishing,
                             onShowInformation = { viewModel.showRelayInformation(entry.url) },
                         )
                         HorizontalDivider()
@@ -202,6 +275,7 @@ fun RelaySettingsScreen(
                     }
                 }
             }
+
         }
     }
 
@@ -210,6 +284,85 @@ fun RelaySettingsScreen(
             state = informationState,
             onDismiss = viewModel::dismissRelayInformation,
             onRefresh = viewModel::refreshRelayInformation,
+        )
+    }
+}
+
+@Composable
+private fun PublishedRelayDiff(
+    additions: Set<String>,
+    removals: Set<String>,
+    isPublishing: Boolean,
+    canUpdate: Boolean,
+    onCancel: () -> Unit,
+    onUpdate: () -> Unit,
+) {
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
+        additions.forEach { url ->
+            RelayDiffRow(
+                icon = Icons.Default.Add,
+                url = url,
+                color = MaterialTheme.colorScheme.primary,
+            )
+        }
+        removals.forEach { url ->
+            RelayDiffRow(
+                icon = Icons.Default.Remove,
+                url = url,
+                color = MaterialTheme.colorScheme.error,
+            )
+        }
+        Row(
+            modifier = Modifier.align(Alignment.End),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            TextButton(
+                onClick = onCancel,
+                enabled = !isPublishing,
+            ) {
+                Text("キャンセル")
+            }
+            Button(
+                onClick = onUpdate,
+                enabled = canUpdate,
+            ) {
+                if (isPublishing) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(18.dp),
+                        strokeWidth = 2.dp,
+                    )
+                } else {
+                    Text("更新")
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun RelayDiffRow(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    url: String,
+    color: androidx.compose.ui.graphics.Color,
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Icon(
+            imageVector = icon,
+            contentDescription = null,
+            tint = color,
+        )
+        Text(
+            text = url,
+            style = MaterialTheme.typography.bodySmall,
+            color = color,
+            modifier = Modifier.weight(1f),
         )
     }
 }
@@ -248,6 +401,7 @@ private fun DisabledRelaysHeader(
 private fun RelayRow(
     entry: RelayEntry,
     onToggle: (Boolean) -> Unit,
+    enabled: Boolean,
     onShowInformation: () -> Unit,
 ) {
     Row(
@@ -261,6 +415,7 @@ private fun RelayRow(
         Checkbox(
             checked = entry.enabled,
             onCheckedChange = onToggle,
+            enabled = enabled,
         )
         Text(
             text = entry.url,
