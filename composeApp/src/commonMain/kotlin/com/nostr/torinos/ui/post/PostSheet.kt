@@ -3,20 +3,23 @@ package com.nostr.torinos.ui.post
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
@@ -26,22 +29,21 @@ import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.AddPhotoAlternate
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.InsertEmoticon
-import androidx.compose.material.icons.filled.SettingsInputAntenna
+import androidx.compose.material.icons.filled.Public
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
-import androidx.compose.material3.Card
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -51,29 +53,35 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
-import androidx.lifecycle.viewmodel.compose.viewModel
 import com.nostr.torinos.model.NoteContext
 import com.nostr.torinos.model.encodeNevent
 import com.nostr.torinos.network.CustomEmoji
 import com.nostr.torinos.network.CustomEmojiList
 import com.nostr.torinos.network.CustomEmojiStore
 import com.nostr.torinos.network.RelayEntry
+import com.nostr.torinos.network.RelayPublishResult
+import com.nostr.torinos.network.RelayStore
 import com.nostr.torinos.ui.components.NetworkImage
 import com.nostr.torinos.ui.components.PreviewImage
 import com.nostr.torinos.ui.components.rememberDismissKeyboard
 import com.nostr.torinos.ui.components.rememberOptimizedImagePickerLauncher
-import com.nostr.torinos.ui.relay.RelaySettingsViewModel
 
 private const val MAX_CHARS = 800
 
@@ -92,14 +100,26 @@ fun PostSheet(
     noteContext: NoteContext = NoteContext.Timeline,
     initialMemo: PostMemoData? = null,
     initialMemoRestoreMessage: String? = null,
+    autoFocus: Boolean = false,
     saveLocalDraftOnCancel: Boolean = true,
     onOpenCustomEmojiSettings: (PostMemoData?) -> Unit = {},
-    onPosted: (eventId: String, replyToId: String?, noteContext: NoteContext) -> Unit = { _, _, _ -> },
+    onPosted: (
+        eventId: String,
+        replyToId: String?,
+        noteContext: NoteContext,
+        publishResult: RelayPublishResult,
+    ) -> Unit = { _, _, _, _ -> },
     viewModel: PostViewModel? = null,
 ) {
     val postViewModel = viewModel ?: remember { PostViewModel() }
     val state by postViewModel.state.collectAsState()
+    val textFocusRequester = remember { FocusRequester() }
+    val keyboardController = LocalSoftwareKeyboardController.current
+    val dismissKeyboard = rememberDismissKeyboard()
+    var isTextFocused by remember { mutableStateOf(false) }
+    var isClosing by remember { mutableStateOf(false) }
     var showRelaySettingsDialog by remember { mutableStateOf(false) }
+    var postRelayUrls by remember { mutableStateOf<Set<String>?>(null) }
     val quoteReference = remember(quoteToId, quoteToPubkey) {
         quoteToId?.let {
             "nostr:${encodeNevent(eventId = it, authorPubkey = quoteToPubkey)}"
@@ -116,13 +136,20 @@ fun PostSheet(
         }
     }
 
+    fun closeOverlay(onClosed: () -> Unit) {
+        if (isClosing) return
+        isClosing = true
+        dismissKeyboard()
+        onClosed()
+    }
+
     fun cancelWithOptionalLocalDraft() {
         val draft = if (saveLocalDraftOnCancel) {
             postViewModel.currentMemoSnapshot(replyToId, replyToPubkey, noteContext)
         } else {
             null
         }
-        onCancel(draft)
+        closeOverlay { onCancel(draft) }
     }
 
     fun openCustomEmojiSettings() {
@@ -131,15 +158,18 @@ fun PostSheet(
         } else {
             null
         }
-        onOpenCustomEmojiSettings(draft)
+        closeOverlay { onOpenCustomEmojiSettings(draft) }
     }
 
-    LaunchedEffect(state.posted, state.postedEventId) {
+    LaunchedEffect(state.posted, state.postedEventId, state.publishResult) {
         val postedEventId = state.postedEventId
-        if (state.posted && postedEventId != null) {
+        val publishResult = state.publishResult
+        if (state.posted && postedEventId != null && publishResult != null) {
             postViewModel.clearPosted()
-            onDismiss()
-            onPosted(postedEventId, replyToId, noteContext)
+            closeOverlay {
+                onDismiss()
+                onPosted(postedEventId, replyToId, noteContext, publishResult)
+            }
         }
     }
 
@@ -149,21 +179,37 @@ fun PostSheet(
         }
     }
 
+    LaunchedEffect(autoFocus) {
+        if (autoFocus) {
+            // Draw the sheet for at least one frame before starting the keyboard animation.
+            withFrameNanos { }
+            if (!isClosing && !isTextFocused) {
+                textFocusRequester.requestFocus()
+                keyboardController?.show()
+            }
+        }
+    }
+
     Dialog(
         onDismissRequest = ::cancelWithOptionalLocalDraft,
-        properties = DialogProperties(usePlatformDefaultWidth = false),
+        properties = DialogProperties(
+            usePlatformDefaultWidth = false,
+            dismissOnBackPress = true,
+            dismissOnClickOutside = false,
+        ),
     ) {
         Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(16.dp)
-                .imePadding(),
-            contentAlignment = Alignment.Center,
+            modifier = Modifier.fillMaxSize(),
         ) {
-            Card(
+            Box(
                 modifier = Modifier
-                    .fillMaxWidth()
-                    .heightIn(max = 560.dp),
+                    .fillMaxSize()
+                    .background(Color.Black.copy(alpha = 0.32f))
+                    .clickable(onClick = ::cancelWithOptionalLocalDraft),
+            )
+            Surface(
+                modifier = Modifier.fillMaxSize(),
+                color = MaterialTheme.colorScheme.surface,
             ) {
                 PostSheetContent(
                     state = state,
@@ -176,21 +222,33 @@ fun PostSheet(
                     quoteToPreview = quoteToPreview,
                     hasQuote = quoteReference != null,
                     onDismiss = ::cancelWithOptionalLocalDraft,
-                    onDeleteMemo = onDeleteMemo,
+                    onDeleteMemo = onDeleteMemo?.let { deleteMemo ->
+                        { closeOverlay(deleteMemo) }
+                    },
                     onPickImage = pickImage,
                     onOpenRelaySettings = { showRelaySettingsDialog = true },
                     onOpenCustomEmojiSettings = ::openCustomEmojiSettings,
                     onTextChange = postViewModel::onTextChange,
+                    textFocusRequester = textFocusRequester,
+                    onTextFocusChanged = { isTextFocused = it },
                     onRemoveImage = postViewModel::removeImage,
                     onSaveMemo = {
                         postViewModel.saveMemo(replyToId, replyToPubkey, noteContext) {
-                            onDismiss()
-                            onMemoSaved()
+                            closeOverlay {
+                                onDismiss()
+                                onMemoSaved()
+                            }
                         }
                     },
                     onPost = {
-                        postViewModel.post(replyToId, replyToPubkey, noteContext, quoteReference)
-                    },
+                        postViewModel.post(
+                            replyToId = replyToId,
+                            replyToPubkey = replyToPubkey,
+                            noteContext = noteContext,
+                            quoteReference = quoteReference,
+                            relayUrls = postRelayUrls ?: RelayStore.enabledRelayUrlsSnapshot(),
+                        )
+                    }
                 )
             }
         }
@@ -198,6 +256,8 @@ fun PostSheet(
 
     if (showRelaySettingsDialog) {
         PostRelaySettingsDialog(
+            selectedRelayUrls = postRelayUrls ?: RelayStore.enabledRelayUrlsSnapshot().toSet(),
+            onSelectionChange = { postRelayUrls = it },
             onDismiss = { showRelaySettingsDialog = false },
         )
     }
@@ -216,6 +276,8 @@ private fun PostSheetContent(
     onOpenRelaySettings: () -> Unit,
     onOpenCustomEmojiSettings: () -> Unit,
     onTextChange: (String) -> Unit,
+    textFocusRequester: FocusRequester,
+    onTextFocusChanged: (Boolean) -> Unit,
     onRemoveImage: (Int) -> Unit,
     onSaveMemo: () -> Unit,
     onPost: () -> Unit,
@@ -251,17 +313,29 @@ private fun PostSheetContent(
 
     Column(
         modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 16.dp, vertical = 12.dp),
+            .fillMaxSize()
+            .windowInsetsPadding(WindowInsets.safeDrawing)
+            .imePadding()
+            .padding(
+                start = 16.dp,
+                top = 12.dp,
+                end = 16.dp,
+                bottom = 12.dp,
+            ),
     ) {
         Row(
             modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically,
         ) {
+            TextButton(onClick = onDismiss) {
+                Text("キャンセル", maxLines = 1)
+            }
             Text(
                 text = title,
+                modifier = Modifier.weight(1f),
                 style = MaterialTheme.typography.titleMedium,
+                textAlign = TextAlign.Center,
+                maxLines = 1,
             )
             if (onDeleteMemo != null) {
                 IconButton(
@@ -275,176 +349,214 @@ private fun PostSheetContent(
                     )
                 }
             }
+            Button(
+                onClick = onPost,
+                enabled = state.canPost ||
+                    (hasQuote && !state.isPosting && !state.isUploadingAny),
+            ) {
+                if (state.isPosting) {
+                    CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+                } else {
+                    Text("ポスト", maxLines = 1)
+                }
+            }
         }
         Spacer(modifier = Modifier.height(12.dp))
 
-        Column(
-            modifier = Modifier
-                .weight(1f, fill = false)
-                .verticalScroll(rememberScrollState()),
-        ) {
-            quoteToPreview?.takeIf { it.isNotBlank() }?.let { preview ->
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .border(
-                            width = 1.dp,
-                            color = MaterialTheme.colorScheme.outlineVariant,
-                            shape = MaterialTheme.shapes.small,
-                        )
-                        .padding(10.dp),
-                    verticalArrangement = Arrangement.spacedBy(4.dp),
-                ) {
-                    Text(
-                        text = "引用",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                    Text(
-                        text = preview,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurface,
-                        maxLines = 3,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                }
-                Spacer(modifier = Modifier.height(12.dp))
-            }
-
-            replyToPreview?.takeIf { it.isNotBlank() }?.let { preview ->
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .border(
-                            width = 1.dp,
-                            color = MaterialTheme.colorScheme.outlineVariant,
-                            shape = MaterialTheme.shapes.small,
-                        )
-                        .padding(10.dp),
-                    verticalArrangement = Arrangement.spacedBy(4.dp),
-                ) {
-                    Text(
-                        text = "返信先",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                    Text(
-                        text = preview,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurface,
-                        maxLines = 3,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                }
-                Spacer(modifier = Modifier.height(12.dp))
-            }
-
-            OutlinedTextField(
-                value = textValue,
-                onValueChange = {
-                    if (it.text.length <= MAX_CHARS) {
-                        textValue = it
-                        onTextChange(it.text)
-                    }
-                },
+        quoteToPreview?.takeIf { it.isNotBlank() }?.let { preview ->
+            Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(140.dp),
-                textStyle = MaterialTheme.typography.bodyLarge,
-                placeholder = { Text("今何してる？") },
-                maxLines = 6,
-            )
+                    .border(
+                        width = 1.dp,
+                        color = MaterialTheme.colorScheme.outlineVariant,
+                        shape = MaterialTheme.shapes.small,
+                    )
+                    .padding(10.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                Text(
+                    text = "引用",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Text(
+                    text = preview,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    maxLines = 3,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+            Spacer(modifier = Modifier.height(12.dp))
+        }
 
-            if (state.images.isNotEmpty()) {
-                Spacer(modifier = Modifier.height(10.dp))
-                LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    items(state.images, key = { it.id }) { attachment ->
-                        ImageThumbnail(
-                            attachment = attachment,
-                            onRemove = { onRemoveImage(attachment.id) },
+        replyToPreview?.takeIf { it.isNotBlank() }?.let { preview ->
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .border(
+                        width = 1.dp,
+                        color = MaterialTheme.colorScheme.outlineVariant,
+                        shape = MaterialTheme.shapes.small,
+                    )
+                    .padding(10.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                Text(
+                    text = "返信先",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Text(
+                    text = preview,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    maxLines = 3,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+            Spacer(modifier = Modifier.height(12.dp))
+        }
+
+        BasicTextField(
+            value = textValue,
+            onValueChange = {
+                if (it.text.length <= MAX_CHARS) {
+                    textValue = it
+                    onTextChange(it.text)
+                }
+            },
+            modifier = Modifier
+                .fillMaxWidth()
+                .weight(1f)
+                .focusRequester(textFocusRequester)
+                .onFocusChanged { onTextFocusChanged(it.isFocused) },
+            textStyle = MaterialTheme.typography.bodyLarge.copy(
+                color = MaterialTheme.colorScheme.onSurface,
+            ),
+            maxLines = Int.MAX_VALUE,
+            decorationBox = { innerTextField ->
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(horizontal = 12.dp, vertical = 8.dp),
+                ) {
+                    if (textValue.text.isEmpty()) {
+                        Text(
+                            text = "今何してる？",
+                            style = MaterialTheme.typography.bodyLarge,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
+                    innerTextField()
+                }
+            },
+        )
+
+        if (state.images.isNotEmpty()) {
+            Spacer(modifier = Modifier.height(10.dp))
+            LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                items(state.images, key = { it.id }) { attachment ->
+                    ImageThumbnail(
+                        attachment = attachment,
+                        onRemove = { onRemoveImage(attachment.id) },
+                    )
                 }
             }
+        }
 
-            state.error?.let { error ->
-                Spacer(modifier = Modifier.height(8.dp))
-                Text(
-                    text = error,
-                    color = MaterialTheme.colorScheme.error,
-                    style = MaterialTheme.typography.labelSmall,
-                )
-            }
-            state.memoMessage?.let { message ->
-                Spacer(modifier = Modifier.height(8.dp))
-                Text(
-                    text = message,
-                    color = MaterialTheme.colorScheme.primary,
-                    style = MaterialTheme.typography.labelSmall,
-                )
-            }
+        state.error?.let { error ->
+            Spacer(modifier = Modifier.height(8.dp))
+            Text(
+                text = error,
+                color = MaterialTheme.colorScheme.error,
+                style = MaterialTheme.typography.labelSmall,
+            )
+        }
+        state.memoMessage?.let { message ->
+            Spacer(modifier = Modifier.height(8.dp))
+            Text(
+                text = message,
+                color = MaterialTheme.colorScheme.primary,
+                style = MaterialTheme.typography.labelSmall,
+            )
         }
 
         Column(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(vertical = 8.dp),
-            verticalArrangement = Arrangement.spacedBy(4.dp),
         ) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
+                horizontalArrangement = Arrangement.Start,
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Row(
-                    horizontalArrangement = Arrangement.spacedBy(4.dp),
-                    verticalAlignment = Alignment.CenterVertically,
+                TextButton(
+                    onClick = {
+                        dismissKeyboard()
+                        onPickImage()
+                    },
+                    enabled = state.images.size < 4,
+                    contentPadding = PaddingValues(horizontal = 4.dp),
                 ) {
-                    IconButton(
-                        onClick = {
-                            dismissKeyboard()
-                            onPickImage()
-                        },
-                        modifier = Modifier.size(36.dp),
-                        enabled = state.images.size < 4,
-                    ) {
-                        Icon(
-                            Icons.Default.AddPhotoAlternate,
-                            contentDescription = "画像を添付",
-                            tint = if (state.images.size < 4) {
-                                MaterialTheme.colorScheme.primary
-                            } else {
-                                MaterialTheme.colorScheme.onSurfaceVariant
-                            },
-                        )
-                    }
-                    IconButton(
-                        onClick = {
-                            dismissKeyboard()
-                            showCustomEmojiPicker = true
-                        },
-                        modifier = Modifier.size(36.dp),
-                    ) {
-                        Icon(
-                            Icons.Default.InsertEmoticon,
-                            contentDescription = "カスタム絵文字",
-                            tint = MaterialTheme.colorScheme.primary,
-                        )
-                    }
-                    IconButton(
-                        onClick = {
-                            dismissKeyboard()
-                            onOpenRelaySettings()
-                        },
-                        modifier = Modifier.size(36.dp),
-                    ) {
-                        Icon(
-                            Icons.Default.SettingsInputAntenna,
-                            contentDescription = "リレー設定",
-                            tint = MaterialTheme.colorScheme.primary,
-                        )
-                    }
+                    Icon(
+                        Icons.Default.Image,
+                        contentDescription = null,
+                        modifier = Modifier.size(16.dp),
+                    )
+                    Spacer(modifier = Modifier.size(3.dp))
+                    Text("画像", maxLines = 1, style = MaterialTheme.typography.labelSmall)
                 }
+                TextButton(
+                    onClick = {
+                        dismissKeyboard()
+                        showCustomEmojiPicker = true
+                    },
+                    contentPadding = PaddingValues(horizontal = 4.dp),
+                ) {
+                    Icon(
+                        Icons.Default.InsertEmoticon,
+                        contentDescription = null,
+                        modifier = Modifier.size(16.dp),
+                    )
+                    Spacer(modifier = Modifier.size(3.dp))
+                    Text("絵文字", maxLines = 1, style = MaterialTheme.typography.labelSmall)
+                }
+                TextButton(
+                    onClick = {
+                        dismissKeyboard()
+                        onOpenRelaySettings()
+                    },
+                    contentPadding = PaddingValues(horizontal = 4.dp),
+                ) {
+                    Icon(
+                        Icons.Default.Public,
+                        contentDescription = null,
+                        modifier = Modifier.size(16.dp),
+                    )
+                    Spacer(modifier = Modifier.size(3.dp))
+                    Text("リレー", maxLines = 1, style = MaterialTheme.typography.labelSmall)
+                }
+                TextButton(
+                    onClick = onSaveMemo,
+                    enabled = state.canSaveMemo,
+                    contentPadding = PaddingValues(horizontal = 4.dp),
+                ) {
+                    if (state.isSavingMemo) {
+                        CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+                    } else {
+                        Icon(
+                            Icons.Default.Edit,
+                            contentDescription = null,
+                            modifier = Modifier.size(16.dp),
+                        )
+                    }
+                    Spacer(modifier = Modifier.size(3.dp))
+                    Text("メモ保存", maxLines = 1, style = MaterialTheme.typography.labelSmall)
+                }
+                Spacer(modifier = Modifier.weight(1f))
                 Text(
                     text = state.text.length.toString(),
                     style = MaterialTheme.typography.labelSmall,
@@ -453,43 +565,6 @@ private fun PostSheetContent(
                     else
                         MaterialTheme.colorScheme.onSurfaceVariant,
                 )
-            }
-
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.End,
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                TextButton(
-                    onClick = onSaveMemo,
-                    enabled = state.canSaveMemo,
-                ) {
-                    if (state.isSavingMemo) {
-                        CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
-                    } else {
-                        Icon(
-                            Icons.Default.Edit,
-                            contentDescription = null,
-                            modifier = Modifier.size(18.dp),
-                        )
-                        Spacer(modifier = Modifier.size(6.dp))
-                        Text("メモ保存", maxLines = 1)
-                    }
-                }
-                TextButton(onClick = onDismiss) {
-                    Text("キャンセル", maxLines = 1)
-                }
-                Button(
-                    onClick = onPost,
-                    enabled = state.canPost ||
-                        (hasQuote && !state.isPosting && !state.isUploadingAny),
-                ) {
-                    if (state.isPosting) {
-                        CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
-                    } else {
-                        Text("ポスト", maxLines = 1)
-                    }
-                }
             }
         }
     }
@@ -698,7 +773,7 @@ private fun ImageThumbnail(
             PreviewImage(
                 data = previewData,
                 contentDescription = null,
-                contentScale = ContentScale.Crop,
+                contentScale = ContentScale.Fit,
                 maxDecodeSizePx = 256,
                 modifier = Modifier.fillMaxSize(),
             )
@@ -738,14 +813,15 @@ private fun ImageThumbnail(
 
 @Composable
 private fun PostRelaySettingsDialog(
+    selectedRelayUrls: Set<String>,
+    onSelectionChange: (Set<String>) -> Unit,
     onDismiss: () -> Unit,
-    viewModel: RelaySettingsViewModel = viewModel(key = "post-relays") { RelaySettingsViewModel() },
 ) {
-    val relayEntries by viewModel.entries.collectAsState()
+    val relayEntries by RelayStore.entries.collectAsState()
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("リレー設定") },
+        title = { Text("この投稿のリレー") },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 if (relayEntries.isEmpty()) {
@@ -761,8 +837,16 @@ private fun PostRelaySettingsDialog(
                         items(relayEntries, key = { it.url }) { entry ->
                             PostRelayRow(
                                 entry = entry,
-                                onToggle = { enabled -> viewModel.setEnabled(entry.url, enabled) },
-                                onDelete = { viewModel.remove(entry.url) },
+                                checked = entry.url in selectedRelayUrls,
+                                onToggle = { enabled ->
+                                    onSelectionChange(
+                                        if (enabled) {
+                                            selectedRelayUrls + entry.url
+                                        } else {
+                                            selectedRelayUrls - entry.url
+                                        },
+                                    )
+                                },
                             )
                             HorizontalDivider()
                         }
@@ -782,8 +866,8 @@ private fun PostRelaySettingsDialog(
 @Composable
 private fun PostRelayRow(
     entry: RelayEntry,
+    checked: Boolean,
     onToggle: (Boolean) -> Unit,
-    onDelete: () -> Unit,
 ) {
     Row(
         modifier = Modifier
@@ -792,7 +876,7 @@ private fun PostRelayRow(
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Checkbox(
-            checked = entry.enabled,
+            checked = checked,
             onCheckedChange = onToggle,
         )
         Text(
@@ -800,12 +884,5 @@ private fun PostRelayRow(
             style = MaterialTheme.typography.bodySmall,
             modifier = Modifier.weight(1f),
         )
-        IconButton(onClick = onDelete) {
-            Icon(
-                Icons.Default.Delete,
-                contentDescription = "削除",
-                tint = MaterialTheme.colorScheme.error,
-            )
-        }
     }
 }

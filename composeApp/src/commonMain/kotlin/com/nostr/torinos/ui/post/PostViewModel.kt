@@ -12,6 +12,7 @@ import com.nostr.torinos.model.extractNostrEventReferences
 import com.nostr.torinos.network.CustomEmojiStore
 import com.nostr.torinos.network.ImageUploader
 import com.nostr.torinos.network.NostrRepository
+import com.nostr.torinos.network.RelayPublishResult
 import com.nostr.torinos.ui.profile.customEmojiTagsForContent
 import kotlin.time.Clock
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -41,6 +42,7 @@ data class PostState(
     val memoMessage: String? = null,
     val posted: Boolean = false,
     val postedEventId: String? = null,
+    val publishResult: RelayPublishResult? = null,
 ) {
     val isUploadingAny: Boolean get() = images.any { it.isUploading }
     val canPost: Boolean get() =
@@ -108,6 +110,7 @@ class PostViewModel : SafeViewModel() {
             memoMessage = null,
             posted = false,
             postedEventId = null,
+            publishResult = null,
         )
     }
 
@@ -267,11 +270,20 @@ class PostViewModel : SafeViewModel() {
         replyToPubkey: String? = null,
         noteContext: NoteContext = NoteContext.Timeline,
         quoteReference: String? = null,
+        relayUrls: Collection<String>? = null,
     ) {
         val current = _state.value
         val uploadedUrls = current.images.mapNotNull { it.uploadedUrl }
         val text = buildPostContent(current.text, uploadedUrls, quoteReference)
         if (text.isBlank()) return
+        val targetRelayUrls = relayUrls
+            ?.map { it.trim() }
+            ?.filter { it.isNotBlank() }
+            ?.distinct()
+        if (targetRelayUrls != null && targetRelayUrls.isEmpty()) {
+            _state.value = current.copy(error = "送信先リレーを1つ以上選択してください")
+            return
+        }
 
         _state.value = _state.value.copy(isPosting = true, error = null)
         launch {
@@ -298,10 +310,23 @@ class PostViewModel : SafeViewModel() {
 
             runCatching {
                 val event = signEvent(privateKeyHex, text, kind = noteContext.eventKind, tags = tags)
-                NostrRepository.publish(event)
-                event
-            }.onSuccess { event ->
-                _state.value = PostState(posted = true, postedEventId = event.id)
+                val publishResult = if (targetRelayUrls == null) {
+                    NostrRepository.publish(event)
+                } else {
+                    NostrRepository.publishToRelaysWithResult(event, targetRelayUrls).also { result ->
+                        check(result.succeededRelays.isNotEmpty()) {
+                            "すべてのリレーへの送信に失敗しました: " +
+                                result.failedRelays.keys.joinToString()
+                        }
+                    }
+                }
+                event to publishResult
+            }.onSuccess { (event, publishResult) ->
+                _state.value = PostState(
+                    posted = true,
+                    postedEventId = event.id,
+                    publishResult = publishResult,
+                )
             }.onFailure { e ->
                 _state.value = _state.value.copy(isPosting = false, error = e.message ?: "ポストに失敗しました")
             }
@@ -309,7 +334,7 @@ class PostViewModel : SafeViewModel() {
     }
 
     fun clearPosted() {
-        _state.value = _state.value.copy(posted = false, postedEventId = null)
+        _state.value = _state.value.copy(posted = false, postedEventId = null, publishResult = null)
     }
 
     private fun buildPostContent(
