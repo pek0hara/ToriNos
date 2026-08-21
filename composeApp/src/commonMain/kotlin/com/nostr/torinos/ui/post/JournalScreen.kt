@@ -405,6 +405,7 @@ fun JournalScreen(
                                                     }
                                             },
                                             replyCount = state.replyCounts[entry.event.id] ?: 0,
+                                            replies = state.replies[entry.event.id].orEmpty(),
                                             reactionCount = state.reactionCounts[entry.event.id] ?: 0,
                                             likeReactionCount =
                                                 state.likeReactionCounts[entry.event.id] ?: 0,

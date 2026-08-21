@@ -180,6 +180,7 @@ data class JournalState(
     val customReactions: Map<String, List<CustomReaction>> = emptyMap(),
     val unicodeReactions: Map<String, List<UnicodeReaction>> = emptyMap(),
     val replyCounts: Map<String, Int> = emptyMap(),
+    val replies: Map<String, List<NostrEvent>> = emptyMap(),
     val repostCounts: Map<String, Int> = emptyMap(),
     val likedReactions: Map<String, String> = emptyMap(),
     val ownEmojiReactionEventIds: Map<String, Map<String, String>> = emptyMap(),
@@ -256,7 +257,11 @@ class JournalViewModel(private val targetPubkey: String? = null) : SafeViewModel
     }
 
     fun toggleCalendar() {
-        _state.value = _state.value.copy(showCalendar = !_state.value.showCalendar)
+        val showCalendar = !_state.value.showCalendar
+        _state.value = _state.value.copy(showCalendar = showCalendar)
+        if (!showCalendar) {
+            fetchMonthEngagement()
+        }
     }
 
     fun showCalendar() {
@@ -608,6 +613,7 @@ class JournalViewModel(private val targetPubkey: String? = null) : SafeViewModel
             customReactions = if (resetCache) emptyMap() else currentState.customReactions,
             unicodeReactions = if (resetCache) emptyMap() else currentState.unicodeReactions,
             replyCounts = if (resetCache) emptyMap() else currentState.replyCounts,
+            replies = if (resetCache) emptyMap() else currentState.replies,
             repostCounts = if (resetCache) emptyMap() else currentState.repostCounts,
             likedReactions = if (resetCache) emptyMap() else currentState.likedReactions,
             ownEmojiReactionEventIds = if (resetCache) {
@@ -721,9 +727,30 @@ class JournalViewModel(private val targetPubkey: String? = null) : SafeViewModel
                     )
                     fetchReferencedContentNow(noteEvents, memos, relayUrl)
                 }
+                if (
+                    _state.value.selectedMonth == monthStart &&
+                    !_state.value.showCalendar
+                ) {
+                    fetchMonthEngagement()
+                }
             } catch (e: CancellationException) {
                 throw e
             }
+        }
+    }
+
+    private fun fetchMonthEngagement() {
+        val currentState = _state.value
+        val noteIds = currentState.notes
+            .asSequence()
+            .filter { event ->
+                event.kind == 1 &&
+                    isSameMonth(dateOfEpochSeconds(event.createdAt), currentState.selectedMonth)
+            }
+            .map { it.id }
+            .toList()
+        if (noteIds.isNotEmpty()) {
+            fetchEngagement(noteIds, ownPublicKeyHex)
         }
     }
 
@@ -882,6 +909,7 @@ class JournalViewModel(private val targetPubkey: String? = null) : SafeViewModel
             val customReactions = mutableMapOf<String, List<CustomReaction>>()
             val unicodeReactions = mutableMapOf<String, List<UnicodeReaction>>()
             val replyCounts = mutableMapOf<String, Int>()
+            val replies = mutableMapOf<String, List<NostrEvent>>()
             val repostCounts = mutableMapOf<String, Int>()
             val likedReactions = mutableMapOf<String, String>()
             val ownEmojiReactionEventIds = mutableMapOf<String, Map<String, String>>()
@@ -926,7 +954,12 @@ class JournalViewModel(private val targetPubkey: String? = null) : SafeViewModel
                                         }
                                     }
                                 }
-                                1 -> replyCounts[targetId] = (replyCounts[targetId] ?: 0) + 1
+                                1 -> {
+                                    replyCounts[targetId] = (replyCounts[targetId] ?: 0) + 1
+                                    replies[targetId] = (replies[targetId].orEmpty() + event)
+                                        .distinctBy { it.id }
+                                        .sortedBy { it.createdAt }
+                                }
                                 6 -> repostCounts[targetId] = (repostCounts[targetId] ?: 0) + 1
                             }
                         }
@@ -968,6 +1001,7 @@ class JournalViewModel(private val targetPubkey: String? = null) : SafeViewModel
                     val retainedCustomReactions = _state.value.customReactions - noteIdSet
                     val retainedUnicodeReactions = _state.value.unicodeReactions - noteIdSet
                     val retainedReplyCounts = _state.value.replyCounts - noteIdSet
+                    val retainedReplies = _state.value.replies - noteIdSet
                     val retainedRepostCounts = _state.value.repostCounts - noteIdSet
                     val retainedLikedReactions = _state.value.likedReactions - noteIdSet
                     val retainedOwnEmojiReactions =
@@ -978,11 +1012,16 @@ class JournalViewModel(private val targetPubkey: String? = null) : SafeViewModel
                         customReactions = retainedCustomReactions + customReactions,
                         unicodeReactions = retainedUnicodeReactions + unicodeReactions,
                         replyCounts = retainedReplyCounts + replyCounts,
+                        replies = retainedReplies + replies,
                         repostCounts = retainedRepostCounts + repostCounts,
                         likedReactions = retainedLikedReactions + likedReactions,
                         ownEmojiReactionEventIds =
                             retainedOwnEmojiReactions + ownEmojiReactionEventIds,
                     )
+                }
+                val replyEvents = replies.values.flatten()
+                if (replyEvents.isNotEmpty()) {
+                    fetchReferencedContentNow(replyEvents, emptyList(), relayUrl)
                 }
             } catch (e: CancellationException) {
                 throw e
@@ -1132,6 +1171,7 @@ class JournalViewModel(private val targetPubkey: String? = null) : SafeViewModel
         val referencedEvents = fetchedEvents + eventIdsToFetch.mapNotNull { _state.value.quotedEvents[it] }
         val pubkeysToFetch = buildSet {
             addAll(memoPubkeys)
+            notes.forEach { add(it.pubkey) }
             referencedEvents.forEach { add(it.pubkey) }
         }.filterNot { _state.value.profiles.containsKey(it) }
 
