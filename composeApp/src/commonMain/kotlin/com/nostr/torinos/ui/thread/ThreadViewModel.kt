@@ -17,11 +17,12 @@ import com.nostr.torinos.model.eventTags
 import com.nostr.torinos.model.extractNpubReferences
 import com.nostr.torinos.model.incrementedWith
 import com.nostr.torinos.model.incrementedWithUnicodeReaction
+import com.nostr.torinos.model.quotedEventIds
 import com.nostr.torinos.model.toCustomReaction
 import com.nostr.torinos.model.toUnicodeReaction
 import com.nostr.torinos.model.toReactionOption
-import com.nostr.torinos.model.toProfile
 import com.nostr.torinos.network.NostrRepository
+import com.nostr.torinos.network.ProfileCache
 import com.nostr.torinos.ui.SafeViewModel
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -70,6 +71,7 @@ class ThreadViewModel(
     private val repostSubId = "thread-repost-$shortId"
     private val quoteRepostSubId = "thread-qrepost-$shortId"
     private val replyParentSubId = "thread-parent-$shortId"
+    private val quotedEventSubId = "thread-quote-$shortId"
 
     private val subscriptionJobs = mutableListOf<Job>()
     private val seenReplyIds = linkedSetOf<String>()
@@ -82,6 +84,8 @@ class ThreadViewModel(
     private val watchedEventIds = linkedSetOf<String>()
     private val watchedReactionEventIds = linkedSetOf<String>()
     private val pendingPubkeys = linkedSetOf<String>()
+    private val requestedProfilePubkeys = linkedSetOf<String>()
+    private val pendingQuotedEventIds = linkedSetOf<String>()
     private var profileBatchJob: Job? = null
     private var replyCountBatchJob: Job? = null
     private var reactionBatchJob: Job? = null
@@ -344,12 +348,14 @@ class ThreadViewModel(
                 _state.value = _state.value.copy(root = event, isLoading = false)
                 scheduleProfileFetch(event.pubkey)
                 scheduleMentionedProfileFetch(event.content)
-                noteContext.replyTargetId(event)?.let { parentId ->
+                val replyParentId = noteContext.replyTargetId(event)
+                replyParentId?.let { parentId ->
                     NostrRepository.subscribe(
                         replyParentSubId,
                         NostrFilter(ids = listOf(parentId), kinds = listOf(noteContext.eventKind), limit = 1),
                     )
                 }
+                scheduleQuotedEventFetch(quotedEventIds(event).filter { it != replyParentId })
             }
         }
 
@@ -360,6 +366,18 @@ class ThreadViewModel(
                 if (cur.quotedEvents.containsKey(event.id)) return@collect
                 _state.value = cur.copy(quotedEvents = cur.quotedEvents + (event.id to event))
                 scheduleProfileFetch(event.pubkey)
+            }
+        }
+
+        subscriptionJobs += launch {
+            NostrRepository.events(quotedEventSubId).collect { event ->
+                if (!noteContext.matches(event)) return@collect
+                pendingQuotedEventIds.remove(event.id)
+                val cur = _state.value
+                if (cur.quotedEvents.containsKey(event.id)) return@collect
+                _state.value = cur.copy(quotedEvents = cur.quotedEvents + (event.id to event))
+                scheduleProfileFetch(event.pubkey)
+                scheduleMentionedProfileFetch(event.content)
             }
         }
 
@@ -377,13 +395,16 @@ class ThreadViewModel(
                     isLoading = false,
                 )
                 scheduleProfileFetch(event.pubkey)
+                scheduleMentionedProfileFetch(event.content)
+                val replyParentId = noteContext.replyTargetId(event)
+                scheduleQuotedEventFetch(quotedEventIds(event).filter { it != replyParentId })
             }
         }
 
         subscriptionJobs += launch {
             NostrRepository.events(profileSubId).collect { event ->
                 if (event.kind != 0) return@collect
-                val profile = event.toProfile() ?: return@collect
+                val profile = ProfileCache.putEvent(event) ?: return@collect
                 pendingPubkeys.remove(event.pubkey)
                 _state.value = _state.value.copy(
                     profiles = _state.value.profiles + (event.pubkey to profile),
@@ -554,6 +575,9 @@ class ThreadViewModel(
         profileBatchJob?.cancel()
         replyCountBatchJob?.cancel()
         reactionBatchJob?.cancel()
+        pendingPubkeys.clear()
+        requestedProfilePubkeys.clear()
+        pendingQuotedEventIds.clear()
         NostrRepository.close(rootSubId)
         NostrRepository.close(repliesSubId)
         NostrRepository.close(profileSubId)
@@ -562,6 +586,23 @@ class ThreadViewModel(
         NostrRepository.close(repostSubId)
         NostrRepository.close(quoteRepostSubId)
         NostrRepository.close(replyParentSubId)
+        NostrRepository.close(quotedEventSubId)
+    }
+
+    private fun scheduleQuotedEventFetch(eventIds: List<String>) {
+        val missingIds = eventIds.filter { id ->
+            id !in _state.value.quotedEvents && pendingQuotedEventIds.add(id)
+        }
+        if (missingIds.isEmpty()) return
+        launch {
+            NostrRepository.subscribe(
+                quotedEventSubId,
+                NostrFilter(
+                    ids = pendingQuotedEventIds.toList(),
+                    kinds = listOf(noteContext.eventKind),
+                ),
+            )
+        }
     }
 
     private fun rememberReceivedEvent(events: LinkedHashMap<String, NostrEvent>, event: NostrEvent) {
@@ -604,7 +645,15 @@ class ThreadViewModel(
     }
 
     private fun scheduleProfileFetch(pubkey: String) {
-        if (pubkey in _state.value.profiles || !pendingPubkeys.add(pubkey)) return
+        ProfileCache.get(pubkey)?.let { cachedProfile ->
+            if (_state.value.profiles[pubkey] != cachedProfile) {
+                _state.value = _state.value.copy(
+                    profiles = _state.value.profiles + (pubkey to cachedProfile),
+                )
+            }
+        }
+        if (!requestedProfilePubkeys.add(pubkey)) return
+        pendingPubkeys.add(pubkey)
         profileBatchJob?.cancel()
         profileBatchJob = launch {
             delay(300)

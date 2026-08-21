@@ -46,6 +46,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.runtime.collectAsState
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.nostr.torinos.model.noteContextForChannel
+import com.nostr.torinos.model.quotedEventIds
 import com.nostr.torinos.model.stripNostrEventUris
 import com.nostr.torinos.model.toCustomReaction
 import com.nostr.torinos.ui.components.NetworkImage
@@ -210,6 +211,16 @@ fun ThreadScreen(
                                         )
                                     }
                                 },
+                                quotedEvents = quotedEventIds(root)
+                                    .filter { it != replyParentId }
+                                    .mapNotNull { quotedEventId ->
+                                        state.quotedEvents[quotedEventId]?.let { quotedEvent ->
+                                            QuotedEvent(
+                                                event = quotedEvent,
+                                                profile = state.profiles[quotedEvent.pubkey],
+                                            )
+                                        }
+                                    },
                                 replyCount = state.replyCounts[root.id] ?: state.replies.size,
                                 replies = state.replies,
                                 reactionCount = state.reactionCounts[root.id] ?: state.reactionPubkeys.size,
@@ -286,10 +297,29 @@ fun ThreadScreen(
                                 } else {
                                     items(state.replies, key = { it.id }) { reply ->
                                         val replyCount = state.replyCounts[reply.id] ?: 0
+                                        val replyParentId = noteContext.replyTargetId(reply)
                                         NoteCard(
                                             event = reply,
                                             profile = state.profiles[reply.pubkey],
                                             profiles = state.profiles,
+                                            replyParent = replyParentId?.let { parentId ->
+                                                state.quotedEvents[parentId]?.let { parentEvent ->
+                                                    QuotedEvent(
+                                                        event = parentEvent,
+                                                        profile = state.profiles[parentEvent.pubkey],
+                                                    )
+                                                }
+                                            },
+                                            quotedEvents = quotedEventIds(reply)
+                                                .filter { it != replyParentId }
+                                                .mapNotNull { quotedEventId ->
+                                                    state.quotedEvents[quotedEventId]?.let { quotedEvent ->
+                                                        QuotedEvent(
+                                                            event = quotedEvent,
+                                                            profile = state.profiles[quotedEvent.pubkey],
+                                                        )
+                                                    }
+                                                },
                                             replyCount = replyCount,
                                             replies = state.repliesByEventId[reply.id].orEmpty(),
                                             reactionCount = state.reactionCounts[reply.id] ?: 0,
