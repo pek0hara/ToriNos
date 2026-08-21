@@ -14,6 +14,7 @@ import kotlinx.coroutines.flow.update
 
 data class PublishedEmojiSet(
     val id: String,
+    val sourceEventId: String,
     val name: String,
     val authorPubkey: String,
     val createdAt: Long,
@@ -53,7 +54,7 @@ class CustomEmojiSettingsViewModel : SafeViewModel() {
                 if (event.kind != KIND_EMOJI_SET) return@collect
                 val set = event.toPublishedEmojiSet() ?: return@collect
                 val current = latestSets[set.id]
-                if (current == null || set.createdAt > current.createdAt) {
+                if (current == null || set.isPreferredTo(current)) {
                     latestSets[set.id] = set
                     publishState(isLoading = true)
                 }
@@ -91,8 +92,7 @@ class CustomEmojiSettingsViewModel : SafeViewModel() {
     private fun publishState(isLoading: Boolean) {
         _state.update {
             it.copy(
-                publishedSets = latestSets.values
-                    .sortedWith(compareByDescending<PublishedEmojiSet> { it.createdAt }.thenBy { it.name }),
+                publishedSets = deduplicatePublishedEmojiSets(latestSets.values),
                 isLoadingPublishedSets = isLoading,
             )
         }
@@ -127,6 +127,7 @@ class CustomEmojiSettingsViewModel : SafeViewModel() {
 
         return PublishedEmojiSet(
             id = "$pubkey:$identifier",
+            sourceEventId = id,
             name = title,
             authorPubkey = pubkey,
             createdAt = createdAt,
@@ -138,3 +139,28 @@ class CustomEmojiSettingsViewModel : SafeViewModel() {
         const val KIND_EMOJI_SET = 30030
     }
 }
+
+/**
+ * Relays may return stale versions of an addressable event and some publishers recreate the
+ * same named set under a new `d` tag. Keep one deterministic, newest entry for both cases.
+ */
+internal fun deduplicatePublishedEmojiSets(
+    sets: Collection<PublishedEmojiSet>,
+): List<PublishedEmojiSet> = sets
+    .sortedWith(
+        compareByDescending<PublishedEmojiSet> { it.createdAt }
+            .thenBy { it.sourceEventId },
+    )
+    .distinctBy { it.id }
+    .distinctBy { set ->
+        "${set.authorPubkey}:${set.name.trim().lowercase()}"
+    }
+    .sortedWith(
+        compareByDescending<PublishedEmojiSet> { it.createdAt }
+            .thenBy { it.name.lowercase() }
+            .thenBy { it.sourceEventId },
+    )
+
+internal fun PublishedEmojiSet.isPreferredTo(other: PublishedEmojiSet): Boolean =
+    createdAt > other.createdAt ||
+        (createdAt == other.createdAt && sourceEventId < other.sourceEventId)

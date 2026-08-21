@@ -23,12 +23,8 @@ import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.lazy.grid.GridCells
-import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
-import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
@@ -72,14 +68,13 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import com.nostr.torinos.model.NoteContext
 import com.nostr.torinos.model.encodeNevent
-import com.nostr.torinos.network.CustomEmoji
-import com.nostr.torinos.network.CustomEmojiList
+import com.nostr.torinos.model.ReactionOption
 import com.nostr.torinos.network.CustomEmojiStore
 import com.nostr.torinos.network.RelayEntry
 import com.nostr.torinos.network.RelayPublishResult
 import com.nostr.torinos.network.RelayStore
-import com.nostr.torinos.ui.components.NetworkImage
 import com.nostr.torinos.ui.components.PreviewImage
+import com.nostr.torinos.ui.components.StandardEmojiPickerSheet
 import com.nostr.torinos.ui.components.rememberDismissKeyboard
 import com.nostr.torinos.ui.components.rememberOptimizedImagePickerLauncher
 
@@ -295,8 +290,8 @@ private fun PostSheetContent(
         }
     }
 
-    fun insertCustomEmoji(emoji: CustomEmoji) {
-        val insertion = ":${emoji.shortcode}:"
+    fun insertEmoji(option: ReactionOption) {
+        val insertion = option.eventContent
         val start = minOf(textValue.selection.start, textValue.selection.end)
         val end = maxOf(textValue.selection.start, textValue.selection.end)
         val newText = textValue.text.replaceRange(start, end, insertion)
@@ -306,7 +301,10 @@ private fun PostSheetContent(
             text = newText,
             selection = TextRange(cursor),
         )
-        CustomEmojiStore.markUsed(emoji.shortcode)
+        when (option) {
+            is ReactionOption.Unicode -> CustomEmojiStore.markUnicodeUsed(option.value)
+            is ReactionOption.Custom -> CustomEmojiStore.markCustomReactionUsed(option.shortcode)
+        }
         onTextChange(newText)
         showCustomEmojiPicker = false
     }
@@ -570,189 +568,10 @@ private fun PostSheetContent(
     }
 
     if (showCustomEmojiPicker) {
-        CustomEmojiPickerDialog(
+        StandardEmojiPickerSheet(
             onDismiss = { showCustomEmojiPicker = false },
-            onEmojiSelected = ::insertCustomEmoji,
+            onSelect = ::insertEmoji,
             onOpenCustomEmojiSettings = onOpenCustomEmojiSettings,
-        )
-    }
-}
-
-@Composable
-private fun CustomEmojiPickerDialog(
-    onDismiss: () -> Unit,
-    onEmojiSelected: (CustomEmoji) -> Unit,
-    onOpenCustomEmojiSettings: () -> Unit,
-) {
-    val emojis by CustomEmojiStore.emojis.collectAsState()
-    val emojiLists by CustomEmojiStore.emojiLists.collectAsState()
-    val recentShortcodes by CustomEmojiStore.recentEmojiShortcodes.collectAsState()
-    val emojiMap = remember(emojis) { emojis.associateBy { it.shortcode } }
-    val recentEmojis = remember(recentShortcodes, emojiMap) {
-        recentShortcodes.mapNotNull { emojiMap[it] }
-    }
-    var selectedListId by remember { mutableStateOf<String?>(null) }
-    val selectedList = remember(selectedListId, emojiLists) {
-        emojiLists.firstOrNull { it.id == selectedListId }
-    }
-
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text(selectedList?.name ?: "カスタム絵文字") },
-        text = {
-            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                if (selectedList == null) {
-                    if (recentEmojis.isNotEmpty()) {
-                        Text(
-                            text = "最近使った絵文字",
-                            style = MaterialTheme.typography.labelMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                        LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            items(recentEmojis, key = { "recent-${it.shortcode}" }) { emoji ->
-                                CustomEmojiTile(
-                                    emoji = emoji,
-                                    onClick = { onEmojiSelected(emoji) },
-                                )
-                            }
-                        }
-                    }
-
-                    Text(
-                        text = "絵文字リスト",
-                        style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                    if (emojiLists.isEmpty()) {
-                        Text(
-                            text = "登録済みの絵文字リストがありません",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    } else {
-                        LazyColumn(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .heightIn(max = 280.dp),
-                            verticalArrangement = Arrangement.spacedBy(8.dp),
-                        ) {
-                            items(emojiLists, key = { it.id }) { list ->
-                                CustomEmojiListRow(
-                                    list = list,
-                                    onClick = { selectedListId = list.id },
-                                )
-                            }
-                        }
-                    }
-                } else {
-                    TextButton(onClick = { selectedListId = null }) {
-                        Text("絵文字リストへ戻る")
-                    }
-                    LazyVerticalGrid(
-                        columns = GridCells.Adaptive(minSize = 72.dp),
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .heightIn(max = 280.dp),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        verticalArrangement = Arrangement.spacedBy(8.dp),
-                    ) {
-                        items(selectedList.emojis, key = { it.shortcode }) { emoji ->
-                            CustomEmojiTile(
-                                emoji = emoji,
-                                onClick = { onEmojiSelected(emoji) },
-                            )
-                        }
-                    }
-                }
-            }
-        },
-        confirmButton = {
-            TextButton(onClick = onOpenCustomEmojiSettings) {
-                Icon(
-                    Icons.Default.Add,
-                    contentDescription = null,
-                    modifier = Modifier.size(18.dp),
-                )
-                Spacer(modifier = Modifier.size(6.dp))
-                Text("絵文字を追加")
-            }
-        },
-        dismissButton = {
-            TextButton(onClick = onDismiss) {
-                Text("閉じる")
-            }
-        },
-    )
-}
-
-@Composable
-private fun CustomEmojiListRow(
-    list: CustomEmojiList,
-    onClick: () -> Unit,
-) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clip(MaterialTheme.shapes.small)
-            .clickable(onClick = onClick)
-            .padding(horizontal = 8.dp, vertical = 6.dp),
-        horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Column(
-            modifier = Modifier.weight(1f),
-            verticalArrangement = Arrangement.spacedBy(2.dp),
-        ) {
-            Text(
-                text = list.name,
-                style = MaterialTheme.typography.bodyMedium,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
-            Text(
-                text = "${list.emojis.size}個",
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
-        Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-            list.emojis.take(4).forEach { emoji ->
-                NetworkImage(
-                    url = emoji.imageUrl,
-                    contentDescription = ":${emoji.shortcode}:",
-                    contentScale = ContentScale.Fit,
-                    modifier = Modifier.size(24.dp),
-                )
-            }
-        }
-    }
-}
-
-@Composable
-private fun CustomEmojiTile(
-    emoji: CustomEmoji,
-    onClick: () -> Unit,
-) {
-    Column(
-        modifier = Modifier
-            .size(width = 64.dp, height = 72.dp)
-            .clip(MaterialTheme.shapes.small)
-            .clickable(onClick = onClick)
-            .padding(6.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.spacedBy(4.dp),
-    ) {
-        NetworkImage(
-            url = emoji.imageUrl,
-            contentDescription = ":${emoji.shortcode}:",
-            contentScale = ContentScale.Fit,
-            modifier = Modifier.size(32.dp),
-        )
-        Text(
-            text = ":${emoji.shortcode}:",
-            style = MaterialTheme.typography.labelSmall,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
         )
     }
 }
