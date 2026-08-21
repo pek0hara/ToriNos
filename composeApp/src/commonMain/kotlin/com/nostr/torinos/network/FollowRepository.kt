@@ -4,6 +4,7 @@ import com.nostr.torinos.crypto.KeyStorage
 import com.nostr.torinos.crypto.loadPublicKey
 import com.nostr.torinos.crypto.signEvent
 import com.nostr.torinos.model.NostrFilter
+import com.nostr.torinos.model.NostrEvent
 import com.nostr.torinos.util.logException
 import com.nostr.torinos.util.loggingExceptionHandler
 import kotlinx.coroutines.CancellationException
@@ -43,8 +44,8 @@ object FollowRepository {
     val loaded: StateFlow<Boolean> = _loaded.asStateFlow()
 
     private var ownPubkey: String? = null
+    private var latestFollowEvent: NostrEvent? = null
     private var loadGeneration = 0L
-    private var updateRequestGeneration = 0L
     private var loadJob: Job? = null
     private val updateMutex = Mutex()
     private val json = Json { ignoreUnknownKeys = true }
@@ -69,6 +70,7 @@ object FollowRepository {
         if (reset) {
             _loaded.value = false
             ownPubkey = null
+            latestFollowEvent = null
             _followedPubkeys.value = emptySet()
         }
         loadJob?.cancel()
@@ -101,13 +103,15 @@ object FollowRepository {
 
         // EOSE を待ってから最新の kind:3 を採用する
         val cached = loadFollowCache(pk)
-        var latestCreatedAt = cached?.createdAt ?: 0L
-        var latestFollows = cached?.pubkeys?.toSet() ?: emptySet()
+        var latestEvent = cached?.event?.takeIf { it.kind == 3 && it.pubkey == pk }
+        var latestCreatedAt = latestEvent?.createdAt ?: cached?.createdAt ?: 0L
+        var latestFollows = latestEvent?.followedPubkeys() ?: cached?.pubkeys?.toSet() ?: emptySet()
         var receivedFollowEvent = false
         val targetRelayUrls = NostrRepository.targetRelayUrls(RelayTarget.AllEnabled)
         val completedRelayUrls = mutableSetOf<String>()
 
         if (cached != null && generation == loadGeneration) {
+            latestFollowEvent = latestEvent
             _followedPubkeys.value = latestFollows
             _loaded.value = true
         }
@@ -118,14 +122,17 @@ object FollowRepository {
             val eventJob = launch(start = CoroutineStart.UNDISPATCHED) {
                 try {
                     NostrRepository.events(subId).collect { event ->
-                        if (event.kind == 3 && event.createdAt > latestCreatedAt) {
+                        if (event.kind == 3 && event.pubkey == pk && event.isNewerThan(latestEvent, latestCreatedAt)) {
+                            latestEvent = event
                             latestCreatedAt = event.createdAt
-                            latestFollows = event.tags
-                                .filter { it.size >= 2 && it[0] == "p" }
-                                .map { it[1] }
-                                .toSet()
+                            latestFollows = event.followedPubkeys()
                             receivedFollowEvent = true
-                            publishLoadedFollows(latestFollows, latestCreatedAt, generation, persist = true)
+                            publishLoadedFollows(
+                                follows = latestFollows,
+                                event = event,
+                                generation = generation,
+                                persist = true,
+                            )
                         }
                     }
                 } catch (e: CancellationException) {
@@ -152,9 +159,14 @@ object FollowRepository {
                 withTimeoutOrNull(FOLLOW_LIST_EOSE_TIMEOUT_MS) { eoseComplete.await() }
                 eoseJob.cancel()
                 // タイムアウトを含め、初回取得の試行が終わったら表示上のロードは完了させる。
-                // フォロー更新時には fetchLatestFollowList() で最新状態を再取得するため、ここで
-                // 空リストを公開しても、表示用の空状態だけを元に kind:3 を上書きすることはない。
-                publishLoadedFollows(latestFollows, latestCreatedAt, generation, persist = receivedFollowEvent)
+                // 表示用の空状態だけでは latestFollowEvent が設定されないため、
+                // kind:3 未取得のままフォロー更新を公開することはない。
+                publishLoadedFollows(
+                    follows = latestFollows,
+                    event = latestEvent,
+                    generation = generation,
+                    persist = receivedFollowEvent,
+                )
                 eventJob.cancel()
                 NostrRepository.close(subId)
             } catch (e: CancellationException) {
@@ -167,16 +179,43 @@ object FollowRepository {
 
     fun isFollowing(pubkey: String): Boolean = _followedPubkeys.value.contains(pubkey)
 
-    suspend fun follow(pubkey: String): Result<Unit> = updateFollowList { follows ->
-        follows + pubkey
+    internal suspend fun latestFollowListEvent(): NostrEvent? {
+        latestFollowEvent?.let { return it }
+        val pubkey = loadPublicKey() ?: return null
+        return loadFollowCache(pubkey)?.event
+            ?.takeIf { it.kind == 3 && it.pubkey == pubkey }
+            ?.also { latestFollowEvent = it }
     }
 
-    suspend fun unfollow(pubkey: String): Result<Unit> = updateFollowList { follows ->
-        follows - pubkey
+    /** Damus と同様に、新規アカウント作成時だけ空の kind:3 を初期化する。 */
+    suspend fun initializeNewAccountFollowList(): Result<Unit> {
+        val privateKey = KeyStorage.loadPrivateKey()
+            ?: return Result.failure(Exception("秘密鍵が設定されていません"))
+        val event = signEvent(
+            privateKeyHex = privateKey,
+            content = "",
+            kind = 3,
+            tags = emptyList(),
+        )
+
+        // 通信に失敗しても、新規生成した鍵の正当な初期イベントは端末に残す。
+        saveFollowCache(event.pubkey, event)
+        return runCatching {
+            NostrRepository.publish(event)
+            Unit
+        }
+    }
+
+    suspend fun follow(pubkey: String): Result<Unit> = updateFollowList { event ->
+        editFollowEvent(event, pubkey, shouldFollow = true)
+    }
+
+    suspend fun unfollow(pubkey: String): Result<Unit> = updateFollowList { event ->
+        editFollowEvent(event, pubkey, shouldFollow = false)
     }
 
     private suspend fun updateFollowList(
-        transform: (Set<String>) -> Set<String>,
+        transform: (NostrEvent) -> FollowEventEdit?,
     ): Result<Unit> {
         // プロフィール画面が閉じられても更新を完了させる。
         val completion = CompletableDeferred<Result<Unit>>()
@@ -187,7 +226,7 @@ object FollowRepository {
     }
 
     private suspend fun performFollowListUpdate(
-        transform: (Set<String>) -> Set<String>,
+        transform: (NostrEvent) -> FollowEventEdit?,
     ): Result<Unit> = updateMutex.withLock {
         val generation = loadGeneration
         val accountPubkey = ownPubkey
@@ -196,25 +235,27 @@ object FollowRepository {
         }
 
         runCatching {
-            // 更新の直前にリレー上の最新 kind:3 を取得し、
-            // ローカルキャッシュの欠落や遅延を上書きしないようにする。
-            val remote = fetchLatestFollowList(accountPubkey)
-
-            check(generation == loadGeneration && _loaded.value) {
-                "アカウントが切り替わったためフォロー更新を中止しました"
+            // Damus と同様に、操作時は読み込み済みの kind:3 を直接編集する。
+            // 操作ごとの EOSE 待ちは行わない。
+            val existingEvent = checkNotNull(
+                latestFollowEvent?.takeIf { it.kind == 3 && it.pubkey == accountPubkey },
+            ) {
+                "既存のフォロー一覧を取得できないため、更新を中止しました"
             }
+            val targetRelayUrls = NostrRepository.targetRelayUrls(RelayTarget.AllEnabled)
+            check(targetRelayUrls.isNotEmpty()) { "有効なリレーがありません" }
 
             val privKey = checkNotNull(KeyStorage.loadPrivateKey()) {
                 "秘密鍵が設定されていません"
             }
-            val newSet = transform(remote.pubkeys)
-            val tags = newSet.map { listOf("p", it) }
-            val createdAt = Clock.System.now().epochSeconds.coerceAtLeast(remote.createdAt + 1L)
+            val edit = transform(existingEvent) ?: return@runCatching
+            val newSet = edit.tags.followedPubkeys()
+            val createdAt = Clock.System.now().epochSeconds.coerceAtLeast(existingEvent.createdAt + 1L)
             val event = signEvent(
                 privKey,
-                content = "",
+                content = edit.content,
                 kind = 3,
-                tags = tags,
+                tags = edit.tags,
                 createdAt = createdAt,
             )
 
@@ -224,90 +265,31 @@ object FollowRepository {
                     event.pubkey == accountPubkey
             ) { "アカウントが切り替わったためフォロー更新を中止しました" }
 
-            val publishResult = NostrRepository.publishToRelaysWithResult(event, remote.relayUrls)
+            // 1リレーに送信できた時点で操作を完了し、残りはバックグラウンドで継続する。
+            val publishResult = NostrRepository.publishToRelaysUntilFirstSuccess(event, targetRelayUrls)
             check(publishResult.succeededRelays.isNotEmpty()) {
-                "取得できたリレーへのフォロー更新に失敗しました"
+                "フォロー更新の送信に失敗しました"
             }
             if (generation == loadGeneration) {
+                latestFollowEvent = event
                 _followedPubkeys.value = newSet
-                saveFollowCache(accountPubkey, newSet, event.createdAt)
+                saveFollowCache(accountPubkey, event)
             }
-        }
-    }
-
-    private suspend fun fetchLatestFollowList(pubkey: String): RemoteFollowList = coroutineScope {
-        val requestId = ++updateRequestGeneration
-        val subId = "follow-update-$requestId"
-        val targetRelayUrls = NostrRepository.targetRelayUrls(RelayTarget.AllEnabled)
-        check(targetRelayUrls.isNotEmpty()) { "有効なリレーがありません" }
-
-        var latestEventCreatedAt = -1L
-        var latestEventId = ""
-        var latestPubkeys = emptySet<String>()
-        val completedRelayUrls = mutableSetOf<String>()
-        val eoseComplete = CompletableDeferred<Unit>()
-
-        val eventJob = launch(start = CoroutineStart.UNDISPATCHED) {
-            NostrRepository.events(subId).collect { event ->
-                val isNewer = event.kind == 3 && (
-                    event.createdAt > latestEventCreatedAt ||
-                        (event.createdAt == latestEventCreatedAt &&
-                            (latestEventId.isEmpty() || event.id < latestEventId))
-                    )
-                if (isNewer) {
-                    latestEventCreatedAt = event.createdAt
-                    latestEventId = event.id
-                    latestPubkeys = event.tags
-                        .filter { it.size >= 2 && it[0] == "p" }
-                        .map { it[1] }
-                        .toSet()
-                }
-            }
-        }
-        val eoseJob = launch(start = CoroutineStart.UNDISPATCHED) {
-            NostrRepository.eoseRelays(subId).collect { relayUrl ->
-                completedRelayUrls.add(relayUrl)
-                if (completedRelayUrls.containsAll(targetRelayUrls)) {
-                    eoseComplete.complete(Unit)
-                }
-            }
-        }
-
-        try {
-            NostrRepository.subscribe(
-                subId,
-                NostrFilter(kinds = listOf(3), authors = listOf(pubkey), limit = 1),
-            )
-            withTimeoutOrNull(FOLLOW_LIST_EOSE_TIMEOUT_MS) {
-                eoseComplete.await()
-            }
-            val readableRelayUrls = completedRelayUrls.toSet()
-            check(readableRelayUrls.isNotEmpty()) {
-                "リレーから最新のフォロー一覧を取得できませんでした"
-            }
-            RemoteFollowList(
-                pubkeys = latestPubkeys,
-                createdAt = latestEventCreatedAt.coerceAtLeast(0L),
-                relayUrls = readableRelayUrls,
-            )
-        } finally {
-            eventJob.cancel()
-            eoseJob.cancel()
-            NostrRepository.close(subId)
         }
     }
 
     private suspend fun publishLoadedFollows(
         follows: Set<String>,
-        createdAt: Long,
+        event: NostrEvent?,
         generation: Long,
         persist: Boolean,
     ) {
         if (generation != loadGeneration) return
+        if (event != null) latestFollowEvent = event
         _followedPubkeys.value = follows
         _loaded.value = true
-        if (persist) {
-            ownPubkey?.let { saveFollowCache(it, follows, createdAt) }
+        if (persist && event != null) {
+            ownPubkey?.let { saveFollowCache(it, event) }
         }
     }
 
@@ -317,11 +299,12 @@ object FollowRepository {
                 ?.let { json.decodeFromString<FollowCache>(it) }
         }.getOrNull()
 
-    private suspend fun saveFollowCache(pubkey: String, follows: Set<String>, createdAt: Long) {
+    private suspend fun saveFollowCache(pubkey: String, event: NostrEvent) {
         runCatching {
             val cache = FollowCache(
-                createdAt = createdAt.takeIf { it > 0 } ?: Clock.System.now().epochSeconds,
-                pubkeys = follows.sorted(),
+                createdAt = event.createdAt.takeIf { it > 0 } ?: Clock.System.now().epochSeconds,
+                pubkeys = event.followedPubkeys().sorted(),
+                event = event,
             )
             LocalSettingsStorage.putString(cacheKey(pubkey), json.encodeToString(cache))
         }.onFailure { e ->
@@ -335,12 +318,7 @@ object FollowRepository {
     private data class FollowCache(
         val createdAt: Long = 0L,
         val pubkeys: List<String> = emptyList(),
-    )
-
-    private data class RemoteFollowList(
-        val pubkeys: Set<String>,
-        val createdAt: Long,
-        val relayUrls: Set<String>,
+        val event: NostrEvent? = null,
     )
 
     private const val FOLLOW_CACHE_KEY_PREFIX = "follow_list_cache_"

@@ -11,6 +11,7 @@ import com.nostr.torinos.util.appLog
 import com.nostr.torinos.util.loggingExceptionHandler
 import com.nostr.torinos.util.networkTraceLog
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -383,6 +384,52 @@ object NostrRepository {
                 }
             }.toMap(),
         )
+    }
+
+    /**
+     * 最初の1リレーへの送信成功で戻る。残りのリレーへの送信はリポジトリの
+     * スコープで継続するため、フォローなどの楽観的UIを遅いリレーがブロックしない。
+     */
+    internal suspend fun publishToRelaysUntilFirstSuccess(
+        event: NostrEvent,
+        relayUrls: Collection<String>,
+        onRelayResult: suspend (RelayPublishResult) -> Unit = {},
+    ): RelayPublishResult {
+        val targets = relayUrls.map { it.trim() }.filter { it.isNotBlank() }.distinct()
+        if (targets.isEmpty()) return RelayPublishResult(emptySet(), emptyMap())
+
+        val completion = CompletableDeferred<RelayPublishResult>()
+        val resultMutex = Mutex()
+        val failures = linkedMapOf<String, String>()
+        var completedCount = 0
+
+        targets.forEach { relayUrl ->
+            scope.launch {
+                val result = publishToRelaysWithResult(event, listOf(relayUrl))
+                runCatching { onRelayResult(result) }
+                    .onFailure { error ->
+                        appLog("[Repo] publish result callback failed: ${error::class.simpleName}: ${error.message}")
+                    }
+                val completedResult = resultMutex.withLock {
+                    completedCount++
+                    failures.putAll(result.failedRelays)
+                    when {
+                        result.succeededRelays.isNotEmpty() -> RelayPublishResult(
+                            succeededRelays = result.succeededRelays,
+                            failedRelays = failures.toMap(),
+                        )
+                        completedCount == targets.size -> RelayPublishResult(
+                            succeededRelays = emptySet(),
+                            failedRelays = failures.toMap(),
+                        )
+                        else -> null
+                    }
+                }
+                if (completedResult != null) completion.complete(completedResult)
+            }
+        }
+
+        return completion.await()
     }
 
     fun events(subscriptionId: String): Flow<NostrEvent> =
