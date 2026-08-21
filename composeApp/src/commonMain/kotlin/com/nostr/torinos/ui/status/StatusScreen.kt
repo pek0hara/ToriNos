@@ -48,6 +48,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
@@ -58,6 +59,7 @@ import androidx.lifecycle.viewmodel.viewModelFactory
 import com.nostr.torinos.model.NostrProfile
 import com.nostr.torinos.network.RelayStore
 import com.nostr.torinos.ui.components.LinkedText
+import com.nostr.torinos.ui.components.ProfileNameText
 import com.nostr.torinos.ui.components.formatTimestamp
 import com.nostr.torinos.ui.components.rememberDismissKeyboard
 import com.nostr.torinos.ui.profile.AvatarCircle
@@ -244,7 +246,6 @@ fun StatusScreen(
                                 StatusRow(
                                     status = status,
                                     profile = state.profiles[status.event.pubkey],
-                                    isOwn = status.event.pubkey == ownPubkey,
                                     onUserClick = { onUserClick(status.event.pubkey) },
                                 )
                                 HorizontalDivider()
@@ -317,7 +318,6 @@ private fun CategoryFilterRow(
 private fun StatusRow(
     status: UserStatus,
     profile: NostrProfile?,
-    isOwn: Boolean,
     onUserClick: () -> Unit,
 ) {
     Row(
@@ -336,21 +336,40 @@ private fun StatusRow(
         )
         Column(
             modifier = Modifier.weight(1f),
-            verticalArrangement = Arrangement.spacedBy(6.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp),
         ) {
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                StatusTagLabel(status.statusTag)
-                LinkedText(
-                    text = status.event.content,
-                    style = MaterialTheme.typography.bodyLarge,
-                    customEmojis = status.customEmojis,
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                ProfileNameText(
+                    profile = profile,
+                    fallback = status.event.pubkey.take(8) + "…" + status.event.pubkey.takeLast(8),
+                    style = MaterialTheme.typography.labelMedium,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.primary,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.weight(1f),
                 )
-                if (isOwn) {
-                    AssistChip(onClick = {}, label = { Text("自分") })
-                }
+                Text(
+                    text = formatTimestamp(status.event.createdAt, todayTimeOnly = true),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(start = 8.dp),
+                )
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                StatusTagLabel(status.statusTag)
+                LinkedText(
+                    text = status.event.content,
+                    style = MaterialTheme.typography.bodyMedium,
+                    customEmojis = status.customEmojis,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f),
+                )
             }
             status.referenceUrls.forEach { url ->
                 LinkedText(
