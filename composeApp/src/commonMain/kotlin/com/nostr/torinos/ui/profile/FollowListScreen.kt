@@ -179,7 +179,8 @@ private fun UserRow(pubkey: String, profile: NostrProfile?, onClick: () -> Unit)
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.primary,
                 )
-            } ?: profile?.about?.takeIf { it.isNotBlank() }?.let { about ->
+            }
+            profile?.about?.takeIf { it.isNotBlank() }?.let { about ->
                 Text(
                     text = about,
                     style = MaterialTheme.typography.labelSmall,

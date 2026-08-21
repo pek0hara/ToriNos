@@ -134,14 +134,17 @@ class FeedViewModel(
             }
         }
         launch {
-            ProfileCache.observeUpdates().collect { (pubkey, profile) ->
-                if (currentFeedState().profiles[pubkey] == null) return@collect
+            ProfileCache.entries.collect { cachedEntries ->
+                val currentProfiles = currentFeedState().profiles
+                if (currentProfiles.isEmpty()) return@collect
+                val updatedProfiles = cachedEntries
+                    .filterKeys { it in currentProfiles }
+                    .mapValues { it.value.profile }
+                if (updatedProfiles.all { (pubkey, profile) -> currentProfiles[pubkey] == profile }) {
+                    return@collect
+                }
                 updateFeedState(immediate = false) { state ->
-                    if (state.profiles[pubkey] == profile) {
-                        state
-                    } else {
-                        state.copy(profiles = state.profiles + (pubkey to profile))
-                    }
+                    state.copy(profiles = state.profiles + updatedProfiles)
                 }
             }
         }
@@ -181,7 +184,7 @@ class FeedViewModel(
     }
 
     fun injectProfile(pubkey: String, profile: com.nostr.torinos.model.NostrProfile) {
-        ProfileCache.put(pubkey, profile)
+        ProfileCache.putOptimistic(pubkey, profile)
         val currentProfile = ProfileCache.get(pubkey) ?: profile
         if (currentFeedState().profiles[pubkey] == currentProfile) return
         updateFeedState { it.copy(profiles = it.profiles + (pubkey to currentProfile)) }

@@ -76,6 +76,10 @@ fun UserProfileScreen(
     val snackbarHostState = remember { SnackbarHostState() }
     var deferredContentStarted by remember(pubkey) { mutableStateOf(false) }
 
+    LaunchedEffect(viewModel) {
+        viewModel.refreshProfile()
+    }
+
     LaunchedEffect(state.profile) {
         val profile = state.profile ?: return@LaunchedEffect
         if (!deferredContentStarted) {

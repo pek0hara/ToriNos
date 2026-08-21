@@ -125,10 +125,6 @@ class UserProfileViewModel(
         startCollectors()
         launch {
             NostrRepository.subscribe(
-                profileSubId,
-                NostrFilter(kinds = listOf(0), authors = listOf(pubkey), limit = 1),
-            )
-            NostrRepository.subscribe(
                 relayListSubId,
                 NostrFilter(kinds = listOf(10002), authors = listOf(pubkey), limit = 1),
             )
@@ -141,6 +137,17 @@ class UserProfileViewModel(
                     limit = 1,
                 ),
                 relayUrl = deferredRelayUrl,
+            )
+        }
+    }
+
+    /** 画面を開くたびに最新プロフィールを取得し、受信時にキャッシュを更新する。 */
+    fun refreshProfile() {
+        launch {
+            NostrRepository.close(profileSubId)
+            NostrRepository.subscribe(
+                profileSubId,
+                NostrFilter(kinds = listOf(0), authors = listOf(pubkey), limit = 1),
             )
         }
     }

@@ -68,7 +68,7 @@ import com.nostr.torinos.crypto.rememberPasswordManagerSaver
 import com.nostr.torinos.crypto.toHex
 import com.nostr.torinos.model.NostrFilter
 import com.nostr.torinos.model.NostrProfile
-import com.nostr.torinos.model.toProfile
+import com.nostr.torinos.network.FollowRepository
 import com.nostr.torinos.network.NostrRepository
 import com.nostr.torinos.network.ProfileCache
 import com.nostr.torinos.ui.components.EditableImage
@@ -119,8 +119,7 @@ fun KeySetupScreen(onSetupComplete: (pubkeyHex: String) -> Unit, onDismiss: (() 
     LaunchedEffect(Unit) {
         NostrRepository.events(STORED_ACCOUNT_PROFILES_SUBSCRIPTION_ID).collect { event ->
             if (event.kind != 0) return@collect
-            event.toProfile()?.let { profile ->
-                ProfileCache.put(event.pubkey, profile, event.createdAt)
+            ProfileCache.putEvent(event)?.let { profile ->
                 storedProfiles = storedProfiles + (event.pubkey to profile)
             }
         }

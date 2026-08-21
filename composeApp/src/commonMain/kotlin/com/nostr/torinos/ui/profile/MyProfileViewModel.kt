@@ -120,10 +120,6 @@ class MyProfileViewModel(private val ownPubkey: String) : SafeViewModel() {
 
         launch {
             NostrRepository.subscribe(
-                profileSubId,
-                NostrFilter(kinds = listOf(0), authors = listOf(ownPubkey), limit = 1),
-            )
-            NostrRepository.subscribe(
                 relayListSubId,
                 NostrFilter(kinds = listOf(10002), authors = listOf(ownPubkey), limit = 1),
             )
@@ -135,6 +131,17 @@ class MyProfileViewModel(private val ownPubkey: String) : SafeViewModel() {
                     dTags = listOf(PROFILE_GENERAL_STATUS_TAG),
                     limit = 1,
                 ),
+            )
+        }
+    }
+
+    /** 画面を開くたびに最新プロフィールを取得し、受信時にキャッシュを更新する。 */
+    fun refreshProfile() {
+        launch {
+            NostrRepository.close(profileSubId)
+            NostrRepository.subscribe(
+                profileSubId,
+                NostrFilter(kinds = listOf(0), authors = listOf(ownPubkey), limit = 1),
             )
         }
     }
@@ -170,15 +177,11 @@ class MyProfileViewModel(private val ownPubkey: String) : SafeViewModel() {
 
     /** 編集保存後に UI を即時更新する（リレーの応答を待たない）。 */
     fun applyProfile(profile: NostrProfile) {
-        ProfileCache.put(ownPubkey, profile)
+        ProfileCache.putOptimistic(ownPubkey, profile)
         _state.update { it.copy(profile = profile) }
         launch {
             delay(2_000)
-            NostrRepository.close(profileSubId)
-            NostrRepository.subscribe(
-                profileSubId,
-                NostrFilter(kinds = listOf(0), authors = listOf(ownPubkey), limit = 1),
-            )
+            refreshProfile()
         }
     }
 

@@ -3,6 +3,7 @@ package com.nostr.torinos.network
 import com.nostr.torinos.model.NostrEvent
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 
 class ProfileCacheTest {
 
@@ -25,15 +26,57 @@ class ProfileCacheTest {
         assertEquals("https://example.com/new.jpg", ProfileCache.get(pubkey)?.picture)
     }
 
+    @Test
+    fun putEvent_usesEventIdAsTieBreaker_whenCreatedAtIsEqual() {
+        val pubkey = "profile-cache-tie-break-test"
+        val higherId = profileEvent(pubkey, createdAt = 300, picture = "higher", id = "ff")
+        val lowerId = profileEvent(pubkey, createdAt = 300, picture = "lower", id = "00")
+
+        ProfileCache.putEvent(higherId)
+        assertEquals("lower", ProfileCache.putEvent(lowerId)?.picture)
+        assertEquals("00", ProfileCache.entries.value[pubkey]?.eventId)
+    }
+
+    @Test
+    fun putOptimistic_keepsEventVersionUntilNewerEventArrives() {
+        val pubkey = "profile-cache-optimistic-test"
+        ProfileCache.putEvent(profileEvent(pubkey, createdAt = 400, picture = "published", id = "01"))
+
+        ProfileCache.putOptimistic(pubkey, com.nostr.torinos.model.NostrProfile(picture = "edited"))
+        assertEquals("edited", ProfileCache.get(pubkey)?.picture)
+        assertEquals("01", ProfileCache.entries.value[pubkey]?.eventId)
+        assertEquals(400, ProfileCache.entries.value[pubkey]?.createdAt)
+
+        ProfileCache.putEvent(profileEvent(pubkey, createdAt = 399, picture = "older", id = "00"))
+        assertEquals("edited", ProfileCache.get(pubkey)?.picture)
+
+        ProfileCache.putEvent(profileEvent(pubkey, createdAt = 401, picture = "newer", id = "02"))
+        assertEquals("newer", ProfileCache.get(pubkey)?.picture)
+    }
+
+    @Test
+    fun putEvent_rejectsNonProfileKind() {
+        val event = profileEvent(
+            pubkey = "profile-cache-kind-test",
+            createdAt = 500,
+            picture = "invalid",
+            kind = 1,
+        )
+
+        assertFailsWith<IllegalArgumentException> { ProfileCache.putEvent(event) }
+    }
+
     private fun profileEvent(
         pubkey: String,
         createdAt: Long,
         picture: String,
+        id: String = "$pubkey-$createdAt",
+        kind: Int = 0,
     ) = NostrEvent(
-        id = "$pubkey-$createdAt",
+        id = id,
         pubkey = pubkey,
         createdAt = createdAt,
-        kind = 0,
+        kind = kind,
         tags = emptyList(),
         content = """{"picture":"$picture"}""",
         sig = "",

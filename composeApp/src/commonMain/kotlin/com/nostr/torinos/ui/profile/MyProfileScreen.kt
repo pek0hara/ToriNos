@@ -77,6 +77,10 @@ fun MyProfileScreen(
         factory = viewModelFactory { initializer { EditProfileViewModel() } },
     )
 
+    LaunchedEffect(viewModel) {
+        viewModel.refreshProfile()
+    }
+
     LaunchedEffect(state.profile) {
         val profile = state.profile ?: return@LaunchedEffect
         postsViewModel.injectProfile(ownPubkey, profile)
