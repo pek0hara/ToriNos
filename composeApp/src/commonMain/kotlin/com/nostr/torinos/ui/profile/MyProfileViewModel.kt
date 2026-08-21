@@ -10,6 +10,7 @@ import com.nostr.torinos.network.CustomEmojiStore
 import com.nostr.torinos.network.FollowRepository
 import com.nostr.torinos.network.NostrRepository
 import com.nostr.torinos.network.ProfileCache
+import com.nostr.torinos.network.RelayListEventCache
 import com.nostr.torinos.network.RelayStore
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -48,7 +49,6 @@ class MyProfileViewModel(private val ownPubkey: String) : SafeViewModel() {
     private val collectorJobs = mutableListOf<Job>()
     private var followerCollectorJob: Job? = null
     private var followerEoseJob: Job? = null
-    private var latestRelayListCreatedAt = -1L
     private var latestGeneralStatusCreatedAt = -1L
     private var hasPublishedRelayList = false
     private val pendingLinkedProfilePubkeys = linkedSetOf<String>()
@@ -58,6 +58,13 @@ class MyProfileViewModel(private val ownPubkey: String) : SafeViewModel() {
     }
 
     private fun start() {
+        RelayListEventCache.get(ownPubkey)?.let { cachedRelayList ->
+            val relayUrls = cachedRelayList.relayUrls()
+            if (relayUrls.isNotEmpty()) {
+                hasPublishedRelayList = true
+                _state.update { it.copy(relayUrls = relayUrls) }
+            }
+        }
         ProfileCache.get(ownPubkey)?.let { cachedProfile ->
             _state.update { it.copy(profile = cachedProfile) }
             scheduleLinkedProfileFetch(cachedProfile.about.orEmpty())
@@ -100,9 +107,8 @@ class MyProfileViewModel(private val ownPubkey: String) : SafeViewModel() {
 
         collectorJobs += launch {
             NostrRepository.events(relayListSubId).collect { event ->
-                if (event.kind != 10002 || event.createdAt <= latestRelayListCreatedAt) return@collect
-                latestRelayListCreatedAt = event.createdAt
-                val relayUrls = event.relayUrls()
+                if (event.kind != 10002) return@collect
+                val relayUrls = RelayListEventCache.putEvent(event).relayUrls()
                 if (relayUrls.isNotEmpty()) {
                     hasPublishedRelayList = true
                     _state.update { it.copy(relayUrls = relayUrls) }

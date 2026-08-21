@@ -71,6 +71,7 @@ import com.nostr.torinos.model.NostrProfile
 import com.nostr.torinos.network.FollowRepository
 import com.nostr.torinos.network.NostrRepository
 import com.nostr.torinos.network.ProfileCache
+import com.nostr.torinos.network.RelayListSynchronizer
 import com.nostr.torinos.ui.components.EditableImage
 import com.nostr.torinos.ui.components.ImageCropperDialog
 import com.nostr.torinos.ui.components.ProfileNameText
@@ -233,6 +234,22 @@ fun KeySetupScreen(onSetupComplete: (pubkeyHex: String) -> Unit, onDismiss: (() 
                                 val err = runCatching {
                                     savePrivateKeyAndVerify(priv)
                                     saveToPasswordManager(nsec, npub)
+                                    FollowRepository.initializeNewAccountFollowList()
+                                        .onFailure { e ->
+                                            logException(
+                                                "KeySetupScreen",
+                                                e,
+                                                "Failed to publish initial follow list",
+                                            )
+                                        }
+                                    RelayListSynchronizer.initializeNewAccountRelayList()
+                                        .onFailure { e ->
+                                            logException(
+                                                "KeySetupScreen",
+                                                e,
+                                                "Failed to publish initial relay list",
+                                            )
+                                        }
                                 }.exceptionOrNull()?.let {
                                     logException("KeySetupScreen", it, "Failed to save generated private key")
                                     "秘密鍵を保存できませんでした: ${it.message}"

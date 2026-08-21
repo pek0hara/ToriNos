@@ -9,6 +9,7 @@ import com.nostr.torinos.model.extractNpubReferences
 import com.nostr.torinos.network.FollowRepository
 import com.nostr.torinos.network.NostrRepository
 import com.nostr.torinos.network.ProfileCache
+import com.nostr.torinos.network.RelayListEventCache
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -51,7 +52,6 @@ class UserProfileViewModel(
 
     private val collectorJobs = mutableListOf<Job>()
     private var followingCountStarted = false
-    private var latestRelayListCreatedAt = -1L
     private var latestGeneralStatusCreatedAt = -1L
     private val pendingLinkedProfilePubkeys = linkedSetOf<String>()
 
@@ -118,6 +118,9 @@ class UserProfileViewModel(
     fun clearFollowError() { _state.update { it.copy(followError = null) } }
 
     private fun start() {
+        RelayListEventCache.get(pubkey)?.let { cachedRelayList ->
+            _state.update { it.copy(relayUrls = cachedRelayList.relayUrls()) }
+        }
         ProfileCache.get(pubkey)?.let { cachedProfile ->
             _state.update { it.copy(profile = cachedProfile) }
             scheduleLinkedProfileFetch(cachedProfile.about.orEmpty())
@@ -207,9 +210,9 @@ class UserProfileViewModel(
 
         collectorJobs += launch {
             NostrRepository.events(relayListSubId).collect { event ->
-                if (event.kind != 10002 || event.createdAt <= latestRelayListCreatedAt) return@collect
-                latestRelayListCreatedAt = event.createdAt
-                _state.update { it.copy(relayUrls = event.relayUrls()) }
+                if (event.kind != 10002) return@collect
+                val latestEvent = RelayListEventCache.putEvent(event)
+                _state.update { it.copy(relayUrls = latestEvent.relayUrls()) }
             }
         }
 

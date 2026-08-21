@@ -1,22 +1,31 @@
 package com.nostr.torinos.network
 
+import com.nostr.torinos.model.NostrEvent
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 
 class RelayStoreTest {
     @Test
-    fun updateStopsWhenPreviouslyFoundRelayListCannotBeFetchedAgain() {
+    fun emptyRelayListCannotBePublished() {
         assertFailsWith<IllegalStateException> {
-            checkExistingPublishedRelayListWasFetched(
-                requireExistingEvent = true,
-                latestEventExists = false,
+            checkRelayListCanBePublished(emptyList())
+        }
+    }
+
+    @Test
+    fun relayListRequiresAtLeastOneWriteCapableRelay() {
+        assertFailsWith<IllegalStateException> {
+            checkRelayListCanBePublished(
+                listOf(listOf("r", "wss://read.example", "read")),
             )
         }
 
-        checkExistingPublishedRelayListWasFetched(
-            requireExistingEvent = false,
-            latestEventExists = false,
+        checkRelayListCanBePublished(
+            listOf(
+                listOf("r", "wss://read.example", "read"),
+                listOf("r", "wss://write.example", "write"),
+            ),
         )
     }
 
@@ -128,6 +137,27 @@ class RelayStoreTest {
         )
 
         assertEquals(currentTags, result)
+    }
+
+    @Test
+    fun legacyKind3RelayConfigurationCanSeedNip65List() {
+        val event = NostrEvent(
+            id = "id",
+            pubkey = "pubkey",
+            createdAt = 100,
+            kind = 3,
+            tags = emptyList(),
+            content = """{"wss://both.example":{"read":true,"write":true},"wss://read.example":{"read":true,"write":false},"wss://off.example":{"read":false,"write":false}}""",
+            sig = "sig",
+        )
+
+        assertEquals(
+            listOf(
+                listOf("r", "wss://both.example"),
+                listOf("r", "wss://read.example", "read"),
+            ),
+            legacyRelayTagsFromContactEvent(event),
+        )
     }
 
 }

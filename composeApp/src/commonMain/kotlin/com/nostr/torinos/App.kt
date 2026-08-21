@@ -380,10 +380,13 @@ fun App() {
 
         // ログイン時に、他クライアントから公開済みの NIP-65 リレーリストを端末設定へ反映する。
         // まずアカウント別キャッシュを即時表示し、リレー設定の同期後にもう一度取得する。
-        LaunchedEffect(ownPubkey) {
+        LaunchedEffect(ownPubkey, accountStateResetKey) {
             FollowRepository.reload()
             val pk = ownPubkey
-            if (pk == null) return@LaunchedEffect
+            if (pk == null) {
+                RelayListSynchronizer.stopObserving()
+                return@LaunchedEffect
+            }
             try {
                 RelayListSynchronizer.syncFromRelays(pk)
             } catch (e: CancellationException) {

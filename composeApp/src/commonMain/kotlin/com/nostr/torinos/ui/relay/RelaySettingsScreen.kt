@@ -64,9 +64,13 @@ fun RelaySettingsScreen(
     var showDisabledRelays by remember { mutableStateOf(false) }
     val searchQuery = input.trim()
     val isSearching = searchQuery.isNotEmpty()
-    val filteredEntries = entries.filter { entry ->
-        !isSearching || entry.url.contains(searchQuery, ignoreCase = true)
-    }
+    val stagedRelayUrls = publishedRelayListState.pendingAdditions +
+        publishedRelayListState.pendingRemovals
+    val filteredEntries = visibleRelayEntries(
+        entries = entries,
+        stagedRelayUrls = stagedRelayUrls,
+        searchQuery = searchQuery,
+    )
     val enabledEntries = filteredEntries.filter { it.enabled }
     val disabledEntries = filteredEntries.filterNot { it.enabled }
     val areDisabledRelaysVisible = isSearching || showDisabledRelays
@@ -286,6 +290,15 @@ fun RelaySettingsScreen(
             onRefresh = viewModel::refreshRelayInformation,
         )
     }
+}
+
+internal fun visibleRelayEntries(
+    entries: List<RelayEntry>,
+    stagedRelayUrls: Set<String>,
+    searchQuery: String,
+): List<RelayEntry> = entries.filter { entry ->
+    entry.url !in stagedRelayUrls &&
+        (searchQuery.isEmpty() || entry.url.contains(searchQuery, ignoreCase = true))
 }
 
 @Composable

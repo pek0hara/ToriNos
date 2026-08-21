@@ -120,7 +120,6 @@ class RelaySettingsViewModel : SafeViewModel() {
                     RelayListSynchronizer.updatePublishedRelayList(
                         additions = state.pendingAdditions,
                         removals = state.pendingRemovals,
-                        requireExistingEvent = state.hasPublishedEvent,
                     )
                 } else {
                     null
@@ -236,9 +235,19 @@ class RelaySettingsViewModel : SafeViewModel() {
     private fun observeStoredEntries() {
         launch {
             RelayStore.entries.collect { storedEntries ->
-                if (!isApplyingDraft && changedRelayUrls.isEmpty()) {
+                if (isApplyingDraft) return@collect
+                if (changedRelayUrls.isEmpty()) {
                     committedEntries = storedEntries
                     _entries.value = storedEntries
+                } else {
+                    val rebasedDraft = rebaseRelayEntryChanges(
+                        changedUrls = changedRelayUrls,
+                        newCommittedEntries = storedEntries,
+                        currentDraftEntries = _entries.value,
+                    )
+                    committedEntries = storedEntries
+                    _entries.value = rebasedDraft
+                    reconcilePublishedRelayChanges()
                 }
             }
         }
@@ -339,4 +348,26 @@ internal fun calculatePublishedRelayListChanges(
             committed != null && (draft == null || (committed.enabled && !draft.enabled))
         },
     )
+}
+
+/** 外部で更新された一覧へ、編集中の URL に対する操作意図だけを再適用する。 */
+internal fun rebaseRelayEntryChanges(
+    changedUrls: Set<String>,
+    newCommittedEntries: List<RelayEntry>,
+    currentDraftEntries: List<RelayEntry>,
+): List<RelayEntry> {
+    val draftByUrl = currentDraftEntries.associateBy { it.url }
+    val committedUrls = newCommittedEntries.mapTo(hashSetOf()) { it.url }
+    return buildList {
+        newCommittedEntries.forEach { committed ->
+            if (committed.url in changedUrls) {
+                draftByUrl[committed.url]?.let(::add)
+            } else {
+                add(committed)
+            }
+        }
+        currentDraftEntries.forEach { draft ->
+            if (draft.url in changedUrls && draft.url !in committedUrls) add(draft)
+        }
+    }.distinctBy { it.url }
 }

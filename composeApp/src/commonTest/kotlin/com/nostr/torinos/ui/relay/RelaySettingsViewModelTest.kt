@@ -55,4 +55,46 @@ class RelaySettingsViewModelTest {
 
         assertEquals(PublishedRelayListChanges(emptySet(), emptySet()), result)
     }
+
+    @Test
+    fun stagedRelaysAreHiddenFromRelayList() {
+        val entries = listOf(
+            RelayEntry("wss://existing.example", enabled = true),
+            RelayEntry("wss://add.example", enabled = true),
+            RelayEntry("wss://remove.example", enabled = false),
+        )
+
+        val result = visibleRelayEntries(
+            entries = entries,
+            stagedRelayUrls = setOf("wss://add.example", "wss://remove.example"),
+            searchQuery = "",
+        )
+
+        assertEquals(listOf(RelayEntry("wss://existing.example", enabled = true)), result)
+    }
+
+    @Test
+    fun stagedChangesAreRebasedOntoExternalRelayUpdate() {
+        val result = rebaseRelayEntryChanges(
+            changedUrls = setOf("wss://add.example", "wss://remove.example"),
+            newCommittedEntries = listOf(
+                RelayEntry("wss://existing.example", enabled = true),
+                RelayEntry("wss://remove.example", enabled = true),
+                RelayEntry("wss://external.example", enabled = true),
+            ),
+            currentDraftEntries = listOf(
+                RelayEntry("wss://existing.example", enabled = true),
+                RelayEntry("wss://add.example", enabled = true),
+            ),
+        )
+
+        assertEquals(
+            listOf(
+                RelayEntry("wss://existing.example", enabled = true),
+                RelayEntry("wss://external.example", enabled = true),
+                RelayEntry("wss://add.example", enabled = true),
+            ),
+            result,
+        )
+    }
 }
