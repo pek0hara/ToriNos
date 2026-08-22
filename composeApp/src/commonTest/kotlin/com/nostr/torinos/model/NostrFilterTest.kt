@@ -3,6 +3,7 @@ package com.nostr.torinos.model
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
 
 class NostrFilterTest {
@@ -90,6 +91,29 @@ class NostrFilterTest {
         val id = "my-unique-sub-id"
         val msg = buildReqMessage(id, NostrFilter())
         assertTrue(msg.contains(""""$id""""))
+    }
+
+    @Test
+    fun buildReqMessage_multipleFilters() {
+        val msg = buildReqMessage(
+            "multi",
+            listOf(
+                NostrFilter(kinds = listOf(1)),
+                NostrFilter(kinds = listOf(6), eTags = listOf("event")),
+            ),
+        )
+
+        assertEquals(
+            """["REQ","multi",{"kinds":[1]},{"kinds":[6],"#e":["event"]}]""",
+            msg,
+        )
+    }
+
+    @Test
+    fun buildReqMessage_rejectsEmptyFilters() {
+        assertFailsWith<IllegalArgumentException> {
+            buildReqMessage("empty", emptyList())
+        }
     }
 
     // ---- buildCloseMessage ----

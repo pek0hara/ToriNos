@@ -25,7 +25,13 @@ data class NostrFilter(
 private val filterJson = Json { encodeDefaults = false }
 
 fun buildReqMessage(subscriptionId: String, filter: NostrFilter): String =
-    """["REQ","$subscriptionId",${filterJson.encodeToString(filter)}]"""
+    buildReqMessage(subscriptionId, listOf(filter))
+
+fun buildReqMessage(subscriptionId: String, filters: List<NostrFilter>): String {
+    require(filters.isNotEmpty()) { "REQには1件以上のフィルターが必要です" }
+    val encodedFilters = filters.joinToString(",") { filterJson.encodeToString(it) }
+    return """["REQ","$subscriptionId",$encodedFilters]"""
+}
 
 fun buildCloseMessage(subscriptionId: String): String =
     """["CLOSE","$subscriptionId"]"""
