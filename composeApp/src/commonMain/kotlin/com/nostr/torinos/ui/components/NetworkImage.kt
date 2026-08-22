@@ -10,12 +10,16 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.FilterQuality
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.unit.Dp
+import coil3.Bitmap
 import coil3.compose.AsyncImage
 import coil3.compose.LocalPlatformContext
 import coil3.request.ImageRequest
 import coil3.request.crossfade
+import coil3.request.transformations
 import coil3.size.Precision
 import coil3.size.Scale
+import coil3.size.Size
+import coil3.transform.Transformation
 
 @Composable
 fun NetworkImage(
@@ -26,9 +30,10 @@ fun NetworkImage(
     alignment: Alignment = Alignment.Center,
     maxDecodeSizePx: Int? = null,
     filterQuality: FilterQuality = FilterQuality.Medium,
+    animate: Boolean = true,
 ) {
     val context = LocalPlatformContext.current
-    val model = remember(context, url, contentScale, maxDecodeSizePx) {
+    val model = remember(context, url, contentScale, maxDecodeSizePx, animate) {
         ImageRequest.Builder(context)
             .data(url)
             .crossfade(false)
@@ -37,6 +42,9 @@ fun NetworkImage(
                     size(maxDecodeSizePx)
                     precision(Precision.INEXACT)
                     scale(contentScale.toCoilScale())
+                }
+                if (!animate) {
+                    transformations(FirstFrameTransformation)
                 }
             }
             .build()
@@ -102,6 +110,13 @@ fun AvatarImage(
             .size(size)
             .clip(CircleShape),
     )
+}
+
+/** アニメーション画像を Bitmap 化し、タイムラインでは先頭フレームだけを描画する。 */
+private object FirstFrameTransformation : Transformation() {
+    override val cacheKey: String = "first-frame"
+
+    override suspend fun transform(input: Bitmap, size: Size): Bitmap = input
 }
 
 private fun ContentScale.toCoilScale(): Scale =

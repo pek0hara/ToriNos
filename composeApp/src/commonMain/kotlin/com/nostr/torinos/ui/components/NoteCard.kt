@@ -1439,6 +1439,7 @@ private fun CollapsibleNoteText(
 private const val CollapsedTextCharacterLimit = 140
 private const val CollapsedTextMaxVisibleLines = 9
 private const val TimelineImageMaxDecodeSizePx = 720
+private const val TimelineGridImageMaxDecodeSizePx = 360
 
 @Composable
 private fun ImagePreviewGrid(
@@ -1456,6 +1457,7 @@ private fun ImagePreviewGrid(
                 alignment = Alignment.CenterStart,
                 maxDecodeSizePx = TimelineImageMaxDecodeSizePx,
                 filterQuality = FilterQuality.Low,
+                animate = false,
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(imageHeight)
@@ -1574,8 +1576,9 @@ private fun GridImage(
         contentDescription = null,
         contentScale = ContentScale.Fit,
         alignment = Alignment.CenterStart,
-        maxDecodeSizePx = TimelineImageMaxDecodeSizePx,
+        maxDecodeSizePx = TimelineGridImageMaxDecodeSizePx,
         filterQuality = FilterQuality.Low,
+        animate = false,
         modifier = modifier
             .fillMaxSize()
             .clickable { onClick() },
