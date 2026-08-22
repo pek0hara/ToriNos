@@ -3,7 +3,6 @@ package com.nostr.torinos.ui.feed
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
-import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -15,6 +14,8 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.requiredHeight
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyListState
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowDropDown
@@ -35,11 +36,11 @@ import com.nostr.torinos.ui.components.AppTopBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.key
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
@@ -49,7 +50,6 @@ import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
 import androidx.compose.ui.input.nestedscroll.NestedScrollSource
@@ -67,6 +67,7 @@ import com.nostr.torinos.network.RelayStore
 import com.nostr.torinos.ui.components.NoteTimeline
 import com.nostr.torinos.ui.profile.AvatarCircle
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -115,27 +116,51 @@ fun FeedScreen(
     var handledScrollToTopRequest by remember { mutableStateOf(scrollToTopRequest) }
     val isLoggedOutMainFeed = authorPubkey == null && isAccountLoaded && ownPubkey == null
     val visibleFeedTabs = if (isLoggedOutMainFeed) listOf(FeedTab.Global) else FeedTab.entries
-    val visibleFeedTab = if (feedTab in visibleFeedTabs) feedTab else FeedTab.Global
+    val savedVisibleFeedTab = if (feedTab in visibleFeedTabs) feedTab else FeedTab.Global
+    val pagerState = rememberPagerState(
+        initialPage = visibleFeedTabs.indexOf(savedVisibleFeedTab).coerceAtLeast(0),
+        pageCount = { visibleFeedTabs.size },
+    )
+    val coroutineScope = rememberCoroutineScope()
+    val visibleFeedTab = visibleFeedTabs.getOrElse(pagerState.currentPage) { savedVisibleFeedTab }
 
     fun setFeedTab(tab: FeedTab) {
         val nextTab = if (isLoggedOutMainFeed && tab == FeedTab.Following) FeedTab.Global else tab
-        feedTab = nextTab
-        onCurrentFeedTabChanged(nextTab)
+        val page = visibleFeedTabs.indexOf(nextTab)
+        if (page >= 0) {
+            coroutineScope.launch {
+                pagerState.animateScrollToPage(page)
+            }
+        }
     }
 
-    LaunchedEffect(Unit) {
-        onCurrentFeedTabChanged(visibleFeedTab)
+    LaunchedEffect(accountResetKey, authorPubkey, visibleFeedTabs) {
+        val targetTab = if (feedTab in visibleFeedTabs) feedTab else FeedTab.Global
+        val targetPage = visibleFeedTabs.indexOf(targetTab).coerceAtLeast(0)
+        if (pagerState.currentPage != targetPage) {
+            pagerState.scrollToPage(targetPage)
+        }
+        if (feedTab != targetTab) {
+            feedTab = targetTab
+        }
+        onCurrentFeedTabChanged(targetTab)
     }
 
-    LaunchedEffect(isLoggedOutMainFeed) {
-        if (isLoggedOutMainFeed && feedTab == FeedTab.Following) {
-            setFeedTab(FeedTab.Global)
+    LaunchedEffect(pagerState, visibleFeedTabs) {
+        snapshotFlow { pagerState.currentPage }.collect { page ->
+            val tab = visibleFeedTabs.getOrNull(page) ?: return@collect
+            if (feedTab != tab) {
+                feedTab = tab
+                onCurrentFeedTabChanged(tab)
+            }
         }
     }
 
     LaunchedEffect(feedTabChangeRequest) {
         if (feedTabChangeRequest > 0 && authorPubkey == null) {
-            setFeedTab(requestedFeedTab)
+            val requestedTab = if (requestedFeedTab in visibleFeedTabs) requestedFeedTab else FeedTab.Global
+            val requestedPage = visibleFeedTabs.indexOf(requestedTab).coerceAtLeast(0)
+            pagerState.animateScrollToPage(requestedPage)
         }
     }
 
@@ -443,101 +468,97 @@ fun FeedScreen(
             .background(feedBackgroundColor)
             .nestedScroll(chromeNestedScrollConnection)
             .padding(padding)
-            .feedTabSwipe(
-                enabled = authorPubkey == null && visibleFeedTabs.size > 1,
-                currentTab = visibleFeedTab,
-                onTabChange = { setFeedTab(it) },
+
+        if (authorPubkey != null) {
+            FeedTimelinePane(
+                viewModelKey = "profile-$authorPubkey-${activeRelayUrl ?: "all"}",
+                authorPubkey = authorPubkey,
+                authorPubkeys = listOf(authorPubkey),
+                relayUrl = activeRelayUrl,
+                includeRepostsInFeed = false,
+                hashtag = null,
+                ownPubkey = ownPubkey,
+                onUserClick = onUserClick,
+                modifier = timelineModifier,
+                onReply = onReply,
+                onOpenReplies = onOpenReplies,
+                onOpenLikes = onOpenLikes,
+                onOpenReposts = onOpenReposts,
+                onHashtagClick = null,
+                scrollToTopRequest = scrollToTopRequest,
             )
-
-        when {
-            authorPubkey != null -> {
-                FeedTimelinePane(
-                    viewModelKey = "profile-$authorPubkey-${activeRelayUrl ?: "all"}",
-                    authorPubkey = authorPubkey,
-                    authorPubkeys = listOf(authorPubkey),
-                    relayUrl = activeRelayUrl,
-                    includeRepostsInFeed = false,
-                    hashtag = null,
-                    ownPubkey = ownPubkey,
-                    onUserClick = onUserClick,
-                    modifier = timelineModifier,
-                    onReply = onReply,
-                    onOpenReplies = onOpenReplies,
-                    onOpenLikes = onOpenLikes,
-                    onOpenReposts = onOpenReposts,
-                    onHashtagClick = null,
-                    scrollToTopRequest = scrollToTopRequest,
-                )
-            }
-
-            visibleFeedTab == FeedTab.Following -> {
-                key(FeedTab.Following) {
-                    val followingAuthors = when (followingFeedMode) {
-                        FollowingFeedMode.Following -> followedPubkeys.sorted()
-                        FollowingFeedMode.Muted -> mutedPubkeys.sorted()
-                    }
-                    if (followingFeedMode == FollowingFeedMode.Following && !isFollowListLoaded) {
-                        Box(
-                            modifier = timelineModifier.fillMaxSize(),
-                            contentAlignment = Alignment.Center,
-                        ) {
-                            Text(
-                                text = "読み込み中...",
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = MaterialTheme.colorScheme.onBackground,
+        } else {
+            HorizontalPager(
+                state = pagerState,
+                modifier = timelineModifier.fillMaxSize(),
+            ) { page ->
+                when (visibleFeedTabs[page]) {
+                    FeedTab.Following -> {
+                        val followingAuthors = when (followingFeedMode) {
+                            FollowingFeedMode.Following -> followedPubkeys.sorted()
+                            FollowingFeedMode.Muted -> mutedPubkeys.sorted()
+                        }
+                        if (followingFeedMode == FollowingFeedMode.Following && !isFollowListLoaded) {
+                            Box(
+                                modifier = Modifier.fillMaxSize(),
+                                contentAlignment = Alignment.Center,
+                            ) {
+                                Text(
+                                    text = "読み込み中...",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = MaterialTheme.colorScheme.onBackground,
+                                )
+                            }
+                        } else {
+                            val ownerKey = ownPubkey ?: "anonymous"
+                            FeedTimelinePane(
+                                viewModelKey = "global-${FeedTab.Following.name}-${followingFeedMode.name}-" +
+                                    "all-$ownerKey-${followingAuthors.joinToString(separator = ",")}",
+                                authorPubkey = null,
+                                authorPubkeys = followingAuthors,
+                                relayUrl = null,
+                                includeRepostsInFeed = followingFeedMode == FollowingFeedMode.Following,
+                                hashtag = null,
+                                filterMutedUsers = followingFeedMode == FollowingFeedMode.Following,
+                                ownPubkey = ownPubkey,
+                                onUserClick = onUserClick,
+                                modifier = Modifier.fillMaxSize(),
+                                onReply = onReply,
+                                onOpenReplies = onOpenReplies,
+                                onOpenLikes = onOpenLikes,
+                                onOpenReposts = onOpenReposts,
+                                onHashtagClick = { tag -> onOpenSearch("#$tag") },
+                                listState = followingListState,
+                                onRefresh = {
+                                    if (followingFeedMode == FollowingFeedMode.Following) {
+                                        FollowRepository.refresh()
+                                    }
+                                },
                             )
                         }
-                    } else {
+                    }
+
+                    FeedTab.Global -> {
                         val ownerKey = ownPubkey ?: "anonymous"
                         FeedTimelinePane(
-                            viewModelKey = "global-${FeedTab.Following.name}-${followingFeedMode.name}-" +
-                                "${activeRelayUrl ?: "all"}-$ownerKey-${followingAuthors.joinToString(separator = ",")}",
+                            viewModelKey = "global-${FeedTab.Global.name}-" +
+                                "${effectiveGlobalRelayUrl ?: "all"}-all-false-$ownerKey",
                             authorPubkey = null,
-                            authorPubkeys = followingAuthors,
-                            relayUrl = activeRelayUrl,
-                            includeRepostsInFeed = followingFeedMode == FollowingFeedMode.Following,
+                            authorPubkeys = null,
+                            relayUrl = effectiveGlobalRelayUrl,
+                            includeRepostsInFeed = false,
                             hashtag = null,
-                            filterMutedUsers = followingFeedMode == FollowingFeedMode.Following,
                             ownPubkey = ownPubkey,
                             onUserClick = onUserClick,
-                            modifier = timelineModifier,
+                            modifier = Modifier.fillMaxSize(),
                             onReply = onReply,
                             onOpenReplies = onOpenReplies,
                             onOpenLikes = onOpenLikes,
                             onOpenReposts = onOpenReposts,
                             onHashtagClick = { tag -> onOpenSearch("#$tag") },
-                            listState = followingListState,
-                            onRefresh = {
-                                if (followingFeedMode == FollowingFeedMode.Following) {
-                                    FollowRepository.refresh()
-                                }
-                            },
+                            listState = globalListState,
                         )
                     }
-                }
-            }
-
-            else -> {
-                key(FeedTab.Global) {
-                    val ownerKey = ownPubkey ?: "anonymous"
-                    FeedTimelinePane(
-                        viewModelKey = "global-${FeedTab.Global.name}-${activeRelayUrl ?: "all"}-all-false-" +
-                            ownerKey,
-                        authorPubkey = null,
-                        authorPubkeys = null,
-                        relayUrl = activeRelayUrl,
-                        includeRepostsInFeed = false,
-                        hashtag = null,
-                        ownPubkey = ownPubkey,
-                        onUserClick = onUserClick,
-                        modifier = timelineModifier,
-                        onReply = onReply,
-                        onOpenReplies = onOpenReplies,
-                        onOpenLikes = onOpenLikes,
-                        onOpenReposts = onOpenReposts,
-                        onHashtagClick = { tag -> onOpenSearch("#$tag") },
-                        listState = globalListState,
-                    )
                 }
             }
         }
@@ -646,36 +667,6 @@ private enum class FollowingFeedMode {
     Following,
     Muted,
 }
-
-private fun Modifier.feedTabSwipe(
-    enabled: Boolean,
-    currentTab: FeedTab,
-    onTabChange: (FeedTab) -> Unit,
-): Modifier {
-    if (!enabled) return this
-
-    return pointerInput(currentTab) {
-        var dragAmount = 0f
-        detectHorizontalDragGestures(
-            onDragStart = { dragAmount = 0f },
-            onHorizontalDrag = { change, amount ->
-                dragAmount += amount
-                change.consume()
-            },
-            onDragEnd = {
-                when {
-                    dragAmount < -SwipeThresholdPx && currentTab == FeedTab.Following ->
-                        onTabChange(FeedTab.Global)
-                    dragAmount > SwipeThresholdPx && currentTab == FeedTab.Global ->
-                        onTabChange(FeedTab.Following)
-                }
-            },
-            onDragCancel = { dragAmount = 0f },
-        )
-    }
-}
-
-private const val SwipeThresholdPx = 80f
 private const val ChromeSettleDelayMillis = 60L
 private const val ChromeSettleAnimationMillis = 140
 
