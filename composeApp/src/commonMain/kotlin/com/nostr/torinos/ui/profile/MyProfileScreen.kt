@@ -23,6 +23,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.runtime.collectAsState
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.nostr.torinos.account.accountScopedViewModelKey
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
 import com.nostr.torinos.ui.components.NoteTimeline
@@ -41,11 +42,13 @@ fun MyProfileScreen(
     onOpenLikes: (eventId: String) -> Unit = {},
     onOpenReposts: (eventId: String) -> Unit = {},
     viewModel: MyProfileViewModel = viewModel(
-        key = "my-profile-$ownPubkey",
+        key = accountScopedViewModelKey("my-profile-$ownPubkey"),
         factory = viewModelFactory { initializer { MyProfileViewModel(ownPubkey) } },
     ),
 ) {
-    val postsViewModel: FeedViewModel = viewModel(key = "my-feed-$ownPubkey-posts") {
+    val postsViewModel: FeedViewModel = viewModel(
+        key = accountScopedViewModelKey("my-feed-$ownPubkey-posts"),
+    ) {
         FeedViewModel(
             authorPubkey = ownPubkey,
             autoStart = false,
@@ -53,7 +56,9 @@ fun MyProfileScreen(
             includeRepliesInFeed = false,
         )
     }
-    val postsAndRepliesViewModel: FeedViewModel = viewModel(key = "my-feed-$ownPubkey-posts-replies") {
+    val postsAndRepliesViewModel: FeedViewModel = viewModel(
+        key = accountScopedViewModelKey("my-feed-$ownPubkey-posts-replies"),
+    ) {
         FeedViewModel(
             authorPubkey = ownPubkey,
             autoStart = false,
@@ -73,7 +78,7 @@ fun MyProfileScreen(
     var showStatusEdit by remember(ownPubkey) { mutableStateOf(false) }
     var selectedTab by remember(ownPubkey) { mutableStateOf(ProfileTimelineTab.Posts) }
     val editProfileViewModel = viewModel<EditProfileViewModel>(
-        key = "edit-profile-$ownPubkey",
+        key = accountScopedViewModelKey("edit-profile-$ownPubkey"),
         factory = viewModelFactory { initializer { EditProfileViewModel() } },
     )
 

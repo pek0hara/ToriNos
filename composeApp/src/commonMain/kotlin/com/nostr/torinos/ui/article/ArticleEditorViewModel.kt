@@ -1,7 +1,7 @@
 package com.nostr.torinos.ui.article
 
-import com.nostr.torinos.crypto.KeyStorage
-import com.nostr.torinos.crypto.signEvent
+import com.nostr.torinos.account.AccountSession
+import com.nostr.torinos.account.AccountSessions
 import com.nostr.torinos.model.NIP23_ARTICLE_KIND
 import com.nostr.torinos.network.ImageUploader
 import com.nostr.torinos.network.NostrRepository
@@ -73,6 +73,7 @@ class ArticleEditorViewModel(
     private val editPubkey: String? = null,
     private val editIdentifier: String? = null,
     private val relayUrl: String? = null,
+    private val accountSession: AccountSession? = AccountSessions.manager.currentSession,
 ) : SafeViewModel() {
     private val _state = MutableStateFlow(ArticleEditorState())
     val state: StateFlow<ArticleEditorState> = _state.asStateFlow()
@@ -155,7 +156,7 @@ class ArticleEditorViewModel(
         if (_state.value.isUploadingCover) return
         _state.update { it.copy(isUploadingCover = true, error = null) }
         launch {
-            ImageUploader.upload(bytes, mimeType)
+            ImageUploader.upload(bytes, mimeType, accountSession?.signer)
                 .onSuccess { url ->
                     _state.update {
                         it.copy(
@@ -179,7 +180,7 @@ class ArticleEditorViewModel(
         if (_state.value.isUploadingBodyImage) return
         _state.update { it.copy(isUploadingBodyImage = true, error = null) }
         launch {
-            ImageUploader.upload(bytes, mimeType)
+            ImageUploader.upload(bytes, mimeType, accountSession?.signer)
                 .onSuccess { url ->
                     _state.update {
                         val separator = if (it.content.isBlank()) "" else "\n\n"
@@ -232,8 +233,7 @@ class ArticleEditorViewModel(
         launch {
             appLog("[ArticleEditor] publish started relays=${relayUrls.size}")
             runCatching {
-                val privateKeyHex = KeyStorage.loadPrivateKey()
-                    ?: error("秘密鍵が設定されていません")
+                val signer = accountSession?.signer ?: error("秘密鍵が設定されていません")
                 val now = Clock.System.now().epochSeconds
                 val editingArticle = current.editingArticle
                 val publishedAt = editingArticle?.publishedAt ?: now
@@ -246,8 +246,7 @@ class ArticleEditorViewModel(
                     topicsInput = current.topicsInput,
                     publishedAt = publishedAt,
                 )
-                val event = signEvent(
-                    privateKeyHex = privateKeyHex,
+                val event = signer.sign(
                     content = current.content.trim(),
                     kind = NIP23_ARTICLE_KIND,
                     tags = tags,

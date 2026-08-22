@@ -1,7 +1,7 @@
 package com.nostr.torinos.ui.profile
 
-import com.nostr.torinos.crypto.KeyStorage
-import com.nostr.torinos.crypto.signEvent
+import com.nostr.torinos.account.AccountSession
+import com.nostr.torinos.account.AccountSessions
 import com.nostr.torinos.ui.SafeViewModel
 import com.nostr.torinos.model.NostrFilter
 import com.nostr.torinos.model.NostrProfile
@@ -36,7 +36,10 @@ data class MyProfileState(
     val generalStatusError: String? = null,
 )
 
-class MyProfileViewModel(private val ownPubkey: String) : SafeViewModel() {
+class MyProfileViewModel(
+    private val ownPubkey: String,
+    private val accountSession: AccountSession? = AccountSessions.manager.currentSession,
+) : SafeViewModel() {
     private val _state = MutableStateFlow(MyProfileState())
     val state: StateFlow<MyProfileState> = _state.asStateFlow()
 
@@ -179,10 +182,8 @@ class MyProfileViewModel(private val ownPubkey: String) : SafeViewModel() {
         launch {
             _state.update { it.copy(isGeneralStatusPublishing = true, generalStatusError = null) }
             try {
-                val privateKeyHex = KeyStorage.loadPrivateKey()
-                    ?: error("秘密鍵が見つかりません")
-                val event = signEvent(
-                    privateKeyHex = privateKeyHex,
+                val signer = accountSession?.signer ?: error("秘密鍵が見つかりません")
+                val event = signer.sign(
                     content = body,
                     kind = PROFILE_STATUS_KIND,
                     tags = listOf(listOf("d", PROFILE_GENERAL_STATUS_TAG)) +

@@ -35,6 +35,7 @@ import androidx.lifecycle.ViewModelProvider
 import androidx.compose.runtime.collectAsState
 import androidx.lifecycle.viewmodel.CreationExtras
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.nostr.torinos.account.accountScopedViewModelKey
 import com.nostr.torinos.model.NostrProfile
 import com.nostr.torinos.network.MuteStore
 import com.nostr.torinos.network.PrivateMuteListSyncState
@@ -78,7 +79,10 @@ class MuteListViewModel : SafeViewModel() {
 fun MuteListScreen(
     onBack: () -> Unit = {},
     onUserClick: (String) -> Unit = {},
-    viewModel: MuteListViewModel = viewModel(factory = MuteListViewModel.Factory),
+    viewModel: MuteListViewModel = viewModel(
+        key = accountScopedViewModelKey("mute-list"),
+        factory = MuteListViewModel.Factory,
+    ),
 ) {
     val mutedPubkeys by MuteStore.mutedPubkeys.collectAsState()
     val syncState by MuteStore.syncState.collectAsState()

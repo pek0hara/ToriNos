@@ -76,6 +76,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.nostr.torinos.account.accountScopedViewModelKey
 import com.nostr.torinos.model.LiveActivityItem
 import com.nostr.torinos.model.LiveActivityStatus
 import com.nostr.torinos.model.LiveParticipant
@@ -130,11 +131,13 @@ fun LiveHubScreen(
         return
     }
 
-    val viewModel: LiveListViewModel = viewModel(key = "live-hub-$activeRelayUrl") {
+    val viewModel: LiveListViewModel = viewModel(key = accountScopedViewModelKey("live-hub-$activeRelayUrl")) {
         LiveListViewModel(relayUrl = activeRelayUrl)
     }
     val state by viewModel.state.collectAsState()
-    val createViewModel: LiveCreateViewModel = viewModel(key = "live-create-$activeRelayUrl") {
+    val createViewModel: LiveCreateViewModel = viewModel(
+        key = accountScopedViewModelKey("live-create-$activeRelayUrl"),
+    ) {
         LiveCreateViewModel(relayUrl = activeRelayUrl)
     }
     val createState by createViewModel.state.collectAsState()
@@ -325,7 +328,9 @@ fun LiveDetailScreen(
         return
     }
 
-    val viewModel: LiveDetailViewModel = viewModel(key = "live-detail-$pubkey-$identifier-$activeRelayUrl") {
+    val viewModel: LiveDetailViewModel = viewModel(
+        key = accountScopedViewModelKey("live-detail-$pubkey-$identifier-$activeRelayUrl"),
+    ) {
         LiveDetailViewModel(pubkey = pubkey, identifier = identifier, relayUrl = activeRelayUrl)
     }
     val state by viewModel.state.collectAsState()

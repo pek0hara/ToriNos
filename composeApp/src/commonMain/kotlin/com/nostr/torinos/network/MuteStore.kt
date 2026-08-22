@@ -21,7 +21,7 @@ object MuteStore {
         PrivateMuteListStore.refresh()
     }
 
-    fun resetForAccountChange() {
-        PrivateMuteListStore.resetForAccountChange()
+    fun resetForAccountChange(pubkey: String?) {
+        PrivateMuteListStore.resetForAccountChange(pubkey)
     }
 }

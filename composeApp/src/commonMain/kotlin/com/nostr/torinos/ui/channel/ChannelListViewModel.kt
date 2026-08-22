@@ -3,8 +3,8 @@ package com.nostr.torinos.ui.channel
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewmodel.CreationExtras
-import com.nostr.torinos.crypto.KeyStorage
-import com.nostr.torinos.crypto.signEvent
+import com.nostr.torinos.account.AccountSession
+import com.nostr.torinos.account.AccountSessions
 import com.nostr.torinos.model.ChannelMeta
 import com.nostr.torinos.model.NostrEvent
 import com.nostr.torinos.model.NostrFilter
@@ -45,7 +45,10 @@ data class ChannelItem(
     val isFavorite: Boolean = false,
 )
 
-class ChannelListViewModel(private val relayUrl: String? = null) : SafeViewModel() {
+class ChannelListViewModel(
+    private val relayUrl: String? = null,
+    private val accountSession: AccountSession? = AccountSessions.manager.currentSession,
+) : SafeViewModel() {
 
     companion object {
         private const val PAGE_TIMEOUT_MS = 10_000L
@@ -306,7 +309,7 @@ class ChannelListViewModel(private val relayUrl: String? = null) : SafeViewModel
         _state.value = current.copy(deleteDialog = dialog.copy(isDeleting = true, error = null))
         launch {
             if (dialog.deleteFromRelays) {
-                val privateKeyHex = KeyStorage.loadPrivateKey() ?: run {
+                val signer = accountSession?.signer ?: run {
                     val s = _state.value as? UiState.Ready ?: return@launch
                     _state.value = s.copy(
                         deleteDialog = s.deleteDialog?.copy(
@@ -317,8 +320,7 @@ class ChannelListViewModel(private val relayUrl: String? = null) : SafeViewModel
                     return@launch
                 }
                 runCatching {
-                    val deletion = signEvent(
-                        privateKeyHex = privateKeyHex,
+                    val deletion = signer.sign(
                         content = "",
                         kind = 5,
                         tags = listOf(
@@ -430,7 +432,7 @@ class ChannelListViewModel(private val relayUrl: String? = null) : SafeViewModel
         if (dialog.name.isBlank() || dialog.isCreating) return
         _state.value = current.copy(createDialog = dialog.copy(isCreating = true, error = null))
         launch {
-            val privateKeyHex = KeyStorage.loadPrivateKey() ?: run {
+            val signer = accountSession?.signer ?: run {
                 val s = _state.value as? UiState.Ready ?: return@launch
                 _state.value = s.copy(createDialog = s.createDialog?.copy(isCreating = false, error = "秘密鍵が設定されていません"))
                 return@launch
@@ -446,11 +448,10 @@ class ChannelListViewModel(private val relayUrl: String? = null) : SafeViewModel
                     put("about", meta.about)
                     put("picture", "")
                 }.toString()
-                val event = signEvent(privateKeyHex, content, kind = 40, tags = listOf(listOf("client", "ToriNos")))
+                val event = signer.sign(content, kind = 40, tags = listOf(listOf("client", "ToriNos")))
                 NostrRepository.publish(event)
                 val firstPost = dialog.body.trim().takeIf { it.isNotBlank() }?.let { body ->
-                    signEvent(
-                        privateKeyHex = privateKeyHex,
+                    signer.sign(
                         content = body,
                         kind = 42,
                         tags = listOf(listOf("e", event.id, "", "root"), listOf("client", "ToriNos")),

@@ -1,9 +1,8 @@
 package com.nostr.torinos.ui.settings
 
-import com.nostr.torinos.crypto.KeyStorage
+import com.nostr.torinos.account.AccountSessionState
+import com.nostr.torinos.account.AccountSessions
 import com.nostr.torinos.crypto.StoredAccount
-import com.nostr.torinos.crypto.hexToNsec
-import com.nostr.torinos.crypto.signEvent
 import com.nostr.torinos.model.NostrProfile
 import com.nostr.torinos.network.NostrRepository
 import com.nostr.torinos.network.ProfileFetchPolicy
@@ -29,6 +28,7 @@ data class SettingsState(
 )
 
 class SettingsViewModel : SafeViewModel() {
+    private val accountSessionManager = AccountSessions.manager
     private val _state = MutableStateFlow(SettingsState())
     val state: StateFlow<SettingsState> = _state.asStateFlow()
 
@@ -51,7 +51,7 @@ class SettingsViewModel : SafeViewModel() {
 
     fun refreshAccounts() {
         launch {
-            val accounts = runCatching { KeyStorage.listAccounts() }.getOrElse { e ->
+            val accounts = runCatching { accountSessionManager.listAccounts() }.getOrElse { e ->
                 logException("SettingsViewModel", e, "Failed to load accounts")
                 emptyList()
             }
@@ -80,8 +80,8 @@ class SettingsViewModel : SafeViewModel() {
                 )
             }
             try {
-                KeyStorage.switchAccount(pubkeyHex)
-                val accounts = KeyStorage.listAccounts()
+                val session = accountSessionManager.switchAccount(pubkeyHex).getOrThrow()
+                val accounts = accountSessionManager.listAccounts()
                 _state.update {
                     it.copy(
                         accounts = accounts,
@@ -89,7 +89,7 @@ class SettingsViewModel : SafeViewModel() {
                         accountActionError = null,
                     )
                 }
-                onSwitched(pubkeyHex)
+                onSwitched(session.pubkey)
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Throwable) {
@@ -109,9 +109,8 @@ class SettingsViewModel : SafeViewModel() {
     fun showSecretKey() {
         launch {
             val nsec = runCatching {
-                val privateKey = KeyStorage.loadPrivateKey()
+                accountSessionManager.exportActiveNsec()
                     ?: error("秘密鍵が保存されていません")
-                hexToNsec(privateKey)
             }.getOrElse { e ->
                 logException("SettingsViewModel", e, "Failed to load private key for display")
                 _state.update {
@@ -135,9 +134,8 @@ class SettingsViewModel : SafeViewModel() {
     fun copySecretKey() {
         launch {
             val nsec = runCatching {
-                val privateKey = KeyStorage.loadPrivateKey()
+                accountSessionManager.exportActiveNsec()
                     ?: error("秘密鍵が保存されていません")
-                hexToNsec(privateKey)
             }.getOrElse { e ->
                 logException("SettingsViewModel", e, "Failed to load private key for clipboard")
                 _state.update { it.copy(keyError = e.message ?: "秘密鍵を読み込めませんでした") }
@@ -159,8 +157,8 @@ class SettingsViewModel : SafeViewModel() {
                 )
             }
             try {
-                KeyStorage.logout()
-                val accounts = KeyStorage.listAccounts()
+                accountSessionManager.logout().getOrThrow()
+                val accounts = accountSessionManager.listAccounts()
                 _state.update {
                     it.copy(
                         accounts = accounts,
@@ -204,17 +202,16 @@ class SettingsViewModel : SafeViewModel() {
                 )
             }
             try {
-                val privateKeyHex = KeyStorage.loadPrivateKey()
+                val signer = accountSessionManager.currentSession?.signer
                     ?: error("秘密鍵が保存されていません")
-                val vanishRequest = signEvent(
-                    privateKeyHex = privateKeyHex,
+                val vanishRequest = signer.sign(
                     content = "",
                     kind = 62,
                     tags = targets.map { listOf("relay", it) },
                 )
                 NostrRepository.publishToRelays(vanishRequest, targets)
-                KeyStorage.deleteKey()
-                val accounts = KeyStorage.listAccounts()
+                val nextState = accountSessionManager.deleteCurrentAccount().getOrThrow()
+                val accounts = accountSessionManager.listAccounts()
                 _state.update {
                     it.copy(
                         accounts = accounts,
@@ -224,7 +221,7 @@ class SettingsViewModel : SafeViewModel() {
                         accountActionError = null,
                     )
                 }
-                onCleared(accounts.firstOrNull()?.pubkeyHex)
+                onCleared((nextState as? AccountSessionState.Active)?.session?.pubkey)
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Throwable) {

@@ -1,7 +1,7 @@
 package com.nostr.torinos.ui.live
 
-import com.nostr.torinos.crypto.KeyStorage
-import com.nostr.torinos.crypto.signEvent
+import com.nostr.torinos.account.AccountSession
+import com.nostr.torinos.account.AccountSessions
 import com.nostr.torinos.model.LiveActivityItem
 import com.nostr.torinos.model.LiveActivityStatus
 import com.nostr.torinos.model.NIP53_LIVE_ACTIVITY_KIND
@@ -241,7 +241,10 @@ class LiveListViewModel(private val relayUrl: String? = null) : SafeViewModel() 
     }
 }
 
-class LiveCreateViewModel(private val relayUrl: String? = null) : SafeViewModel() {
+class LiveCreateViewModel(
+    private val relayUrl: String? = null,
+    private val accountSession: AccountSession? = AccountSessions.manager.currentSession,
+) : SafeViewModel() {
     private val _state = MutableStateFlow(
         LiveCreateState(
             scheduledDate = defaultScheduledDate(),
@@ -273,7 +276,7 @@ class LiveCreateViewModel(private val relayUrl: String? = null) : SafeViewModel(
             publishedEvent = null,
         )
         launch {
-            ImageUploader.upload(bytes, mimeType)
+            ImageUploader.upload(bytes, mimeType, accountSession?.signer)
                 .onSuccess { url ->
                     _state.value = _state.value.copy(
                         image = _state.value.image?.copy(uploadedUrl = url, isUploading = false),
@@ -331,11 +334,9 @@ class LiveCreateViewModel(private val relayUrl: String? = null) : SafeViewModel(
         launch {
             _state.value = _state.value.copy(isPublishing = true, error = null, publishedEvent = null)
             try {
-                val privateKeyHex = KeyStorage.loadPrivateKey()
-                    ?: error("秘密鍵が見つかりません")
+                val signer = accountSession?.signer ?: error("秘密鍵が見つかりません")
                 val identifier = "torinos-live-$now"
-                val event = signEvent(
-                    privateKeyHex = privateKeyHex,
+                val event = signer.sign(
                     content = current.summary.trim(),
                     kind = NIP53_LIVE_ACTIVITY_KIND,
                     tags = buildLiveActivityTags(
@@ -445,6 +446,7 @@ class LiveDetailViewModel(
     private val pubkey: String,
     private val identifier: String,
     private val relayUrl: String? = null,
+    private val accountSession: AccountSession? = AccountSessions.manager.currentSession,
 ) : SafeViewModel() {
     private val _state = MutableStateFlow(LiveDetailState())
     val state: StateFlow<LiveDetailState> = _state.asStateFlow()
@@ -471,10 +473,8 @@ class LiveDetailViewModel(
         launch {
             _state.value = _state.value.copy(isPublishing = true, error = null)
             try {
-                val privateKeyHex = KeyStorage.loadPrivateKey()
-                    ?: error("秘密鍵が見つかりません")
-                val event = signEvent(
-                    privateKeyHex = privateKeyHex,
+                val signer = accountSession?.signer ?: error("秘密鍵が見つかりません")
+                val event = signer.sign(
                     content = body,
                     kind = NIP53_LIVE_CHAT_KIND,
                     tags = listOf(listOf("a", address, relayUrl.orEmpty(), "root")),
@@ -512,11 +512,9 @@ class LiveDetailViewModel(
         launch {
             _state.value = _state.value.copy(isPublishing = true, error = null)
             try {
-                val privateKeyHex = KeyStorage.loadPrivateKey()
-                    ?: error("秘密鍵が見つかりません")
+                val signer = accountSession?.signer ?: error("秘密鍵が見つかりません")
                 val now = Clock.System.now().epochSeconds
-                val event = signEvent(
-                    privateKeyHex = privateKeyHex,
+                val event = signer.sign(
                     content = currentActivity.event.content,
                     kind = NIP53_LIVE_ACTIVITY_KIND,
                     tags = currentActivity.event.tags.endedLiveTags(
@@ -553,10 +551,8 @@ class LiveDetailViewModel(
         launch {
             _state.value = _state.value.copy(isPublishing = true, error = null)
             try {
-                val privateKeyHex = KeyStorage.loadPrivateKey()
-                    ?: error("秘密鍵が見つかりません")
-                val deletion = signEvent(
-                    privateKeyHex = privateKeyHex,
+                val signer = accountSession?.signer ?: error("秘密鍵が見つかりません")
+                val deletion = signer.sign(
                     content = "ライブを削除",
                     kind = NIP09_DELETION_KIND,
                     tags = listOf(

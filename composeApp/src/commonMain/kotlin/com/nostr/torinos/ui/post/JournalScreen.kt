@@ -71,6 +71,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.nostr.torinos.account.accountScopedViewModelKey
 import com.nostr.torinos.model.NostrEvent
 import com.nostr.torinos.model.NostrProfile
 import com.nostr.torinos.model.NIP23_ARTICLE_KIND
@@ -111,7 +112,9 @@ fun JournalScreen(
     onOpenRelaySettings: () -> Unit = {},
     targetPubkey: String? = null,
     viewModel: JournalViewModel = viewModel(
-        key = targetPubkey?.let { "journal-$it" } ?: "journal-${accountKey ?: "anonymous"}",
+        key = accountScopedViewModelKey(
+            targetPubkey?.let { "journal-$it" } ?: "journal-${accountKey ?: "anonymous"}",
+        ),
     ) {
         JournalViewModel(targetPubkey)
     },

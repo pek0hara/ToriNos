@@ -45,6 +45,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.runtime.collectAsState
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.nostr.torinos.account.accountScopedViewModelKey
 import com.nostr.torinos.model.noteContextForChannel
 import com.nostr.torinos.model.quotedEventIds
 import com.nostr.torinos.model.stripNostrEventUris
@@ -70,7 +71,9 @@ fun ThreadScreen(
     onOpenLikes: (eventId: String) -> Unit = {},
     onOpenReposts: (eventId: String) -> Unit = {},
     ownPubkey: String? = null,
-    viewModel: ThreadViewModel = viewModel(key = "thread-$eventId-${channelId ?: "note"}") {
+    viewModel: ThreadViewModel = viewModel(
+        key = accountScopedViewModelKey("thread-$eventId-${channelId ?: "note"}"),
+    ) {
         ThreadViewModel(eventId, noteContextForChannel(channelId))
     },
 ) {

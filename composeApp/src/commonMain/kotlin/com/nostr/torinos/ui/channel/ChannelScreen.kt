@@ -48,6 +48,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.runtime.collectAsState
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.nostr.torinos.account.accountScopedViewModelKey
 import com.nostr.torinos.model.ChannelMeta
 import com.nostr.torinos.network.MuteStore
 import com.nostr.torinos.network.RelayStore
@@ -92,7 +93,9 @@ fun ChannelScreen(
         return
     }
 
-    val viewModel: ChannelViewModel = viewModel(key = "$channelId-$activeRelayUrl") {
+    val viewModel: ChannelViewModel = viewModel(
+        key = accountScopedViewModelKey("$channelId-$activeRelayUrl"),
+    ) {
         ChannelViewModel(channelId = channelId, relayUrl = activeRelayUrl)
     }
     val state by viewModel.state.collectAsState()

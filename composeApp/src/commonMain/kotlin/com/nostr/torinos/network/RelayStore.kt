@@ -9,6 +9,8 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.json.Json
@@ -31,6 +33,7 @@ object RelayStore {
 
     private val json = Json { ignoreUnknownKeys = true }
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    private val accountMutex = Mutex()
 
     val defaults = listOf(
         RelayEntry("wss://yabu.me", enabled = true),
@@ -51,6 +54,7 @@ object RelayStore {
     private val _selectedLiveRelayUrl = MutableStateFlow<String?>(null)
     private val _selectedMemoRelayUrl = MutableStateFlow<String?>(null)
     private val _isLoaded = MutableStateFlow(false)
+    private var activeAccountPubkey: String? = null
 
 
     /** 全リレー一覧（UI 用） */
@@ -85,13 +89,32 @@ object RelayStore {
 
     init {
         scope.launch {
-            runCatching {
-                loadSavedState()
-            }.onFailure {
-                ensureSelectedRelay()
+            accountMutex.withLock {
+                runCatching {
+                    loadSavedState()
+                }.onFailure {
+                    ensureSelectedRelay()
+                }
+                _isLoaded.value = true
             }
-            _isLoaded.value = true
         }
+    }
+
+    suspend fun activateAccount(pubkey: String?): Unit = accountMutex.withLock {
+        if (_isLoaded.value && activeAccountPubkey == pubkey) return
+        _isLoaded.value = false
+        activeAccountPubkey = pubkey
+        _entries.value = defaults
+        _selectedFollowingRelayUrl.value = null
+        _selectedGlobalRelayUrl.value = null
+        _selectedChannelRelayUrl.value = null
+        _selectedStatusRelayUrl.value = null
+        _selectedArticleRelayUrl.value = null
+        _selectedLiveRelayUrl.value = null
+        _selectedMemoRelayUrl.value = null
+        runCatching { loadSavedState() }.onFailure { ensureSelectedRelay() }
+        ensureSelectedRelay()
+        _isLoaded.value = true
     }
 
     fun add(url: String) {
@@ -237,7 +260,7 @@ object RelayStore {
     }
 
     private suspend fun loadSavedState() {
-        LocalSettingsStorage.getString(ENTRIES_KEY)
+        readSetting(ENTRIES_KEY)
             ?.let { saved ->
                 runCatching {
                     json.decodeFromString(ListSerializer(RelayEntry.serializer()), saved)
@@ -255,42 +278,42 @@ object RelayStore {
                 }
             }
 
-        val legacySelectedRelayUrl = LocalSettingsStorage.getString(SELECTED_RELAY_KEY)
+        val legacySelectedRelayUrl = readSetting(SELECTED_RELAY_KEY)
             ?.takeIf { it in enabledRelayUrls() }
 
-        val savedFollowingRelayUrl = LocalSettingsStorage.getString(SELECTED_FOLLOWING_RELAY_KEY)
+        val savedFollowingRelayUrl = readSetting(SELECTED_FOLLOWING_RELAY_KEY)
         _selectedFollowingRelayUrl.value = when {
             savedFollowingRelayUrl == ALL_RELAYS_VALUE -> null
             savedFollowingRelayUrl in enabledRelayUrls() -> savedFollowingRelayUrl
             else -> legacySelectedRelayUrl
         }
 
-        _selectedGlobalRelayUrl.value = LocalSettingsStorage.getString(SELECTED_GLOBAL_RELAY_KEY)
+        _selectedGlobalRelayUrl.value = readSetting(SELECTED_GLOBAL_RELAY_KEY)
             ?.takeIf { it in enabledRelayUrls() }
             ?: legacySelectedRelayUrl
             ?: enabledRelayUrls().firstOrNull()
 
-        _selectedChannelRelayUrl.value = LocalSettingsStorage.getString(SELECTED_CHANNEL_RELAY_KEY)
+        _selectedChannelRelayUrl.value = readSetting(SELECTED_CHANNEL_RELAY_KEY)
             ?.takeIf { it in enabledRelayUrls() }
             ?: legacySelectedRelayUrl
             ?: enabledRelayUrls().firstOrNull()
 
-        _selectedStatusRelayUrl.value = LocalSettingsStorage.getString(SELECTED_STATUS_RELAY_KEY)
+        _selectedStatusRelayUrl.value = readSetting(SELECTED_STATUS_RELAY_KEY)
             ?.takeIf { it in enabledRelayUrls() }
             ?: legacySelectedRelayUrl
             ?: enabledRelayUrls().firstOrNull()
 
-        _selectedArticleRelayUrl.value = LocalSettingsStorage.getString(SELECTED_ARTICLE_RELAY_KEY)
+        _selectedArticleRelayUrl.value = readSetting(SELECTED_ARTICLE_RELAY_KEY)
             ?.takeIf { it in enabledRelayUrls() }
             ?: legacySelectedRelayUrl
             ?: enabledRelayUrls().firstOrNull()
 
-        _selectedLiveRelayUrl.value = LocalSettingsStorage.getString(SELECTED_LIVE_RELAY_KEY)
+        _selectedLiveRelayUrl.value = readSetting(SELECTED_LIVE_RELAY_KEY)
             ?.takeIf { it in enabledRelayUrls() }
             ?: legacySelectedRelayUrl
             ?: enabledRelayUrls().firstOrNull()
 
-        _selectedMemoRelayUrl.value = LocalSettingsStorage.getString(SELECTED_MEMO_RELAY_KEY)
+        _selectedMemoRelayUrl.value = readSetting(SELECTED_MEMO_RELAY_KEY)
             ?.takeIf { it in enabledRelayUrls() }
             ?: legacySelectedRelayUrl
             ?: enabledRelayUrls().firstOrNull()
@@ -332,14 +355,16 @@ object RelayStore {
         _entries.value.filter { it.enabled }.map { it.url }
 
     private fun saveEntries() {
+        val value = json.encodeToString(ListSerializer(RelayEntry.serializer()), _entries.value)
+        val key = storageKey(ENTRIES_KEY)
         scope.launch {
-            persistEntries()
+            LocalSettingsStorage.putString(key, value)
         }
     }
 
     private suspend fun persistEntries() {
         val value = json.encodeToString(ListSerializer(RelayEntry.serializer()), _entries.value)
-        LocalSettingsStorage.putString(ENTRIES_KEY, value)
+        LocalSettingsStorage.putString(storageKey(ENTRIES_KEY), value)
     }
 
     private fun setSelectedRelayUrl(
@@ -362,50 +387,70 @@ object RelayStore {
 
     private fun saveSelectedFollowingRelay() {
         val value = _selectedFollowingRelayUrl.value ?: ALL_RELAYS_VALUE
+        val key = storageKey(SELECTED_FOLLOWING_RELAY_KEY)
         scope.launch {
-            LocalSettingsStorage.putString(SELECTED_FOLLOWING_RELAY_KEY, value)
+            LocalSettingsStorage.putString(key, value)
         }
     }
 
     private fun saveSelectedGlobalRelay() {
         val value = _selectedGlobalRelayUrl.value
+        val key = storageKey(SELECTED_GLOBAL_RELAY_KEY)
         scope.launch {
-            LocalSettingsStorage.putString(SELECTED_GLOBAL_RELAY_KEY, value)
+            LocalSettingsStorage.putString(key, value)
         }
     }
 
     private fun saveSelectedChannelRelay() {
         val value = _selectedChannelRelayUrl.value
+        val key = storageKey(SELECTED_CHANNEL_RELAY_KEY)
         scope.launch {
-            LocalSettingsStorage.putString(SELECTED_CHANNEL_RELAY_KEY, value)
+            LocalSettingsStorage.putString(key, value)
         }
     }
 
     private fun saveSelectedStatusRelay() {
         val value = _selectedStatusRelayUrl.value
+        val key = storageKey(SELECTED_STATUS_RELAY_KEY)
         scope.launch {
-            LocalSettingsStorage.putString(SELECTED_STATUS_RELAY_KEY, value)
+            LocalSettingsStorage.putString(key, value)
         }
     }
 
     private fun saveSelectedArticleRelay() {
         val value = _selectedArticleRelayUrl.value
+        val key = storageKey(SELECTED_ARTICLE_RELAY_KEY)
         scope.launch {
-            LocalSettingsStorage.putString(SELECTED_ARTICLE_RELAY_KEY, value)
+            LocalSettingsStorage.putString(key, value)
         }
     }
 
     private fun saveSelectedLiveRelay() {
         val value = _selectedLiveRelayUrl.value
+        val key = storageKey(SELECTED_LIVE_RELAY_KEY)
         scope.launch {
-            LocalSettingsStorage.putString(SELECTED_LIVE_RELAY_KEY, value)
+            LocalSettingsStorage.putString(key, value)
         }
     }
 
     private fun saveSelectedMemoRelay() {
         val value = _selectedMemoRelayUrl.value
+        val key = storageKey(SELECTED_MEMO_RELAY_KEY)
         scope.launch {
-            LocalSettingsStorage.putString(SELECTED_MEMO_RELAY_KEY, value)
+            LocalSettingsStorage.putString(key, value)
+        }
+    }
+
+    private fun storageKey(base: String): String =
+        activeAccountPubkey?.let { "$base-$it" } ?: base
+
+    private suspend fun readSetting(base: String): String? {
+        val scopedKey = storageKey(base)
+        LocalSettingsStorage.getString(scopedKey)?.let { return it }
+        if (scopedKey == base) return null
+        return LocalSettingsStorage.getString(base)?.also { legacy ->
+            LocalSettingsStorage.putString(scopedKey, legacy)
+            LocalSettingsStorage.putString(base, null)
         }
     }
 }

@@ -55,6 +55,7 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.nostr.torinos.account.accountScopedViewModelKey
 import androidx.lifecycle.viewmodel.viewModelFactory
 import com.nostr.torinos.model.NostrProfile
 import com.nostr.torinos.network.RelayStore
@@ -104,7 +105,7 @@ fun StatusScreen(
     }
 
     val viewModel: StatusViewModel = viewModel(
-        key = "status-$activeRelayUrl",
+        key = accountScopedViewModelKey("status-$activeRelayUrl"),
         factory = viewModelFactory { initializer { StatusViewModel(relayUrl = activeRelayUrl) } },
     )
     val state by viewModel.state.collectAsState()

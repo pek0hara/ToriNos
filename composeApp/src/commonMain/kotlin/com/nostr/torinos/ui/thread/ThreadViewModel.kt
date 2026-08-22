@@ -1,9 +1,8 @@
 package com.nostr.torinos.ui.thread
 
-import com.nostr.torinos.crypto.KeyStorage
+import com.nostr.torinos.account.AccountSession
+import com.nostr.torinos.account.AccountSessions
 import com.nostr.torinos.crypto.isWriteSupported
-import com.nostr.torinos.crypto.loadPublicKey
-import com.nostr.torinos.crypto.signEvent
 import com.nostr.torinos.model.NostrEvent
 import com.nostr.torinos.model.NostrFilter
 import com.nostr.torinos.model.NostrProfile
@@ -33,6 +32,7 @@ import kotlinx.serialization.json.Json
 class ThreadViewModel(
     private val eventId: String,
     private val noteContext: NoteContext = NoteContext.Timeline,
+    private val accountSession: AccountSession? = AccountSessions.manager.currentSession,
 ) : SafeViewModel() {
 
     data class UiState(
@@ -63,7 +63,8 @@ class ThreadViewModel(
     private val _state = kotlinx.coroutines.flow.MutableStateFlow(UiState())
     val state: kotlinx.coroutines.flow.StateFlow<UiState> = _state
 
-    private val shortId = eventId.take(16)
+    private val sessionKey = accountSession?.sessionId?.hashCode()?.toString() ?: "anonymous"
+    private val shortId = "${eventId.take(16)}-$sessionKey"
     private val rootSubId = "thread-root-$shortId"
     private val repliesSubId = "thread-replies-$shortId"
     private val replyCountSubId = "thread-count-$shortId"
@@ -93,7 +94,7 @@ class ThreadViewModel(
     init {
         if (isWriteSupported) {
             launch {
-                ownPubkey = loadPublicKey()
+                ownPubkey = accountSession?.pubkey
                 reconcileOwnEngagement()
             }
         }
@@ -118,13 +119,13 @@ class ThreadViewModel(
         if (text.isBlank()) return
         _state.value = _state.value.copy(isReplying = true, replyError = null)
         launch {
-            val privateKeyHex = KeyStorage.loadPrivateKey() ?: run {
+            val signer = accountSession?.signer ?: run {
                 _state.value = _state.value.copy(isReplying = false, replyError = "秘密鍵が設定されていません")
                 return@launch
             }
             runCatching {
                 val tags = noteContext.replyTags(root.id, root.pubkey) + listOf(listOf("client", "ToriNos"))
-                val event = signEvent(privateKeyHex, text, kind = noteContext.eventKind, tags = tags)
+                val event = signer.sign(text, kind = noteContext.eventKind, tags = tags)
                 NostrRepository.publish(event)
                 event
             }.onSuccess { event ->
@@ -157,13 +158,12 @@ class ThreadViewModel(
             },
         )
         launch {
-            val privateKeyHex = KeyStorage.loadPrivateKey() ?: run {
+            val signer = accountSession?.signer ?: run {
                 _state.value = _state.value.withoutOptimisticLike(eventId, ownPubkey)
                 return@launch
             }
             runCatching {
-                val reaction = signEvent(
-                    privateKeyHex = privateKeyHex,
+                val reaction = signer.sign(
                     content = "+",
                     kind = 7,
                     tags = listOf(listOf("e", eventId), listOf("p", eventPubkey)),
@@ -206,10 +206,9 @@ class ThreadViewModel(
         )
         if (reactionEventId.isEmpty()) return
         launch {
-            val privateKeyHex = KeyStorage.loadPrivateKey() ?: return@launch
+            val signer = accountSession?.signer ?: return@launch
             runCatching {
-                val deletion = signEvent(
-                    privateKeyHex = privateKeyHex,
+                val deletion = signer.sign(
                     content = "",
                     kind = 5,
                     tags = listOf(listOf("e", reactionEventId)),
@@ -227,13 +226,12 @@ class ThreadViewModel(
         ) return
         _state.value = cur.withOptimisticEmojiReaction(eventId, option, "")
         launch {
-            val privateKeyHex = KeyStorage.loadPrivateKey() ?: run {
+            val signer = accountSession?.signer ?: run {
                 _state.value = _state.value.withoutOptimisticEmojiReaction(eventId, option)
                 return@launch
             }
             runCatching {
-                signEvent(
-                    privateKeyHex = privateKeyHex,
+                signer.sign(
                     content = option.eventContent,
                     kind = 7,
                     tags = option.eventTags(eventId, eventPubkey),
@@ -261,10 +259,9 @@ class ThreadViewModel(
         _state.value = cur.withoutOptimisticEmojiReaction(eventId, option)
         if (reactionEventId.isEmpty()) return
         launch {
-            val privateKeyHex = KeyStorage.loadPrivateKey() ?: return@launch
+            val signer = accountSession?.signer ?: return@launch
             runCatching {
-                val deletion = signEvent(
-                    privateKeyHex = privateKeyHex,
+                val deletion = signer.sign(
                     content = "",
                     kind = 5,
                     tags = listOf(listOf("e", reactionEventId)),
@@ -288,10 +285,9 @@ class ThreadViewModel(
             ownRepostEventId = "",
         )
         launch {
-            val privateKeyHex = KeyStorage.loadPrivateKey() ?: return@launch
+            val signer = accountSession?.signer ?: return@launch
             runCatching {
-                val repostEvent = signEvent(
-                    privateKeyHex = privateKeyHex,
+                val repostEvent = signer.sign(
                     content = Json.encodeToString(NostrEvent.serializer(), event),
                     kind = 6,
                     tags = listOf(listOf("e", event.id), listOf("p", event.pubkey)),
@@ -318,10 +314,9 @@ class ThreadViewModel(
         )
         if (repostEventId.isEmpty()) return
         launch {
-            val privateKeyHex = KeyStorage.loadPrivateKey() ?: return@launch
+            val signer = accountSession?.signer ?: return@launch
             runCatching {
-                val deletion = signEvent(
-                    privateKeyHex = privateKeyHex,
+                val deletion = signer.sign(
                     content = "",
                     kind = 5,
                     tags = listOf(listOf("e", repostEventId)),

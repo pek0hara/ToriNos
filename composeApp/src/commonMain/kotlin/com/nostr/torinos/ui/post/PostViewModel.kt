@@ -1,12 +1,8 @@
 package com.nostr.torinos.ui.post
 
 import com.nostr.torinos.ui.SafeViewModel
-import com.nostr.torinos.crypto.KeyStorage
-import com.nostr.torinos.crypto.Nip44
-import com.nostr.torinos.crypto.derivePublicKey
-import com.nostr.torinos.crypto.fromHex
-import com.nostr.torinos.crypto.signEvent
-import com.nostr.torinos.crypto.toHex
+import com.nostr.torinos.account.AccountSession
+import com.nostr.torinos.account.AccountSessions
 import com.nostr.torinos.model.NoteContext
 import com.nostr.torinos.model.extractNostrEventReferences
 import com.nostr.torinos.network.CustomEmojiStore
@@ -96,7 +92,9 @@ internal fun PostMemoPayload.toPostMemoData(identifier: String? = null): PostMem
         identifier = identifier,
     )
 
-class PostViewModel : SafeViewModel() {
+class PostViewModel(
+    private val accountSession: AccountSession? = AccountSessions.manager.currentSession,
+) : SafeViewModel() {
     private val _state = MutableStateFlow(PostState())
     val state: StateFlow<PostState> = _state.asStateFlow()
     private var nextImageId = 0
@@ -134,7 +132,7 @@ class PostViewModel : SafeViewModel() {
         }
         launch {
             withContext(Dispatchers.Default) {
-                ImageUploader.upload(bytes, mimeType)
+                ImageUploader.upload(bytes, mimeType, accountSession?.signer)
             }
                 .onSuccess { url ->
                     _state.update { s ->
@@ -209,16 +207,10 @@ class PostViewModel : SafeViewModel() {
 
         _state.value = current.copy(isSavingMemo = true, error = null, memoMessage = null)
         launch {
-            val privateKeyHex = KeyStorage.loadPrivateKey() ?: run {
+            val signer = accountSession?.signer ?: run {
                 _state.value = _state.value.copy(isSavingMemo = false, error = "秘密鍵が設定されていません")
                 return@launch
             }
-            val publicKeyHex = runCatching { derivePublicKey(privateKeyHex.fromHex()).toHex() }
-                .getOrElse {
-                    _state.value = _state.value.copy(isSavingMemo = false, error = "公開鍵の取得に失敗しました")
-                    return@launch
-            }
-
             val updatedAt = nextMemoUpdatedAt(
                 now = Clock.System.now().epochSeconds,
                 previousUpdatedAt = editingMemoUpdatedAt,
@@ -236,9 +228,8 @@ class PostViewModel : SafeViewModel() {
 
             runCatching {
                 val plaintext = memoJson.encodeToString(memo)
-                val content = Nip44.encrypt(plaintext, privateKeyHex, publicKeyHex)
-                val event = signEvent(
-                    privateKeyHex = privateKeyHex,
+                val content = signer.encryptToSelf(plaintext)
+                val event = signer.sign(
                     content = content,
                     kind = MEMO_EVENT_KIND,
                     tags = listOf(
@@ -287,7 +278,7 @@ class PostViewModel : SafeViewModel() {
 
         _state.value = _state.value.copy(isPosting = true, error = null)
         launch {
-            val privateKeyHex = KeyStorage.loadPrivateKey() ?: run {
+            val signer = accountSession?.signer ?: run {
                 _state.value = _state.value.copy(isPosting = false, error = "秘密鍵が設定されていません")
                 return@launch
             }
@@ -309,7 +300,7 @@ class PostViewModel : SafeViewModel() {
             }
 
             runCatching {
-                val event = signEvent(privateKeyHex, text, kind = noteContext.eventKind, tags = tags)
+                val event = signer.sign(text, kind = noteContext.eventKind, tags = tags)
                 val publishResult = if (targetRelayUrls == null) {
                     NostrRepository.publish(event)
                 } else {

@@ -1,11 +1,8 @@
 package com.nostr.torinos.ui.post
 
-import com.nostr.torinos.crypto.KeyStorage
-import com.nostr.torinos.crypto.Nip44
-import com.nostr.torinos.crypto.derivePublicKey
-import com.nostr.torinos.crypto.fromHex
-import com.nostr.torinos.crypto.signEvent
-import com.nostr.torinos.crypto.toHex
+import com.nostr.torinos.account.AccountSession
+import com.nostr.torinos.account.AccountSigner
+import com.nostr.torinos.account.AccountSessions
 import com.nostr.torinos.model.NostrEvent
 import com.nostr.torinos.model.NostrFilter
 import com.nostr.torinos.model.NostrProfile
@@ -223,7 +220,10 @@ data class JournalState(
     val canGoNextDate: Boolean get() = selectedDate < currentDate()
 }
 
-class JournalViewModel(private val targetPubkey: String? = null) : SafeViewModel() {
+class JournalViewModel(
+    private val targetPubkey: String? = null,
+    private val accountSession: AccountSession? = AccountSessions.manager.currentSession,
+) : SafeViewModel() {
     private val _state = MutableStateFlow(JournalState())
     val state: StateFlow<JournalState> = _state.asStateFlow()
     private var loadJob: Job? = null
@@ -346,13 +346,12 @@ class JournalViewModel(private val targetPubkey: String? = null) : SafeViewModel
                 (eventId to (cur.likeReactionCounts[eventId] ?: 0) + 1),
         )
         launch {
-            val privateKeyHex = KeyStorage.loadPrivateKey() ?: run {
+            val signer = accountSession?.signer ?: run {
                 _state.value = _state.value.withoutOptimisticLike(eventId)
                 return@launch
             }
             runCatching {
-                val reaction = signEvent(
-                    privateKeyHex = privateKeyHex,
+                val reaction = signer.sign(
                     content = "+",
                     kind = 7,
                     tags = listOf(listOf("e", eventId), listOf("p", eventPubkey)),
@@ -379,10 +378,9 @@ class JournalViewModel(private val targetPubkey: String? = null) : SafeViewModel
         )
         if (reactionEventId.isEmpty()) return
         launch {
-            val privateKeyHex = KeyStorage.loadPrivateKey() ?: return@launch
+            val signer = accountSession?.signer ?: return@launch
             runCatching {
-                val deletion = signEvent(
-                    privateKeyHex = privateKeyHex,
+                val deletion = signer.sign(
                     content = "",
                     kind = 5,
                     tags = listOf(listOf("e", reactionEventId)),
@@ -400,13 +398,12 @@ class JournalViewModel(private val targetPubkey: String? = null) : SafeViewModel
         ) return
         _state.value = cur.withOptimisticEmojiReaction(eventId, option, "")
         launch {
-            val privateKeyHex = KeyStorage.loadPrivateKey() ?: run {
+            val signer = accountSession?.signer ?: run {
                 _state.value = _state.value.withoutOptimisticEmojiReaction(eventId, option)
                 return@launch
             }
             runCatching {
-                signEvent(
-                    privateKeyHex = privateKeyHex,
+                signer.sign(
                     content = option.eventContent,
                     kind = 7,
                     tags = option.eventTags(eventId, eventPubkey),
@@ -431,10 +428,9 @@ class JournalViewModel(private val targetPubkey: String? = null) : SafeViewModel
         _state.value = cur.withoutOptimisticEmojiReaction(eventId, option)
         if (reactionEventId.isEmpty()) return
         launch {
-            val privateKeyHex = KeyStorage.loadPrivateKey() ?: return@launch
+            val signer = accountSession?.signer ?: return@launch
             runCatching {
-                val deletion = signEvent(
-                    privateKeyHex = privateKeyHex,
+                val deletion = signer.sign(
                     content = "",
                     kind = 5,
                     tags = listOf(listOf("e", reactionEventId)),
@@ -461,7 +457,7 @@ class JournalViewModel(private val targetPubkey: String? = null) : SafeViewModel
             deleteDialog = dialog.copy(isDeleting = true, error = null),
         )
         launch {
-            val privateKeyHex = KeyStorage.loadPrivateKey() ?: run {
+            val signer = accountSession?.signer ?: run {
                 _state.value = _state.value.copy(
                     deleteDialog = _state.value.deleteDialog?.copy(
                         isDeleting = false,
@@ -472,8 +468,7 @@ class JournalViewModel(private val targetPubkey: String? = null) : SafeViewModel
             }
 
             runCatching {
-                val deletion = signEvent(
-                    privateKeyHex = privateKeyHex,
+                val deletion = signer.sign(
                     content = "",
                     kind = 5,
                     tags = buildList {
@@ -517,7 +512,7 @@ class JournalViewModel(private val targetPubkey: String? = null) : SafeViewModel
             noteDeleteDialog = dialog.copy(isDeleting = true, error = null),
         )
         launch {
-            val privateKeyHex = KeyStorage.loadPrivateKey() ?: run {
+            val signer = accountSession?.signer ?: run {
                 _state.value = _state.value.copy(
                     noteDeleteDialog = _state.value.noteDeleteDialog?.copy(
                         isDeleting = false,
@@ -526,7 +521,7 @@ class JournalViewModel(private val targetPubkey: String? = null) : SafeViewModel
                 )
                 return@launch
             }
-            val signerPubkey = derivePublicKey(privateKeyHex.fromHex()).toHex()
+            val signerPubkey = signer.pubkey
             if (dialog.event.pubkey != signerPubkey) {
                 _state.value = _state.value.copy(
                     noteDeleteDialog = _state.value.noteDeleteDialog?.copy(
@@ -538,8 +533,7 @@ class JournalViewModel(private val targetPubkey: String? = null) : SafeViewModel
             }
 
             runCatching {
-                val deletion = signEvent(
-                    privateKeyHex = privateKeyHex,
+                val deletion = signer.sign(
                     content = "",
                     kind = 5,
                     tags = listOf(
@@ -1019,13 +1013,13 @@ class JournalViewModel(private val targetPubkey: String? = null) : SafeViewModel
     }
 
     private data class JournalLoadContext(
-        val privateKeyHex: String?,
+        val signer: AccountSigner?,
         val publicKeyHex: String,
     )
 
     private suspend fun resolveLoadContext(): JournalLoadContext? {
-        val privateKeyHex = if (targetPubkey == null) {
-            KeyStorage.loadPrivateKey() ?: run {
+        val signer = if (targetPubkey == null) {
+            accountSession?.signer ?: run {
                 _state.value = _state.value.copy(
                     isLoading = false,
                     memos = emptyList(),
@@ -1037,18 +1031,18 @@ class JournalViewModel(private val targetPubkey: String? = null) : SafeViewModel
         } else {
             null
         }
-        val publicKeyHex = targetPubkey ?: derivePublicKey(privateKeyHex!!.fromHex()).toHex()
-        ownPublicKeyHex = privateKeyHex?.let { derivePublicKey(it.fromHex()).toHex() }
-        return JournalLoadContext(privateKeyHex = privateKeyHex, publicKeyHex = publicKeyHex)
+        val publicKeyHex = targetPubkey ?: signer!!.pubkey
+        ownPublicKeyHex = signer?.pubkey
+        return JournalLoadContext(signer = signer, publicKeyHex = publicKeyHex)
     }
 
     private fun decodeMemoEvents(
         events: List<NostrEvent>,
         context: JournalLoadContext,
     ): List<JournalItem> {
-        val privateKeyHex = context.privateKeyHex ?: return emptyList()
+        val signer = context.signer ?: return emptyList()
         return events.mapNotNull { event ->
-            decodeMemo(event, privateKeyHex, context.publicKeyHex)?.let { memo ->
+            decodeMemo(event, signer, context.publicKeyHex)?.let { memo ->
                 JournalItem(
                     eventId = event.id,
                     pubkey = event.pubkey,
@@ -1176,12 +1170,12 @@ class JournalViewModel(private val targetPubkey: String? = null) : SafeViewModel
 
     private fun decodeMemo(
         event: NostrEvent,
-        privateKeyHex: String,
+        signer: AccountSigner,
         publicKeyHex: String,
     ): PostMemoPayload? =
         runCatching {
             memoJson.decodeFromString<PostMemoPayload>(
-                Nip44.decrypt(event.content, privateKeyHex, publicKeyHex),
+                signer.decrypt(event.content, publicKeyHex),
             )
         }.getOrNull()
 }

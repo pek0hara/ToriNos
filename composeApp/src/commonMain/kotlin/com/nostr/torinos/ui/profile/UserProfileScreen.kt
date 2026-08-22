@@ -23,6 +23,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.runtime.collectAsState
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.nostr.torinos.account.accountScopedViewModelKey
 import com.nostr.torinos.network.MuteStore
 import com.nostr.torinos.network.RelayStore
 import com.nostr.torinos.ui.components.NoteTimeline
@@ -52,13 +53,17 @@ fun UserProfileScreen(
     )
     val contentRelayUrl = relays.firstOrNull()
     val ownerKey = ownPubkey ?: "anonymous"
-    val viewModel: UserProfileViewModel = viewModel(key = "profile-$pubkey-${contentRelayUrl ?: "all"}-$ownerKey") {
+    val viewModel: UserProfileViewModel = viewModel(
+        key = accountScopedViewModelKey("profile-$pubkey-${contentRelayUrl ?: "all"}-$ownerKey"),
+    ) {
         UserProfileViewModel(pubkey, deferredRelayUrl = contentRelayUrl)
     }
     var showRelayList by remember(pubkey) { mutableStateOf(false) }
     var selectedTab by remember(pubkey) { mutableStateOf(ProfileTimelineTab.Posts) }
     val feedViewModel: FeedViewModel = viewModel(
-        key = "user-feed-$pubkey-${contentRelayUrl ?: "all"}-$ownerKey-${selectedTab.name}",
+        key = accountScopedViewModelKey(
+            "user-feed-$pubkey-${contentRelayUrl ?: "all"}-$ownerKey-${selectedTab.name}",
+        ),
     ) {
         FeedViewModel(
             authorPubkey = pubkey,

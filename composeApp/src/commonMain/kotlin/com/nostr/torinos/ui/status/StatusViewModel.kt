@@ -1,7 +1,7 @@
 package com.nostr.torinos.ui.status
 
-import com.nostr.torinos.crypto.KeyStorage
-import com.nostr.torinos.crypto.signEvent
+import com.nostr.torinos.account.AccountSession
+import com.nostr.torinos.account.AccountSessions
 import com.nostr.torinos.model.NostrEvent
 import com.nostr.torinos.model.NostrFilter
 import com.nostr.torinos.model.NostrProfile
@@ -43,7 +43,10 @@ data class StatusState(
     val errorMessage: String? = null,
 )
 
-class StatusViewModel(private val relayUrl: String? = null) : SafeViewModel() {
+class StatusViewModel(
+    private val relayUrl: String? = null,
+    private val accountSession: AccountSession? = AccountSessions.manager.currentSession,
+) : SafeViewModel() {
     private val _state = MutableStateFlow(StatusState())
     val state: StateFlow<StatusState> = _state.asStateFlow()
 
@@ -84,8 +87,7 @@ class StatusViewModel(private val relayUrl: String? = null) : SafeViewModel() {
         launch {
             _state.value = _state.value.copy(isPublishing = true, errorMessage = null)
             try {
-                val privateKeyHex = KeyStorage.loadPrivateKey()
-                    ?: error("秘密鍵が見つかりません")
+                val signer = accountSession?.signer ?: error("秘密鍵が見つかりません")
                 val tags = buildList {
                     add(listOf("d", tag))
                     if (expiration != null) add(listOf("expiration", expiration.toString()))
@@ -94,8 +96,7 @@ class StatusViewModel(private val relayUrl: String? = null) : SafeViewModel() {
                         add(listOf("r", url))
                     }
                 }
-                val event = signEvent(
-                    privateKeyHex = privateKeyHex,
+                val event = signer.sign(
                     content = body,
                     kind = STATUS_KIND,
                     tags = tags,

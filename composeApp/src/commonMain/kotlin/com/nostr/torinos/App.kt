@@ -37,6 +37,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberDrawerState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import kotlin.coroutines.cancellation.CancellationException
@@ -70,6 +71,9 @@ import androidx.navigation.toRoute
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
+import com.nostr.torinos.account.AccountSessionState
+import com.nostr.torinos.account.AccountSessions
+import com.nostr.torinos.account.accountScopedViewModelKey
 import com.nostr.torinos.crypto.isWriteSupported
 import com.nostr.torinos.crypto.loadPublicKey
 import com.nostr.torinos.model.NoteContext
@@ -165,6 +169,7 @@ private enum class PendingKeyAction {
 @Composable
 fun App() {
     NostrTheme {
+        val accountSessionState by AccountSessions.manager.state.collectAsState()
         val nav = rememberNavController()
         val backStackEntry by nav.currentBackStackEntryAsState()
         val currentRoute = backStackEntry?.destination?.route
@@ -195,15 +200,19 @@ fun App() {
         }
 
         var ownPubkey by remember { mutableStateOf<String?>(null) }
+        var muteAccountPubkey by remember { mutableStateOf<String?>(null) }
         var ownProfile by remember { mutableStateOf<NostrProfile?>(null) }
         var isAccountLoaded by remember { mutableStateOf(false) }
         val notificationsViewModel = ownPubkey?.let { pubkey ->
             viewModel<NotificationsViewModel>(
-                key = "notifications-$pubkey",
+                key = accountScopedViewModelKey("notifications-$pubkey"),
                 factory = viewModelFactory { initializer { NotificationsViewModel(pubkey) } },
             )
         }
         val notificationsState = notificationsViewModel?.state?.collectAsState()?.value
+        DisposableEffect(notificationsViewModel) {
+            onDispose { notificationsViewModel?.stopForAccountChange() }
+        }
         var feedScrollToTopRequest by remember { mutableStateOf(0) }
         var currentFeedTab by remember { mutableStateOf(FeedTab.Following) }
         var feedScrollToTopTargetTab by remember { mutableStateOf(FeedTab.Following) }
@@ -224,6 +233,38 @@ fun App() {
         val followingFeedListState = remember(accountStateResetKey) { LazyListState() }
         val globalFeedListState = remember(accountStateResetKey) { LazyListState() }
         var currentServiceTab by remember { mutableStateOf(ServiceTab.Articles) }
+
+        LaunchedEffect(Unit) {
+            AccountSessions.manager.initialize()
+        }
+
+        LaunchedEffect(accountSessionState) {
+            when (val state = accountSessionState) {
+                is AccountSessionState.Active -> {
+                    if (ownPubkey != state.session.pubkey) {
+                        ownPubkey = state.session.pubkey
+                        ownProfile = null
+                    }
+                    if (muteAccountPubkey != state.session.pubkey) {
+                        muteAccountPubkey = state.session.pubkey
+                        MuteStore.resetForAccountChange(state.session.pubkey)
+                    }
+                    isAccountLoaded = true
+                }
+                is AccountSessionState.Anonymous -> {
+                    ownPubkey = null
+                    ownProfile = null
+                    if (muteAccountPubkey != null) {
+                        muteAccountPubkey = null
+                        MuteStore.resetForAccountChange(null)
+                    }
+                    isAccountLoaded = true
+                }
+                AccountSessionState.Loading,
+                is AccountSessionState.Switching,
+                -> isAccountLoaded = false
+            }
+        }
 
         fun openProfileDrawer(pubkey: String) {
             scope.launch {
@@ -329,18 +370,8 @@ fun App() {
             }
         }
 
-        // 起動時に保存済み秘密鍵から公開鍵を読み込む & DBを整理
+        // 起動時のアカウント復元は AccountSessionManager が担当する。DB整理は独立して行う。
         LaunchedEffect(Unit) {
-            appLog("[App] startup: loading saved public key")
-            try {
-                ownPubkey = loadPublicKey()
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Throwable) {
-                logException("App", e, "Failed to load public key on startup")
-            } finally {
-                isAccountLoaded = true
-            }
             try {
                 ChannelCacheStore.prune()
             } catch (e: CancellationException) {
@@ -370,8 +401,9 @@ fun App() {
         // ログイン時に、他クライアントから公開済みの NIP-65 リレーリストを端末設定へ反映する。
         // まずアカウント別キャッシュを即時表示し、リレー設定の同期後にもう一度取得する。
         LaunchedEffect(ownPubkey, accountStateResetKey) {
-            FollowRepository.reload()
             val pk = ownPubkey
+            RelayStore.activateAccount(pk)
+            FollowRepository.reload()
             if (pk == null) {
                 RelayListSynchronizer.stopObserving()
                 return@LaunchedEffect
@@ -462,7 +494,6 @@ fun App() {
             selectedMemo = null
             selectedMemoDeleteAction = null
             localDraft = null
-            MuteStore.resetForAccountChange()
             accountStateResetKey++
             currentFeedTab = FeedTab.Global
             feedScrollToTopTargetTab = FeedTab.Global
@@ -499,7 +530,6 @@ fun App() {
             selectedMemo = null
             selectedMemoDeleteAction = null
             localDraft = null
-            MuteStore.resetForAccountChange()
             accountStateResetKey++
             currentFeedTab = FeedTab.Global
             feedScrollToTopTargetTab = FeedTab.Global
@@ -1501,7 +1531,6 @@ fun App() {
                     // 保存直後に導出済みの公開鍵を直接セット（Keychain 再読み込み不要）
                     ownPubkey = pubkeyHex
                     ownProfile = null
-                    MuteStore.resetForAccountChange()
                     accountStateResetKey++
                     when (action) {
                         PendingKeyAction.NewPost -> {

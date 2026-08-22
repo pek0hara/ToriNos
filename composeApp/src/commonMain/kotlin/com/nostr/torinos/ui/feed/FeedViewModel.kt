@@ -2,10 +2,9 @@ package com.nostr.torinos.ui.feed
 
 import androidx.lifecycle.ViewModel
 import com.nostr.torinos.ui.SafeViewModel
-import com.nostr.torinos.crypto.KeyStorage
+import com.nostr.torinos.account.AccountSession
+import com.nostr.torinos.account.AccountSessions
 import com.nostr.torinos.crypto.isWriteSupported
-import com.nostr.torinos.crypto.loadPublicKey
-import com.nostr.torinos.crypto.signEvent
 import com.nostr.torinos.model.NostrEvent
 import com.nostr.torinos.model.NostrFilter
 import com.nostr.torinos.model.NostrProfile
@@ -44,6 +43,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 
 class FeedViewModel(
+    private val accountSession: AccountSession? = AccountSessions.manager.currentSession,
     private val authorPubkey: String? = null,
     private val authorPubkeys: List<String>? = authorPubkey?.let { listOf(it) },
     private val relayUrl: String? = null,
@@ -131,7 +131,7 @@ class FeedViewModel(
     init {
         if (isWriteSupported) {
             launch {
-                ownPubkey = loadPublicKey()
+                ownPubkey = accountSession?.pubkey
                 reconcileOwnEngagement()
             }
         }
@@ -194,10 +194,9 @@ class FeedViewModel(
 
     fun deleteEvent(eventId: String) {
         launch {
-            val privateKeyHex = KeyStorage.loadPrivateKey() ?: return@launch
+            val signer = accountSession?.signer ?: return@launch
             runCatching {
-                val deletion = signEvent(
-                    privateKeyHex = privateKeyHex,
+                val deletion = signer.sign(
                     content = "",
                     kind = 5,
                     tags = listOf(listOf("e", eventId)),
@@ -227,13 +226,12 @@ class FeedViewModel(
                 (eventId to (cur.likeReactionCounts[eventId] ?: 0) + 1),
         ))
         launch {
-            val privateKeyHex = KeyStorage.loadPrivateKey() ?: run {
+            val signer = accountSession?.signer ?: run {
                 updateFeedState { it.withoutOptimisticLike(eventId) }
                 return@launch
             }
             runCatching {
-                val reaction = signEvent(
-                    privateKeyHex = privateKeyHex,
+                val reaction = signer.sign(
                     content = "+",
                     kind = 7,
                     tags = listOf(listOf("e", eventId), listOf("p", eventPubkey)),
@@ -263,10 +261,9 @@ class FeedViewModel(
         ))
         if (reactionEventId.isEmpty()) return
         launch {
-            val privateKeyHex = KeyStorage.loadPrivateKey() ?: return@launch
+            val signer = accountSession?.signer ?: return@launch
             runCatching {
-                val deletion = signEvent(
-                    privateKeyHex = privateKeyHex,
+                val deletion = signer.sign(
                     content = "",
                     kind = 5,
                     tags = listOf(listOf("e", reactionEventId)),
@@ -286,13 +283,12 @@ class FeedViewModel(
             cur.withOptimisticEmojiReaction(eventId, option, eventIdValue = ""),
         )
         launch {
-            val privateKeyHex = KeyStorage.loadPrivateKey() ?: run {
+            val signer = accountSession?.signer ?: run {
                 updateFeedState { it.withoutOptimisticEmojiReaction(eventId, option) }
                 return@launch
             }
             runCatching {
-                signEvent(
-                    privateKeyHex = privateKeyHex,
+                signer.sign(
                     content = option.eventContent,
                     kind = 7,
                     tags = option.eventTags(eventId, eventPubkey),
@@ -321,10 +317,9 @@ class FeedViewModel(
         setFeedState(cur.withoutOptimisticEmojiReaction(eventId, option))
         if (reactionEventId.isEmpty()) return
         launch {
-            val privateKeyHex = KeyStorage.loadPrivateKey() ?: return@launch
+            val signer = accountSession?.signer ?: return@launch
             runCatching {
-                val deletion = signEvent(
-                    privateKeyHex = privateKeyHex,
+                val deletion = signer.sign(
                     content = "",
                     kind = 5,
                     tags = listOf(listOf("e", reactionEventId)),
@@ -343,10 +338,9 @@ class FeedViewModel(
             repostCounts = cur.repostCounts + (event.id to (cur.repostCounts[event.id] ?: 0) + 1),
         ))
         launch {
-            val privateKeyHex = KeyStorage.loadPrivateKey() ?: return@launch
+            val signer = accountSession?.signer ?: return@launch
             runCatching {
-                val repostEvent = signEvent(
-                    privateKeyHex = privateKeyHex,
+                val repostEvent = signer.sign(
                     content = Json.encodeToString(NostrEvent.serializer(), eventToRepost),
                     kind = 6,
                     tags = listOf(listOf("e", eventToRepost.id), listOf("p", eventToRepost.pubkey)),
@@ -369,10 +363,9 @@ class FeedViewModel(
         ))
         if (repostEventId.isEmpty()) return
         launch {
-            val privateKeyHex = KeyStorage.loadPrivateKey() ?: return@launch
+            val signer = accountSession?.signer ?: return@launch
             runCatching {
-                val deletion = signEvent(
-                    privateKeyHex = privateKeyHex,
+                val deletion = signer.sign(
                     content = "",
                     kind = 5,
                     tags = listOf(listOf("e", repostEventId)),
@@ -386,10 +379,9 @@ class FeedViewModel(
         MuteStore.mute(event.pubkey)
         rebuildFilteredEvents()
         launch {
-            val privateKeyHex = KeyStorage.loadPrivateKey() ?: return@launch
+            val signer = accountSession?.signer ?: return@launch
             runCatching {
-                val report = signEvent(
-                    privateKeyHex = privateKeyHex,
+                val report = signer.sign(
                     content = detail,
                     kind = 1984,
                     tags = listOf(

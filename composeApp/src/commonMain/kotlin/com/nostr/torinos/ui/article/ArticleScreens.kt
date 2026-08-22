@@ -73,6 +73,7 @@ import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.nostr.torinos.account.accountScopedViewModelKey
 import com.nostr.torinos.model.ArticleAuthorItem
 import com.nostr.torinos.model.ArticleItem
 import com.nostr.torinos.model.NostrEvent
@@ -122,7 +123,7 @@ fun ArticleHubScreen(
         return
     }
 
-    val viewModel: ArticleHubViewModel = viewModel(key = "article-hub-$activeRelayUrl") {
+    val viewModel: ArticleHubViewModel = viewModel(key = accountScopedViewModelKey("article-hub-$activeRelayUrl")) {
         ArticleHubViewModel(relayUrl = activeRelayUrl)
     }
     val state by viewModel.state.collectAsState()
@@ -375,7 +376,9 @@ fun UserArticleListScreen(
         return
     }
 
-    val viewModel: UserArticleListViewModel = viewModel(key = "user-articles-$pubkey-$activeRelayUrl") {
+    val viewModel: UserArticleListViewModel = viewModel(
+        key = accountScopedViewModelKey("user-articles-$pubkey-$activeRelayUrl"),
+    ) {
         UserArticleListViewModel(pubkey, relayUrl = activeRelayUrl)
     }
     val state by viewModel.state.collectAsState()
@@ -450,7 +453,9 @@ fun ArticleDetailScreen(
         return
     }
 
-    val viewModel: ArticleDetailViewModel = viewModel(key = "article-$pubkey-$identifier-$activeRelayUrl") {
+    val viewModel: ArticleDetailViewModel = viewModel(
+        key = accountScopedViewModelKey("article-$pubkey-$identifier-$activeRelayUrl"),
+    ) {
         ArticleDetailViewModel(pubkey, identifier, relayUrl = activeRelayUrl)
     }
     val state by viewModel.state.collectAsState()

@@ -57,6 +57,7 @@ import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
 import com.nostr.torinos.crypto.KeyStorage
 import com.nostr.torinos.crypto.StoredAccount
+import com.nostr.torinos.account.AccountSessions
 import com.nostr.torinos.crypto.derivePublicKey
 import com.nostr.torinos.crypto.fromHex
 import com.nostr.torinos.crypto.generateKeyPair
@@ -177,7 +178,7 @@ fun KeySetupScreen(onSetupComplete: (pubkeyHex: String) -> Unit, onDismiss: (() 
                             pendingUsageConsentAction = {
                                 scope.launch(uiExceptionHandler) {
                                     val err = runCatching {
-                                        KeyStorage.switchAccount(account.pubkeyHex)
+                                        AccountSessions.manager.switchAccount(account.pubkeyHex).getOrThrow()
                                     }.exceptionOrNull()?.let {
                                         logException("KeySetupScreen", it, "Failed to switch stored account")
                                         "アカウントを選択できませんでした: ${it.message}"
@@ -217,6 +218,7 @@ fun KeySetupScreen(onSetupComplete: (pubkeyHex: String) -> Unit, onDismiss: (() 
                             scope.launch(uiExceptionHandler) {
                                 val err = runCatching {
                                     savePrivateKeyAndVerify(priv)
+                                    AccountSessions.manager.activateCurrentAccount(pub).getOrThrow()
                                     saveToPasswordManager(nsec, npub)
                                     FollowRepository.initializeNewAccountFollowList()
                                         .onFailure { e ->
@@ -755,6 +757,7 @@ private suspend fun validateAndSave(
         val npub = hexToNpub(pubkeyHex)
         try {
             savePrivateKeyAndVerify(hexKey)
+            AccountSessions.manager.activateCurrentAccount(pubkeyHex).getOrThrow()
             saveToPasswordManager(nsec, npub)
         } catch (e: Exception) {
             logException("KeySetupScreen", e, "Failed to save imported private key")

@@ -52,6 +52,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.nostr.torinos.account.accountScopedViewModelKey
 import com.nostr.torinos.network.RelayEntry
 import com.nostr.torinos.network.RelayStore
 import com.nostr.torinos.ui.components.AppTopBar
@@ -77,7 +78,9 @@ fun ArticleEditorScreen(
     viewModelOverride: ArticleEditorViewModel? = null,
 ) {
     val editorViewModel = viewModelOverride ?: viewModel(
-        key = "article-editor-${editPubkey.orEmpty()}-${editIdentifier.orEmpty()}-${relayUrl.orEmpty()}",
+        key = accountScopedViewModelKey(
+            "article-editor-${editPubkey.orEmpty()}-${editIdentifier.orEmpty()}-${relayUrl.orEmpty()}",
+        ),
     ) {
         ArticleEditorViewModel(
             editPubkey = editPubkey,
@@ -475,7 +478,9 @@ private fun ArticleEditContent(
 @Composable
 private fun ArticleRelaySettingsDialog(
     onDismiss: () -> Unit,
-    viewModel: RelaySettingsViewModel = viewModel(key = "article-post-relays") { RelaySettingsViewModel() },
+    viewModel: RelaySettingsViewModel = viewModel(
+        key = accountScopedViewModelKey("article-post-relays"),
+    ) { RelaySettingsViewModel() },
 ) {
     val relayEntries by viewModel.entries.collectAsState()
 

@@ -1,10 +1,8 @@
 package com.nostr.torinos.ui.profile
 
-import androidx.lifecycle.ViewModel
+import com.nostr.torinos.account.AccountSession
+import com.nostr.torinos.account.AccountSessions
 import com.nostr.torinos.ui.SafeViewModel
-import com.nostr.torinos.crypto.KeyStorage
-import com.nostr.torinos.crypto.loadPublicKey
-import com.nostr.torinos.crypto.signEvent
 import com.nostr.torinos.model.NostrProfile
 import com.nostr.torinos.network.CustomEmojiStore
 import com.nostr.torinos.network.ImageUploader
@@ -34,7 +32,9 @@ data class EditProfileState(
     val savedProfile: NostrProfile? = null,
 )
 
-class EditProfileViewModel : SafeViewModel() {
+class EditProfileViewModel(
+    private val accountSession: AccountSession? = AccountSessions.manager.currentSession,
+) : SafeViewModel() {
     companion object {
         private var instanceCounter = 0
     }
@@ -43,7 +43,7 @@ class EditProfileViewModel : SafeViewModel() {
 
     init {
         launch {
-            val pubkey = loadPublicKey() ?: return@launch
+            val pubkey = accountSession?.pubkey ?: return@launch
             val profile = ProfileRepository.awaitProfiles(
                 setOf(pubkey),
                 ProfileFetchPolicy.CacheFirst(15 * 60 * 1_000L),
@@ -90,7 +90,7 @@ class EditProfileViewModel : SafeViewModel() {
     private fun uploadImage(bytes: ByteArray, mimeType: String, target: ImageUploadTarget) {
         _state.value = _state.value.copy(isUploadingImage = true, error = null)
         launch {
-            ImageUploader.upload(bytes, mimeType)
+            ImageUploader.upload(bytes, mimeType, accountSession?.signer)
                 .onSuccess { url ->
                     _state.value = when (target) {
                         ImageUploadTarget.Picture -> _state.value.copy(picture = url, isUploadingImage = false)
@@ -109,7 +109,7 @@ class EditProfileViewModel : SafeViewModel() {
     fun save() {
         _state.value = _state.value.copy(isSaving = true, error = null)
         launch {
-            val privateKeyHex = KeyStorage.loadPrivateKey() ?: run {
+            val signer = accountSession?.signer ?: run {
                 _state.value = _state.value.copy(isSaving = false, error = "秘密鍵が設定されていません")
                 return@launch
             }
@@ -125,8 +125,7 @@ class EditProfileViewModel : SafeViewModel() {
             }
 
             runCatching {
-                val event = signEvent(
-                    privateKeyHex,
+                val event = signer.sign(
                     Json.encodeToString(contentJson),
                     kind = 0,
                     tags = customEmojiTagsForContent(

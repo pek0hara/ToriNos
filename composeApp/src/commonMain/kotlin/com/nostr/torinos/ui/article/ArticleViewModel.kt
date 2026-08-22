@@ -1,7 +1,7 @@
 package com.nostr.torinos.ui.article
 
-import com.nostr.torinos.crypto.KeyStorage
-import com.nostr.torinos.crypto.signEvent
+import com.nostr.torinos.account.AccountSession
+import com.nostr.torinos.account.AccountSessions
 import com.nostr.torinos.model.ArticleAuthorItem
 import com.nostr.torinos.model.ArticleItem
 import com.nostr.torinos.model.NIP23_ARTICLE_KIND
@@ -400,6 +400,7 @@ class ArticleDetailViewModel(
     private val pubkey: String,
     private val identifier: String,
     private val relayUrl: String? = null,
+    private val accountSession: AccountSession? = AccountSessions.manager.currentSession,
 ) : SafeViewModel() {
     private val _state = MutableStateFlow(ArticleDetailState())
     val state: StateFlow<ArticleDetailState> = _state.asStateFlow()
@@ -468,10 +469,8 @@ class ArticleDetailViewModel(
         _state.value = _state.value.copy(isDeleting = true, deleteError = null)
         launch {
             try {
-                val privateKeyHex = KeyStorage.loadPrivateKey()
-                    ?: error("秘密鍵が設定されていません")
-                val deletion = signEvent(
-                    privateKeyHex = privateKeyHex,
+                val signer = accountSession?.signer ?: error("秘密鍵が設定されていません")
+                val deletion = signer.sign(
                     content = "記事を削除",
                     kind = NIP09_DELETION_KIND,
                     tags = listOf(

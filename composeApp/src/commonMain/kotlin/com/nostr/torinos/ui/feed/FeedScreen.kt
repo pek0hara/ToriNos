@@ -60,6 +60,7 @@ import androidx.compose.ui.unit.Velocity
 import androidx.compose.ui.unit.dp
 import androidx.compose.runtime.collectAsState
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.nostr.torinos.account.accountScopedViewModelKey
 import com.nostr.torinos.model.NostrProfile
 import com.nostr.torinos.network.FollowRepository
 import com.nostr.torinos.network.MuteStore
@@ -607,7 +608,7 @@ private fun FeedTimelinePane(
     listState: LazyListState? = null,
     onRefresh: (() -> Unit)? = null,
 ) {
-    val viewModel: FeedViewModel = viewModel(key = viewModelKey) {
+    val viewModel: FeedViewModel = viewModel(key = accountScopedViewModelKey(viewModelKey)) {
         FeedViewModel(
             authorPubkey = authorPubkey,
             authorPubkeys = authorPubkeys,

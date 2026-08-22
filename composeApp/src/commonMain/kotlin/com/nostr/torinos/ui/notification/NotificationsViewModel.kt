@@ -156,6 +156,14 @@ class NotificationsViewModel(private val ownPubkey: String) : SafeViewModel() {
         closeSubscriptions()
     }
 
+    fun stopForAccountChange() {
+        collectorJobs.forEach { it.cancel() }
+        cancelAuxiliaryFetches()
+        startupSyncJob?.cancel()
+        liveSubscriptionJob?.cancel()
+        closeSubscriptions()
+    }
+
     private suspend fun subscribeNotificationFeeds(limit: Int) {
         NostrRepository.subscribe(
             activitySubId,
@@ -337,11 +345,7 @@ class NotificationsViewModel(private val ownPubkey: String) : SafeViewModel() {
 
     override fun onCleared() {
         super.onCleared()
-        collectorJobs.forEach { it.cancel() }
-        cancelAuxiliaryFetches()
-        startupSyncJob?.cancel()
-        liveSubscriptionJob?.cancel()
-        closeSubscriptions()
+        stopForAccountChange()
     }
 
     private fun canFetchAuxiliaryDetails(): Boolean =

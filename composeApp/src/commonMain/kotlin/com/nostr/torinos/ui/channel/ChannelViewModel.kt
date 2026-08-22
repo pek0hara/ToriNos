@@ -1,10 +1,8 @@
 package com.nostr.torinos.ui.channel
 
-import androidx.lifecycle.ViewModel
+import com.nostr.torinos.account.AccountSession
+import com.nostr.torinos.account.AccountSessions
 import com.nostr.torinos.ui.SafeViewModel
-import com.nostr.torinos.crypto.KeyStorage
-import com.nostr.torinos.crypto.loadPublicKey
-import com.nostr.torinos.crypto.signEvent
 import com.nostr.torinos.model.ChannelMeta
 import com.nostr.torinos.model.CustomReaction
 import com.nostr.torinos.model.ReactionOption
@@ -43,6 +41,7 @@ import kotlinx.serialization.json.put
 class ChannelViewModel(
     private val channelId: String,
     private val relayUrl: String? = null,
+    private val accountSession: AccountSession? = AccountSessions.manager.currentSession,
 ) : SafeViewModel() {
 
     sealed interface UiState {
@@ -79,7 +78,8 @@ class ChannelViewModel(
     private val _state = MutableStateFlow<UiState>(UiState.Loading)
     val state: StateFlow<UiState> = _state.asStateFlow()
 
-    private val shortId = channelId.take(16)
+    private val sessionKey = accountSession?.sessionId?.hashCode()?.toString() ?: "anonymous"
+    private val shortId = "${channelId.take(16)}-$sessionKey"
     private val relayKey = relayUrl?.hashCode()?.toString() ?: "all"
     private val metaSubId = "ch-meta-$shortId-$relayKey"
     private val metaUpdateSubId = "ch-meta-update-$shortId-$relayKey"
@@ -130,7 +130,7 @@ class ChannelViewModel(
 
     init {
         launch {
-            ownPubkey = loadPublicKey()
+            ownPubkey = accountSession?.pubkey
             reconcileOwnEngagement()
         }
         start()
@@ -148,15 +148,14 @@ class ChannelViewModel(
 
         _state.value = current.copy(isPosting = true, postError = null)
         launch {
-            val privateKeyHex = KeyStorage.loadPrivateKey() ?: run {
+            val signer = accountSession?.signer ?: run {
                 (_state.value as? UiState.Ready)?.let {
                     _state.value = it.copy(isPosting = false, postError = "秘密鍵が設定されていません")
                 }
                 return@launch
             }
             runCatching {
-                val event = signEvent(
-                    privateKeyHex = privateKeyHex,
+                val event = signer.sign(
                     content = text,
                     kind = noteContext.eventKind,
                     tags = noteContext.replyTags(replyToId = null, replyToPubkey = null) +
@@ -187,14 +186,13 @@ class ChannelViewModel(
             )
         syncReadyState()
         launch {
-            val privateKeyHex = KeyStorage.loadPrivateKey() ?: run {
+            val signer = accountSession?.signer ?: run {
                 removeOptimisticLike(eventId)
                 syncReadyState()
                 return@launch
             }
             runCatching {
-                val reaction = signEvent(
-                    privateKeyHex = privateKeyHex,
+                val reaction = signer.sign(
                     content = "+",
                     kind = 7,
                     tags = listOf(listOf("e", eventId), listOf("p", eventPubkey)),
@@ -220,10 +218,9 @@ class ChannelViewModel(
         syncReadyState()
         if (reactionEventId.isEmpty()) return
         launch {
-            val privateKeyHex = KeyStorage.loadPrivateKey() ?: return@launch
+            val signer = accountSession?.signer ?: return@launch
             runCatching {
-                val deletion = signEvent(
-                    privateKeyHex = privateKeyHex,
+                val deletion = signer.sign(
                     content = "",
                     kind = 5,
                     tags = listOf(listOf("e", reactionEventId)),
@@ -241,14 +238,13 @@ class ChannelViewModel(
         addOptimisticEmojiReaction(eventId, option, "")
         syncReadyState()
         launch {
-            val privateKeyHex = KeyStorage.loadPrivateKey() ?: run {
+            val signer = accountSession?.signer ?: run {
                 removeOptimisticEmojiReaction(eventId, option)
                 syncReadyState()
                 return@launch
             }
             runCatching {
-                signEvent(
-                    privateKeyHex = privateKeyHex,
+                signer.sign(
                     content = option.eventContent,
                     kind = 7,
                     tags = option.eventTags(eventId, eventPubkey),
@@ -275,10 +271,9 @@ class ChannelViewModel(
         syncReadyState()
         if (reactionEventId.isEmpty()) return
         launch {
-            val privateKeyHex = KeyStorage.loadPrivateKey() ?: return@launch
+            val signer = accountSession?.signer ?: return@launch
             runCatching {
-                val deletion = signEvent(
-                    privateKeyHex = privateKeyHex,
+                val deletion = signer.sign(
                     content = "",
                     kind = 5,
                     tags = listOf(listOf("e", reactionEventId)),
@@ -294,10 +289,9 @@ class ChannelViewModel(
         currentRepostCounts = currentRepostCounts + (event.id to (currentRepostCounts[event.id] ?: 0) + 1)
         syncReadyState()
         launch {
-            val privateKeyHex = KeyStorage.loadPrivateKey() ?: return@launch
+            val signer = accountSession?.signer ?: return@launch
             runCatching {
-                val repostEvent = signEvent(
-                    privateKeyHex = privateKeyHex,
+                val repostEvent = signer.sign(
                     content = Json.encodeToString(NostrEvent.serializer(), event),
                     kind = 6,
                     tags = listOf(listOf("e", event.id), listOf("p", event.pubkey)),
@@ -317,10 +311,9 @@ class ChannelViewModel(
         syncReadyState()
         if (repostEventId.isEmpty()) return
         launch {
-            val privateKeyHex = KeyStorage.loadPrivateKey() ?: return@launch
+            val signer = accountSession?.signer ?: return@launch
             runCatching {
-                val deletion = signEvent(
-                    privateKeyHex = privateKeyHex,
+                val deletion = signer.sign(
                     content = "",
                     kind = 5,
                     tags = listOf(listOf("e", repostEventId)),
@@ -362,7 +355,7 @@ class ChannelViewModel(
         if (dialog.title.isBlank() || dialog.isSaving) return
         _state.value = current.copy(editDialog = dialog.copy(isSaving = true, error = null))
         launch {
-            val privateKeyHex = KeyStorage.loadPrivateKey() ?: run {
+            val signer = accountSession?.signer ?: run {
                 val s = _state.value as? UiState.Ready ?: return@launch
                 _state.value = s.copy(
                     editDialog = s.editDialog?.copy(isSaving = false, error = "秘密鍵が設定されていません"),
@@ -377,8 +370,7 @@ class ChannelViewModel(
                     put("about", description)
                     put("picture", currentChannelMeta.picture)
                 }.toString()
-                val event = signEvent(
-                    privateKeyHex = privateKeyHex,
+                val event = signer.sign(
                     content = content,
                     kind = 41,
                     tags = listOf(listOf("e", channelId), listOf("client", "ToriNos")),

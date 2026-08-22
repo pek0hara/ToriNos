@@ -1,7 +1,6 @@
 package com.nostr.torinos.network
 
-import com.nostr.torinos.crypto.KeyStorage
-import com.nostr.torinos.crypto.signEvent
+import com.nostr.torinos.account.AccountSigner
 import com.nostr.torinos.util.networkTraceLog
 import io.ktor.client.request.forms.MultiPartFormDataContent
 import io.ktor.client.request.forms.formData
@@ -26,13 +25,10 @@ private val json = Json { ignoreUnknownKeys = true }
 object ImageUploader {
 
     @OptIn(ExperimentalEncodingApi::class)
-    suspend fun upload(bytes: ByteArray, mimeType: String): Result<String> = runCatching {
-        val privKey = KeyStorage.loadPrivateKey()
-            ?: error("秘密鍵が設定されていません")
-
+    suspend fun upload(bytes: ByteArray, mimeType: String, signer: AccountSigner?): Result<String> = runCatching {
+        val activeSigner = signer ?: error("秘密鍵が設定されていません")
         // NIP-98: kind:27235 イベントを署名して Authorization ヘッダーに付与
-        val authEvent = signEvent(
-            privateKeyHex = privKey,
+        val authEvent = activeSigner.sign(
             content = "",
             kind = 27235,
             tags = listOf(

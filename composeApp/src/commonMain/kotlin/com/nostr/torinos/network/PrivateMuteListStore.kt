@@ -51,7 +51,8 @@ data class PrivateMuteListSyncState(
 
 object PrivateMuteListStore {
     private const val KIND_MUTE_LIST = 10000
-    private const val CACHE_KEY = "private_mute_list_cache_v1"
+    private const val LEGACY_CACHE_KEY = "private_mute_list_cache_v1"
+    private const val CACHE_KEY_PREFIX = "private_mute_list_cache_v2_"
     private const val LEGACY_MUTED_PUBKEYS_KEY = "muted_pubkeys"
     private const val LEGACY_NG_WORDS_KEY = "ng_words"
     private const val MAX_WORD_LENGTH = 128
@@ -71,11 +72,13 @@ object PrivateMuteListStore {
     val syncState: StateFlow<PrivateMuteListSyncState> = _syncState.asStateFlow()
 
     private var accountGeneration = 0L
+    private var currentAccountPubkey: String? = null
 
     init {
         scope.launch {
-            loadCache()
-            refreshFromRelays(updateStatus = true)
+            val privateKey = KeyStorage.loadPrivateKey()
+            val pubkey = privateKey?.let { derivePublicKey(it.fromHex()).toHex() }
+            resetForAccountChange(pubkey)
         }
     }
 
@@ -122,26 +125,33 @@ object PrivateMuteListStore {
         scope.launch { refreshFromRelays(updateStatus = true, expectedGeneration = accountGeneration) }
     }
 
-    fun resetForAccountChange() {
+    fun resetForAccountChange(pubkey: String?) {
         accountGeneration++
+        currentAccountPubkey = pubkey
         _mutedPubkeys.value = emptySet()
         _ngWords.value = emptyList()
         _syncState.value = PrivateMuteListSyncState()
         val expectedGeneration = accountGeneration
         scope.launch {
-            clearCache()
+            if (pubkey == null) return@launch
+            loadCache(pubkey)
             refreshFromRelays(updateStatus = true, expectedGeneration = expectedGeneration)
         }
     }
 
-    private suspend fun loadCache() {
-        val cache = LocalSettingsStorage.getString(CACHE_KEY)
+    private suspend fun loadCache(accountPubkey: String) {
+        val accountCache = LocalSettingsStorage.getString(cacheKey(accountPubkey))
+        val cache = (accountCache ?: LocalSettingsStorage.getString(LEGACY_CACHE_KEY))
             ?.let { saved ->
                 runCatching { json.decodeFromString<PrivateMuteListCache>(saved) }.getOrNull()
             }
 
         if (cache != null) {
             applyCache(cache)
+            if (accountCache == null) {
+                saveCache(null)
+                LocalSettingsStorage.putString(LEGACY_CACHE_KEY, null)
+            }
             return
         }
 
@@ -178,21 +188,15 @@ object PrivateMuteListStore {
     }
 
     private fun persistAndPublish() {
+        if (currentAccountPubkey == null) return
         scope.launch {
             saveCache(null)
             publishCurrentList()
         }
     }
 
-    private suspend fun clearCache() {
-        runCatching {
-            LocalSettingsStorage.putString(CACHE_KEY, null)
-        }.onFailure {
-            appLog("[PrivateMuteListStore] cache clear failed: ${it::class.simpleName}: ${it.message}")
-        }
-    }
-
     private suspend fun saveCache(source: NostrEvent?) {
+        val accountPubkey = currentAccountPubkey ?: return
         val cache = PrivateMuteListCache(
             mutedPubkeys = _mutedPubkeys.value.toList().sorted(),
             ngWords = _ngWords.value,
@@ -201,7 +205,7 @@ object PrivateMuteListStore {
             updatedAt = Clock.System.now().epochSeconds,
         )
         runCatching {
-            LocalSettingsStorage.putString(CACHE_KEY, json.encodeToString(cache))
+            LocalSettingsStorage.putString(cacheKey(accountPubkey), json.encodeToString(cache))
         }.onFailure {
             appLog("[PrivateMuteListStore] cache save failed: ${it::class.simpleName}: ${it.message}")
         }
@@ -217,7 +221,7 @@ object PrivateMuteListStore {
         try {
             val privateKey = KeyStorage.loadPrivateKey() ?: return
             val publicKey = derivePublicKey(privateKey.fromHex()).toHex()
-            if (expectedGeneration != accountGeneration) return
+            if (expectedGeneration != accountGeneration || publicKey != currentAccountPubkey) return
             val event = fetchLatestMuteList(publicKey) ?: run {
                 if (updateStatus && expectedGeneration == accountGeneration) {
                     _syncState.value = _syncState.value.copy(
@@ -265,8 +269,15 @@ object PrivateMuteListStore {
     }
 
     private suspend fun publishCurrentList() {
+        val expectedGeneration = accountGeneration
+        val expectedPubkey = currentAccountPubkey ?: return
         val privateKey = KeyStorage.loadPrivateKey() ?: return
         val publicKey = runCatching { derivePublicKey(privateKey.fromHex()).toHex() }.getOrNull() ?: return
+        if (
+            expectedGeneration != accountGeneration ||
+            expectedPubkey != currentAccountPubkey ||
+            publicKey != expectedPubkey
+        ) return
         val targets = RelayStore.enabledRelayUrlsSnapshot()
         if (targets.isEmpty()) {
             _syncState.value = _syncState.value.copy(error = "有効なリレーがありません")
@@ -396,6 +407,8 @@ object PrivateMuteListStore {
 
     private fun isHex64(value: String): Boolean =
         value.length == 64 && value.all { it in '0'..'9' || it in 'a'..'f' }
+
+    private fun cacheKey(pubkey: String): String = "$CACHE_KEY_PREFIX$pubkey"
 
     private data class ParsedMuteList(
         val mutedPubkeys: List<String> = emptyList(),

@@ -34,6 +34,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.nostr.torinos.account.accountScopedViewModelKey
 import com.nostr.torinos.model.NostrProfile
 import com.nostr.torinos.network.MuteStore
 import com.nostr.torinos.ui.components.ProfileNameText
@@ -169,7 +170,9 @@ private fun AccountSwitcherDialog(
     onBackToMenu: () -> Unit,
     onAccountChanged: (String?) -> Unit,
     onAddAccountClick: () -> Unit,
-    viewModel: SettingsViewModel = viewModel(key = "quick-settings-account") { SettingsViewModel() },
+    viewModel: SettingsViewModel = viewModel(
+        key = accountScopedViewModelKey("quick-settings-account"),
+    ) { SettingsViewModel() },
 ) {
     val state by viewModel.state.collectAsState()
 
@@ -296,7 +299,10 @@ private fun MuteListDialog(
     onDismiss: () -> Unit,
     onBackToMenu: () -> Unit,
     onUserClick: (String) -> Unit,
-    viewModel: MuteListViewModel = viewModel(factory = MuteListViewModel.Factory),
+    viewModel: MuteListViewModel = viewModel(
+        key = accountScopedViewModelKey("quick-settings-mute-list"),
+        factory = MuteListViewModel.Factory,
+    ),
 ) {
     val mutedPubkeys by MuteStore.mutedPubkeys.collectAsState()
     val profiles by viewModel.profiles.collectAsState()
