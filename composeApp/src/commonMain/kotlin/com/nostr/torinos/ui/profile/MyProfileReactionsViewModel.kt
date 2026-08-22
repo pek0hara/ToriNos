@@ -4,7 +4,8 @@ import com.nostr.torinos.model.NostrEvent
 import com.nostr.torinos.model.NostrFilter
 import com.nostr.torinos.model.NostrProfile
 import com.nostr.torinos.network.NostrRepository
-import com.nostr.torinos.network.ProfileCache
+import com.nostr.torinos.network.ProfileFetchPolicy
+import com.nostr.torinos.network.ProfileRepository
 import com.nostr.torinos.ui.SafeViewModel
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -43,14 +44,12 @@ class MyProfileReactionsViewModel(private val ownPubkey: String) : SafeViewModel
     val state: StateFlow<MyProfileReactionsState> = _state.asStateFlow()
 
     private val reactionsSubId = "mp-react-$shortKey"
-    private val profileSubId = "mp-react-prof-$shortKey"
     private val targetSubId = "mp-react-target-$shortKey"
 
     private val seenItemIds = linkedSetOf<String>()
-    private val pendingPubkeys = linkedSetOf<String>()
+    private val requestedProfilePubkeys = linkedSetOf<String>()
     private val pendingTargetIds = linkedSetOf<String>()
     private val collectorJobs = mutableListOf<Job>()
-    private var profileBatchJob: Job? = null
     private var targetBatchJob: Job? = null
     private var eoseJob: Job? = null
 
@@ -68,11 +67,11 @@ class MyProfileReactionsViewModel(private val ownPubkey: String) : SafeViewModel
             }
         }
         collectorJobs += launch {
-            NostrRepository.events(profileSubId).collect { event ->
-                if (event.kind != 0) return@collect
-                val profile = ProfileCache.putEvent(event) ?: return@collect
-                pendingPubkeys.remove(event.pubkey)
-                _state.update { it.copy(profiles = it.profiles + (event.pubkey to profile)) }
+            ProfileRepository.observeAll().collect { cachedProfiles ->
+                val profiles = cachedProfiles.filterKeys { it in requestedProfilePubkeys }
+                if (profiles != _state.value.profiles) {
+                    _state.update { it.copy(profiles = profiles) }
+                }
             }
         }
         collectorJobs += launch {
@@ -132,18 +131,15 @@ class MyProfileReactionsViewModel(private val ownPubkey: String) : SafeViewModel
     }
 
     private fun scheduleProfileFetch(pubkey: String) {
-        if (pubkey in _state.value.profiles || !pendingPubkeys.add(pubkey)) return
-        ProfileCache.get(pubkey)?.let { cachedProfile ->
-            pendingPubkeys.remove(pubkey)
+        requestedProfilePubkeys.add(pubkey)
+        ProfileRepository.getCached(pubkey)?.let { cachedProfile ->
             _state.update { it.copy(profiles = it.profiles + (pubkey to cachedProfile)) }
-            return
         }
-        profileBatchJob?.cancel()
-        profileBatchJob = launch {
-            delay(400)
-            val pubkeys = pendingPubkeys.toList()
-            pendingPubkeys.clear()
-            NostrRepository.subscribe(profileSubId, NostrFilter(kinds = listOf(0), authors = pubkeys))
+        launch {
+            ProfileRepository.ensureProfiles(
+                setOf(pubkey),
+                ProfileFetchPolicy.CacheFirst(PROFILE_MAX_AGE_MS),
+            )
         }
     }
 
@@ -170,16 +166,16 @@ class MyProfileReactionsViewModel(private val ownPubkey: String) : SafeViewModel
     override fun onCleared() {
         super.onCleared()
         collectorJobs.forEach { it.cancel() }
-        profileBatchJob?.cancel()
+        requestedProfilePubkeys.clear()
         targetBatchJob?.cancel()
         eoseJob?.cancel()
         NostrRepository.close(reactionsSubId)
-        NostrRepository.close(profileSubId)
         NostrRepository.close(targetSubId)
     }
 
     companion object {
         private const val MAX_SEEN_IDS = 1000
+        private const val PROFILE_MAX_AGE_MS = 15 * 60 * 1_000L
     }
 }
 

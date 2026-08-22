@@ -15,7 +15,8 @@ import com.nostr.torinos.model.toArticleAuthors
 import com.nostr.torinos.model.toArticleMeta
 import com.nostr.torinos.network.MuteStore
 import com.nostr.torinos.network.NostrRepository
-import com.nostr.torinos.network.ProfileCache
+import com.nostr.torinos.network.ProfileFetchPolicy
+import com.nostr.torinos.network.ProfileRepository
 import com.nostr.torinos.network.RelayStore
 import com.nostr.torinos.ui.SafeViewModel
 import kotlin.random.Random
@@ -243,7 +244,7 @@ class ArticleHubViewModel(private val relayUrl: String? = null) : SafeViewModel(
             .map { it.pubkey }
             .distinct()
             .filterNot { it in _state.value.profiles }
-        val cachedProfiles = ProfileCache.getAll(missing)
+        val cachedProfiles = ProfileRepository.getCached(missing)
         if (cachedProfiles.isNotEmpty()) {
             _state.value = _state.value.copy(profiles = _state.value.profiles + cachedProfiles)
             updateStateFromEvents()
@@ -370,7 +371,7 @@ class UserArticleListViewModel(
 
     private suspend fun fetchProfile() {
         if (pubkey in _state.value.profiles) return
-        ProfileCache.get(pubkey)?.let { cachedProfile ->
+        ProfileRepository.getCached(pubkey)?.let { cachedProfile ->
             _state.value = _state.value.copy(profiles = _state.value.profiles + (pubkey to cachedProfile))
             updateStateFromEvents()
             return
@@ -420,10 +421,10 @@ class ArticleDetailViewModel(
                 val quoteIds = latest?.event?.let(::quotedEventIds).orEmpty()
                 val cachedQuotedEvents = ArticleMemoryCache.events(relayUrl, quoteIds)
                 val profilePubkeys = (listOf(pubkey) + cachedQuotedEvents.values.map { it.pubkey }).distinct()
-                val cachedProfiles = ProfileCache.getAll(profilePubkeys)
+                val cachedProfiles = ProfileRepository.getCached(profilePubkeys)
                 val profile = cachedProfiles[pubkey]
                     ?: latest?.authorProfile
-                    ?: ProfileCache.get(pubkey)
+                    ?: ProfileRepository.getCached(pubkey)
                 _state.value = ArticleDetailState(
                     article = latest?.copy(authorProfile = profile),
                     profile = profile,
@@ -655,43 +656,12 @@ private suspend fun fetchProfiles(
 ): Map<String, NostrProfile> {
     val authors = pubkeys.distinct().take(PROFILE_FETCH_LIMIT)
     if (authors.isEmpty()) return emptyMap()
-    val cachedProfiles = ProfileCache.getAll(authors)
-    val missingAuthors = authors.filterNot { it in cachedProfiles }
-    if (missingAuthors.isEmpty()) return cachedProfiles
-    return cachedProfiles + fetchProfilesFromRelay(missingAuthors, relayUrl)
-}
-
-private suspend fun fetchProfilesFromRelay(
-    authors: List<String>,
-    relayUrl: String?,
-): Map<String, NostrProfile> = coroutineScope {
-    val subId = articleSubscriptionId("article-prof", authors)
-    val mutex = Mutex()
-    val profiles = mutableMapOf<String, NostrProfile>()
-    var collector: Job? = null
-    try {
-        collector = launch(start = CoroutineStart.UNDISPATCHED) {
-            NostrRepository.events(subId).collect { event ->
-                if (event.kind == 0 && event.pubkey in authors) {
-                    ProfileCache.putEvent(event)?.let { profile ->
-                        mutex.withLock { profiles[event.pubkey] = profile }
-                    }
-                }
-            }
-        }
-        NostrRepository.subscribe(
-            subId,
-            NostrFilter(kinds = listOf(0), authors = authors, limit = authors.size),
-            relayUrl = relayUrl,
-        )
-        withTimeoutOrNull(PROFILE_FETCH_TIMEOUT_MS) {
-            NostrRepository.eose(subId).first()
-        }
-        mutex.withLock { profiles.toMap() }
-    } finally {
-        runCatching { NostrRepository.close(subId) }
-        collector?.cancelAndJoin()
-    }
+    return ProfileRepository.awaitProfiles(
+        pubkeys = authors.toSet(),
+        policy = ProfileFetchPolicy.CacheFirst(PROFILE_MAX_AGE_MS),
+        relayHint = relayUrl,
+        timeoutMillis = PROFILE_FETCH_TIMEOUT_MS,
+    )
 }
 
 private const val ARTICLE_PAGE_SIZE = 50
@@ -699,6 +669,7 @@ private const val ARTICLE_DETAIL_AUTHOR_FALLBACK_LIMIT = 100
 private const val ARTICLE_FETCH_TIMEOUT_MS = 8_000L
 private const val PROFILE_FETCH_TIMEOUT_MS = 5_000L
 private const val PROFILE_FETCH_LIMIT = 200
+private const val PROFILE_MAX_AGE_MS = 15 * 60 * 1_000L
 private const val NIP09_DELETION_KIND = 5
 
 private fun articleSubscriptionId(prefix: String, key: Any): String =

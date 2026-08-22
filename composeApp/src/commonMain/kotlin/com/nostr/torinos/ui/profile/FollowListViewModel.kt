@@ -4,7 +4,8 @@ import com.nostr.torinos.ui.SafeViewModel
 import com.nostr.torinos.model.NostrFilter
 import com.nostr.torinos.model.NostrProfile
 import com.nostr.torinos.network.NostrRepository
-import com.nostr.torinos.network.ProfileCache
+import com.nostr.torinos.network.ProfileFetchPolicy
+import com.nostr.torinos.network.ProfileRepository
 import com.nostr.torinos.network.RelayTarget
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineStart
@@ -33,11 +34,9 @@ class FollowListViewModel(
     private val _state = MutableStateFlow(FollowListState())
     val state: StateFlow<FollowListState> = _state.asStateFlow()
 
-    private val profileSubId = "fl-profiles-${mode.name}-${ownPubkey.take(8)}"
     private val followerSubId = "fl-followers-${ownPubkey.take(8)}"
     private val followingListSubId = "fl-kind3-${ownPubkey.take(16)}"
     private val collectorJobs = mutableListOf<Job>()
-    private val activeProfileSubIds = mutableSetOf<String>()
     private val queuedProfilePubkeys = linkedSetOf<String>()
     private val requestedProfilePubkeys = mutableSetOf<String>()
 
@@ -45,12 +44,24 @@ class FollowListViewModel(
     private val profileMap = mutableMapOf<String, NostrProfile?>()
     // 取得済みpubkeyセット
     private val knownPubkeys = linkedSetOf<String>()
-    private var profileRequestSerial = 0
     private var pendingProfileSubscriptions = 0
     private var profileBatchJob: Job? = null
     private var publishJob: Job? = null
 
     init {
+        collectorJobs += launch {
+            ProfileRepository.observeAll().collect { cachedProfiles ->
+                var changed = false
+                knownPubkeys.forEach { pubkey ->
+                    val profile = cachedProfiles[pubkey]
+                    if (profile != null && profileMap[pubkey] != profile) {
+                        profileMap[pubkey] = profile
+                        changed = true
+                    }
+                }
+                if (changed) schedulePublishEntries()
+            }
+        }
         launch { start() }
     }
 
@@ -116,7 +127,7 @@ class FollowListViewModel(
                 if (event.kind != 3) return@collect
                 val pubkey = event.pubkey
                 if (knownPubkeys.add(pubkey)) {
-                    profileMap[pubkey] = ProfileCache.get(pubkey)
+                    profileMap[pubkey] = ProfileRepository.getCached(pubkey)
                     schedulePublishEntries()
                     queueProfileRequests(listOf(pubkey))
                 }
@@ -137,7 +148,7 @@ class FollowListViewModel(
     }
 
     private fun initPubkeys(pubkeys: List<String>) {
-        val cachedProfiles = ProfileCache.getAll(pubkeys)
+        val cachedProfiles = ProfileRepository.getCached(pubkeys)
         pubkeys.forEach { pk ->
             knownPubkeys.add(pk)
             if (pk !in profileMap) {
@@ -197,38 +208,18 @@ class FollowListViewModel(
     }
 
     private suspend fun subscribeProfileBatch(pubkeys: List<String>) {
-        val subId = "$profileSubId-${profileRequestSerial++}"
-        activeProfileSubIds.add(subId)
         pendingProfileSubscriptions++
-
-        val eventJob = launch(start = CoroutineStart.UNDISPATCHED) {
-            NostrRepository.events(subId).collect { event ->
-                if (event.kind != 0) return@collect
-                if (event.pubkey in knownPubkeys) {
-                    ProfileCache.putEvent(event)?.let { profile ->
-                        profileMap[event.pubkey] = profile
-                        schedulePublishEntries()
-                    }
-                }
-            }
-        }
-        collectorJobs += eventJob
-
-        // EOSE 後に購読解除 & ローディング終了
-        collectorJobs += launch(start = CoroutineStart.UNDISPATCHED) {
-            NostrRepository.eose(subId).first()
-            NostrRepository.close(subId)
-            activeProfileSubIds.remove(subId)
+        try {
+            ProfileRepository.ensureProfiles(
+                pubkeys.toSet(),
+                policy = ProfileFetchPolicy.CacheFirst(PROFILE_MAX_AGE_MS),
+            )
+        } finally {
             pendingProfileSubscriptions--
             if (mode == FollowListMode.FOLLOWING && pendingProfileSubscriptions == 0) {
                 _state.update { it.copy(isLoading = false) }
             }
         }
-
-        NostrRepository.subscribe(
-            subId,
-            NostrFilter(kinds = listOf(0), authors = pubkeys, limit = pubkeys.size),
-        )
     }
 
     private fun schedulePublishEntries() {
@@ -253,8 +244,6 @@ class FollowListViewModel(
         collectorJobs.forEach { it.cancel() }
         NostrRepository.close(followerSubId)
         NostrRepository.close(followingListSubId)
-        activeProfileSubIds.forEach { NostrRepository.close(it) }
-        activeProfileSubIds.clear()
     }
 
     companion object {
@@ -262,6 +251,7 @@ class FollowListViewModel(
         private const val PROFILE_BATCH_DELAY_MS = 120L
         private const val PUBLISH_DELAY_MS = 180L
         private const val FOLLOWING_LIST_TIMEOUT_MS = 10_000L
+        private const val PROFILE_MAX_AGE_MS = 15 * 60 * 1_000L
     }
 }
 

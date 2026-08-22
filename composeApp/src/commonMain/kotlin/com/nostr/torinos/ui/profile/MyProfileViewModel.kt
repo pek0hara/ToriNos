@@ -9,7 +9,8 @@ import com.nostr.torinos.model.extractNpubReferences
 import com.nostr.torinos.network.CustomEmojiStore
 import com.nostr.torinos.network.FollowRepository
 import com.nostr.torinos.network.NostrRepository
-import com.nostr.torinos.network.ProfileCache
+import com.nostr.torinos.network.ProfileFetchPolicy
+import com.nostr.torinos.network.ProfileRepository
 import com.nostr.torinos.network.RelayListEventCache
 import com.nostr.torinos.network.RelayStore
 import kotlinx.coroutines.Job
@@ -40,8 +41,6 @@ class MyProfileViewModel(private val ownPubkey: String) : SafeViewModel() {
     val state: StateFlow<MyProfileState> = _state.asStateFlow()
 
     private val subIdKey = ownPubkey.take(16)
-    private val profileSubId = "mp-profile-$subIdKey"
-    private val linkedProfileSubId = "mp-linked-profile-$subIdKey"
     private val followerSubId = "mp-followers-$subIdKey"
     private val relayListSubId = "mp-relay-list-$subIdKey"
     private val generalStatusSubId = "mp-general-status-$subIdKey"
@@ -49,9 +48,10 @@ class MyProfileViewModel(private val ownPubkey: String) : SafeViewModel() {
     private val collectorJobs = mutableListOf<Job>()
     private var followerCollectorJob: Job? = null
     private var followerEoseJob: Job? = null
+    private var linkedProfileObserverJob: Job? = null
     private var latestGeneralStatusCreatedAt = -1L
     private var hasPublishedRelayList = false
-    private val pendingLinkedProfilePubkeys = linkedSetOf<String>()
+    private val linkedProfilePubkeys = linkedSetOf<String>()
 
     init {
         start()
@@ -65,7 +65,7 @@ class MyProfileViewModel(private val ownPubkey: String) : SafeViewModel() {
                 _state.update { it.copy(relayUrls = relayUrls) }
             }
         }
-        ProfileCache.get(ownPubkey)?.let { cachedProfile ->
+        ProfileRepository.getCached(ownPubkey)?.let { cachedProfile ->
             _state.update { it.copy(profile = cachedProfile) }
             scheduleLinkedProfileFetch(cachedProfile.about.orEmpty())
         }
@@ -84,24 +84,11 @@ class MyProfileViewModel(private val ownPubkey: String) : SafeViewModel() {
         }
 
         collectorJobs += launch {
-            NostrRepository.events(profileSubId).collect { event ->
-                if (event.kind != 0) return@collect
-                ProfileCache.putEvent(event)?.let { profile ->
-                    _state.update { it.copy(profile = profile) }
-                    scheduleLinkedProfileFetch(profile.about.orEmpty())
-                }
-            }
-        }
-
-        collectorJobs += launch {
-            NostrRepository.events(linkedProfileSubId).collect { event ->
-                if (event.kind != 0) return@collect
-                ProfileCache.putEvent(event)?.let { profile ->
-                    pendingLinkedProfilePubkeys.remove(event.pubkey)
-                    _state.update {
-                        it.copy(linkedProfiles = it.linkedProfiles + (event.pubkey to profile))
-                    }
-                }
+            ProfileRepository.observe(ownPubkey).collect { profile ->
+                profile ?: return@collect
+                if (_state.value.profile == profile) return@collect
+                _state.update { it.copy(profile = profile) }
+                scheduleLinkedProfileFetch(profile.about.orEmpty())
             }
         }
 
@@ -144,11 +131,7 @@ class MyProfileViewModel(private val ownPubkey: String) : SafeViewModel() {
     /** 画面を開くたびに最新プロフィールを取得し、受信時にキャッシュを更新する。 */
     fun refreshProfile() {
         launch {
-            NostrRepository.close(profileSubId)
-            NostrRepository.subscribe(
-                profileSubId,
-                NostrFilter(kinds = listOf(0), authors = listOf(ownPubkey), limit = 1),
-            )
+            ProfileRepository.refresh(ownPubkey)
         }
     }
 
@@ -183,7 +166,7 @@ class MyProfileViewModel(private val ownPubkey: String) : SafeViewModel() {
 
     /** 編集保存後に UI を即時更新する（リレーの応答を待たない）。 */
     fun applyProfile(profile: NostrProfile) {
-        ProfileCache.putOptimistic(ownPubkey, profile)
+        ProfileRepository.applyOptimistic(ownPubkey, profile)
         _state.update { it.copy(profile = profile) }
         launch {
             delay(2_000)
@@ -239,32 +222,39 @@ class MyProfileViewModel(private val ownPubkey: String) : SafeViewModel() {
         collectorJobs.forEach { it.cancel() }
         followerCollectorJob?.cancel()
         followerEoseJob?.cancel()
-        NostrRepository.close(profileSubId)
-        NostrRepository.close(linkedProfileSubId)
+        linkedProfileObserverJob?.cancel()
         NostrRepository.close(followerSubId)
         NostrRepository.close(relayListSubId)
         NostrRepository.close(generalStatusSubId)
     }
 
     private fun scheduleLinkedProfileFetch(text: String) {
-        val linkedPubkeys = extractNpubReferences(text)
+        val discoveredPubkeys = extractNpubReferences(text)
             .map { it.pubkey }
-            .filter { it !in _state.value.linkedProfiles }
             .distinct()
-        val cachedProfiles = ProfileCache.getAll(linkedPubkeys)
+        if (discoveredPubkeys.isEmpty()) return
+        linkedProfilePubkeys.addAll(discoveredPubkeys)
+        val watchedPubkeys = linkedProfilePubkeys.toSet()
+        val cachedProfiles = ProfileRepository.getCached(watchedPubkeys)
         if (cachedProfiles.isNotEmpty()) {
             _state.update { it.copy(linkedProfiles = it.linkedProfiles + cachedProfiles) }
         }
-        val authors = linkedPubkeys
-            .filterNot { it in cachedProfiles }
-            .filter { pendingLinkedProfilePubkeys.add(it) }
-        if (authors.isEmpty()) return
+        linkedProfileObserverJob?.cancel()
+        linkedProfileObserverJob = launch {
+            ProfileRepository.observe(watchedPubkeys).collect { profiles ->
+                _state.update { it.copy(linkedProfiles = it.linkedProfiles + profiles) }
+            }
+        }
         launch {
-            NostrRepository.subscribe(
-                linkedProfileSubId,
-                NostrFilter(kinds = listOf(0), authors = pendingLinkedProfilePubkeys.toList()),
+            ProfileRepository.ensureProfiles(
+                pubkeys = watchedPubkeys,
+                policy = ProfileFetchPolicy.CacheFirst(LINKED_PROFILE_MAX_AGE_MS),
             )
         }
+    }
+
+    companion object {
+        private const val LINKED_PROFILE_MAX_AGE_MS = 15 * 60 * 1_000L
     }
 }
 

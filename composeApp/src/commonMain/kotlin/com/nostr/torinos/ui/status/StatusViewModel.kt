@@ -5,10 +5,11 @@ import com.nostr.torinos.crypto.signEvent
 import com.nostr.torinos.model.NostrEvent
 import com.nostr.torinos.model.NostrFilter
 import com.nostr.torinos.model.NostrProfile
-import com.nostr.torinos.model.toProfile
 import com.nostr.torinos.network.CustomEmojiStore
 import com.nostr.torinos.network.MuteStore
 import com.nostr.torinos.network.NostrRepository
+import com.nostr.torinos.network.ProfileFetchPolicy
+import com.nostr.torinos.network.ProfileRepository
 import com.nostr.torinos.ui.SafeViewModel
 import com.nostr.torinos.ui.profile.customEmojiMap
 import com.nostr.torinos.ui.profile.customEmojiTagsForContent
@@ -49,7 +50,6 @@ class StatusViewModel(private val relayUrl: String? = null) : SafeViewModel() {
     private val instanceKey = nextInstanceKey()
     private val relayKey = relayUrl?.hashCode()?.toString() ?: "all"
     private val statusSubId = "status-$relayKey-$instanceKey"
-    private val profileSubId = "status-profile-$relayKey-$instanceKey"
     private val rawStatuses = linkedMapOf<String, UserStatus>()
     private val pendingPubkeys = linkedSetOf<String>()
     private val jobs = mutableListOf<Job>()
@@ -130,13 +130,9 @@ class StatusViewModel(private val relayUrl: String? = null) : SafeViewModel() {
             }
         }
         jobs += launch {
-            NostrRepository.events(profileSubId).collect { event ->
-                if (event.kind != 0) return@collect
-                val profile = event.toProfile() ?: return@collect
-                pendingPubkeys.remove(event.pubkey)
-                _state.value = _state.value.copy(
-                    profiles = _state.value.profiles + (event.pubkey to profile),
-                )
+            ProfileRepository.observeAll().collect { cachedProfiles ->
+                val profiles = cachedProfiles.filterKeys { it in pendingPubkeys || it in _state.value.profiles }
+                if (profiles != _state.value.profiles) _state.value = _state.value.copy(profiles = profiles)
             }
         }
         jobs += launch {
@@ -216,18 +212,17 @@ class StatusViewModel(private val relayUrl: String? = null) : SafeViewModel() {
 
     private fun scheduleProfileFetch(pubkey: String) {
         if (pubkey in _state.value.profiles || !pendingPubkeys.add(pubkey)) return
+        ProfileRepository.getCached(pubkey)?.let { profile ->
+            _state.value = _state.value.copy(profiles = _state.value.profiles + (pubkey to profile))
+        }
         profileBatchJob?.cancel()
         profileBatchJob = launch {
             delay(PROFILE_BATCH_DELAY_MS)
-            val pubkeys = pendingPubkeys.toList()
-            pendingPubkeys.clear()
-            if (pubkeys.isNotEmpty()) {
-                NostrRepository.subscribe(
-                    profileSubId,
-                    NostrFilter(kinds = listOf(0), authors = pubkeys),
-                    relayUrl = relayUrl,
-                )
-            }
+            ProfileRepository.ensureProfiles(
+                pendingPubkeys.toSet(),
+                ProfileFetchPolicy.CacheFirst(PROFILE_MAX_AGE_MS),
+                relayHint = relayUrl,
+            )
         }
     }
 
@@ -236,7 +231,6 @@ class StatusViewModel(private val relayUrl: String? = null) : SafeViewModel() {
         jobs.forEach { it.cancel() }
         profileBatchJob?.cancel()
         NostrRepository.close(statusSubId)
-        NostrRepository.close(profileSubId)
     }
 
     private companion object {
@@ -245,6 +239,7 @@ class StatusViewModel(private val relayUrl: String? = null) : SafeViewModel() {
         const val INITIAL_LOAD_TIMEOUT_MS = 5_000L
         const val EXPIRATION_REFRESH_INTERVAL_MS = 60_000L
         const val PROFILE_BATCH_DELAY_MS = 300L
+        const val PROFILE_MAX_AGE_MS = 15 * 60 * 1_000L
         var nextKey = 0
         fun nextInstanceKey(): Int = nextKey++
     }

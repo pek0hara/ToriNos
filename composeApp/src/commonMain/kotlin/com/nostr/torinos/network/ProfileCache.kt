@@ -10,12 +10,14 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.update
+import kotlin.time.Clock
 
 object ProfileCache {
     data class Entry(
         val profile: NostrProfile,
         val eventId: String?,
         val createdAt: Long,
+        val fetchedAt: Long,
     )
 
     private val _entries = MutableStateFlow<Map<String, Entry>>(emptyMap())
@@ -26,6 +28,7 @@ object ProfileCache {
      * 既存イベントの版情報は維持し、それより新しいイベントを受信した時だけ置き換えられる。
      */
     fun putOptimistic(pubkey: String, profile: NostrProfile) {
+        val now = Clock.System.now().toEpochMilliseconds()
         _entries.update { current ->
             val existing = current[pubkey]
             current + (
@@ -33,12 +36,16 @@ object ProfileCache {
                     profile = profile,
                     eventId = existing?.eventId,
                     createdAt = existing?.createdAt ?: Long.MIN_VALUE,
+                    fetchedAt = now,
                 )
             )
         }
     }
 
-    fun putEvent(event: NostrEvent): NostrProfile? {
+    fun putEvent(
+        event: NostrEvent,
+        fetchedAt: Long = Clock.System.now().toEpochMilliseconds(),
+    ): NostrProfile? {
         require(event.kind == PROFILE_KIND) { "kind:0 以外は保存できません" }
         val profile = event.toProfile() ?: return null
         _entries.update { current ->
@@ -49,13 +56,31 @@ object ProfileCache {
                         profile = profile,
                         eventId = event.id,
                         createdAt = event.createdAt,
+                        fetchedAt = fetchedAt,
                     )
                 )
+            } else if (fetchedAt > existing.fetchedAt) {
+                current + (event.pubkey to existing.copy(fetchedAt = fetchedAt))
             } else {
                 current
             }
         }
         return get(event.pubkey)
+    }
+
+    /** リレーで再検証できた既存プロフィールの取得時刻だけを更新する。 */
+    fun markFetched(pubkeys: Collection<String>, fetchedAt: Long = Clock.System.now().toEpochMilliseconds()) {
+        if (pubkeys.isEmpty()) return
+        _entries.update { current ->
+            pubkeys.fold(current) { entries, pubkey ->
+                val existing = entries[pubkey]
+                if (existing == null || existing.fetchedAt >= fetchedAt) {
+                    entries
+                } else {
+                    entries + (pubkey to existing.copy(fetchedAt = fetchedAt))
+                }
+            }
+        }
     }
 
     fun get(pubkey: String): NostrProfile? =

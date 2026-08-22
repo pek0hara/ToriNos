@@ -22,7 +22,8 @@ import com.nostr.torinos.model.toCustomReaction
 import com.nostr.torinos.model.toUnicodeReaction
 import com.nostr.torinos.model.toReactionOption
 import com.nostr.torinos.network.NostrRepository
-import com.nostr.torinos.network.ProfileCache
+import com.nostr.torinos.network.ProfileFetchPolicy
+import com.nostr.torinos.network.ProfileRepository
 import com.nostr.torinos.ui.SafeViewModel
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -65,7 +66,6 @@ class ThreadViewModel(
     private val shortId = eventId.take(16)
     private val rootSubId = "thread-root-$shortId"
     private val repliesSubId = "thread-replies-$shortId"
-    private val profileSubId = "thread-prof-$shortId"
     private val replyCountSubId = "thread-count-$shortId"
     private val reactionSubId = "thread-react-$shortId"
     private val repostSubId = "thread-repost-$shortId"
@@ -83,10 +83,8 @@ class ThreadViewModel(
     private val receivedRepostEvents = linkedMapOf<String, NostrEvent>()
     private val watchedEventIds = linkedSetOf<String>()
     private val watchedReactionEventIds = linkedSetOf<String>()
-    private val pendingPubkeys = linkedSetOf<String>()
     private val requestedProfilePubkeys = linkedSetOf<String>()
     private val pendingQuotedEventIds = linkedSetOf<String>()
-    private var profileBatchJob: Job? = null
     private var replyCountBatchJob: Job? = null
     private var reactionBatchJob: Job? = null
     private var started = false
@@ -97,6 +95,14 @@ class ThreadViewModel(
             launch {
                 ownPubkey = loadPublicKey()
                 reconcileOwnEngagement()
+            }
+        }
+        subscriptionJobs += launch {
+            ProfileRepository.observeAll().collect { cachedProfiles ->
+                val profiles = cachedProfiles.filterKeys { it in requestedProfilePubkeys }
+                if (profiles != _state.value.profiles) {
+                    _state.value = _state.value.copy(profiles = profiles)
+                }
             }
         }
         startSubscriptions()
@@ -402,17 +408,6 @@ class ThreadViewModel(
         }
 
         subscriptionJobs += launch {
-            NostrRepository.events(profileSubId).collect { event ->
-                if (event.kind != 0) return@collect
-                val profile = ProfileCache.putEvent(event) ?: return@collect
-                pendingPubkeys.remove(event.pubkey)
-                _state.value = _state.value.copy(
-                    profiles = _state.value.profiles + (event.pubkey to profile),
-                )
-            }
-        }
-
-        subscriptionJobs += launch {
             NostrRepository.events(replyCountSubId).collect { event ->
                 if (!noteContext.matches(event) || !seenReplyCountIds.add(event.id)) return@collect
                 val targetId = noteContext.replyTargetId(event) ?: return@collect
@@ -572,15 +567,12 @@ class ThreadViewModel(
         started = false
         subscriptionJobs.forEach { it.cancel() }
         subscriptionJobs.clear()
-        profileBatchJob?.cancel()
         replyCountBatchJob?.cancel()
         reactionBatchJob?.cancel()
-        pendingPubkeys.clear()
         requestedProfilePubkeys.clear()
         pendingQuotedEventIds.clear()
         NostrRepository.close(rootSubId)
         NostrRepository.close(repliesSubId)
-        NostrRepository.close(profileSubId)
         NostrRepository.close(replyCountSubId)
         NostrRepository.close(reactionSubId)
         NostrRepository.close(repostSubId)
@@ -645,22 +637,19 @@ class ThreadViewModel(
     }
 
     private fun scheduleProfileFetch(pubkey: String) {
-        ProfileCache.get(pubkey)?.let { cachedProfile ->
+        requestedProfilePubkeys.add(pubkey)
+        ProfileRepository.getCached(pubkey)?.let { cachedProfile ->
             if (_state.value.profiles[pubkey] != cachedProfile) {
                 _state.value = _state.value.copy(
                     profiles = _state.value.profiles + (pubkey to cachedProfile),
                 )
             }
         }
-        if (!requestedProfilePubkeys.add(pubkey)) return
-        pendingPubkeys.add(pubkey)
-        profileBatchJob?.cancel()
-        profileBatchJob = launch {
-            delay(300)
-            if (pendingPubkeys.isEmpty()) return@launch
-            val authors = pendingPubkeys.toList()
-            pendingPubkeys.removeAll(authors)
-            NostrRepository.subscribe(profileSubId, NostrFilter(kinds = listOf(0), authors = authors))
+        launch {
+            ProfileRepository.ensureProfiles(
+                pubkeys = setOf(pubkey),
+                policy = ProfileFetchPolicy.CacheFirst(PROFILE_MAX_AGE_MS),
+            )
         }
     }
 
@@ -721,6 +710,7 @@ class ThreadViewModel(
     companion object {
         private const val MAX_RECEIVED_ENGAGEMENT_EVENTS = 2_000
         private const val MAX_WATCHED_EVENTS = 100
+        private const val PROFILE_MAX_AGE_MS = 15 * 60 * 1_000L
     }
 }
 

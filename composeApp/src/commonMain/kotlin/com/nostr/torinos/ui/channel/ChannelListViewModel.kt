@@ -14,6 +14,8 @@ import com.nostr.torinos.model.toProfile
 import com.nostr.torinos.network.CachedChannelSummary
 import com.nostr.torinos.network.ChannelCacheStore
 import com.nostr.torinos.network.NostrRepository
+import com.nostr.torinos.network.ProfileFetchPolicy
+import com.nostr.torinos.network.ProfileRepository
 import com.nostr.torinos.ui.SafeViewModel
 import com.nostr.torinos.ui.profile.customEmojiMap
 import kotlin.reflect.KClass
@@ -53,6 +55,7 @@ class ChannelListViewModel(private val relayUrl: String? = null) : SafeViewModel
         private const val PAGE_SIZE = 50
         private const val HISTORY_PAGE_SIZE = 200
         private const val MAX_SEEN_MSG_IDS = 5_000
+        private const val PROFILE_MAX_AGE_MS = 15 * 60 * 1_000L
 
         val Factory: ViewModelProvider.Factory = object : ViewModelProvider.Factory {
             @Suppress("UNCHECKED_CAST")
@@ -108,7 +111,6 @@ class ChannelListViewModel(private val relayUrl: String? = null) : SafeViewModel
     private val liveSubId = "ch-list-live-$relayKey"
     // ライブで発見した未知チャンネルの kind:40 取得
     private val newMetaSubId = "ch-list-newmeta-$relayKey"
-    private val authorsSubId = "ch-list-authors-$relayKey"
 
     private val channelMap = linkedMapOf<String, ChannelItem>()
     private val lastActivities = mutableMapOf<String, Long>()
@@ -216,13 +218,15 @@ class ChannelListViewModel(private val relayUrl: String? = null) : SafeViewModel
             }
         }
 
-        // kind:0 プロフィール
+        // 共通プロフィールキャッシュ
         jobs += launch {
-            NostrRepository.events(authorsSubId).collect { event ->
-                if (event.kind != 0) return@collect
-                val profile = event.toProfile() ?: return@collect
-                authorProfiles[event.pubkey] = profile
-                emitReady()
+            ProfileRepository.observeAll().collect { cachedProfiles ->
+                val profiles = cachedProfiles.filterKeys { it in subscribedAuthorPubkeys }
+                if (profiles != authorProfiles) {
+                    authorProfiles.clear()
+                    authorProfiles.putAll(profiles)
+                    emitReady()
+                }
             }
         }
 
@@ -647,10 +651,11 @@ class ChannelListViewModel(private val relayUrl: String? = null) : SafeViewModel
             .toSet()
         if (authorPubkeys.isNotEmpty() && authorPubkeys != subscribedAuthorPubkeys) {
             subscribedAuthorPubkeys = authorPubkeys
-            NostrRepository.subscribe(
-                authorsSubId,
-                NostrFilter(kinds = listOf(0), authors = authorPubkeys.toList()),
-                relayUrl = relayUrl,
+            authorProfiles.putAll(ProfileRepository.getCached(authorPubkeys))
+            ProfileRepository.ensureProfiles(
+                authorPubkeys,
+                ProfileFetchPolicy.CacheFirst(PROFILE_MAX_AGE_MS),
+                relayHint = relayUrl,
             )
         }
     }
@@ -726,6 +731,5 @@ class ChannelListViewModel(private val relayUrl: String? = null) : SafeViewModel
         NostrRepository.close(historySubId)
         NostrRepository.close(liveSubId)
         NostrRepository.close(newMetaSubId)
-        NostrRepository.close(authorsSubId)
     }
 }

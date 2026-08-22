@@ -35,24 +35,23 @@ import androidx.lifecycle.ViewModelProvider
 import androidx.compose.runtime.collectAsState
 import androidx.lifecycle.viewmodel.CreationExtras
 import androidx.lifecycle.viewmodel.compose.viewModel
-import com.nostr.torinos.model.NostrFilter
 import com.nostr.torinos.model.NostrProfile
-import com.nostr.torinos.model.toProfile
 import com.nostr.torinos.network.MuteStore
 import com.nostr.torinos.network.PrivateMuteListSyncState
-import com.nostr.torinos.network.NostrRepository
+import com.nostr.torinos.network.ProfileFetchPolicy
+import com.nostr.torinos.network.ProfileRepository
 import com.nostr.torinos.ui.SafeViewModel
 import com.nostr.torinos.ui.components.ProfileNameText
 import com.nostr.torinos.ui.profile.AvatarCircle
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.update
 import kotlin.reflect.KClass
 
 class MuteListViewModel : SafeViewModel() {
     companion object {
-        private const val SUB_ID = "mute-list-prof"
         val Factory: ViewModelProvider.Factory = object : ViewModelProvider.Factory {
             @Suppress("UNCHECKED_CAST")
             override fun <T : ViewModel> create(modelClass: KClass<T>, extras: CreationExtras): T =
@@ -65,27 +64,12 @@ class MuteListViewModel : SafeViewModel() {
 
     init {
         launch {
-            MuteStore.mutedPubkeys.collect { pubkeys ->
-                if (pubkeys.isNotEmpty()) {
-                    NostrRepository.subscribe(
-                        SUB_ID,
-                        NostrFilter(kinds = listOf(0), authors = pubkeys.toList()),
-                    )
-                }
+            MuteStore.mutedPubkeys.collectLatest { pubkeys ->
+                _profiles.value = ProfileRepository.getCached(pubkeys)
+                ProfileRepository.ensureProfiles(pubkeys, ProfileFetchPolicy.CacheFirst(15 * 60 * 1_000L))
+                ProfileRepository.observe(pubkeys).collect { _profiles.value = it }
             }
         }
-        launch {
-            NostrRepository.events(SUB_ID).collect { event ->
-                if (event.kind != 0) return@collect
-                val profile = event.toProfile() ?: return@collect
-                _profiles.update { it + (event.pubkey to profile) }
-            }
-        }
-    }
-
-    override fun onCleared() {
-        super.onCleared()
-        NostrRepository.close(SUB_ID)
     }
 }
 

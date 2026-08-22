@@ -5,18 +5,16 @@ import com.nostr.torinos.ui.SafeViewModel
 import com.nostr.torinos.crypto.KeyStorage
 import com.nostr.torinos.crypto.loadPublicKey
 import com.nostr.torinos.crypto.signEvent
-import com.nostr.torinos.model.NostrFilter
 import com.nostr.torinos.model.NostrProfile
-import com.nostr.torinos.model.toProfile
 import com.nostr.torinos.network.CustomEmojiStore
 import com.nostr.torinos.network.ImageUploader
 import com.nostr.torinos.network.NostrRepository
+import com.nostr.torinos.network.ProfileFetchPolicy
+import com.nostr.torinos.network.ProfileRepository
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.firstOrNull
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.buildJsonObject
@@ -43,27 +41,14 @@ class EditProfileViewModel : SafeViewModel() {
     private val _state = MutableStateFlow(EditProfileState())
     val state: StateFlow<EditProfileState> = _state.asStateFlow()
 
-    // インスタンスごとにユニークな subId を生成（同時に複数開いた場合の競合を防ぐ）
-    private val subId = "ep-${instanceCounter++}"
-
     init {
         launch {
             val pubkey = loadPublicKey() ?: return@launch
-
-            NostrRepository.subscribe(
-                subId,
-                NostrFilter(kinds = listOf(0), authors = listOf(pubkey), limit = 1),
-            )
-
-            // リレーが応答しない場合に無限待機しないようタイムアウトを設定
-            val event = withTimeoutOrNull(10_000) {
-                NostrRepository.events(subId).firstOrNull {
-                    it.kind == 0 && it.pubkey == pubkey
-                }
-            }
-            NostrRepository.close(subId)
-
-            val profile = event?.toProfile() ?: return@launch
+            val profile = ProfileRepository.awaitProfiles(
+                setOf(pubkey),
+                ProfileFetchPolicy.CacheFirst(15 * 60 * 1_000L),
+                timeoutMillis = 10_000L,
+            )[pubkey] ?: return@launch
             _state.value = _state.value.copy(
                 name = profile.name ?: "",
                 displayName = profile.displayName ?: "",
@@ -150,6 +135,7 @@ class EditProfileViewModel : SafeViewModel() {
                     ),
                 )
                 NostrRepository.publish(event)
+                event
             }.onSuccess {
                 val customEmojis = customEmojiTagsForContent(
                     listOf(s.name, s.displayName).joinToString(" "),
@@ -164,6 +150,7 @@ class EditProfileViewModel : SafeViewModel() {
                     nip05 = s.nip05.trim().ifBlank { null },
                     customEmojis = customEmojis,
                 )
+                ProfileRepository.applyOptimistic(it.pubkey, savedProfile)
                 _state.value = _state.value.copy(isSaving = false, saved = true, savedProfile = savedProfile)
             }.onFailure { e ->
                 _state.value = _state.value.copy(isSaving = false, error = e.message ?: "保存に失敗しました")

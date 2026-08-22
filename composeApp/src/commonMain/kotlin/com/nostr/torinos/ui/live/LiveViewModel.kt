@@ -14,7 +14,8 @@ import com.nostr.torinos.model.liveActivityAddress
 import com.nostr.torinos.model.toLiveActivityMeta
 import com.nostr.torinos.network.ImageUploader
 import com.nostr.torinos.network.NostrRepository
-import com.nostr.torinos.network.ProfileCache
+import com.nostr.torinos.network.ProfileFetchPolicy
+import com.nostr.torinos.network.ProfileRepository
 import com.nostr.torinos.ui.SafeViewModel
 import kotlin.coroutines.cancellation.CancellationException
 import kotlin.time.Clock
@@ -87,13 +88,11 @@ class LiveListViewModel(private val relayUrl: String? = null) : SafeViewModel() 
     private val instanceKey = nextInstanceKey()
     private val relayKey = relayUrl?.hashCode()?.toString() ?: "all"
     private val liveSubId = "live-list-$relayKey-$instanceKey"
-    private val profileSubId = "live-list-profile-$relayKey-$instanceKey"
     private val rawEvents = linkedMapOf<String, NostrEvent>()
     private val deletedAddresses = linkedSetOf<String>()
     private val deletedEventIds = linkedSetOf<String>()
-    private val pendingPubkeys = linkedSetOf<String>()
+    private val requestedProfilePubkeys = linkedSetOf<String>()
     private val jobs = mutableListOf<Job>()
-    private var profileBatchJob: Job? = null
 
     init {
         start()
@@ -121,12 +120,12 @@ class LiveListViewModel(private val relayUrl: String? = null) : SafeViewModel() 
             }
         }
         jobs += launch {
-            NostrRepository.events(profileSubId).collect { event ->
-                if (event.kind != 0) return@collect
-                val profile = ProfileCache.putEvent(event) ?: return@collect
-                pendingPubkeys.remove(event.pubkey)
-                _state.value = _state.value.copy(profiles = _state.value.profiles + (event.pubkey to profile))
-                rebuildActivities()
+            ProfileRepository.observeAll().collect { cachedProfiles ->
+                val profiles = cachedProfiles.filterKeys { it in requestedProfilePubkeys }
+                if (profiles != _state.value.profiles) {
+                    _state.value = _state.value.copy(profiles = profiles)
+                    rebuildActivities()
+                }
             }
         }
         jobs += launch {
@@ -205,7 +204,7 @@ class LiveListViewModel(private val relayUrl: String? = null) : SafeViewModel() 
             val meta = event.toLiveActivityMeta(now)
             if (meta == null) listOf(event.pubkey) else listOf(event.pubkey) + meta.participants.map { it.pubkey }
         }
-        val profiles = _state.value.profiles + ProfileCache.getAll(requiredPubkeys)
+        val profiles = _state.value.profiles + ProfileRepository.getCached(requiredPubkeys)
         if (profiles != _state.value.profiles) {
             _state.value = _state.value.copy(profiles = profiles)
         }
@@ -220,30 +219,25 @@ class LiveListViewModel(private val relayUrl: String? = null) : SafeViewModel() 
     }
 
     private fun scheduleProfileFetch(pubkey: String) {
-        if (pubkey in _state.value.profiles || !pendingPubkeys.add(pubkey)) return
-        ProfileCache.get(pubkey)?.let { cachedProfile ->
-            pendingPubkeys.remove(pubkey)
+        requestedProfilePubkeys.add(pubkey)
+        ProfileRepository.getCached(pubkey)?.let { cachedProfile ->
             _state.value = _state.value.copy(profiles = _state.value.profiles + (pubkey to cachedProfile))
             rebuildActivities()
-            return
         }
-        profileBatchJob?.cancel()
-        profileBatchJob = launch {
-            delay(PROFILE_BATCH_DELAY_MS)
-            val pubkeys = pendingPubkeys.toList().take(PROFILE_FETCH_LIMIT)
-            pendingPubkeys.removeAll(pubkeys.toSet())
-            if (pubkeys.isNotEmpty()) {
-                NostrRepository.subscribe(profileSubId, NostrFilter(kinds = listOf(0), authors = pubkeys), relayUrl = relayUrl)
-            }
+        launch {
+            ProfileRepository.ensureProfiles(
+                setOf(pubkey),
+                ProfileFetchPolicy.CacheFirst(PROFILE_MAX_AGE_MS),
+                relayHint = relayUrl,
+            )
         }
     }
 
     override fun onCleared() {
         super.onCleared()
         jobs.forEach { it.cancel() }
-        profileBatchJob?.cancel()
+        requestedProfilePubkeys.clear()
         NostrRepository.close(liveSubId)
-        NostrRepository.close(profileSubId)
     }
 }
 
@@ -459,12 +453,10 @@ class LiveDetailViewModel(
     private val relayKey = relayUrl?.hashCode()?.toString() ?: "all"
     private val activitySubId = "live-detail-$relayKey-$instanceKey"
     private val chatSubId = "live-chat-$relayKey-$instanceKey"
-    private val profileSubId = "live-detail-profile-$relayKey-$instanceKey"
     private val address = liveActivityAddress(pubkey, identifier)
     private val chatEvents = linkedMapOf<String, NostrEvent>()
-    private val pendingPubkeys = linkedSetOf<String>()
+    private val requestedProfilePubkeys = linkedSetOf<String>()
     private val jobs = mutableListOf<Job>()
-    private var profileBatchJob: Job? = null
 
     init {
         start()
@@ -622,12 +614,12 @@ class LiveDetailViewModel(
             }
         }
         jobs += launch {
-            NostrRepository.events(profileSubId).collect { event ->
-                if (event.kind != 0) return@collect
-                val profile = ProfileCache.putEvent(event) ?: return@collect
-                pendingPubkeys.remove(event.pubkey)
-                _state.value = _state.value.copy(profiles = _state.value.profiles + (event.pubkey to profile))
-                refreshProfilesOnItems()
+            ProfileRepository.observeAll().collect { cachedProfiles ->
+                val profiles = cachedProfiles.filterKeys { it in requestedProfilePubkeys }
+                if (profiles != _state.value.profiles) {
+                    _state.value = _state.value.copy(profiles = profiles)
+                    refreshProfilesOnItems()
+                }
             }
         }
         jobs += launch {
@@ -672,31 +664,26 @@ class LiveDetailViewModel(
     }
 
     private fun scheduleProfileFetch(pubkey: String) {
-        if (pubkey in _state.value.profiles || !pendingPubkeys.add(pubkey)) return
-        ProfileCache.get(pubkey)?.let { cachedProfile ->
-            pendingPubkeys.remove(pubkey)
+        requestedProfilePubkeys.add(pubkey)
+        ProfileRepository.getCached(pubkey)?.let { cachedProfile ->
             _state.value = _state.value.copy(profiles = _state.value.profiles + (pubkey to cachedProfile))
             refreshProfilesOnItems()
-            return
         }
-        profileBatchJob?.cancel()
-        profileBatchJob = launch {
-            delay(PROFILE_BATCH_DELAY_MS)
-            val pubkeys = pendingPubkeys.toList().take(PROFILE_FETCH_LIMIT)
-            pendingPubkeys.removeAll(pubkeys.toSet())
-            if (pubkeys.isNotEmpty()) {
-                NostrRepository.subscribe(profileSubId, NostrFilter(kinds = listOf(0), authors = pubkeys), relayUrl = relayUrl)
-            }
+        launch {
+            ProfileRepository.ensureProfiles(
+                setOf(pubkey),
+                ProfileFetchPolicy.CacheFirst(PROFILE_MAX_AGE_MS),
+                relayHint = relayUrl,
+            )
         }
     }
 
     override fun onCleared() {
         super.onCleared()
         jobs.forEach { it.cancel() }
-        profileBatchJob?.cancel()
+        requestedProfilePubkeys.clear()
         NostrRepository.close(activitySubId)
         NostrRepository.close(chatSubId)
-        NostrRepository.close(profileSubId)
     }
 
     private fun List<List<String>>.endedLiveTags(
@@ -721,9 +708,8 @@ class LiveDetailViewModel(
 private const val LIVE_LIMIT = 200
 private const val NIP09_DELETION_KIND = 5
 private const val CHAT_LIMIT = 500
-private const val PROFILE_FETCH_LIMIT = 200
 private const val INITIAL_LOAD_TIMEOUT_MS = 5_000L
-private const val PROFILE_BATCH_DELAY_MS = 300L
+private const val PROFILE_MAX_AGE_MS = 15 * 60 * 1_000L
 private const val LIVE_REFRESH_INTERVAL_MS = 60_000L
 private const val DEFAULT_SCHEDULE_OFFSET_SECONDS = 60L * 60L
 

@@ -4,10 +4,10 @@ import com.nostr.torinos.crypto.KeyStorage
 import com.nostr.torinos.crypto.StoredAccount
 import com.nostr.torinos.crypto.hexToNsec
 import com.nostr.torinos.crypto.signEvent
-import com.nostr.torinos.model.NostrFilter
 import com.nostr.torinos.model.NostrProfile
-import com.nostr.torinos.model.toProfile
 import com.nostr.torinos.network.NostrRepository
+import com.nostr.torinos.network.ProfileFetchPolicy
+import com.nostr.torinos.network.ProfileRepository
 import com.nostr.torinos.ui.SafeViewModel
 import com.nostr.torinos.util.logException
 import kotlinx.coroutines.CancellationException
@@ -38,15 +38,12 @@ class SettingsViewModel : SafeViewModel() {
     private val _secretKeyClipboardEvent = MutableSharedFlow<String>(replay = 0, extraBufferCapacity = 1)
     val secretKeyClipboardEvent: SharedFlow<String> = _secretKeyClipboardEvent.asSharedFlow()
 
-    private val profileSubId = "settings-account-profiles"
-
     init {
         launch {
-            NostrRepository.events(profileSubId).collect { event ->
-                if (event.kind != 0) return@collect
-                event.toProfile()?.let { profile ->
-                    _state.update { it.copy(profiles = it.profiles + (event.pubkey to profile)) }
-                }
+            ProfileRepository.observeAll().collect { cachedProfiles ->
+                val accountPubkeys = _state.value.accounts.mapTo(hashSetOf()) { it.pubkeyHex }
+                val profiles = cachedProfiles.filterKeys { it in accountPubkeys }
+                if (profiles != _state.value.profiles) _state.update { it.copy(profiles = profiles) }
             }
         }
         refreshAccounts()
@@ -60,17 +57,14 @@ class SettingsViewModel : SafeViewModel() {
             }
             _state.update { it.copy(accounts = accounts) }
             if (accounts.isNotEmpty()) {
-                NostrRepository.subscribe(
-                    profileSubId,
-                    NostrFilter(kinds = listOf(0), authors = accounts.map { it.pubkeyHex }),
+                val pubkeys = accounts.mapTo(linkedSetOf()) { it.pubkeyHex }
+                _state.update { it.copy(profiles = ProfileRepository.getCached(pubkeys)) }
+                ProfileRepository.ensureProfiles(
+                    pubkeys,
+                    ProfileFetchPolicy.CacheFirst(15 * 60 * 1_000L),
                 )
             }
         }
-    }
-
-    override fun onCleared() {
-        super.onCleared()
-        NostrRepository.close(profileSubId)
     }
 
     fun switchAccount(pubkeyHex: String, onSwitched: (String?) -> Unit) {

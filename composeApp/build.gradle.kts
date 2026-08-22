@@ -180,3 +180,26 @@ android {
         disable += "CredManMissingDal"
     }
 }
+
+val verifyNoDirectProfileSubscriptions by tasks.registering {
+    group = "verification"
+    description = "ProfileRepository外にkind:0の直接購読がないことを検証します。"
+    val sources = fileTree("src/commonMain/kotlin") { include("**/*.kt") }
+    inputs.files(sources)
+
+    doLast {
+        val directKindZero = Regex("""kinds\s*=\s*listOf\(\s*0\s*\)""")
+        val violations = sources.files
+            .filter { it.readText().contains(directKindZero) }
+            .map { it.relativeTo(projectDir).invariantSeparatorsPath }
+            .sorted()
+        check(violations.isEmpty()) {
+            "kind:0の直接購読は禁止されています。ProfileRepositoryを使用してください:\n" +
+                violations.joinToString("\n")
+        }
+    }
+}
+
+tasks.matching { it.name == "check" }.configureEach {
+    dependsOn(verifyNoDirectProfileSubscriptions)
+}

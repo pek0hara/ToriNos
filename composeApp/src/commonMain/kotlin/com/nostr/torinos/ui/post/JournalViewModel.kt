@@ -25,6 +25,8 @@ import com.nostr.torinos.model.toUnicodeReaction
 import com.nostr.torinos.model.toReactionOption
 import com.nostr.torinos.model.toProfile
 import com.nostr.torinos.network.NostrRepository
+import com.nostr.torinos.network.ProfileFetchPolicy
+import com.nostr.torinos.network.ProfileRepository
 import com.nostr.torinos.ui.SafeViewModel
 import com.nostr.torinos.util.appLog
 import kotlin.time.Clock
@@ -872,30 +874,12 @@ class JournalViewModel(private val targetPubkey: String? = null) : SafeViewModel
     private suspend fun fetchProfile(
         pubkey: String,
         relayUrl: String? = null,
-    ): NostrProfile? = coroutineScope {
-        val subId = nextSubscriptionId("memo-prof")
-        var result: NostrProfile? = null
-        var collector: Job? = null
-        try {
-            collector = launch {
-                NostrRepository.events(subId).collect { event ->
-                    if (event.kind == 0 && event.pubkey == pubkey) {
-                        result = event.toProfile()
-                    }
-                }
-            }
-            NostrRepository.subscribe(
-                subId,
-                NostrFilter(kinds = listOf(0), authors = listOf(pubkey), limit = 1),
-                relayUrl = relayUrl,
-            )
-            awaitSubscriptionEnd(subId, 5_000L)
-            result
-        } finally {
-            runCatching { NostrRepository.close(subId) }
-            collector?.cancelAndJoin()
-        }
-    }
+    ): NostrProfile? = ProfileRepository.awaitProfiles(
+        pubkeys = setOf(pubkey),
+        policy = ProfileFetchPolicy.CacheFirst(15 * 60 * 1_000L),
+        relayHint = relayUrl,
+        timeoutMillis = 5_000L,
+    )[pubkey]
 
     private fun fetchEngagement(noteIds: List<String>, ownPubkey: String?) {
         engagementJob?.cancel()
@@ -1176,35 +1160,16 @@ class JournalViewModel(private val targetPubkey: String? = null) : SafeViewModel
         }.filterNot { _state.value.profiles.containsKey(it) }
 
         if (pubkeysToFetch.isNotEmpty()) {
-            val subId = nextSubscriptionId("memo-ref-prof")
-            val mutex = Mutex()
-            val newProfiles = mutableMapOf<String, NostrProfile>()
-            val pubkeySet = pubkeysToFetch.toHashSet()
-            var collector: Job? = null
-            try {
-                collector = launch {
-                    NostrRepository.events(subId).collect { event ->
-                        if (event.kind == 0 && event.pubkey in pubkeySet) {
-                            event.toProfile()?.let { profile ->
-                                mutex.withLock { newProfiles[event.pubkey] = profile }
-                            }
-                        }
-                    }
-                }
-                NostrRepository.subscribe(
-                    subId,
-                    NostrFilter(kinds = listOf(0), authors = pubkeysToFetch, limit = pubkeysToFetch.size),
-                    relayUrl = relayUrl,
+            val newProfiles = ProfileRepository.awaitProfiles(
+                pubkeys = pubkeysToFetch.toSet(),
+                policy = ProfileFetchPolicy.CacheFirst(15 * 60 * 1_000L),
+                relayHint = relayUrl,
+                timeoutMillis = 5_000L,
+            )
+            if (newProfiles.isNotEmpty()) {
+                _state.value = _state.value.copy(
+                    profiles = _state.value.profiles + newProfiles,
                 )
-                awaitSubscriptionEnd(subId, 5_000L)
-                if (newProfiles.isNotEmpty()) {
-                    _state.value = _state.value.copy(
-                        profiles = _state.value.profiles + newProfiles,
-                    )
-                }
-            } finally {
-                runCatching { NostrRepository.close(subId) }
-                collector?.cancelAndJoin()
             }
         }
     }

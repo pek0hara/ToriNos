@@ -46,9 +46,6 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
-import kotlinx.coroutines.CoroutineStart
-import kotlinx.coroutines.async
-import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
@@ -87,6 +84,8 @@ import com.nostr.torinos.network.FollowRepository
 import com.nostr.torinos.network.LocalSettingsStorage
 import com.nostr.torinos.network.MuteStore
 import com.nostr.torinos.network.NostrRepository
+import com.nostr.torinos.network.ProfileFetchPolicy
+import com.nostr.torinos.network.ProfileRepository
 import com.nostr.torinos.network.RelayListSynchronizer
 import com.nostr.torinos.network.RelayPublishResult
 import com.nostr.torinos.network.RelayStore
@@ -351,30 +350,20 @@ fun App() {
             }
         }
 
-        // ownPubkey が確定したらプロフィールを購読（ログイン後の再実行にも対応）
+        // ownPubkey が確定したら共通プロフィールキャッシュを監視する。
         LaunchedEffect(ownPubkey) {
             val pk = ownPubkey ?: return@LaunchedEffect
-            val subscriptionId = "app-self-profile-${pk.take(16)}"
-            ownProfile = null
             try {
-                coroutineScope {
-                    val profileEvent = async(start = CoroutineStart.UNDISPATCHED) {
-                        NostrRepository.events(subscriptionId).first {
-                            it.kind == 0 && it.pubkey == pk
-                        }
-                    }
-                    NostrRepository.subscribe(
-                        subscriptionId,
-                        NostrFilter(kinds = listOf(0), authors = listOf(pk), limit = 1),
-                    )
-                    ownProfile = profileEvent.await().toProfile()
-                }
+                ownProfile = ProfileRepository.getCached(pk)
+                ProfileRepository.ensureProfiles(
+                    setOf(pk),
+                    ProfileFetchPolicy.CacheFirst(15 * 60 * 1_000L),
+                )
+                ProfileRepository.observe(pk).collect { ownProfile = it }
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Throwable) {
                 logException("App", e, "Failed to load own profile")
-            } finally {
-                NostrRepository.close(subscriptionId)
             }
         }
 

@@ -70,7 +70,8 @@ import com.nostr.torinos.model.NostrFilter
 import com.nostr.torinos.model.NostrProfile
 import com.nostr.torinos.network.FollowRepository
 import com.nostr.torinos.network.NostrRepository
-import com.nostr.torinos.network.ProfileCache
+import com.nostr.torinos.network.ProfileFetchPolicy
+import com.nostr.torinos.network.ProfileRepository
 import com.nostr.torinos.network.RelayListSynchronizer
 import com.nostr.torinos.ui.components.EditableImage
 import com.nostr.torinos.ui.components.ImageCropperDialog
@@ -83,7 +84,6 @@ import com.nostr.torinos.ui.profile.EditProfileViewModel
 import com.nostr.torinos.ui.settings.setPlainText
 import com.nostr.torinos.util.loggingExceptionHandler
 import com.nostr.torinos.util.logException
-import kotlinx.coroutines.awaitCancellation
 
 @Composable
 fun KeySetupScreen(onSetupComplete: (pubkeyHex: String) -> Unit, onDismiss: (() -> Unit)? = null) {
@@ -117,29 +117,13 @@ fun KeySetupScreen(onSetupComplete: (pubkeyHex: String) -> Unit, onDismiss: (() 
             }
     }
 
-    LaunchedEffect(Unit) {
-        NostrRepository.events(STORED_ACCOUNT_PROFILES_SUBSCRIPTION_ID).collect { event ->
-            if (event.kind != 0) return@collect
-            ProfileCache.putEvent(event)?.let { profile ->
-                storedProfiles = storedProfiles + (event.pubkey to profile)
-            }
-        }
-    }
-
     LaunchedEffect(storedAccounts) {
         if (storedAccounts.isEmpty()) return@LaunchedEffect
 
-        val pubkeys = storedAccounts.map { it.pubkeyHex }
-        storedProfiles = ProfileCache.getAll(pubkeys)
-        try {
-            NostrRepository.subscribe(
-                STORED_ACCOUNT_PROFILES_SUBSCRIPTION_ID,
-                NostrFilter(kinds = listOf(0), authors = pubkeys),
-            )
-            awaitCancellation()
-        } finally {
-            NostrRepository.closeSuspending(STORED_ACCOUNT_PROFILES_SUBSCRIPTION_ID)
-        }
+        val pubkeys = storedAccounts.mapTo(linkedSetOf()) { it.pubkeyHex }
+        storedProfiles = ProfileRepository.getCached(pubkeys)
+        ProfileRepository.ensureProfiles(pubkeys, ProfileFetchPolicy.CacheFirst(15 * 60 * 1_000L))
+        ProfileRepository.observe(pubkeys).collect { storedProfiles = it }
     }
 
     Box(
@@ -716,7 +700,6 @@ private fun StoredAccountsSection(
 private fun shortNpub(npub: String): String =
     if (npub.length <= 24) npub else "${npub.take(14)}...${npub.takeLast(8)}"
 
-private const val STORED_ACCOUNT_PROFILES_SUBSCRIPTION_ID = "setup-stored-account-profiles"
 
 @Composable
 private fun KeyInfoCard(

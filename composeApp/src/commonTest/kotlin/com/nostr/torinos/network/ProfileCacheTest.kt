@@ -66,6 +66,19 @@ class ProfileCacheTest {
         assertFailsWith<IllegalArgumentException> { ProfileCache.putEvent(event) }
     }
 
+    @Test
+    fun putEvent_updatesFetchedAt_withoutReplacingNewerProfile() {
+        val pubkey = "profile-cache-fetched-at-test"
+        val newer = profileEvent(pubkey, createdAt = 700, picture = "newer", id = "01")
+        val older = profileEvent(pubkey, createdAt = 600, picture = "older", id = "00")
+
+        ProfileCache.putEvent(newer, fetchedAt = 1_000)
+        ProfileCache.putEvent(older, fetchedAt = 2_000)
+
+        assertEquals("newer", ProfileCache.get(pubkey)?.picture)
+        assertEquals(2_000, ProfileCache.entries.value[pubkey]?.fetchedAt)
+    }
+
     private fun profileEvent(
         pubkey: String,
         createdAt: Long,

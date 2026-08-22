@@ -8,7 +8,8 @@ import com.nostr.torinos.model.NostrProfile
 import com.nostr.torinos.model.extractNpubReferences
 import com.nostr.torinos.network.FollowRepository
 import com.nostr.torinos.network.NostrRepository
-import com.nostr.torinos.network.ProfileCache
+import com.nostr.torinos.network.ProfileFetchPolicy
+import com.nostr.torinos.network.ProfileRepository
 import com.nostr.torinos.network.RelayListEventCache
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -43,17 +44,16 @@ class UserProfileViewModel(
     val state: StateFlow<UserProfileState> = _state.asStateFlow()
 
     private val shortKey = pubkey.take(16)
-    private val profileSubId = "up-$shortKey"
-    private val linkedProfileSubId = "upl-$shortKey"
     private val followingSubId = "uf-$shortKey"
     private val followersSubId = "ur-$shortKey"
     private val relayListSubId = "url-$shortKey"
     private val generalStatusSubId = "ugs-$shortKey"
 
     private val collectorJobs = mutableListOf<Job>()
+    private var linkedProfileObserverJob: Job? = null
     private var followingCountStarted = false
     private var latestGeneralStatusCreatedAt = -1L
-    private val pendingLinkedProfilePubkeys = linkedSetOf<String>()
+    private val linkedProfilePubkeys = linkedSetOf<String>()
 
     init {
         start()
@@ -121,7 +121,7 @@ class UserProfileViewModel(
         RelayListEventCache.get(pubkey)?.let { cachedRelayList ->
             _state.update { it.copy(relayUrls = cachedRelayList.relayUrls()) }
         }
-        ProfileCache.get(pubkey)?.let { cachedProfile ->
+        ProfileRepository.getCached(pubkey)?.let { cachedProfile ->
             _state.update { it.copy(profile = cachedProfile) }
             scheduleLinkedProfileFetch(cachedProfile.about.orEmpty())
         }
@@ -147,11 +147,7 @@ class UserProfileViewModel(
     /** 画面を開くたびに最新プロフィールを取得し、受信時にキャッシュを更新する。 */
     fun refreshProfile() {
         launch {
-            NostrRepository.close(profileSubId)
-            NostrRepository.subscribe(
-                profileSubId,
-                NostrFilter(kinds = listOf(0), authors = listOf(pubkey), limit = 1),
-            )
+            ProfileRepository.refresh(pubkey)
         }
     }
 
@@ -181,30 +177,10 @@ class UserProfileViewModel(
 
     private fun startCollectors() {
         collectorJobs += launch {
-            ProfileCache.observe(pubkey).collect { profile ->
+            ProfileRepository.observe(pubkey).collect { profile ->
                 if (profile == null || profile == _state.value.profile) return@collect
                 _state.update { it.copy(profile = profile) }
                 scheduleLinkedProfileFetch(profile.about.orEmpty())
-            }
-        }
-
-        collectorJobs += launch {
-            NostrRepository.events(profileSubId).collect { event ->
-                if (event.kind != 0) return@collect
-                val profile = ProfileCache.putEvent(event) ?: return@collect
-                _state.update { it.copy(profile = profile) }
-                scheduleLinkedProfileFetch(profile.about.orEmpty())
-            }
-        }
-
-        collectorJobs += launch {
-            NostrRepository.events(linkedProfileSubId).collect { event ->
-                if (event.kind != 0) return@collect
-                val profile = ProfileCache.putEvent(event) ?: return@collect
-                pendingLinkedProfilePubkeys.remove(event.pubkey)
-                _state.update {
-                    it.copy(linkedProfiles = it.linkedProfiles + (event.pubkey to profile))
-                }
             }
         }
 
@@ -269,8 +245,7 @@ class UserProfileViewModel(
     override fun onCleared() {
         super.onCleared()
         collectorJobs.forEach { it.cancel() }
-        NostrRepository.close(profileSubId)
-        NostrRepository.close(linkedProfileSubId)
+        linkedProfileObserverJob?.cancel()
         NostrRepository.close(followingSubId)
         NostrRepository.close(followersSubId)
         NostrRepository.close(relayListSubId)
@@ -278,29 +253,34 @@ class UserProfileViewModel(
     }
 
     private fun scheduleLinkedProfileFetch(text: String) {
-        val linkedPubkeys = extractNpubReferences(text)
+        val discoveredPubkeys = extractNpubReferences(text)
             .map { it.pubkey }
-            .filter { it !in _state.value.linkedProfiles }
             .distinct()
-        val cachedProfiles = ProfileCache.getAll(linkedPubkeys)
+        if (discoveredPubkeys.isEmpty()) return
+        linkedProfilePubkeys.addAll(discoveredPubkeys)
+        val watchedPubkeys = linkedProfilePubkeys.toSet()
+        val cachedProfiles = ProfileRepository.getCached(watchedPubkeys)
         if (cachedProfiles.isNotEmpty()) {
             _state.update { it.copy(linkedProfiles = it.linkedProfiles + cachedProfiles) }
         }
-        val authors = linkedPubkeys
-            .filterNot { it in cachedProfiles }
-            .filter { pendingLinkedProfilePubkeys.add(it) }
-        if (authors.isEmpty()) return
+        linkedProfileObserverJob?.cancel()
+        linkedProfileObserverJob = launch {
+            ProfileRepository.observe(watchedPubkeys).collect { profiles ->
+                _state.update { it.copy(linkedProfiles = it.linkedProfiles + profiles) }
+            }
+        }
         launch {
-            NostrRepository.subscribe(
-                linkedProfileSubId,
-                NostrFilter(kinds = listOf(0), authors = pendingLinkedProfilePubkeys.toList()),
-                relayUrl = deferredRelayUrl,
+            ProfileRepository.ensureProfiles(
+                pubkeys = watchedPubkeys,
+                policy = ProfileFetchPolicy.CacheFirst(LINKED_PROFILE_MAX_AGE_MS),
+                relayHint = deferredRelayUrl,
             )
         }
     }
 
     companion object {
         private const val FOLLOWERS_FETCH_LIMIT = 500
+        private const val LINKED_PROFILE_MAX_AGE_MS = 15 * 60 * 1_000L
     }
 }
 

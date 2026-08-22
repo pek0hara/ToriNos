@@ -3,8 +3,9 @@ package com.nostr.torinos.ui.notification
 import com.nostr.torinos.model.NostrEvent
 import com.nostr.torinos.model.NostrFilter
 import com.nostr.torinos.model.NostrProfile
-import com.nostr.torinos.model.toProfile
 import com.nostr.torinos.network.NostrRepository
+import com.nostr.torinos.network.ProfileFetchPolicy
+import com.nostr.torinos.network.ProfileRepository
 import com.nostr.torinos.ui.SafeViewModel
 import kotlin.time.Clock
 import kotlinx.coroutines.Job
@@ -55,7 +56,6 @@ class NotificationsViewModel(private val ownPubkey: String) : SafeViewModel() {
 
     private val activitySubId = "notif-act-$shortKey"
     private val followsSubId = "notif-follow-$shortKey"
-    private val profileSubId = "notif-prof-$shortKey"
     private val targetSubId = "notif-target-$shortKey"
 
     private val seenItemIds = linkedSetOf<String>()
@@ -99,11 +99,9 @@ class NotificationsViewModel(private val ownPubkey: String) : SafeViewModel() {
             }
         }
         collectorJobs += launch {
-            NostrRepository.events(profileSubId).collect { event ->
-                if (event.kind != 0) return@collect
-                val profile = event.toProfile() ?: return@collect
-                pendingPubkeys.remove(event.pubkey)
-                _state.update { it.copy(profiles = it.profiles + (event.pubkey to profile)) }
+            ProfileRepository.observeAll().collect { cachedProfiles ->
+                val profiles = cachedProfiles.filterKeys { it in pendingPubkeys || it in _state.value.profiles }
+                if (profiles != _state.value.profiles) _state.update { it.copy(profiles = profiles) }
             }
         }
         collectorJobs += launch {
@@ -240,6 +238,9 @@ class NotificationsViewModel(private val ownPubkey: String) : SafeViewModel() {
     private fun scheduleProfileFetch(pubkey: String) {
         if (!canFetchAuxiliaryDetails()) return
         if (pubkey in _state.value.profiles || !pendingPubkeys.add(pubkey)) return
+        ProfileRepository.getCached(pubkey)?.let { profile ->
+            _state.update { it.copy(profiles = it.profiles + (pubkey to profile)) }
+        }
         profileBatchJob?.cancel()
         profileBatchJob = launch {
             delay(400)
@@ -247,9 +248,11 @@ class NotificationsViewModel(private val ownPubkey: String) : SafeViewModel() {
                 pendingPubkeys.clear()
                 return@launch
             }
-            val pubkeys = pendingPubkeys.toList()
-            pendingPubkeys.clear()
-            NostrRepository.subscribe(profileSubId, NostrFilter(kinds = listOf(0), authors = pubkeys))
+            val pubkeys = pendingPubkeys.toSet()
+            ProfileRepository.ensureProfiles(
+                pubkeys,
+                ProfileFetchPolicy.CacheFirst(PROFILE_MAX_AGE_MS),
+            )
         }
     }
 
@@ -356,7 +359,6 @@ class NotificationsViewModel(private val ownPubkey: String) : SafeViewModel() {
     private fun closeSubscriptions() {
         NostrRepository.close(activitySubId)
         NostrRepository.close(followsSubId)
-        NostrRepository.close(profileSubId)
         NostrRepository.close(targetSubId)
     }
 
@@ -367,6 +369,7 @@ class NotificationsViewModel(private val ownPubkey: String) : SafeViewModel() {
         private const val LIVE_SYNC_LIMIT = 100
         private const val INITIAL_SYNC_TIMEOUT_MS = 10_000L
         private const val AUXILIARY_FETCH_DRAIN_MS = 1_000L
+        private const val PROFILE_MAX_AGE_MS = 15 * 60 * 1_000L
     }
 }
 

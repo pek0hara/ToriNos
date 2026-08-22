@@ -26,8 +26,14 @@ import com.nostr.torinos.model.toReactionOption
 import com.nostr.torinos.network.MuteStore
 import com.nostr.torinos.network.NgWordStore
 import com.nostr.torinos.network.NostrRepository
-import com.nostr.torinos.network.ProfileCache
+import com.nostr.torinos.network.ProfileFetchPolicy
+import com.nostr.torinos.network.ProfileRepository
 import com.nostr.torinos.network.RelayTarget
+import com.nostr.torinos.network.RelayOutcome
+import com.nostr.torinos.network.SubscriptionBehavior
+import com.nostr.torinos.network.SubscriptionSession
+import com.nostr.torinos.network.SubscriptionSignal
+import com.nostr.torinos.network.SubscriptionSpec
 import kotlinx.serialization.json.Json
 import kotlinx.coroutines.Job
 import kotlin.time.Clock
@@ -84,12 +90,12 @@ class FeedViewModel(
     private val subscriptionJobs = mutableListOf<Job>()
     private val historyCollectorJobs = mutableListOf<Job>()
     private var subscriptionIds: SubscriptionIds? = null
-    private var currentHistorySubId: String? = null
+    private var liveSession: SubscriptionSession? = null
+    private var engagementSession: SubscriptionSession? = null
+    private var currentHistorySession: SubscriptionSession? = null
     private var subscriptionGeneration = 0
     private var historyRequestGeneration = 0
-    private val pendingPubkeys = mutableSetOf<String>()
-    private var profileBatchJob: Job? = null
-    private var historyPageTimeoutJob: Job? = null
+    private val requestedProfilePubkeys = mutableSetOf<String>()
     private var refreshIndicatorTimeoutJob: Job? = null
     private val watchedEventIds = linkedSetOf<String>()
     private var engagementBatchJob: Job? = null
@@ -118,13 +124,9 @@ class FeedViewModel(
     private var lastHistoryBatchUniqueCount = 0
     private var lastHistoryBatchOldestCreatedAt: Long? = null
     private var consecutiveEmptyHistoryPages = 0
-    private val completedHistoryRelayUrls = mutableSetOf<String>()
-    private var expectedEoseCount = 1
     private var initialHistoryRequested = false
     private var manualRefreshRequested = false
     private val relayTarget: RelayTarget = relayUrl?.let(RelayTarget::Single) ?: RelayTarget.AllEnabled
-    private val shouldRefreshLiveSubscription: Boolean
-        get() = authorPubkey == null && authorPubkeys != null
 
     init {
         if (isWriteSupported) {
@@ -134,15 +136,15 @@ class FeedViewModel(
             }
         }
         launch {
-            ProfileCache.entries.collect { cachedEntries ->
+            ProfileRepository.observeAll().collect { cachedProfiles ->
                 val currentProfiles = currentFeedState().profiles
-                if (currentProfiles.isEmpty()) return@collect
-                val updatedProfiles = cachedEntries
-                    .filterKeys { it in currentProfiles }
-                    .mapValues { it.value.profile }
+                val relevantPubkeys = currentProfiles.keys + requestedProfilePubkeys
+                if (relevantPubkeys.isEmpty()) return@collect
+                val updatedProfiles = cachedProfiles.filterKeys { it in relevantPubkeys }
                 if (updatedProfiles.all { (pubkey, profile) -> currentProfiles[pubkey] == profile }) {
                     return@collect
                 }
+                requestedProfilePubkeys.removeAll(updatedProfiles.keys)
                 updateFeedState(immediate = false) { state ->
                     state.copy(profiles = state.profiles + updatedProfiles)
                 }
@@ -184,8 +186,8 @@ class FeedViewModel(
     }
 
     fun injectProfile(pubkey: String, profile: com.nostr.torinos.model.NostrProfile) {
-        ProfileCache.putOptimistic(pubkey, profile)
-        val currentProfile = ProfileCache.get(pubkey) ?: profile
+        ProfileRepository.applyOptimistic(pubkey, profile)
+        val currentProfile = ProfileRepository.getCached(pubkey) ?: profile
         if (currentFeedState().profiles[pubkey] == currentProfile) return
         updateFeedState { it.copy(profiles = it.profiles + (pubkey to currentProfile)) }
     }
@@ -425,177 +427,6 @@ class FeedViewModel(
         val ids = newSubscriptionIds()
         subscriptionIds = ids
 
-        // フィードイベント収集（ライブ：feedSubId）
-        subscriptionJobs += launch {
-            NostrRepository.events(ids.feed).collect { event ->
-                appendFeedEvent(event)
-            }
-        }
-
-        // リレーが feedSubId を CLOSED したら再購読（接続維持中でも切られることがある）
-        subscriptionJobs += launch {
-            NostrRepository.closed(ids.feed).collect {
-                if (!subscriptionsStarted) return@collect
-                subscribeLiveFeed(since = liveSince())
-            }
-        }
-
-        // エンゲージメント購読が CLOSED されたら再購読
-        for (subId in listOf(ids.reaction, ids.reply, ids.repost, ids.quoteRepost)) {
-            subscriptionJobs += launch {
-                NostrRepository.closed(subId).collect {
-                    if (!subscriptionsStarted) return@collect
-                    resubscribeEngagement()
-                }
-            }
-        }
-
-        // リレーが CLOSED を返さずに購読だけ止めるケースに備え、フォロータブは定期的に REQ を再送する。
-        if (shouldRefreshLiveSubscription) {
-            subscriptionJobs += launch {
-                while (subscriptionsStarted) {
-                    delay(LIVE_SUBSCRIPTION_REFRESH_INTERVAL_MS)
-                    if (subscriptionsStarted) {
-                        subscribeLiveFeed(since = liveSince())
-                    }
-                }
-            }
-        }
-
-        // プロフィール受信（kind:0）
-        subscriptionJobs += launch {
-            NostrRepository.events(ids.profile).collect { event ->
-                if (event.kind != 0) return@collect
-                val profile = ProfileCache.putEvent(event) ?: return@collect
-                pendingPubkeys.remove(event.pubkey)
-                updateFeedState(immediate = false) { state ->
-                    state.copy(profiles = state.profiles + (event.pubkey to profile))
-                }
-            }
-        }
-
-        // リアクション受信（kind:7）
-        subscriptionJobs += launch {
-            NostrRepository.events(ids.reaction).collect { event ->
-                if (event.kind != 7) return@collect
-                if (!rememberSeenId(seenReactionIds, event.id)) return@collect
-                rememberReceivedEvent(receivedReactionEvents, event)
-                val targetId = event.tags.lastOrNull { it.firstOrNull() == "e" }?.getOrNull(1)
-                    ?: return@collect
-                val cur = currentFeedState()
-                val isOwn = ownPubkey != null && event.pubkey == ownPubkey
-                val customReaction = event.toCustomReaction()
-                val unicodeReaction = event.toUnicodeReaction()
-                val reactionOption = event.toReactionOption()
-                setFeedState(cur.copy(
-                    reactionCounts = cur.reactionCounts +
-                        (targetId to (cur.reactionCounts[targetId] ?: 0) + 1),
-                    likeReactionCounts = if (event.content.trim() == "+") {
-                        cur.likeReactionCounts + (
-                            targetId to (cur.likeReactionCounts[targetId] ?: 0) + 1
-                            )
-                    } else {
-                        cur.likeReactionCounts
-                    },
-                    customReactions = if (customReaction != null) {
-                        cur.customReactions + (
-                            targetId to cur.customReactions[targetId]
-                                .orEmpty()
-                                .incrementedWith(customReaction)
-                        )
-                    } else {
-                        cur.customReactions
-                    },
-                    unicodeReactions = if (unicodeReaction != null) {
-                        cur.unicodeReactions + (
-                            targetId to cur.unicodeReactions[targetId]
-                                .orEmpty()
-                                .incrementedWithUnicodeReaction(unicodeReaction)
-                        )
-                    } else {
-                        cur.unicodeReactions
-                    },
-                    likedReactions = if (
-                        isOwn &&
-                        event.content.trim() == "+" &&
-                        !cur.likedReactions.containsKey(targetId)
-                    )
-                        cur.likedReactions + (targetId to event.id)
-                    else cur.likedReactions,
-                    ownEmojiReactionEventIds = if (isOwn && reactionOption != null) {
-                        cur.ownEmojiReactionEventIds + (
-                            targetId to cur.ownEmojiReactionEventIds[targetId].orEmpty()
-                                .plus(reactionOption.key to event.id)
-                            )
-                    } else {
-                        cur.ownEmojiReactionEventIds
-                    },
-                ), immediate = false)
-            }
-        }
-
-        // リプライ受信（kind:1 with e-tag）
-        subscriptionJobs += launch {
-            NostrRepository.events(ids.reply).collect { event ->
-                if (event.kind != 1) return@collect
-                if (!rememberSeenId(seenReplyIds, event.id)) return@collect
-                val targetId = event.tags.lastOrNull { it.firstOrNull() == "e" }?.getOrNull(1)
-                    ?: return@collect
-                scheduleProfileFetch(event.pubkey)
-                scheduleMentionedProfileFetch(event.content)
-                val cur = currentFeedState()
-                val replies = cur.replies[targetId].orEmpty()
-                val updatedReplies = if (replies.any { it.id == event.id }) {
-                    replies
-                } else {
-                    (replies + event).sortedBy { it.createdAt }
-                }
-                setFeedState(cur.copy(
-                    replyCounts = cur.replyCounts +
-                        (targetId to (cur.replyCounts[targetId] ?: 0) + 1),
-                    replies = cur.replies + (targetId to updatedReplies),
-                ), immediate = false)
-            }
-        }
-
-        // リポスト受信（kind:6）
-        subscriptionJobs += launch {
-            NostrRepository.events(ids.repost).collect { event ->
-                if (event.kind != 6) return@collect
-                if (!rememberSeenId(seenRepostIds, event.id)) return@collect
-                rememberReceivedEvent(receivedRepostEvents, event)
-                val targetId = event.tags.lastOrNull { it.firstOrNull() == "e" }?.getOrNull(1)
-                    ?: return@collect
-                val cur = currentFeedState()
-                val isOwn = ownPubkey != null && event.pubkey == ownPubkey
-                setFeedState(cur.copy(
-                    repostCounts = cur.repostCounts +
-                        (targetId to (cur.repostCounts[targetId] ?: 0) + 1),
-                    repostedEvents = if (isOwn && !cur.repostedEvents.containsKey(targetId))
-                        cur.repostedEvents + (targetId to event.id)
-                    else cur.repostedEvents,
-                ), immediate = false)
-            }
-        }
-
-        // 引用リポスト受信（kind:1 with q-tag）。リポスト済み状態は kind:6 のみで管理する。
-        subscriptionJobs += launch {
-            NostrRepository.events(ids.quoteRepost).collect { event ->
-                if (event.kind != 1) return@collect
-                val targetIds = event.tags
-                    .filter { it.firstOrNull() == "q" }
-                    .mapNotNull { it.getOrNull(1) }
-                    .distinct()
-                    .filter { it in watchedEventIds }
-                    .filter { rememberSeenId(seenQuoteRepostIds, "${event.id}:$it") }
-                if (targetIds.isEmpty()) return@collect
-                val cur = currentFeedState()
-                val counts = cur.repostCounts.toMutableMap()
-                targetIds.forEach { targetId -> counts[targetId] = (counts[targetId] ?: 0) + 1 }
-                setFeedState(cur.copy(repostCounts = counts), immediate = false)
-            }
-        }
-
         // 引用先イベント受信（nostr:note/nevent または q タグ）
         subscriptionJobs += launch {
             NostrRepository.events(ids.quote).collect { event ->
@@ -662,10 +493,7 @@ class FeedViewModel(
         subscriptionJobs.clear()
         historyCollectorJobs.forEach { it.cancel() }
         historyCollectorJobs.clear()
-        profileBatchJob?.cancel()
         engagementBatchJob?.cancel()
-        historyPageTimeoutJob?.cancel()
-        historyPageTimeoutJob = null
         if (clearRefreshing) {
             refreshIndicatorTimeoutJob?.cancel()
             refreshIndicatorTimeoutJob = null
@@ -684,15 +512,14 @@ class FeedViewModel(
         if (currentFeedState().isInitialLoad && currentFeedState().events.isEmpty()) {
             initialHistoryRequested = false
         }
-        currentHistorySubId?.let { NostrRepository.close(it) }
-        currentHistorySubId = null
+        val sessionsToClose = listOfNotNull(liveSession, engagementSession, currentHistorySession)
+        liveSession = null
+        engagementSession = null
+        currentHistorySession = null
+        if (sessionsToClose.isNotEmpty()) {
+            launch { sessionsToClose.forEach { it.close() } }
+        }
         ids?.let {
-            NostrRepository.close(it.feed)
-            NostrRepository.close(it.profile)
-            NostrRepository.close(it.reaction)
-            NostrRepository.close(it.reply)
-            NostrRepository.close(it.repost)
-            NostrRepository.close(it.quoteRepost)
             NostrRepository.close(it.repostTarget)
             NostrRepository.close(it.quote)
         }
@@ -718,10 +545,8 @@ class FeedViewModel(
             return
         }
 
-        currentHistorySubId?.let { NostrRepository.closeSuspending(it) }
+        currentHistorySession?.close()
         val historySubId = nextHistorySubscriptionId(ids)
-        currentHistorySubId = historySubId
-        startHistoryCollectors(historySubId)
 
         isGapFill = false
         activeHistoryUntil = until
@@ -729,63 +554,67 @@ class FeedViewModel(
         lastHistoryBatchReceivedCount = 0
         lastHistoryBatchUniqueCount = 0
         lastHistoryBatchOldestCreatedAt = null
-        completedHistoryRelayUrls.clear()
 
         // 初回のみライブ購読も開始（since=現在時刻でライブイベントのみ）
         if (until == null) {
             initialHistoryRequested = true
             subscribeLiveFeed(since = Clock.System.now().epochSeconds)
         }
-        expectedEoseCount = NostrRepository.targetRelayUrls(relayTarget).size.coerceAtLeast(1)
         updateFeedState { it.copy(canLoadMore = false, isLoadingMore = true) }
-        scheduleHistoryPageTimeout()
-        NostrRepository.subscribe(
-            historySubId,
-            NostrFilter(
-                kinds = feedKinds(),
-                authors = authorPubkeys,
-                tTags = hashtag?.let { listOf(it) },
-                until = until,
-                limit = FEED_PAGE_SIZE,
+        val session = NostrRepository.openSubscription(
+            SubscriptionSpec(
+                id = historySubId,
+                filters = listOf(
+                    NostrFilter(
+                        kinds = feedKinds(),
+                        authors = authorPubkeys,
+                        tTags = hashtag?.let { listOf(it) },
+                        until = until,
+                        limit = FEED_PAGE_SIZE,
+                    ),
+                ),
+                target = relayTarget,
+                behavior = SubscriptionBehavior.Fetch(HISTORY_FETCH_TIMEOUT_MS),
             ),
-            target = relayTarget,
         )
+        currentHistorySession = session
+        startHistoryCollector(session)
     }
 
     private suspend fun requestGapFill(since: Long, until: Long) {
         val ids = subscriptionIds ?: return
         if (authorPubkeys?.isEmpty() == true) return
-        currentHistorySubId?.let { NostrRepository.closeSuspending(it) }
+        currentHistorySession?.close()
         val historySubId = nextHistorySubscriptionId(ids)
-        currentHistorySubId = historySubId
-        startHistoryCollectors(historySubId)
         isGapFill = true
         loadingMore = true
         lastHistoryBatchReceivedCount = 0
         lastHistoryBatchUniqueCount = 0
         lastHistoryBatchOldestCreatedAt = null
-        completedHistoryRelayUrls.clear()
-        expectedEoseCount = NostrRepository.targetRelayUrls(relayTarget).size.coerceAtLeast(1)
-        scheduleHistoryPageTimeout()
-        NostrRepository.subscribe(
-            historySubId,
-            NostrFilter(
-                kinds = feedKinds(),
-                authors = authorPubkeys,
-                tTags = hashtag?.let { listOf(it) },
-                since = since,
-                until = until,
-                limit = FEED_PAGE_SIZE,
+        val session = NostrRepository.openSubscription(
+            SubscriptionSpec(
+                id = historySubId,
+                filters = listOf(
+                    NostrFilter(
+                        kinds = feedKinds(),
+                        authors = authorPubkeys,
+                        tTags = hashtag?.let { listOf(it) },
+                        since = since,
+                        until = until,
+                        limit = FEED_PAGE_SIZE,
+                    ),
+                ),
+                target = relayTarget,
+                behavior = SubscriptionBehavior.Fetch(HISTORY_FETCH_TIMEOUT_MS),
             ),
-            target = relayTarget,
         )
+        currentHistorySession = session
+        startHistoryCollector(session)
     }
 
     private fun onHistoryPageCompleted() {
         if (!loadingMore) return
         loadingMore = false
-        historyPageTimeoutJob?.cancel()
-        historyPageTimeoutJob = null
         // リプライ等がフィルタされても受信件数が上限に達していれば次ページがある
         val hasMore = lastHistoryBatchReceivedCount >= FEED_PAGE_SIZE
         val oldestReceivedAt = lastHistoryBatchOldestCreatedAt
@@ -804,9 +633,6 @@ class FeedViewModel(
         ))
         refreshIndicatorTimeoutJob?.cancel()
         refreshIndicatorTimeoutJob = null
-        currentHistorySubId?.let { subId ->
-            if (isGapFill || !hasMore) NostrRepository.close(subId)
-        }
         if (!isGapFill) {
             continuePastEmptyHistoryPageIfNeeded(
                 hasMore = hasMore,
@@ -815,51 +641,36 @@ class FeedViewModel(
         }
     }
 
-    private fun scheduleHistoryPageTimeout() {
-        historyPageTimeoutJob?.cancel()
-        historyPageTimeoutJob = launch {
-            delay(10_000)
-            if (!loadingMore) return@launch
-
-            loadingMore = false
-            val hasMore = lastHistoryBatchReceivedCount >= FEED_PAGE_SIZE
-            val hasIncompleteRelays = completedHistoryRelayUrls.size < expectedEoseCount
-            val oldestReceivedAt = lastHistoryBatchOldestCreatedAt
-            val loadedVisibleEvents = lastHistoryBatchUniqueCount > 0
-            val canAdvanceFromPartialResponse = hasIncompleteRelays &&
-                lastHistoryBatchReceivedCount > 0 &&
-                oldestReceivedAt != null
-            val shouldRetryCurrentPage = hasIncompleteRelays && !canAdvanceFromPartialResponse
-            if (!isGapFill) {
-                shouldRetryHistoryPage = shouldRetryCurrentPage
-                nextHistoryUntil = when {
-                    shouldRetryCurrentPage -> activeHistoryUntil
-                    (hasMore || canAdvanceFromPartialResponse) && oldestReceivedAt != null -> oldestReceivedAt - 1
-                    else -> null
-                }
-            }
-            val current = currentFeedState()
-            setFeedState(current.copy(
-                isInitialLoad = false,
-                canLoadMore = if (isGapFill) {
-                    current.canLoadMore
-                } else {
-                    hasMore || shouldRetryCurrentPage || canAdvanceFromPartialResponse
-                },
-                isLoadingMore = false,
-                isRefreshing = false,
-            ))
-            refreshIndicatorTimeoutJob?.cancel()
-            refreshIndicatorTimeoutJob = null
-            currentHistorySubId?.let { subId ->
-                if (isGapFill || !hasMore) NostrRepository.close(subId)
-            }
-            if (!isGapFill && !shouldRetryCurrentPage) {
-                continuePastEmptyHistoryPageIfNeeded(
-                    hasMore = hasMore || canAdvanceFromPartialResponse,
-                    loadedVisibleEvents = loadedVisibleEvents,
-                )
-            }
+    private fun onHistoryFetchIncomplete() {
+        if (!loadingMore) return
+        loadingMore = false
+        val hasMore = lastHistoryBatchReceivedCount >= FEED_PAGE_SIZE
+        val oldestReceivedAt = lastHistoryBatchOldestCreatedAt
+        val loadedVisibleEvents = lastHistoryBatchUniqueCount > 0
+        val canAdvanceFromPartialResponse = lastHistoryBatchReceivedCount > 0 && oldestReceivedAt != null
+        val shouldRetryCurrentPage = !canAdvanceFromPartialResponse
+        if (!isGapFill) {
+            shouldRetryHistoryPage = shouldRetryCurrentPage
+            nextHistoryUntil = if (shouldRetryCurrentPage) activeHistoryUntil else oldestReceivedAt - 1
+        }
+        val current = currentFeedState()
+        setFeedState(current.copy(
+            isInitialLoad = false,
+            canLoadMore = if (isGapFill) {
+                current.canLoadMore
+            } else {
+                hasMore || shouldRetryCurrentPage || canAdvanceFromPartialResponse
+            },
+            isLoadingMore = false,
+            isRefreshing = false,
+        ))
+        refreshIndicatorTimeoutJob?.cancel()
+        refreshIndicatorTimeoutJob = null
+        if (!isGapFill && !shouldRetryCurrentPage) {
+            continuePastEmptyHistoryPageIfNeeded(
+                hasMore = hasMore || canAdvanceFromPartialResponse,
+                loadedVisibleEvents = loadedVisibleEvents,
+            )
         }
     }
 
@@ -882,27 +693,35 @@ class FeedViewModel(
         }
     }
 
-    private fun startHistoryCollectors(historySubId: String) {
+    private fun startHistoryCollector(session: SubscriptionSession) {
         historyCollectorJobs.forEach { it.cancel() }
         historyCollectorJobs.clear()
         historyCollectorJobs += launch {
-            NostrRepository.events(historySubId).collect { event ->
-                lastHistoryBatchReceivedCount++
-                lastHistoryBatchOldestCreatedAt = minOf(lastHistoryBatchOldestCreatedAt ?: event.createdAt, event.createdAt)
-                lastHistoryBatchUniqueCount += appendFeedEvent(event)
-                if (currentFeedState().isRefreshing && lastHistoryBatchUniqueCount > 0) {
-                    clearRefreshIndicator()
-                }
-                if (currentFeedState().isInitialLoad && currentFeedState().events.isNotEmpty()) {
-                    updateFeedState { it.copy(isInitialLoad = false) }
-                }
-            }
-        }
-        historyCollectorJobs += launch {
-            NostrRepository.eoseRelays(historySubId).collect { relayUrl ->
-                completedHistoryRelayUrls.add(relayUrl)
-                if (completedHistoryRelayUrls.size >= expectedEoseCount) {
-                    onHistoryPageCompleted()
+            session.signals.collect { signal ->
+                if (currentHistorySession !== session) return@collect
+                when (signal) {
+                    is SubscriptionSignal.Event -> {
+                        val event = signal.event
+                        lastHistoryBatchReceivedCount++
+                        lastHistoryBatchOldestCreatedAt = minOf(
+                            lastHistoryBatchOldestCreatedAt ?: event.createdAt,
+                            event.createdAt,
+                        )
+                        lastHistoryBatchUniqueCount += appendFeedEvent(event)
+                        if (currentFeedState().isRefreshing && lastHistoryBatchUniqueCount > 0) {
+                            clearRefreshIndicator()
+                        }
+                        if (currentFeedState().isInitialLoad && currentFeedState().events.isNotEmpty()) {
+                            updateFeedState { it.copy(isInitialLoad = false) }
+                        }
+                    }
+                    is SubscriptionSignal.FetchCompleted -> {
+                        currentHistorySession = null
+                        val incomplete = signal.timedOut ||
+                            signal.outcomes.values.any { it !is RelayOutcome.Eose }
+                        if (incomplete) onHistoryFetchIncomplete() else onHistoryPageCompleted()
+                    }
+                    else -> Unit
                 }
             }
         }
@@ -926,22 +745,37 @@ class FeedViewModel(
 
     private suspend fun subscribeLiveFeed(since: Long) {
         val ids = subscriptionIds ?: return
-        NostrRepository.subscribe(
-            ids.feed,
+        val filters = listOf(
             NostrFilter(
                 kinds = feedKinds(),
                 authors = authorPubkeys,
                 tTags = hashtag?.let { listOf(it) },
                 since = since,
             ),
-            target = relayTarget,
         )
-    }
+        val existing = liveSession
+        if (existing != null) {
+            existing.update(filters, relayTarget)
+            return
+        }
 
-    private fun liveSince(): Long {
-        val latestEventAt = eventSortTimes.values.maxOrNull()
-        val recentWindowStart = Clock.System.now().epochSeconds - LIVE_SUBSCRIPTION_SINCE_OVERLAP_SECONDS
-        return maxOf(latestEventAt ?: recentWindowStart, recentWindowStart)
+        val session = NostrRepository.openSubscription(
+            SubscriptionSpec(
+                id = ids.feed,
+                filters = filters,
+                target = relayTarget,
+                behavior = SubscriptionBehavior.Live,
+            ),
+        )
+        liveSession = session
+        subscriptionJobs += launch {
+            session.signals.collect { signal ->
+                if (liveSession !== session) return@collect
+                if (signal is SubscriptionSignal.Event) {
+                    appendFeedEvent(signal.event)
+                }
+            }
+        }
     }
 
     private fun feedKinds(): List<Int> = if (includeRepostsInFeed && hashtag == null) listOf(1, 6) else listOf(1)
@@ -1122,7 +956,7 @@ class FeedViewModel(
             ownPubkey?.let(::add)
         }
         val profiles = current.profiles.filterKeys { it in retainedPubkeys } +
-            ProfileCache.getAll(retainedPubkeys)
+            ProfileRepository.getCached(retainedPubkeys)
 
         setFeedState(current.copy(
             events = visibleEvents,
@@ -1184,41 +1018,19 @@ class FeedViewModel(
 
     private fun scheduleProfileFetch(pubkey: String) {
         if (pubkey in currentFeedState().profiles) return
-        ProfileCache.get(pubkey)?.let { cachedProfile ->
+        ProfileRepository.getCached(pubkey)?.let { cachedProfile ->
             updateFeedState(immediate = false) { state ->
                 state.copy(profiles = state.profiles + (pubkey to cachedProfile))
             }
             return
         }
-        pendingPubkeys.add(pubkey)
-        scheduleProfileSubscription()
-    }
-
-    private fun scheduleProfileSubscription() {
-        profileBatchJob?.cancel()
-        profileBatchJob = launch {
-            delay(500)
-            val cachedProfiles = ProfileCache.getAll(pendingPubkeys)
-            if (cachedProfiles.isNotEmpty()) {
-                pendingPubkeys.removeAll(cachedProfiles.keys)
-                updateFeedState(immediate = false) { state ->
-                    state.copy(profiles = state.profiles + cachedProfiles)
-                }
-            }
-            val authors = pendingPubkeys
-                .filterNot { it in currentFeedState().profiles }
-                .take(PROFILE_FETCH_BATCH_LIMIT)
-            if (authors.isEmpty()) return@launch
-            val ids = subscriptionIds ?: return@launch
-            NostrRepository.subscribe(
-                ids.profile,
-                NostrFilter(kinds = listOf(0), authors = authors),
-                target = relayTarget,
+        if (!requestedProfilePubkeys.add(pubkey)) return
+        launch {
+            ProfileRepository.ensureProfiles(
+                pubkeys = setOf(pubkey),
+                policy = ProfileFetchPolicy.CacheFirst(PROFILE_MAX_AGE_MS),
+                relayHint = relayUrl,
             )
-            delay(PROFILE_FETCH_RETRY_INTERVAL_MS)
-            if (subscriptionsStarted && pendingPubkeys.any { it !in currentFeedState().profiles }) {
-                scheduleProfileSubscription()
-            }
         }
     }
 
@@ -1232,10 +1044,30 @@ class FeedViewModel(
         val subIds = subscriptionIds ?: return
         if (watchedEventIds.isEmpty()) return
         val ids = watchedEventIds.toList()
-        NostrRepository.subscribe(subIds.reaction, NostrFilter(kinds = listOf(7), eTags = ids), target = relayTarget)
-        NostrRepository.subscribe(subIds.reply,    NostrFilter(kinds = listOf(1), eTags = ids), target = relayTarget)
-        NostrRepository.subscribe(subIds.repost,   NostrFilter(kinds = listOf(6), eTags = ids), target = relayTarget)
-        NostrRepository.subscribe(subIds.quoteRepost, NostrFilter(kinds = listOf(1), qTags = ids), target = relayTarget)
+        val filters = engagementFilters(ids)
+        val existing = engagementSession
+        if (existing != null) {
+            existing.update(filters, relayTarget)
+            return
+        }
+
+        val session = NostrRepository.openSubscription(
+            SubscriptionSpec(
+                id = subIds.reaction,
+                filters = filters,
+                target = relayTarget,
+                behavior = SubscriptionBehavior.Live,
+            ),
+        )
+        engagementSession = session
+        subscriptionJobs += launch {
+            session.signals.collect { signal ->
+                if (engagementSession !== session) return@collect
+                if (signal is SubscriptionSignal.Event) {
+                    handleEngagementEvent(signal.event)
+                }
+            }
+        }
     }
 
     private fun scheduleEngagementFetch(eventId: String) {
@@ -1246,13 +1078,130 @@ class FeedViewModel(
         engagementBatchJob?.cancel()
         engagementBatchJob = launch {
             delay(500)
-            val ids = watchedEventIds.toList()
-            val subIds = subscriptionIds ?: return@launch
-            NostrRepository.subscribe(subIds.reaction, NostrFilter(kinds = listOf(7), eTags = ids), target = relayTarget)
-            NostrRepository.subscribe(subIds.reply, NostrFilter(kinds = listOf(1), eTags = ids), target = relayTarget)
-            NostrRepository.subscribe(subIds.repost, NostrFilter(kinds = listOf(6), eTags = ids), target = relayTarget)
-            NostrRepository.subscribe(subIds.quoteRepost, NostrFilter(kinds = listOf(1), qTags = ids), target = relayTarget)
+            resubscribeEngagement()
         }
+    }
+
+    private fun engagementFilters(ids: List<String>): List<NostrFilter> = listOf(
+        NostrFilter(kinds = listOf(7), eTags = ids),
+        NostrFilter(kinds = listOf(1), eTags = ids),
+        NostrFilter(kinds = listOf(6), eTags = ids),
+        NostrFilter(kinds = listOf(1), qTags = ids),
+    )
+
+    private fun handleEngagementEvent(event: NostrEvent) {
+        when (event.kind) {
+            7 -> handleReactionEvent(event)
+            6 -> handleEngagementRepostEvent(event)
+            1 -> {
+                handleReplyEvent(event)
+                handleQuoteRepostEvent(event)
+            }
+        }
+    }
+
+    private fun handleReactionEvent(event: NostrEvent) {
+        if (!rememberSeenId(seenReactionIds, event.id)) return
+        val targetId = event.tags.lastOrNull { it.firstOrNull() == "e" }?.getOrNull(1)
+            ?.takeIf { it in watchedEventIds }
+            ?: return
+        rememberReceivedEvent(receivedReactionEvents, event)
+        val cur = currentFeedState()
+        val isOwn = ownPubkey != null && event.pubkey == ownPubkey
+        val customReaction = event.toCustomReaction()
+        val unicodeReaction = event.toUnicodeReaction()
+        val reactionOption = event.toReactionOption()
+        setFeedState(cur.copy(
+            reactionCounts = cur.reactionCounts +
+                (targetId to (cur.reactionCounts[targetId] ?: 0) + 1),
+            likeReactionCounts = if (event.content.trim() == "+") {
+                cur.likeReactionCounts + (targetId to (cur.likeReactionCounts[targetId] ?: 0) + 1)
+            } else {
+                cur.likeReactionCounts
+            },
+            customReactions = if (customReaction != null) {
+                cur.customReactions + (
+                    targetId to cur.customReactions[targetId].orEmpty().incrementedWith(customReaction)
+                )
+            } else {
+                cur.customReactions
+            },
+            unicodeReactions = if (unicodeReaction != null) {
+                cur.unicodeReactions + (
+                    targetId to cur.unicodeReactions[targetId].orEmpty()
+                        .incrementedWithUnicodeReaction(unicodeReaction)
+                )
+            } else {
+                cur.unicodeReactions
+            },
+            likedReactions = if (
+                isOwn && event.content.trim() == "+" && !cur.likedReactions.containsKey(targetId)
+            ) {
+                cur.likedReactions + (targetId to event.id)
+            } else {
+                cur.likedReactions
+            },
+            ownEmojiReactionEventIds = if (isOwn && reactionOption != null) {
+                cur.ownEmojiReactionEventIds + (
+                    targetId to cur.ownEmojiReactionEventIds[targetId].orEmpty()
+                        .plus(reactionOption.key to event.id)
+                )
+            } else {
+                cur.ownEmojiReactionEventIds
+            },
+        ), immediate = false)
+    }
+
+    private fun handleReplyEvent(event: NostrEvent) {
+        val targetId = event.tags.lastOrNull { it.firstOrNull() == "e" }?.getOrNull(1)
+            ?.takeIf { it in watchedEventIds }
+            ?: return
+        if (!rememberSeenId(seenReplyIds, event.id)) return
+        scheduleProfileFetch(event.pubkey)
+        scheduleMentionedProfileFetch(event.content)
+        val cur = currentFeedState()
+        val replies = cur.replies[targetId].orEmpty()
+        val updatedReplies = if (replies.any { it.id == event.id }) {
+            replies
+        } else {
+            (replies + event).sortedBy { it.createdAt }
+        }
+        setFeedState(cur.copy(
+            replyCounts = cur.replyCounts + (targetId to (cur.replyCounts[targetId] ?: 0) + 1),
+            replies = cur.replies + (targetId to updatedReplies),
+        ), immediate = false)
+    }
+
+    private fun handleEngagementRepostEvent(event: NostrEvent) {
+        val targetId = event.tags.lastOrNull { it.firstOrNull() == "e" }?.getOrNull(1)
+            ?.takeIf { it in watchedEventIds }
+            ?: return
+        if (!rememberSeenId(seenRepostIds, event.id)) return
+        rememberReceivedEvent(receivedRepostEvents, event)
+        val cur = currentFeedState()
+        val isOwn = ownPubkey != null && event.pubkey == ownPubkey
+        setFeedState(cur.copy(
+            repostCounts = cur.repostCounts + (targetId to (cur.repostCounts[targetId] ?: 0) + 1),
+            repostedEvents = if (isOwn && !cur.repostedEvents.containsKey(targetId)) {
+                cur.repostedEvents + (targetId to event.id)
+            } else {
+                cur.repostedEvents
+            },
+        ), immediate = false)
+    }
+
+    private fun handleQuoteRepostEvent(event: NostrEvent) {
+        val targetIds = event.tags
+            .filter { it.firstOrNull() == "q" }
+            .mapNotNull { it.getOrNull(1) }
+            .distinct()
+            .filter { it in watchedEventIds }
+            .filter { rememberSeenId(seenQuoteRepostIds, "${event.id}:$it") }
+        if (targetIds.isEmpty()) return
+        val cur = currentFeedState()
+        val counts = cur.repostCounts.toMutableMap()
+        targetIds.forEach { targetId -> counts[targetId] = (counts[targetId] ?: 0) + 1 }
+        setFeedState(cur.copy(repostCounts = counts), immediate = false)
     }
 
     private fun scheduleQuoteFetch(eventIds: List<String>) {
@@ -1276,11 +1225,7 @@ class FeedViewModel(
         return SubscriptionIds(
             feed = "feed-$suffix",
             history = "hist-$suffix",
-            profile = "prof-$suffix",
             reaction = "reac-$suffix",
-            reply = "repl-$suffix",
-            repost = "repo-$suffix",
-            quoteRepost = "qrep-$suffix",
             repostTarget = "rpt-$suffix",
             quote = "quot-$suffix",
         )
@@ -1296,12 +1241,10 @@ class FeedViewModel(
         private const val MAX_TIMELINE_EVENTS = 800
         private const val MAX_TRACKED_ENGAGEMENT_EVENTS = 100
         private const val MAX_SEEN_IDS = 2000
-        private const val PROFILE_FETCH_BATCH_LIMIT = 200
-        private const val PROFILE_FETCH_RETRY_INTERVAL_MS = 5_000L
+        private const val PROFILE_MAX_AGE_MS = 15 * 60 * 1_000L
         private const val FEED_STATE_EMIT_DELAY_MS = 150L
         private const val REFRESH_INDICATOR_TIMEOUT_MS = 2_500L
-        private const val LIVE_SUBSCRIPTION_REFRESH_INTERVAL_MS = 60_000L
-        private const val LIVE_SUBSCRIPTION_SINCE_OVERLAP_SECONDS = 300L
+        private const val HISTORY_FETCH_TIMEOUT_MS = 10_000L
         private const val MAX_AUTO_SKIP_EMPTY_HISTORY_PAGES = 5
         private var nextInstanceKeyValue = 0
 
@@ -1391,11 +1334,7 @@ private data class PendingRepostTarget(
 private data class SubscriptionIds(
     val feed: String,
     val history: String,
-    val profile: String,
     val reaction: String,
-    val reply: String,
-    val repost: String,
-    val quoteRepost: String,
     val repostTarget: String,
     val quote: String,
 )

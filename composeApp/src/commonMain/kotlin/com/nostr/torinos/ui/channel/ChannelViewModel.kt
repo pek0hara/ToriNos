@@ -23,11 +23,12 @@ import com.nostr.torinos.model.toChannelMeta
 import com.nostr.torinos.model.toCustomReaction
 import com.nostr.torinos.model.toUnicodeReaction
 import com.nostr.torinos.model.toReactionOption
-import com.nostr.torinos.model.toProfile
 import com.nostr.torinos.network.ChannelCacheStore
 import com.nostr.torinos.network.MuteStore
 import com.nostr.torinos.network.NgWordStore
 import com.nostr.torinos.network.NostrRepository
+import com.nostr.torinos.network.ProfileFetchPolicy
+import com.nostr.torinos.network.ProfileRepository
 import kotlin.time.Clock
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -84,7 +85,6 @@ class ChannelViewModel(
     private val metaUpdateSubId = "ch-meta-update-$shortId-$relayKey"
     private val msgSubId = "ch-msg-$shortId-$relayKey"
     private val histSubId = "ch-hist-$shortId-$relayKey"
-    private val profSubId = "ch-prof-$shortId-$relayKey"
     private val replyCountSubId = "ch-reply-count-$shortId-$relayKey"
     private val reactionSubId = "ch-react-$shortId-$relayKey"
     private val repostSubId = "ch-repost-$shortId-$relayKey"
@@ -590,14 +590,14 @@ class ChannelViewModel(
             }
         }
 
-        // プロフィール受信
+        // 共通プロフィールキャッシュを監視
         jobs += launch {
-            NostrRepository.events(profSubId).collect { event ->
-                if (event.kind != 0) return@collect
-                val profile = event.toProfile() ?: return@collect
-                pendingPubkeys.remove(event.pubkey)
-                currentProfiles = currentProfiles + (event.pubkey to profile)
-                syncReadyState()
+            ProfileRepository.observeAll().collect { cachedProfiles ->
+                val profiles = cachedProfiles.filterKeys { it in pendingPubkeys || it in currentProfiles }
+                if (profiles != currentProfiles) {
+                    currentProfiles = profiles
+                    syncReadyState()
+                }
             }
         }
 
@@ -859,16 +859,18 @@ class ChannelViewModel(
     private fun scheduleProfileFetch(pubkey: String) {
         if (pubkey in currentProfiles || pubkey in pendingPubkeys) return
         pendingPubkeys.add(pubkey)
+        ProfileRepository.getCached(pubkey)?.let { profile ->
+            currentProfiles = currentProfiles + (pubkey to profile)
+            syncReadyState()
+        }
         profileBatchJob?.cancel()
         profileBatchJob = launch {
             delay(500)
             if (pendingPubkeys.isEmpty()) return@launch
-            val authors = pendingPubkeys.toList()
-            pendingPubkeys.removeAll(authors)
-            NostrRepository.subscribe(
-                profSubId,
-                NostrFilter(kinds = listOf(0), authors = authors),
-                relayUrl = relayUrl,
+            ProfileRepository.ensureProfiles(
+                pendingPubkeys.toSet(),
+                ProfileFetchPolicy.CacheFirst(PROFILE_MAX_AGE_MS),
+                relayHint = relayUrl,
             )
         }
     }
@@ -919,7 +921,6 @@ class ChannelViewModel(
         NostrRepository.close(metaUpdateSubId)
         NostrRepository.close(msgSubId)
         NostrRepository.close(histSubId)
-        NostrRepository.close(profSubId)
         NostrRepository.close(replyCountSubId)
         NostrRepository.close(reactionSubId)
         NostrRepository.close(repostSubId)
@@ -957,5 +958,6 @@ class ChannelViewModel(
         private const val PAGE_SIZE = 30
         private const val MAX_SEEN_IDS = 1000
         private const val MAX_WATCHED_EVENTS = 100
+        private const val PROFILE_MAX_AGE_MS = 15 * 60 * 1_000L
     }
 }

@@ -15,8 +15,9 @@ import com.nostr.torinos.model.incrementedWith
 import com.nostr.torinos.model.incrementedWithUnicodeReaction
 import com.nostr.torinos.model.toCustomReaction
 import com.nostr.torinos.model.toUnicodeReaction
-import com.nostr.torinos.model.toProfile
 import com.nostr.torinos.network.NostrRepository
+import com.nostr.torinos.network.ProfileFetchPolicy
+import com.nostr.torinos.network.ProfileRepository
 import com.nostr.torinos.util.networkTraceLog
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -76,12 +77,10 @@ class SearchViewModel : SafeViewModel() {
 
     private var searchGeneration = 0
     private var activeSearchSubId = "srch-main-0"
-    private val profileSubId = "sprof-main"
     private var activeReactionSubId = "sreact-main-0"
     private var activeReplySubId = "sreply-main-0"
     private var activeRepostSubId = "srepost-main-0"
     private var activeQuoteRepostSubId = "sqrepost-main-0"
-    private var activeUserSubId = "suser-main-0"
     private val seenUserIds = linkedSetOf<String>()
     private var currentUsers = emptyList<Pair<String, NostrProfile>>()
 
@@ -100,7 +99,6 @@ class SearchViewModel : SafeViewModel() {
         activeReplySubId = "sreply-main-$generation"
         activeRepostSubId = "srepost-main-$generation"
         activeQuoteRepostSubId = "sqrepost-main-$generation"
-        activeUserSubId = "suser-main-$generation"
 
         currentQuery = trimmed
         seenEventIds.clear()
@@ -145,7 +143,6 @@ class SearchViewModel : SafeViewModel() {
         val replySubId = activeReplySubId
         val repostSubId = activeRepostSubId
         val quoteRepostSubId = activeQuoteRepostSubId
-        val userSubId = activeUserSubId
         subscriptionJobs += launch {
             NostrRepository.events(searchSubId).collect { event ->
                 if (event.kind != 1) return@collect
@@ -184,15 +181,14 @@ class SearchViewModel : SafeViewModel() {
             }
         }
 
-        // プロフィール受信（kind:0）
+        // 共通プロフィールキャッシュ
         subscriptionJobs += launch {
-            NostrRepository.events(profileSubId).collect { event ->
-                if (event.kind != 0) return@collect
-                val profile = event.toProfile() ?: return@collect
-                networkTraceLog { "[Search] profile received pubkey=${event.pubkey.take(8)} name=${profile.name}" }
-                pendingPubkeys.remove(event.pubkey)
-                currentProfiles = currentProfiles + (event.pubkey to profile)
-                syncReadyState()
+            ProfileRepository.observeAll().collect { cachedProfiles ->
+                val profiles = cachedProfiles.filterKeys { it in pendingPubkeys || it in currentProfiles }
+                if (profiles != currentProfiles) {
+                    currentProfiles = profiles
+                    syncReadyState()
+                }
             }
         }
 
@@ -268,17 +264,6 @@ class SearchViewModel : SafeViewModel() {
             }
         }
 
-        // ユーザー検索結果（kind:0）
-        subscriptionJobs += launch {
-            NostrRepository.events(userSubId).collect { event ->
-                if (event.kind != 0) return@collect
-                val profile = event.toProfile() ?: return@collect
-                if (!seenUserIds.add(event.pubkey)) return@collect
-                currentUsers = currentUsers + (event.pubkey to profile)
-                syncReadyState()
-            }
-        }
-
         launch {
             requestPage(until = null)
         }
@@ -293,8 +278,6 @@ class SearchViewModel : SafeViewModel() {
         pageTimeoutJob = null
         loadingMore = false
         NostrRepository.closeTemporaryRelay(activeSearchSubId)
-        NostrRepository.closeTemporaryRelay(activeUserSubId)
-        NostrRepository.close(profileSubId)
         NostrRepository.close(activeReactionSubId)
         NostrRepository.close(activeReplySubId)
         NostrRepository.close(activeRepostSubId)
@@ -324,12 +307,14 @@ class SearchViewModel : SafeViewModel() {
 
         if (until == null) {
             val q = currentQuery
-            val userSubId = activeUserSubId
-            NostrRepository.subscribeTemporaryRelay(
-                userSubId,
-                NostrFilter(kinds = listOf(0), search = q, limit = USER_SEARCH_LIMIT),
-                SEARCH_RELAY_URL,
-            )
+            launch {
+                val users = ProfileRepository.searchProfiles(q, SEARCH_RELAY_URL, USER_SEARCH_LIMIT)
+                if (q != currentQuery) return@launch
+                users.forEach { (pubkey, profile) ->
+                    if (seenUserIds.add(pubkey)) currentUsers = currentUsers + (pubkey to profile)
+                }
+                syncReadyState()
+            }
         }
     }
 
@@ -414,15 +399,17 @@ class SearchViewModel : SafeViewModel() {
     private fun scheduleProfileFetch(pubkey: String) {
         if (pubkey in currentProfiles || pubkey in pendingPubkeys) return
         pendingPubkeys.add(pubkey)
+        ProfileRepository.getCached(pubkey)?.let { profile ->
+            currentProfiles = currentProfiles + (pubkey to profile)
+            syncReadyState()
+        }
         profileBatchJob?.cancel()
         profileBatchJob = launch {
             delay(500)
             if (pendingPubkeys.isEmpty()) return@launch
-            val authors = pendingPubkeys.toList()
-            pendingPubkeys.removeAll(authors)
-            NostrRepository.subscribe(
-                profileSubId,
-                NostrFilter(kinds = listOf(0), authors = authors),
+            ProfileRepository.ensureProfiles(
+                pendingPubkeys.toSet(),
+                ProfileFetchPolicy.CacheFirst(PROFILE_MAX_AGE_MS),
             )
         }
     }
@@ -454,6 +441,7 @@ class SearchViewModel : SafeViewModel() {
         private const val USER_SEARCH_LIMIT = 20
         private const val MAX_SEEN_IDS = 2_000
         private const val MAX_TRACKED_ENGAGEMENT_EVENTS = 100
+        private const val PROFILE_MAX_AGE_MS = 15 * 60 * 1_000L
         private const val SEARCH_RELAY_URL = "wss://search.nos.today"
 
         val Factory: ViewModelProvider.Factory = object : ViewModelProvider.Factory {
