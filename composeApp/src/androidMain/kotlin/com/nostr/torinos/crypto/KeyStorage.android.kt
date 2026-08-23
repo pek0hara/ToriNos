@@ -29,6 +29,7 @@ actual object KeyStorage {
     private val PREF_ACCOUNTS = stringSetPreferencesKey("encrypted_accounts")
     private val PREF_ACTIVE_PUBKEY = stringPreferencesKey("active_pubkey")
     private val PREF_LOGGED_OUT = androidx.datastore.preferences.core.booleanPreferencesKey("logged_out")
+    private val PREF_LOGGED_OUT_ACCOUNTS = stringSetPreferencesKey("logged_out_accounts")
 
     private val context get() = ToriNosApp.appContext
     private fun keyStore() = KeyStore.getInstance(KEYSTORE_PROVIDER).also { it.load(null) }
@@ -102,6 +103,22 @@ actual object KeyStorage {
         return Triple(parts[0], parts[1], parts[2])
     }
 
+    private fun accountPubkeys(prefs: androidx.datastore.preferences.core.Preferences): Set<String> =
+        prefs[PREF_ACCOUNTS].orEmpty().mapNotNullTo(linkedSetOf()) { parseAccountRecord(it)?.first }
+
+    private fun loggedOutPubkeys(prefs: androidx.datastore.preferences.core.Preferences): Set<String> =
+        prefs[PREF_LOGGED_OUT_ACCOUNTS]
+            ?: if (prefs[PREF_LOGGED_OUT] == true) accountPubkeys(prefs) else emptySet()
+
+    private fun writeLoggedOutPubkeys(
+        prefs: androidx.datastore.preferences.core.MutablePreferences,
+        pubkeys: Set<String>,
+    ) {
+        if (pubkeys.isEmpty()) prefs.remove(PREF_LOGGED_OUT_ACCOUNTS)
+        else prefs[PREF_LOGGED_OUT_ACCOUNTS] = pubkeys
+        prefs.remove(PREF_LOGGED_OUT)
+    }
+
     private suspend fun migrateLegacyKeyIfNeeded() {
         val prefs = runCatching { context.dataStore.data.first() }.getOrElse { emptyPreferences() }
         if (!prefs[PREF_ACCOUNTS].isNullOrEmpty()) return
@@ -130,7 +147,7 @@ actual object KeyStorage {
                 .toSet()
             prefs[PREF_ACCOUNTS] = existing + accountRecord(pubkeyHex, encryptedPayload.first, encryptedPayload.second)
             prefs[PREF_ACTIVE_PUBKEY] = pubkeyHex
-            prefs[PREF_LOGGED_OUT] = false
+            writeLoggedOutPubkeys(prefs, loggedOutPubkeys(prefs) - pubkeyHex)
             prefs.remove(PREF_ENCRYPTED)
             prefs.remove(PREF_IV)
         }
@@ -139,9 +156,12 @@ actual object KeyStorage {
     actual suspend fun loadPrivateKey(): String? {
         migrateLegacyKeyIfNeeded()
         val prefs = runCatching { context.dataStore.data.first() }.getOrElse { emptyPreferences() }
-        if (prefs[PREF_LOGGED_OUT] == true) return null
         val records = prefs[PREF_ACCOUNTS].orEmpty()
-        val activePubkey = prefs[PREF_ACTIVE_PUBKEY] ?: records.firstOrNull()?.let { parseAccountRecord(it)?.first }
+        val parsedRecords = records.mapNotNull(::parseAccountRecord)
+        val loggedOut = loggedOutPubkeys(prefs)
+        val preferredPubkey = prefs[PREF_ACTIVE_PUBKEY]
+        val activePubkey = preferredPubkey?.takeIf { it !in loggedOut }
+            ?: parsedRecords.firstOrNull { it.first !in loggedOut }?.first
         val activeRecord = records
             .mapNotNull(::parseAccountRecord)
             .firstOrNull { it.first == activePubkey }
@@ -157,10 +177,15 @@ actual object KeyStorage {
         migrateLegacyKeyIfNeeded()
         val prefs = runCatching { context.dataStore.data.first() }.getOrElse { emptyPreferences() }
         val activePubkey = prefs[PREF_ACTIVE_PUBKEY]
+        val loggedOut = loggedOutPubkeys(prefs)
         val accounts = prefs[PREF_ACCOUNTS].orEmpty()
             .mapNotNull { record ->
                 val pubkeyHex = parseAccountRecord(record)?.first ?: return@mapNotNull null
-                StoredAccount(pubkeyHex = pubkeyHex, npub = hexToNpub(pubkeyHex))
+                StoredAccount(
+                    pubkeyHex = pubkeyHex,
+                    npub = hexToNpub(pubkeyHex),
+                    isLoggedOut = pubkeyHex in loggedOut,
+                )
             }
             .distinctBy { it.pubkeyHex }
         return accounts.sortedBy { if (it.pubkeyHex == activePubkey) 0 else 1 }
@@ -174,14 +199,53 @@ actual object KeyStorage {
                 .any { it.first == pubkeyHex }
             check(exists) { "アカウントが保存されていません" }
             prefs[PREF_ACTIVE_PUBKEY] = pubkeyHex
-            prefs[PREF_LOGGED_OUT] = false
+            writeLoggedOutPubkeys(prefs, loggedOutPubkeys(prefs) - pubkeyHex)
         }
     }
 
     actual suspend fun logout() {
         migrateLegacyKeyIfNeeded()
         context.dataStore.edit { prefs ->
-            prefs[PREF_LOGGED_OUT] = true
+            val accounts = accountPubkeys(prefs)
+            val activePubkey = prefs[PREF_ACTIVE_PUBKEY]
+            val loggedOut = loggedOutPubkeys(prefs) + listOfNotNull(activePubkey)
+            writeLoggedOutPubkeys(prefs, loggedOut)
+            accounts.firstOrNull { it !in loggedOut }?.let {
+                prefs[PREF_ACTIVE_PUBKEY] = it
+            } ?: prefs.remove(PREF_ACTIVE_PUBKEY)
+        }
+    }
+
+    actual suspend fun deleteAccount(pubkeyHex: String) {
+        migrateLegacyKeyIfNeeded()
+        context.dataStore.edit { prefs ->
+            val activePubkey = prefs[PREF_ACTIVE_PUBKEY]
+            val currentLoggedOut = loggedOutPubkeys(prefs)
+            check(pubkeyHex in currentLoggedOut) { "ログアウトしていないアカウントは削除できません" }
+            val loggedOut = currentLoggedOut - pubkeyHex
+            val remaining = prefs[PREF_ACCOUNTS].orEmpty()
+                .filterNot { parseAccountRecord(it)?.first == pubkeyHex }
+                .toSet()
+            check(remaining.size < prefs[PREF_ACCOUNTS].orEmpty().size) {
+                "削除するアカウントが保存されていません"
+            }
+            if (remaining.isEmpty()) {
+                prefs.remove(PREF_ACCOUNTS)
+                prefs.remove(PREF_ACTIVE_PUBKEY)
+                prefs.remove(PREF_ENCRYPTED)
+                prefs.remove(PREF_IV)
+                writeLoggedOutPubkeys(prefs, emptySet())
+                deleteKeystoreKey()
+            } else {
+                prefs[PREF_ACCOUNTS] = remaining
+                if (activePubkey == pubkeyHex) {
+                    val remainingPubkeys = remaining.mapNotNull { parseAccountRecord(it)?.first }
+                    remainingPubkeys.firstOrNull { it !in loggedOut }?.let {
+                        prefs[PREF_ACTIVE_PUBKEY] = it
+                    } ?: prefs.remove(PREF_ACTIVE_PUBKEY)
+                }
+                writeLoggedOutPubkeys(prefs, loggedOut)
+            }
         }
     }
 
@@ -189,6 +253,7 @@ actual object KeyStorage {
         migrateLegacyKeyIfNeeded()
         context.dataStore.edit { prefs ->
             val activePubkey = prefs[PREF_ACTIVE_PUBKEY]
+            val loggedOut = loggedOutPubkeys(prefs) - listOfNotNull(activePubkey)
             val remaining = prefs[PREF_ACCOUNTS].orEmpty()
                 .filterNot { parseAccountRecord(it)?.first == activePubkey }
                 .toSet()
@@ -197,12 +262,15 @@ actual object KeyStorage {
                 prefs.remove(PREF_ACTIVE_PUBKEY)
                 prefs.remove(PREF_ENCRYPTED)
                 prefs.remove(PREF_IV)
-                prefs.remove(PREF_LOGGED_OUT)
+                writeLoggedOutPubkeys(prefs, emptySet())
                 deleteKeystoreKey()
             } else {
                 prefs[PREF_ACCOUNTS] = remaining
-                prefs[PREF_ACTIVE_PUBKEY] = parseAccountRecord(remaining.first())!!.first
-                prefs[PREF_LOGGED_OUT] = false
+                val remainingPubkeys = remaining.mapNotNull { parseAccountRecord(it)?.first }
+                remainingPubkeys.firstOrNull { it !in loggedOut }?.let {
+                    prefs[PREF_ACTIVE_PUBKEY] = it
+                } ?: prefs.remove(PREF_ACTIVE_PUBKEY)
+                writeLoggedOutPubkeys(prefs, loggedOut)
             }
         }
     }

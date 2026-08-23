@@ -23,6 +23,7 @@ private const val LEGACY_DEFAULTS_KEY = "torinos_private_key"
 private const val ACCOUNTS_DEFAULTS_KEY = "torinos_accounts"
 private const val ACTIVE_ACCOUNT_DEFAULTS_KEY = "torinos_active_account"
 private const val LOGGED_OUT_DEFAULTS_KEY = "torinos_logged_out"
+private const val LOGGED_OUT_ACCOUNTS_DEFAULTS_KEY = "torinos_logged_out_accounts"
 
 private fun keychainAccount(pubkeyHex: String): String = "private_key_$pubkeyHex"
 
@@ -109,16 +110,18 @@ actual object KeyStorage {
         writeAccountPubkeys(defaults, accounts)
         writeSyncedAccountPubkeys(accounts)
         defaults.setObject(pubkeyHex, forKey = ACTIVE_ACCOUNT_DEFAULTS_KEY)
-        defaults.setBool(false, forKey = LOGGED_OUT_DEFAULTS_KEY)
+        writeLoggedOutPubkeys(defaults, readLoggedOutPubkeys(defaults, accounts) - pubkeyHex)
         defaults.synchronize()
     }
 
     actual suspend fun loadPrivateKey(): String? {
         migrateLegacyKeyIfNeeded()
         val defaults = NSUserDefaults.standardUserDefaults
-        if (defaults.boolForKey(LOGGED_OUT_DEFAULTS_KEY)) return null
+        val accounts = readAllAccountPubkeys(defaults)
+        val loggedOut = readLoggedOutPubkeys(defaults, accounts)
         val activePubkey = defaults.stringForKey(ACTIVE_ACCOUNT_DEFAULTS_KEY)
-            ?: readAccountPubkeys(defaults).firstOrNull()
+            ?.takeIf { it !in loggedOut }
+            ?: accounts.firstOrNull { it !in loggedOut }
             ?: return null
 
         loadPrivateKeyFromKeychain(keychainAccount(activePubkey))?.let {
@@ -141,6 +144,7 @@ actual object KeyStorage {
         migrateLegacyKeyIfNeeded()
         val defaults = NSUserDefaults.standardUserDefaults
         val accounts = readAllAccountPubkeys(defaults)
+        var loggedOut = readLoggedOutPubkeys(defaults, accounts)
         val validAccounts = accounts.filter(::hasStoredPrivateKey)
         if (validAccounts != accounts) {
             writeAccountPubkeys(defaults, validAccounts)
@@ -148,20 +152,25 @@ actual object KeyStorage {
                 .onFailure { e ->
                     logException("KeyStorage", e, "Failed to clean stale synced account index")
                 }
+            loggedOut = loggedOut.intersect(validAccounts.toSet())
+            writeLoggedOutPubkeys(defaults, loggedOut)
             val activePubkey = defaults.stringForKey(ACTIVE_ACCOUNT_DEFAULTS_KEY)
             if (activePubkey !in validAccounts) {
-                if (validAccounts.isEmpty()) {
-                    defaults.removeObjectForKey(ACTIVE_ACCOUNT_DEFAULTS_KEY)
-                    defaults.removeObjectForKey(LOGGED_OUT_DEFAULTS_KEY)
-                } else {
-                    defaults.setObject(validAccounts.first(), forKey = ACTIVE_ACCOUNT_DEFAULTS_KEY)
-                }
+                validAccounts.firstOrNull { it !in loggedOut }?.let {
+                    defaults.setObject(it, forKey = ACTIVE_ACCOUNT_DEFAULTS_KEY)
+                } ?: defaults.removeObjectForKey(ACTIVE_ACCOUNT_DEFAULTS_KEY)
             }
             defaults.synchronize()
         }
         val activePubkey = defaults.stringForKey(ACTIVE_ACCOUNT_DEFAULTS_KEY)
         return validAccounts
-            .map { StoredAccount(pubkeyHex = it, npub = hexToNpub(it)) }
+            .map {
+                StoredAccount(
+                    pubkeyHex = it,
+                    npub = hexToNpub(it),
+                    isLoggedOut = it in loggedOut,
+                )
+            }
             .sortedBy { if (it.pubkeyHex == activePubkey) 0 else 1 }
     }
 
@@ -169,14 +178,44 @@ actual object KeyStorage {
         val defaults = NSUserDefaults.standardUserDefaults
         check(pubkeyHex in readAllAccountPubkeys(defaults)) { "アカウントが保存されていません" }
         defaults.setObject(pubkeyHex, forKey = ACTIVE_ACCOUNT_DEFAULTS_KEY)
-        defaults.setBool(false, forKey = LOGGED_OUT_DEFAULTS_KEY)
+        val accounts = readAllAccountPubkeys(defaults)
+        writeLoggedOutPubkeys(defaults, readLoggedOutPubkeys(defaults, accounts) - pubkeyHex)
         defaults.synchronize()
     }
 
     actual suspend fun logout() {
         migrateLegacyKeyIfNeeded()
         val defaults = NSUserDefaults.standardUserDefaults
-        defaults.setBool(true, forKey = LOGGED_OUT_DEFAULTS_KEY)
+        val accounts = readAllAccountPubkeys(defaults)
+        val activePubkey = defaults.stringForKey(ACTIVE_ACCOUNT_DEFAULTS_KEY)
+        val loggedOut = readLoggedOutPubkeys(defaults, accounts) + listOfNotNull(activePubkey)
+        writeLoggedOutPubkeys(defaults, loggedOut)
+        accounts.firstOrNull { it !in loggedOut }?.let {
+            defaults.setObject(it, forKey = ACTIVE_ACCOUNT_DEFAULTS_KEY)
+        } ?: defaults.removeObjectForKey(ACTIVE_ACCOUNT_DEFAULTS_KEY)
+        defaults.synchronize()
+    }
+
+    actual suspend fun deleteAccount(pubkeyHex: String) {
+        migrateLegacyKeyIfNeeded()
+        val defaults = NSUserDefaults.standardUserDefaults
+        val accounts = readAllAccountPubkeys(defaults)
+        check(pubkeyHex in accounts) { "削除するアカウントが保存されていません" }
+        val loggedOut = readLoggedOutPubkeys(defaults, accounts)
+        check(pubkeyHex in loggedOut) { "ログアウトしていないアカウントは削除できません" }
+
+        deleteKeychainEntries(keychainAccount(pubkeyHex))
+
+        val remaining = accounts.filterNot { it == pubkeyHex }
+        val remainingLoggedOut = loggedOut - pubkeyHex
+        writeAccountPubkeys(defaults, remaining)
+        writeSyncedAccountPubkeys(remaining)
+        if (defaults.stringForKey(ACTIVE_ACCOUNT_DEFAULTS_KEY) == pubkeyHex) {
+            remaining.firstOrNull { it !in remainingLoggedOut }?.let {
+                defaults.setObject(it, forKey = ACTIVE_ACCOUNT_DEFAULTS_KEY)
+            } ?: defaults.removeObjectForKey(ACTIVE_ACCOUNT_DEFAULTS_KEY)
+        }
+        writeLoggedOutPubkeys(defaults, remainingLoggedOut)
         defaults.synchronize()
     }
 
@@ -185,8 +224,10 @@ actual object KeyStorage {
         val defaults = NSUserDefaults.standardUserDefaults
         val activePubkey = defaults.stringForKey(ACTIVE_ACCOUNT_DEFAULTS_KEY)
         if (activePubkey != null) {
+            val accounts = readAllAccountPubkeys(defaults)
+            val loggedOut = readLoggedOutPubkeys(defaults, accounts) - listOfNotNull(activePubkey)
             deleteKeychainEntries(keychainAccount(activePubkey))
-            val remaining = readAllAccountPubkeys(defaults).filterNot { it == activePubkey }
+            val remaining = accounts.filterNot { it == activePubkey }
             writeAccountPubkeys(defaults, remaining)
             runCatching { writeSyncedAccountPubkeys(remaining) }
                 .onFailure { e ->
@@ -194,11 +235,12 @@ actual object KeyStorage {
                 }
             if (remaining.isEmpty()) {
                 defaults.removeObjectForKey(ACTIVE_ACCOUNT_DEFAULTS_KEY)
-                defaults.removeObjectForKey(LOGGED_OUT_DEFAULTS_KEY)
             } else {
-                defaults.setObject(remaining.first(), forKey = ACTIVE_ACCOUNT_DEFAULTS_KEY)
-                defaults.setBool(false, forKey = LOGGED_OUT_DEFAULTS_KEY)
+                remaining.firstOrNull { it !in loggedOut }?.let {
+                    defaults.setObject(it, forKey = ACTIVE_ACCOUNT_DEFAULTS_KEY)
+                } ?: defaults.removeObjectForKey(ACTIVE_ACCOUNT_DEFAULTS_KEY)
             }
+            writeLoggedOutPubkeys(defaults, loggedOut)
         }
         defaults.removeObjectForKey(LEGACY_DEFAULTS_KEY)
         defaults.synchronize()
@@ -255,6 +297,20 @@ actual object KeyStorage {
 
     private fun readAllAccountPubkeys(defaults: NSUserDefaults): List<String> =
         (readAccountPubkeys(defaults) + readSyncedAccountPubkeys()).distinct()
+
+    private fun readLoggedOutPubkeys(defaults: NSUserDefaults, accounts: List<String>): Set<String> {
+        val stored = defaults.stringForKey(LOGGED_OUT_ACCOUNTS_DEFAULTS_KEY)
+        if (stored != null) {
+            return stored.split(",").map { it.trim() }.filterTo(linkedSetOf()) { it.isNotBlank() }
+        }
+        return if (defaults.boolForKey(LOGGED_OUT_DEFAULTS_KEY)) accounts.toSet() else emptySet()
+    }
+
+    private fun writeLoggedOutPubkeys(defaults: NSUserDefaults, pubkeys: Set<String>) {
+        if (pubkeys.isEmpty()) defaults.removeObjectForKey(LOGGED_OUT_ACCOUNTS_DEFAULTS_KEY)
+        else defaults.setObject(pubkeys.joinToString(","), forKey = LOGGED_OUT_ACCOUNTS_DEFAULTS_KEY)
+        defaults.removeObjectForKey(LOGGED_OUT_DEFAULTS_KEY)
+    }
 
     private fun writeSyncedAccountPubkeys(pubkeys: List<String>) {
         val normalizedPubkeys = pubkeys.distinct()
