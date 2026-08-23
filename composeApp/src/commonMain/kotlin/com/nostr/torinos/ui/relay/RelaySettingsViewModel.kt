@@ -1,13 +1,13 @@
 package com.nostr.torinos.ui.relay
 
 import com.nostr.torinos.ui.SafeViewModel
+import com.nostr.torinos.account.AccountSession
 import com.nostr.torinos.crypto.isWriteSupported
 import com.nostr.torinos.network.FollowedRelayDiscovery
 import com.nostr.torinos.network.FollowedRelayDiscoveryResult
 import com.nostr.torinos.network.RelayEntry
 import com.nostr.torinos.network.RelayInformation
 import com.nostr.torinos.network.RelayInformationRepository
-import com.nostr.torinos.network.RelayListSynchronizer
 import com.nostr.torinos.network.RelayStore
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.CancellationException
@@ -47,7 +47,9 @@ data class PublishedRelayListUiState(
     val canPublishChanges: Boolean get() = hasCompletedInitialFetch && hasChanges && !isPublishing
 }
 
-class RelaySettingsViewModel : SafeViewModel() {
+class RelaySettingsViewModel(
+    private val accountSession: AccountSession? = null,
+) : SafeViewModel() {
     private val _entries = MutableStateFlow(RelayStore.entries.value)
     val entries: StateFlow<List<RelayEntry>> = _entries.asStateFlow()
     private val _informationState = MutableStateFlow(RelayInformationUiState())
@@ -117,7 +119,8 @@ class RelaySettingsViewModel : SafeViewModel() {
         launch {
             try {
                 val result = if (isWriteSupported) {
-                    RelayListSynchronizer.updatePublishedRelayList(
+                    checkNotNull(accountSession) { "アカウントセッションがありません" }
+                        .relayListSynchronizer.updatePublishedRelayList(
                         additions = state.pendingAdditions,
                         removals = state.pendingRemovals,
                     )
@@ -188,7 +191,8 @@ class RelaySettingsViewModel : SafeViewModel() {
         )
         launch {
             try {
-                val snapshot = RelayListSynchronizer.fetchPublishedRelayList(
+                val snapshot = checkNotNull(accountSession) { "アカウントセッションがありません" }
+                    .relayListSynchronizer.fetchPublishedRelayList(
                     onFirstResponse = {
                         _publishedRelayListState.update {
                             it.copy(isAwaitingFirstResponse = false)
@@ -277,7 +281,13 @@ class RelaySettingsViewModel : SafeViewModel() {
         _discoveryState.value = FollowedRelayDiscoveryUiState(isLoading = true)
         discoverFollowedRelaysJob = launch {
             try {
-                val result = FollowedRelayDiscovery.discover(forceRefresh)
+                val session = checkNotNull(accountSession) { "アカウントセッションがありません" }
+                val result = FollowedRelayDiscovery.discover(
+                    ownPubkey = session.pubkey,
+                    followRepository = session.followRepository,
+                    relayStore = session.relayStore,
+                    forceRefresh = forceRefresh,
+                )
                 _discoveryState.value = when (result) {
                     is FollowedRelayDiscoveryResult.Completed -> FollowedRelayDiscoveryUiState(
                         message = result.addedCount

@@ -63,7 +63,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.snapshotFlow
 import androidx.lifecycle.viewmodel.compose.viewModel
-import com.nostr.torinos.account.accountScopedViewModelKey
+import com.nostr.torinos.account.accountSessionViewModel
 import com.nostr.torinos.model.NostrProfile
 import com.nostr.torinos.network.RelayStore
 import com.nostr.torinos.ui.components.LinkedText
@@ -107,10 +107,13 @@ fun ChannelListScreen(
         return
     }
 
-    val viewModel: ChannelListViewModel = viewModel(
-        key = accountScopedViewModelKey("channel-list-$activeRelayUrl"),
-    ) {
-        ChannelListViewModel(relayUrl = activeRelayUrl)
+    val viewModel: ChannelListViewModel = accountSessionViewModel(
+        key = "channel-list-$activeRelayUrl",
+    ) { accountSession ->
+        ChannelListViewModel(
+            relayUrl = activeRelayUrl,
+            accountSession = accountSession,
+        )
     }
     val state by viewModel.state.collectAsState()
     val listState = rememberSaveable(activeRelayUrl, saver = LazyListState.Saver) { LazyListState() }

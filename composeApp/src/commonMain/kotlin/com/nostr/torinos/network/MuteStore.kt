@@ -2,26 +2,22 @@ package com.nostr.torinos.network
 
 import kotlinx.coroutines.flow.StateFlow
 
-object MuteStore {
-    val mutedPubkeys: StateFlow<Set<String>> = PrivateMuteListStore.mutedPubkeys
-    val syncState: StateFlow<PrivateMuteListSyncState> = PrivateMuteListStore.syncState
+class MuteStore internal constructor(private val store: PrivateMuteListStore) {
+    val mutedPubkeys: StateFlow<Set<String>> = store.mutedPubkeys
+    val syncState: StateFlow<PrivateMuteListSyncState> = store.syncState
 
     fun mute(pubkey: String) {
-        PrivateMuteListStore.mute(pubkey)
+        store.mute(pubkey)
     }
 
     fun unmute(pubkey: String) {
-        PrivateMuteListStore.unmute(pubkey)
+        store.unmute(pubkey)
     }
 
     fun isMuted(pubkey: String): Boolean =
-        PrivateMuteListStore.isMuted(pubkey)
+        store.isMuted(pubkey)
 
     fun refresh() {
-        PrivateMuteListStore.refresh()
-    }
-
-    fun resetForAccountChange(pubkey: String?) {
-        PrivateMuteListStore.resetForAccountChange(pubkey)
+        store.refresh()
     }
 }

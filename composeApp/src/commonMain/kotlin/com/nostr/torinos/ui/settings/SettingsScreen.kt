@@ -51,7 +51,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.runtime.collectAsState
 import androidx.lifecycle.viewmodel.compose.viewModel
-import com.nostr.torinos.account.accountScopedViewModelKey
+import com.nostr.torinos.account.accountSessionViewModel
 import com.nostr.torinos.crypto.hexToNpub
 import com.nostr.torinos.crypto.StoredAccount
 import com.nostr.torinos.network.RelayEntry
@@ -69,12 +69,12 @@ fun SettingsScreen(
     onMuteListClick: () -> Unit = {},
     onNgWordClick: () -> Unit = {},
     onCustomEmojiClick: () -> Unit = {},
-    relayViewModel: RelaySettingsViewModel = viewModel(
-        key = accountScopedViewModelKey("settings-relays"),
-    ) { RelaySettingsViewModel() },
+    relayViewModel: RelaySettingsViewModel = accountSessionViewModel(
+        key = "settings-relays",
+    ) { accountSession -> RelaySettingsViewModel(accountSession) },
 ) {
     val accountViewModel = if (ownPubkey != null) {
-        viewModel(key = accountScopedViewModelKey("settings-account")) { SettingsViewModel() }
+        viewModel(key = "settings-account") { SettingsViewModel() }
     } else {
         null
     }

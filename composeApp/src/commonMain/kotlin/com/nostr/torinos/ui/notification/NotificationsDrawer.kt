@@ -41,7 +41,6 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
-import com.nostr.torinos.account.accountScopedViewModelKey
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
 import com.nostr.torinos.model.NostrEvent
@@ -74,7 +73,7 @@ fun NotificationsDrawer(
         }
 
         val viewModel: NotificationsViewModel = viewModel(
-            key = accountScopedViewModelKey("notifications-$ownPubkey"),
+            key = "notifications-$ownPubkey",
             factory = viewModelFactory { initializer { NotificationsViewModel(ownPubkey) } },
         )
         val state by viewModel.state.collectAsState()

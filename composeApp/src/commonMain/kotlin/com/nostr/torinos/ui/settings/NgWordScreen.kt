@@ -32,12 +32,13 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.compose.runtime.collectAsState
-import com.nostr.torinos.network.NgWordStore
+import com.nostr.torinos.account.LocalAccountSession
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun NgWordScreen(onBack: () -> Unit = {}) {
-    val ngWords by NgWordStore.ngWords.collectAsState()
+    val ngWordStore = LocalAccountSession.current?.ngWordStore
+    val ngWords = ngWordStore?.ngWords?.collectAsState()?.value.orEmpty()
     var input by remember { mutableStateOf("") }
 
     Scaffold(
@@ -77,7 +78,7 @@ fun NgWordScreen(onBack: () -> Unit = {}) {
                 )
                 IconButton(
                     onClick = {
-                        NgWordStore.add(input)
+                        ngWordStore?.add(input)
                         input = ""
                     },
                     enabled = input.isNotBlank(),
@@ -119,7 +120,7 @@ fun NgWordScreen(onBack: () -> Unit = {}) {
                                 style = MaterialTheme.typography.bodyMedium,
                                 modifier = Modifier.weight(1f),
                             )
-                            IconButton(onClick = { NgWordStore.remove(word) }) {
+                            IconButton(onClick = { ngWordStore?.remove(word) }) {
                                 Icon(
                                     Icons.Default.Delete,
                                     contentDescription = "削除",

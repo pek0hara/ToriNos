@@ -73,7 +73,7 @@ import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
-import com.nostr.torinos.account.accountScopedViewModelKey
+import com.nostr.torinos.account.accountSessionViewModel
 import com.nostr.torinos.model.ArticleAuthorItem
 import com.nostr.torinos.model.ArticleItem
 import com.nostr.torinos.model.NostrEvent
@@ -81,7 +81,7 @@ import com.nostr.torinos.model.NostrProfile
 import com.nostr.torinos.model.extractNostrEventReferences
 import com.nostr.torinos.model.quotedEventIds
 import com.nostr.torinos.model.stripNostrEventUris
-import com.nostr.torinos.network.FollowRepository
+import com.nostr.torinos.account.LocalAccountSession
 import com.nostr.torinos.network.RelayStore
 import com.nostr.torinos.ui.components.LinkedText
 import com.nostr.torinos.ui.components.NetworkImage
@@ -112,6 +112,7 @@ fun ArticleHubScreen(
     val relays by RelayStore.relays.collectAsState(initial = emptyList())
     val selectedRelayUrl by RelayStore.selectedArticleRelayUrl.collectAsState()
     val isRelayStoreLoaded by RelayStore.isLoaded.collectAsState()
+    val accountSession = LocalAccountSession.current
     var showRelayMenu by remember { mutableStateOf(false) }
 
     val activeRelayUrl = selectedRelayUrl
@@ -123,12 +124,12 @@ fun ArticleHubScreen(
         return
     }
 
-    val viewModel: ArticleHubViewModel = viewModel(key = accountScopedViewModelKey("article-hub-$activeRelayUrl")) {
-        ArticleHubViewModel(relayUrl = activeRelayUrl)
+    val viewModel: ArticleHubViewModel = viewModel(key = "article-hub-$activeRelayUrl") {
+        ArticleHubViewModel(relayUrl = activeRelayUrl, accountSession = accountSession)
     }
     val state by viewModel.state.collectAsState()
     var selectedTab by rememberSaveable { mutableStateOf(ArticleHubTab.Articles) }
-    val followedPubkeys by FollowRepository.followedPubkeys.collectAsState()
+    val followedPubkeys = accountSession?.followRepository?.followedPubkeys?.collectAsState()?.value.orEmpty()
     var isMyAuthorsExpanded by rememberSaveable { mutableStateOf(true) }
     var isFollowingAuthorsExpanded by rememberSaveable { mutableStateOf(true) }
     var isGlobalAuthorsExpanded by rememberSaveable { mutableStateOf(true) }
@@ -364,6 +365,7 @@ fun UserArticleListScreen(
     onBack: () -> Unit,
     onArticleClick: (pubkey: String, identifier: String) -> Unit,
 ) {
+    val accountSession = LocalAccountSession.current
     val relays by RelayStore.relays.collectAsState(initial = emptyList())
     val selectedRelayUrl by RelayStore.selectedArticleRelayUrl.collectAsState()
     val isRelayStoreLoaded by RelayStore.isLoaded.collectAsState()
@@ -377,9 +379,13 @@ fun UserArticleListScreen(
     }
 
     val viewModel: UserArticleListViewModel = viewModel(
-        key = accountScopedViewModelKey("user-articles-$pubkey-$activeRelayUrl"),
+        key = "user-articles-$pubkey-$activeRelayUrl",
     ) {
-        UserArticleListViewModel(pubkey, relayUrl = activeRelayUrl)
+        UserArticleListViewModel(
+            pubkey = pubkey,
+            relayUrl = activeRelayUrl,
+            accountSession = accountSession,
+        )
     }
     val state by viewModel.state.collectAsState()
     val listState = rememberSaveable(pubkey, selectedRelayUrl, saver = LazyListState.Saver) { LazyListState() }
@@ -453,10 +459,15 @@ fun ArticleDetailScreen(
         return
     }
 
-    val viewModel: ArticleDetailViewModel = viewModel(
-        key = accountScopedViewModelKey("article-$pubkey-$identifier-$activeRelayUrl"),
-    ) {
-        ArticleDetailViewModel(pubkey, identifier, relayUrl = activeRelayUrl)
+    val viewModel: ArticleDetailViewModel = accountSessionViewModel(
+        key = "article-$pubkey-$identifier-$activeRelayUrl",
+    ) { accountSession ->
+        ArticleDetailViewModel(
+            pubkey,
+            identifier,
+            relayUrl = activeRelayUrl,
+            accountSession = accountSession,
+        )
     }
     val state by viewModel.state.collectAsState()
     var showDeleteDialog by rememberSaveable(pubkey, identifier) { mutableStateOf(false) }

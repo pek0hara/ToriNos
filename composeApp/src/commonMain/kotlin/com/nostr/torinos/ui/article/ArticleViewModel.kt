@@ -1,7 +1,6 @@
 package com.nostr.torinos.ui.article
 
 import com.nostr.torinos.account.AccountSession
-import com.nostr.torinos.account.AccountSessions
 import com.nostr.torinos.model.ArticleAuthorItem
 import com.nostr.torinos.model.ArticleItem
 import com.nostr.torinos.model.NIP23_ARTICLE_KIND
@@ -13,7 +12,6 @@ import com.nostr.torinos.model.latestArticleVersions
 import com.nostr.torinos.model.quotedEventIds
 import com.nostr.torinos.model.toArticleAuthors
 import com.nostr.torinos.model.toArticleMeta
-import com.nostr.torinos.network.MuteStore
 import com.nostr.torinos.network.NostrRepository
 import com.nostr.torinos.network.ProfileFetchPolicy
 import com.nostr.torinos.network.ProfileRepository
@@ -132,7 +130,10 @@ internal data class LocalArticleDeletion(
         relayUrl == null || relayUrl in relayUrls
 }
 
-class ArticleHubViewModel(private val relayUrl: String? = null) : SafeViewModel() {
+class ArticleHubViewModel(
+    private val relayUrl: String? = null,
+    private val accountSession: AccountSession? = null,
+) : SafeViewModel() {
     private val _state = MutableStateFlow(ArticleListState())
     val state: StateFlow<ArticleListState> = _state.asStateFlow()
 
@@ -143,7 +144,7 @@ class ArticleHubViewModel(private val relayUrl: String? = null) : SafeViewModel(
 
     init {
         launch {
-            MuteStore.mutedPubkeys.drop(1).collect { updateStateFromEvents() }
+            accountSession?.muteStore?.mutedPubkeys?.drop(1)?.collect { updateStateFromEvents() }
         }
         launch {
             ArticleMemoryCache.articleEvents.collect { localEvent ->
@@ -215,7 +216,7 @@ class ArticleHubViewModel(private val relayUrl: String? = null) : SafeViewModel(
     private fun updateStateFromEvents() {
         val profiles = _state.value.profiles
         val articles = rawEvents.values
-            .filterNot { MuteStore.isMuted(it.pubkey) }
+            .filterNot { accountSession?.muteStore?.isMuted(it.pubkey) == true }
             .mapNotNull { event ->
                 val meta = event.toArticleMeta() ?: return@mapNotNull null
                 ArticleItem(event = event, meta = meta, authorProfile = profiles[event.pubkey])
@@ -261,6 +262,7 @@ class ArticleHubViewModel(private val relayUrl: String? = null) : SafeViewModel(
 class UserArticleListViewModel(
     private val pubkey: String,
     private val relayUrl: String? = null,
+    private val accountSession: AccountSession? = null,
 ) : SafeViewModel() {
     private val _state = MutableStateFlow(ArticleListState())
     val state: StateFlow<ArticleListState> = _state.asStateFlow()
@@ -272,7 +274,7 @@ class UserArticleListViewModel(
 
     init {
         launch {
-            MuteStore.mutedPubkeys.drop(1).collect { updateStateFromEvents() }
+            accountSession?.muteStore?.mutedPubkeys?.drop(1)?.collect { updateStateFromEvents() }
         }
         launch {
             ArticleMemoryCache.articleEvents.collect { localEvent ->
@@ -345,7 +347,7 @@ class UserArticleListViewModel(
     private fun updateStateFromEvents() {
         val profiles = _state.value.profiles
         val articles = rawEvents.values
-            .filterNot { MuteStore.isMuted(it.pubkey) }
+            .filterNot { accountSession?.muteStore?.isMuted(it.pubkey) == true }
             .mapNotNull { event ->
                 val meta = event.toArticleMeta() ?: return@mapNotNull null
                 ArticleItem(event = event, meta = meta, authorProfile = profiles[event.pubkey])
@@ -400,7 +402,7 @@ class ArticleDetailViewModel(
     private val pubkey: String,
     private val identifier: String,
     private val relayUrl: String? = null,
-    private val accountSession: AccountSession? = AccountSessions.manager.currentSession,
+    private val accountSession: AccountSession? = null,
 ) : SafeViewModel() {
     private val _state = MutableStateFlow(ArticleDetailState())
     val state: StateFlow<ArticleDetailState> = _state.asStateFlow()

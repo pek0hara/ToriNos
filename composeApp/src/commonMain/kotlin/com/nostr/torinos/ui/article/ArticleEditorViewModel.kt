@@ -1,7 +1,6 @@
 package com.nostr.torinos.ui.article
 
 import com.nostr.torinos.account.AccountSession
-import com.nostr.torinos.account.AccountSessions
 import com.nostr.torinos.model.NIP23_ARTICLE_KIND
 import com.nostr.torinos.network.ImageUploader
 import com.nostr.torinos.network.NostrRepository
@@ -73,7 +72,7 @@ class ArticleEditorViewModel(
     private val editPubkey: String? = null,
     private val editIdentifier: String? = null,
     private val relayUrl: String? = null,
-    private val accountSession: AccountSession? = AccountSessions.manager.currentSession,
+    private val accountSession: AccountSession? = null,
 ) : SafeViewModel() {
     private val _state = MutableStateFlow(ArticleEditorState())
     val state: StateFlow<ArticleEditorState> = _state.asStateFlow()

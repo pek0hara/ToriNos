@@ -23,7 +23,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.runtime.collectAsState
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
-import com.nostr.torinos.account.accountScopedViewModelKey
+import com.nostr.torinos.account.accountSessionViewModel
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
 import com.nostr.torinos.ui.components.NoteTimeline
@@ -41,25 +41,26 @@ fun MyProfileScreen(
     onOpenReplies: (eventId: String) -> Unit = {},
     onOpenLikes: (eventId: String) -> Unit = {},
     onOpenReposts: (eventId: String) -> Unit = {},
-    viewModel: MyProfileViewModel = viewModel(
-        key = accountScopedViewModelKey("my-profile-$ownPubkey"),
-        factory = viewModelFactory { initializer { MyProfileViewModel(ownPubkey) } },
-    ),
+    viewModel: MyProfileViewModel = accountSessionViewModel(
+        key = "my-profile-$ownPubkey",
+    ) { accountSession -> MyProfileViewModel(ownPubkey, accountSession) },
 ) {
-    val postsViewModel: FeedViewModel = viewModel(
-        key = accountScopedViewModelKey("my-feed-$ownPubkey-posts"),
-    ) {
+    val postsViewModel: FeedViewModel = accountSessionViewModel(
+        key = "my-feed-$ownPubkey-posts",
+    ) { accountSession ->
         FeedViewModel(
+            accountSession = accountSession,
             authorPubkey = ownPubkey,
             autoStart = false,
             includeRepostsInFeed = true,
             includeRepliesInFeed = false,
         )
     }
-    val postsAndRepliesViewModel: FeedViewModel = viewModel(
-        key = accountScopedViewModelKey("my-feed-$ownPubkey-posts-replies"),
-    ) {
+    val postsAndRepliesViewModel: FeedViewModel = accountSessionViewModel(
+        key = "my-feed-$ownPubkey-posts-replies",
+    ) { accountSession ->
         FeedViewModel(
+            accountSession = accountSession,
             authorPubkey = ownPubkey,
             autoStart = false,
             includeRepostsInFeed = true,
@@ -77,10 +78,9 @@ fun MyProfileScreen(
     var showAboutEdit by remember(ownPubkey) { mutableStateOf(false) }
     var showStatusEdit by remember(ownPubkey) { mutableStateOf(false) }
     var selectedTab by remember(ownPubkey) { mutableStateOf(ProfileTimelineTab.Posts) }
-    val editProfileViewModel = viewModel<EditProfileViewModel>(
-        key = accountScopedViewModelKey("edit-profile-$ownPubkey"),
-        factory = viewModelFactory { initializer { EditProfileViewModel() } },
-    )
+    val editProfileViewModel = accountSessionViewModel<EditProfileViewModel>(
+        key = "edit-profile-$ownPubkey",
+    ) { accountSession -> EditProfileViewModel(accountSession = accountSession) }
 
     LaunchedEffect(viewModel) {
         viewModel.refreshProfile()

@@ -6,6 +6,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotEquals
 import kotlin.test.assertTrue
+import kotlin.test.assertFailsWith
 import kotlinx.coroutines.runBlocking
 
 class AccountSessionManagerTest {
@@ -30,6 +31,10 @@ class AccountSessionManagerTest {
         assertEquals(PUBKEY_B, second.pubkey)
         assertNotEquals(first.session.sessionId, second.sessionId)
         assertEquals(PUBKEY_B, manager.currentPubkey)
+        assertTrue(first.session.followRepository !== second.followRepository)
+        assertTrue(first.session.muteStore !== second.muteStore)
+        assertTrue(first.session.relayStore !== second.relayStore)
+        assertTrue(first.session.relayListSynchronizer !== second.relayListSynchronizer)
     }
 
     @Test
@@ -43,7 +48,20 @@ class AccountSessionManagerTest {
     }
 
     @Test
-    fun failedSwitchRestoresPreviousSession() = runBlocking {
+    fun switchingAccountInvalidatesPreviousSigner() = runBlocking {
+        val manager = newManager(FakeAccountStorage(activePubkey = PUBKEY_A))
+        val first = manager.initialize().getOrThrow() as AccountSessionState.Active
+
+        manager.switchAccount(PUBKEY_B).getOrThrow()
+
+        assertFailsWith<IllegalStateException> {
+            first.session.signer.encryptToSelf("old session")
+        }
+        Unit
+    }
+
+    @Test
+    fun failedSwitchCreatesFreshPreviousAccountSession() = runBlocking {
         val storage = FakeAccountStorage(activePubkey = PUBKEY_A, failSwitch = true)
         val manager = newManager(storage)
         val first = manager.initialize().getOrThrow() as AccountSessionState.Active
@@ -52,8 +70,10 @@ class AccountSessionManagerTest {
 
         assertTrue(result.isFailure)
         val restored = manager.state.value as AccountSessionState.Active
-        assertEquals(first.session.sessionId, restored.session.sessionId)
+        assertNotEquals(first.session.sessionId, restored.session.sessionId)
         assertEquals(PUBKEY_A, restored.session.pubkey)
+        assertTrue(first.session.resources.isClosed)
+        assertEquals("アカウントを切り替えられませんでした", manager.transitionError.value)
     }
 
     @Test
@@ -72,11 +92,12 @@ class AccountSessionManagerTest {
     @Test
     fun logoutCreatesAnonymousSession() = runBlocking {
         val manager = newManager(FakeAccountStorage(activePubkey = PUBKEY_A))
-        manager.initialize().getOrThrow()
+        val active = manager.initialize().getOrThrow() as AccountSessionState.Active
 
         manager.logout().getOrThrow()
 
         assertTrue(manager.state.value is AccountSessionState.Anonymous)
+        assertTrue(active.session.resources.isClosed)
     }
 
     @Test
@@ -133,12 +154,15 @@ class AccountSessionManagerTest {
     }
 
     private fun newManager(storage: AccountStorage): AccountSessionManager =
-        AccountSessionManager(storage) { credentials -> FakeSigner(credentials.pubkey) }
+        AccountSessionManager(storage) { credentials, lease -> FakeSigner(credentials.pubkey, lease) }
 
-    private class FakeSigner(override val pubkey: String) : AccountSigner {
-        override fun encryptToSelf(plaintext: String): String = plaintext
+    private class FakeSigner(
+        override val pubkey: String,
+        private val lease: AccountSessionLease,
+    ) : AccountSigner {
+        override fun encryptToSelf(plaintext: String): String = plaintext.also { lease.ensureActive() }
 
-        override fun decrypt(content: String, peerPubkey: String): String = content
+        override fun decrypt(content: String, peerPubkey: String): String = content.also { lease.ensureActive() }
 
         override fun sign(
             content: String,

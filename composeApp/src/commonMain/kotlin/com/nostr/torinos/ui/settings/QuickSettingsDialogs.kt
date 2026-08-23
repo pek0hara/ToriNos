@@ -34,9 +34,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
-import com.nostr.torinos.account.accountScopedViewModelKey
 import com.nostr.torinos.model.NostrProfile
-import com.nostr.torinos.network.MuteStore
+import com.nostr.torinos.account.LocalAccountSession
+import com.nostr.torinos.account.accountSessionViewModel
 import com.nostr.torinos.ui.components.ProfileNameText
 import com.nostr.torinos.ui.profile.AvatarCircle
 
@@ -171,7 +171,7 @@ private fun AccountSwitcherDialog(
     onAccountChanged: (String?) -> Unit,
     onAddAccountClick: () -> Unit,
     viewModel: SettingsViewModel = viewModel(
-        key = accountScopedViewModelKey("quick-settings-account"),
+        key = "quick-settings-account",
     ) { SettingsViewModel() },
 ) {
     val state by viewModel.state.collectAsState()
@@ -299,12 +299,12 @@ private fun MuteListDialog(
     onDismiss: () -> Unit,
     onBackToMenu: () -> Unit,
     onUserClick: (String) -> Unit,
-    viewModel: MuteListViewModel = viewModel(
-        key = accountScopedViewModelKey("quick-settings-mute-list"),
-        factory = MuteListViewModel.Factory,
-    ),
+    viewModel: MuteListViewModel = accountSessionViewModel(key = "quick-settings-mute-list") {
+        MuteListViewModel(it?.muteStore)
+    },
 ) {
-    val mutedPubkeys by MuteStore.mutedPubkeys.collectAsState()
+    val muteStore = LocalAccountSession.current?.muteStore
+    val mutedPubkeys = muteStore?.mutedPubkeys?.collectAsState()?.value.orEmpty()
     val profiles by viewModel.profiles.collectAsState()
 
     AlertDialog(
@@ -327,7 +327,7 @@ private fun MuteListDialog(
                             pubkey = pubkey,
                             profile = profile,
                             onClick = { onUserClick(pubkey) },
-                            onUnmute = { MuteStore.unmute(pubkey) },
+                            onUnmute = { muteStore?.unmute(pubkey) },
                         )
                         HorizontalDivider()
                     }

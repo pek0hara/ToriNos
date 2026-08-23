@@ -1,13 +1,11 @@
 package com.nostr.torinos.ui.profile
 
 import com.nostr.torinos.account.AccountSession
-import com.nostr.torinos.account.AccountSessions
 import com.nostr.torinos.ui.SafeViewModel
 import com.nostr.torinos.model.NostrFilter
 import com.nostr.torinos.model.NostrProfile
 import com.nostr.torinos.model.extractNpubReferences
 import com.nostr.torinos.network.CustomEmojiStore
-import com.nostr.torinos.network.FollowRepository
 import com.nostr.torinos.network.NostrRepository
 import com.nostr.torinos.network.ProfileFetchPolicy
 import com.nostr.torinos.network.ProfileRepository
@@ -38,7 +36,7 @@ data class MyProfileState(
 
 class MyProfileViewModel(
     private val ownPubkey: String,
-    private val accountSession: AccountSession? = AccountSessions.manager.currentSession,
+    private val accountSession: AccountSession? = null,
 ) : SafeViewModel() {
     private val _state = MutableStateFlow(MyProfileState())
     val state: StateFlow<MyProfileState> = _state.asStateFlow()
@@ -73,7 +71,7 @@ class MyProfileViewModel(
             scheduleLinkedProfileFetch(cachedProfile.about.orEmpty())
         }
         collectorJobs += launch {
-            FollowRepository.followedPubkeys.collect { follows ->
+            accountSession?.followRepository?.followedPubkeys?.collect { follows ->
                 _state.update { it.copy(followingCount = follows.size) }
             }
         }

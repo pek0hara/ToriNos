@@ -2,22 +2,22 @@ package com.nostr.torinos.network
 
 import kotlinx.coroutines.flow.StateFlow
 
-object NgWordStore {
-    val ngWords: StateFlow<List<String>> = PrivateMuteListStore.ngWords
-    val syncState: StateFlow<PrivateMuteListSyncState> = PrivateMuteListStore.syncState
+class NgWordStore internal constructor(private val store: PrivateMuteListStore) {
+    val ngWords: StateFlow<List<String>> = store.ngWords
+    val syncState: StateFlow<PrivateMuteListSyncState> = store.syncState
 
     fun add(word: String) {
-        PrivateMuteListStore.addNgWord(word)
+        store.addNgWord(word)
     }
 
     fun remove(word: String) {
-        PrivateMuteListStore.removeNgWord(word)
+        store.removeNgWord(word)
     }
 
     fun matches(content: String): Boolean =
-        PrivateMuteListStore.matchesNgWord(content)
+        store.matchesNgWord(content)
 
     fun refresh() {
-        PrivateMuteListStore.refresh()
+        store.refresh()
     }
 }

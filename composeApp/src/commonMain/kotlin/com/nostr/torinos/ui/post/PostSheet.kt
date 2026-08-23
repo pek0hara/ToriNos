@@ -67,6 +67,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import com.nostr.torinos.model.NoteContext
+import com.nostr.torinos.account.accountSessionViewModel
 import com.nostr.torinos.model.encodeNevent
 import com.nostr.torinos.model.ReactionOption
 import com.nostr.torinos.network.CustomEmojiStore
@@ -106,7 +107,9 @@ fun PostSheet(
     ) -> Unit = { _, _, _, _ -> },
     viewModel: PostViewModel? = null,
 ) {
-    val postViewModel = viewModel ?: remember { PostViewModel() }
+    val postViewModel = viewModel ?: accountSessionViewModel(
+        key = "post-composer",
+    ) { accountSession -> PostViewModel(accountSession) }
     val state by postViewModel.state.collectAsState()
     val textFocusRequester = remember { FocusRequester() }
     val keyboardController = LocalSoftwareKeyboardController.current

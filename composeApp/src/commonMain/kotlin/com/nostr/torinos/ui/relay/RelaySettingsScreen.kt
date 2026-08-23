@@ -46,6 +46,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.compose.runtime.collectAsState
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.nostr.torinos.account.accountSessionViewModel
 import com.nostr.torinos.network.RelayEntry
 import com.nostr.torinos.network.RelayInformation
 import com.nostr.torinos.network.RelayLimitation
@@ -54,7 +55,9 @@ import com.nostr.torinos.network.RelayLimitation
 @Composable
 fun RelaySettingsScreen(
     onBack: () -> Unit,
-    viewModel: RelaySettingsViewModel = viewModel { RelaySettingsViewModel() },
+    viewModel: RelaySettingsViewModel = accountSessionViewModel("relay-settings") { accountSession ->
+        RelaySettingsViewModel(accountSession)
+    },
 ) {
     val entries by viewModel.entries.collectAsState()
     val informationState by viewModel.informationState.collectAsState()

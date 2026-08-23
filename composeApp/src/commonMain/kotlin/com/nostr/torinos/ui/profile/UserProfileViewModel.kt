@@ -6,7 +6,7 @@ import com.nostr.torinos.crypto.isWriteSupported
 import com.nostr.torinos.model.NostrFilter
 import com.nostr.torinos.model.NostrProfile
 import com.nostr.torinos.model.extractNpubReferences
-import com.nostr.torinos.network.FollowRepository
+import com.nostr.torinos.account.AccountSession
 import com.nostr.torinos.network.NostrRepository
 import com.nostr.torinos.network.ProfileFetchPolicy
 import com.nostr.torinos.network.ProfileRepository
@@ -39,6 +39,7 @@ data class UserProfileState(
 class UserProfileViewModel(
     private val pubkey: String,
     private val deferredRelayUrl: String? = null,
+    private val accountSession: AccountSession? = null,
 ) : SafeViewModel() {
     private val _state = MutableStateFlow(UserProfileState())
     val state: StateFlow<UserProfileState> = _state.asStateFlow()
@@ -63,8 +64,8 @@ class UserProfileViewModel(
     private fun observeFollowState() {
         collectorJobs += launch {
             combine(
-                FollowRepository.followedPubkeys,
-                FollowRepository.loaded,
+                checkNotNull(accountSession).followRepository.followedPubkeys,
+                accountSession.followRepository.loaded,
             ) { follows, loaded ->
                 Pair(follows, loaded)
             }.collect { (follows, loaded) ->
@@ -89,7 +90,7 @@ class UserProfileViewModel(
             it.copy(isFollowing = true, isFollowLoading = true, followError = null)
         }
         launch {
-            FollowRepository.follow(pubkey)
+            checkNotNull(accountSession).followRepository.follow(pubkey)
                 .onSuccess { _state.update { it.copy(isFollowLoading = false) } }
                 .onFailure { e ->
                     _state.update {
@@ -105,7 +106,7 @@ class UserProfileViewModel(
             it.copy(isFollowing = false, isFollowLoading = true, followError = null)
         }
         launch {
-            FollowRepository.unfollow(pubkey)
+            checkNotNull(accountSession).followRepository.unfollow(pubkey)
                 .onSuccess { _state.update { it.copy(isFollowLoading = false) } }
                 .onFailure { e ->
                     _state.update {

@@ -1,8 +1,6 @@
 package com.nostr.torinos.network
 
-import com.nostr.torinos.crypto.KeyStorage
-import com.nostr.torinos.crypto.loadPublicKey
-import com.nostr.torinos.crypto.signEvent
+import com.nostr.torinos.account.AccountSession
 import com.nostr.torinos.model.NostrEvent
 import com.nostr.torinos.model.NostrFilter
 import com.nostr.torinos.util.appLog
@@ -10,9 +8,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
@@ -32,8 +28,12 @@ import kotlin.time.Clock
  * ログインしたアカウントが他クライアントから公開した NIP-65 リレーリストを取得し、
  * ToriNos の端末設定へ反映する。
  */
-object RelayListSynchronizer {
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+class RelayListSynchronizer internal constructor(
+    private val session: AccountSession,
+    private val followRepository: FollowRepository,
+    private val relayStore: AccountRelayStore,
+    private val scope: CoroutineScope,
+) {
     private var syncGeneration = 0L
     private val operationMutex = Mutex()
     private val retryMutex = Mutex()
@@ -41,8 +41,9 @@ object RelayListSynchronizer {
     private var outboxRetryJob: Job? = null
     private var observedPubkey: String? = null
 
-    suspend fun syncFromRelays(pubkey: String): Boolean = operationMutex.withLock {
-        RelayStore.isLoaded.first { it }
+    suspend fun syncFromRelays(): Boolean = operationMutex.withLock {
+        val pubkey = session.pubkey
+        relayStore.isLoaded.first { it }
         startObserving(pubkey)
         scope.launch { retryPendingPublish(pubkey) }
 
@@ -50,7 +51,8 @@ object RelayListSynchronizer {
         val publishedUrls = relayUrlsFromTags(latestEvent.tags)
         if (publishedUrls.isEmpty()) return@withLock false
 
-        RelayStore.applyPublishedRelayUrls(publishedUrls)
+        session.ensureActive()
+        relayStore.applyPublishedRelayUrls(publishedUrls)
         appLog("[RelayListSynchronizer] applied ${publishedUrls.size} relays for ${pubkey.take(8)}")
         true
     }
@@ -60,10 +62,9 @@ object RelayListSynchronizer {
         additions: Set<String>,
         removals: Set<String>,
     ): RelayListUpdateResult = operationMutex.withLock {
-        val privateKeyHex = KeyStorage.loadPrivateKey() ?: error("秘密鍵がありません")
-        val pubkey = loadPublicKey() ?: error("公開鍵を取得できません")
+        val pubkey = session.pubkey
         val latestEvent = RelayListEventCache.getOrLoad(pubkey)
-        val legacyContactEvent = if (latestEvent == null) FollowRepository.latestFollowListEvent() else null
+        val legacyContactEvent = if (latestEvent == null) followRepository.latestFollowListEvent() else null
         val currentTags = latestEvent?.tags ?: legacyContactEvent
             ?.let(::legacyRelayTagsFromContactEvent)
             .orEmpty()
@@ -78,8 +79,8 @@ object RelayListSynchronizer {
         checkRelayListCanBePublished(updatedTags)
         val updatedRelayUrls = relayUrlsFromTags(updatedTags)
         val targetRelayUrls = (
-            RelayStore.enabledRelayUrlsSnapshot() +
-                RelayStore.defaults.map { it.url } +
+            relayStore.enabledRelayUrlsSnapshot() +
+                relayStore.defaults.map { it.url } +
                 relayUrlsFromTags(currentTags) +
                 updatedRelayUrls
             )
@@ -87,8 +88,7 @@ object RelayListSynchronizer {
             .distinct()
         check(targetRelayUrls.isNotEmpty()) { "送信先リレーがありません" }
 
-        val event = signEvent(
-            privateKeyHex = privateKeyHex,
+        val event = session.signer.sign(
             content = latestEvent?.content.orEmpty(),
             kind = RELAY_LIST_KIND,
             tags = updatedTags,
@@ -101,7 +101,7 @@ object RelayListSynchronizer {
         RelayListPublishOutbox.enqueue(event, targetRelayUrls)
         val publishResult = publishRelayListEvent(event, targetRelayUrls)
         check(publishResult.succeededRelays.isNotEmpty()) { "すべてのリレーへの送信に失敗しました" }
-        check(loadPublicKey() == pubkey) { "アカウントが切り替わったため、端末設定への反映を中止しました" }
+        session.ensureActive()
         RelayListEventCache.putEventAndPersist(event)
         RelayListUpdateResult(event = event, publishResult = publishResult)
     }
@@ -109,14 +109,12 @@ object RelayListSynchronizer {
     /** 新規生成したアカウントにだけ初期 kind:10002 を作る。 */
     suspend fun initializeNewAccountRelayList(): Result<Unit> = operationMutex.withLock {
         runCatching {
-            val privateKeyHex = KeyStorage.loadPrivateKey() ?: error("秘密鍵がありません")
-            val relayUrls = RelayStore.defaults
+            val relayUrls = relayStore.defaults
                 .filter { it.enabled }
                 .mapNotNull { normalizeRelayUrl(it.url) }
                 .distinct()
             check(relayUrls.isNotEmpty()) { "初期リレーがありません" }
-            val event = signEvent(
-                privateKeyHex = privateKeyHex,
+            val event = session.signer.sign(
                 content = "",
                 kind = RELAY_LIST_KIND,
                 tags = relayUrls.map { listOf("r", it) },
@@ -132,8 +130,7 @@ object RelayListSynchronizer {
     suspend fun fetchPublishedRelayList(
         onFirstResponse: () -> Unit = {},
     ): PublishedRelayListSnapshot = operationMutex.withLock {
-        val pubkey = loadPublicKey()
-            ?: return@withLock PublishedRelayListSnapshot(urls = emptySet(), hasPublishedEvent = false)
+        val pubkey = session.pubkey
         val event = fetchLatestEvent(pubkey, onFirstResponse)
         PublishedRelayListSnapshot(
             urls = relayUrlsFromTags(event?.tags.orEmpty()).toSet(),
@@ -146,7 +143,7 @@ object RelayListSynchronizer {
         onFirstResponse: () -> Unit = {},
         bypassCache: Boolean = false,
     ): NostrEvent? {
-        RelayStore.isLoaded.first { it }
+        relayStore.isLoaded.first { it }
         val cachedEvent = RelayListEventCache.getOrLoad(pubkey)
         if (cachedEvent != null && !bypassCache) {
             onFirstResponse()
@@ -159,8 +156,8 @@ object RelayListSynchronizer {
             return cachedEvent
         }
         val relayUrls = (
-            RelayStore.enabledRelayUrlsSnapshot() +
-                RelayStore.defaults.map { it.url }
+            relayStore.enabledRelayUrlsSnapshot() +
+                relayStore.defaults.map { it.url }
             )
             .mapNotNull(::normalizeRelayUrl)
             .distinct()
@@ -259,6 +256,7 @@ object RelayListSynchronizer {
             appLog("[RelayListSynchronizer] sync failed: ${e::class.simpleName}: ${e.message}")
             throw e
         }
+        session.ensureActive()
         return latestEvent?.let { RelayListEventCache.putEventAndPersist(it) }
             ?: RelayListEventCache.getOrLoad(pubkey)
     }
@@ -282,10 +280,11 @@ object RelayListSynchronizer {
             if (pending.pendingRelayUrls.isEmpty()) return@withLock
             val result = publishRelayListEvent(pending.event, pending.pendingRelayUrls)
             if (result.succeededRelays.isNotEmpty()) {
+                session.ensureActive()
                 RelayListEventCache.putEventAndPersist(pending.event)
                 relayUrlsFromTags(pending.event.tags)
                     .takeIf { it.isNotEmpty() }
-                    ?.let { RelayStore.applyPublishedRelayUrls(it) }
+                    ?.let { relayStore.applyPublishedRelayUrls(it) }
             }
         }
     }
@@ -310,9 +309,10 @@ object RelayListSynchronizer {
                         appLog("[RelayListSynchronizer] ignored empty relay list from network")
                         return@collect
                     }
+                    session.ensureActive()
                     RelayListEventCache.putEventAndPersist(event)
                     RelayListPublishOutbox.discardIfOlderThan(event)
-                    RelayStore.applyPublishedRelayUrls(urls)
+                    relayStore.applyPublishedRelayUrls(urls)
                 }
             }
             try {
@@ -335,7 +335,7 @@ object RelayListSynchronizer {
         }
     }
 
-    fun stopObserving() {
+    internal fun close() {
         observerJob?.cancel()
         outboxRetryJob?.cancel()
         observedPubkey?.let { NostrRepository.close(observerSubscriptionId(it)) }
@@ -345,14 +345,14 @@ object RelayListSynchronizer {
     }
 
     private fun observerSubscriptionId(pubkey: String): String =
-        "relay-list-observer-${pubkey.take(16)}"
+        "relay-list-observer-${pubkey.take(12)}-${session.sessionId.takeLast(12)}"
 
     private fun NostrEvent.isNewerThan(other: NostrEvent): Boolean =
         createdAt > other.createdAt || (createdAt == other.createdAt && id < other.id)
 
-    private const val RELAY_LIST_KIND = 10002
-    private const val SYNC_TIMEOUT_MS = 5_000L
-    private const val OUTBOX_RETRY_INTERVAL_MS = 30_000L
+    private val RELAY_LIST_KIND = 10002
+    private val SYNC_TIMEOUT_MS = 5_000L
+    private val OUTBOX_RETRY_INTERVAL_MS = 30_000L
 
     private val RELAY_EVENT_COMPARATOR = compareBy<NostrEvent> { it.createdAt }
         .thenByDescending { it.id }

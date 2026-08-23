@@ -4,7 +4,6 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewmodel.CreationExtras
 import com.nostr.torinos.account.AccountSession
-import com.nostr.torinos.account.AccountSessions
 import com.nostr.torinos.model.ChannelMeta
 import com.nostr.torinos.model.NostrEvent
 import com.nostr.torinos.model.NostrFilter
@@ -47,7 +46,7 @@ data class ChannelItem(
 
 class ChannelListViewModel(
     private val relayUrl: String? = null,
-    private val accountSession: AccountSession? = AccountSessions.manager.currentSession,
+    private val accountSession: AccountSession? = null,
 ) : SafeViewModel() {
 
     companion object {

@@ -10,9 +10,20 @@ import com.nostr.torinos.crypto.normalizePrivateKey
 import com.nostr.torinos.crypto.signEvent
 import com.nostr.torinos.crypto.toHex
 import com.nostr.torinos.model.NostrEvent
+import com.nostr.torinos.network.FollowRepository
+import com.nostr.torinos.network.MuteStore
+import com.nostr.torinos.network.NgWordStore
+import com.nostr.torinos.network.PrivateMuteListStore
+import com.nostr.torinos.network.RelayListSynchronizer
+import com.nostr.torinos.network.AccountRelayStore
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 
@@ -21,7 +32,9 @@ sealed interface AccountSessionState {
 
     data class Active(val session: AccountSession) : AccountSessionState
 
-    data class Anonymous(val sessionId: String) : AccountSessionState
+    data class Anonymous(val session: AnonymousSession) : AccountSessionState {
+        val sessionId: String get() = session.sessionId
+    }
 
     data class Switching(
         val fromPubkey: String?,
@@ -29,11 +42,81 @@ sealed interface AccountSessionState {
     ) : AccountSessionState
 }
 
-data class AccountSession(
+data class AnonymousSession(val sessionId: String)
+
+class AccountSession internal constructor(
     val sessionId: String,
     val pubkey: String,
     val signer: AccountSigner,
-)
+    internal val resources: AccountSessionResources,
+) {
+    val relayStore = AccountRelayStore(this)
+    val followRepository = FollowRepository(this, resources.scope)
+    private val privateMuteListStore = PrivateMuteListStore(this, relayStore, resources.scope)
+    val muteStore = MuteStore(privateMuteListStore)
+    val ngWordStore = NgWordStore(privateMuteListStore)
+    val relayListSynchronizer = RelayListSynchronizer(this, followRepository, relayStore, resources.scope)
+    private var repositoriesStarted = false
+
+    init {
+        resources.onClose(followRepository::close)
+        resources.onClose(privateMuteListStore::close)
+        resources.onClose(relayListSynchronizer::close)
+    }
+
+    internal fun ensureActive() {
+        resources.lease.ensureActive()
+    }
+
+    internal fun startRepositories() {
+        ensureActive()
+        if (repositoriesStarted) return
+        repositoriesStarted = true
+        followRepository.start()
+        privateMuteListStore.start()
+    }
+
+    internal fun onClose(action: () -> Unit) {
+        resources.onClose(action)
+    }
+}
+
+/** セッション終了後の署名・暗号化を、グローバル状態に依存せず拒否する。 */
+internal class AccountSessionLease {
+    private val _active = MutableStateFlow(true)
+    val isActive: Boolean get() = _active.value
+
+    fun ensureActive() {
+        check(isActive) { "アカウントが切り替わったため操作を中止しました" }
+    }
+
+    fun invalidate() {
+        _active.value = false
+    }
+}
+
+/** AccountSession が所有する非同期処理の終了境界。 */
+internal class AccountSessionResources(
+    val lease: AccountSessionLease = AccountSessionLease(),
+    private val sessionJob: Job = SupervisorJob(),
+) {
+    private val closeActions = mutableListOf<() -> Unit>()
+    val scope: CoroutineScope = CoroutineScope(sessionJob + Dispatchers.Default)
+    val isClosed: Boolean get() = !lease.isActive
+
+    suspend fun close() {
+        if (isClosed) return
+        lease.invalidate()
+        closeActions.toList().also { closeActions.clear() }.forEach { action ->
+            runCatching(action)
+        }
+        sessionJob.cancelAndJoin()
+    }
+
+    fun onClose(action: () -> Unit) {
+        if (isClosed) action() else closeActions += action
+    }
+}
 
 /** 秘密鍵を画面や ViewModel に公開せず、セッションに固定した鍵で署名する。 */
 interface AccountSigner {
@@ -53,6 +136,7 @@ interface AccountSigner {
 
 private class PrivateKeyAccountSigner(
     private val privateKeyHex: String,
+    private val lease: AccountSessionLease,
 ) : AccountSigner {
     override val pubkey: String = derivePublicKey(privateKeyHex.fromHex()).toHex()
 
@@ -92,9 +176,7 @@ private class PrivateKeyAccountSigner(
     }
 
     private fun ensureActive() {
-        check(AccountSessions.manager.currentSession?.signer === this) {
-            "アカウントが切り替わったため操作を中止しました"
-        }
+        lease.ensureActive()
     }
 }
 
@@ -137,13 +219,15 @@ internal object KeyStorageAccountStorage : AccountStorage {
 
 class AccountSessionManager internal constructor(
     private val storage: AccountStorage,
-    private val signerFactory: (AccountCredentials) -> AccountSigner = {
-        PrivateKeyAccountSigner(it.privateKeyHex)
+    private val signerFactory: (AccountCredentials, AccountSessionLease) -> AccountSigner = { credentials, lease ->
+        PrivateKeyAccountSigner(credentials.privateKeyHex, lease)
     },
 ) {
     private val transitionMutex = Mutex()
     private val _state = MutableStateFlow<AccountSessionState>(AccountSessionState.Loading)
     val state: StateFlow<AccountSessionState> = _state.asStateFlow()
+    private val _transitionError = MutableStateFlow<String?>(null)
+    val transitionError: StateFlow<String?> = _transitionError.asStateFlow()
 
     private var nextSessionNumber = 0L
 
@@ -169,10 +253,12 @@ class AccountSessionManager internal constructor(
             next
         }.onFailure {
             _state.value = newAnonymousSession()
+            _transitionError.value = "アカウントを復元できませんでした"
         }
     }
 
     suspend fun switchAccount(pubkey: String): Result<AccountSession> = transitionMutex.withLock {
+        _transitionError.value = null
         val previous = _state.value
         val current = (previous as? AccountSessionState.Active)?.session
         if (current?.pubkey == pubkey) return@withLock Result.success(current)
@@ -181,6 +267,7 @@ class AccountSessionManager internal constructor(
             fromPubkey = current?.pubkey,
             toPubkey = pubkey,
         )
+        current?.resources?.close()
         val result = runCatching {
             storage.switchAccount(pubkey)
             val credentials = checkNotNull(storage.loadActiveCredentials()) {
@@ -192,10 +279,8 @@ class AccountSessionManager internal constructor(
             newActiveSession(credentials).also { _state.value = AccountSessionState.Active(it) }
         }
         if (result.isFailure) {
-            runCatching {
-                if (current != null) storage.switchAccount(current.pubkey) else storage.logout()
-            }
-            _state.value = previous
+            _state.value = restorePreviousSession(current)
+            _transitionError.value = "アカウントを切り替えられませんでした"
         }
         result
     }
@@ -203,11 +288,14 @@ class AccountSessionManager internal constructor(
     /** 鍵追加直後など、KeyStorage の現在値から新しいセッションを開始する。 */
     suspend fun activateCurrentAccount(expectedPubkey: String? = null): Result<AccountSession> =
         transitionMutex.withLock {
+            _transitionError.value = null
             val previous = _state.value
             _state.value = AccountSessionState.Switching(
                 fromPubkey = (previous as? AccountSessionState.Active)?.session?.pubkey,
                 toPubkey = expectedPubkey,
             )
+            val previousSession = (previous as? AccountSessionState.Active)?.session
+            previousSession?.resources?.close()
             val result = runCatching {
                 val credentials = checkNotNull(storage.loadActiveCredentials()) {
                     "アカウントの鍵を読み込めませんでした"
@@ -220,48 +308,53 @@ class AccountSessionManager internal constructor(
                 newActiveSession(credentials).also { _state.value = AccountSessionState.Active(it) }
             }
             if (result.isFailure) {
-                runCatching {
-                    val previousSession = (previous as? AccountSessionState.Active)?.session
-                    if (previousSession != null) {
-                        storage.switchAccount(previousSession.pubkey)
-                    } else {
-                        storage.logout()
-                    }
-                }
-                _state.value = previous
+                _state.value = restorePreviousSession(previousSession)
+                _transitionError.value = "アカウントを開始できませんでした"
             }
             result
         }
 
     suspend fun logout(): Result<AccountSessionState.Anonymous> = transitionMutex.withLock {
+        _transitionError.value = null
         val previous = _state.value
         _state.value = AccountSessionState.Switching(
             fromPubkey = (previous as? AccountSessionState.Active)?.session?.pubkey,
             toPubkey = null,
         )
+        val previousSession = (previous as? AccountSessionState.Active)?.session
+        previousSession?.resources?.close()
         runCatching {
             storage.logout()
             newAnonymousSession().also { _state.value = it }
         }.onFailure {
-            _state.value = previous
+            _state.value = restorePreviousSession(previousSession)
+            _transitionError.value = "ログアウトできませんでした"
         }
     }
 
     suspend fun deleteCurrentAccount(): Result<AccountSessionState> = transitionMutex.withLock {
+        _transitionError.value = null
         val previous = _state.value
         _state.value = AccountSessionState.Switching(
             fromPubkey = (previous as? AccountSessionState.Active)?.session?.pubkey,
             toPubkey = null,
         )
+        val previousSession = (previous as? AccountSessionState.Active)?.session
+        previousSession?.resources?.close()
         runCatching {
             storage.deleteActiveAccount()
             activeOrAnonymous(storage.loadActiveCredentials()).also { _state.value = it }
         }.onFailure {
-            _state.value = previous
+            _state.value = restorePreviousSession(previousSession)
+            _transitionError.value = "アカウントを削除できませんでした"
         }
     }
 
     suspend fun listAccounts(): List<StoredAccount> = storage.listAccounts()
+
+    fun consumeTransitionError() {
+        _transitionError.value = null
+    }
 
     suspend fun exportActiveNsec(): String? {
         val credentials = storage.loadActiveCredentials() ?: return null
@@ -269,32 +362,59 @@ class AccountSessionManager internal constructor(
         return hexToNsec(credentials.privateKeyHex)
     }
 
-    private fun activeOrAnonymous(credentials: AccountCredentials?): AccountSessionState =
+    private suspend fun activeOrAnonymous(credentials: AccountCredentials?): AccountSessionState =
         credentials?.let { AccountSessionState.Active(newActiveSession(it)) }
             ?: newAnonymousSession()
 
-    private fun newActiveSession(credentials: AccountCredentials): AccountSession {
-        val signer = signerFactory(credentials)
-        check(signer.pubkey == credentials.pubkey) { "秘密鍵と公開鍵が一致しません" }
-        return AccountSession(
-            sessionId = nextSessionId(credentials.pubkey),
-            pubkey = credentials.pubkey,
-            signer = signer,
-        )
+    private suspend fun newActiveSession(credentials: AccountCredentials): AccountSession {
+        val resources = AccountSessionResources()
+        return try {
+            val signer = signerFactory(credentials, resources.lease)
+            check(signer.pubkey == credentials.pubkey) { "秘密鍵と公開鍵が一致しません" }
+            AccountSession(
+                sessionId = nextSessionId(credentials.pubkey),
+                pubkey = credentials.pubkey,
+                signer = signer,
+                resources = resources,
+            )
+        } catch (error: Throwable) {
+            resources.close()
+            throw error
+        }
     }
 
     private fun newAnonymousSession(): AccountSessionState.Anonymous =
-        AccountSessionState.Anonymous(sessionId = nextSessionId("anonymous"))
+        AccountSessionState.Anonymous(
+            session = AnonymousSession(sessionId = nextSessionId("anonymous")),
+        )
 
     private fun nextSessionId(owner: String): String {
         nextSessionNumber++
         return "$owner-$nextSessionNumber"
+    }
+
+    private suspend fun restorePreviousSession(previous: AccountSession?): AccountSessionState {
+        if (previous == null) {
+            runCatching { storage.logout() }
+            return newAnonymousSession()
+        }
+        return runCatching {
+            val currentCredentials = runCatching { storage.loadActiveCredentials() }.getOrNull()
+            val credentials = if (currentCredentials?.pubkey == previous.pubkey) {
+                currentCredentials
+            } else {
+                storage.switchAccount(previous.pubkey)
+                checkNotNull(storage.loadActiveCredentials())
+            }
+            check(credentials.pubkey == previous.pubkey)
+            AccountSessionState.Active(newActiveSession(credentials))
+        }.getOrElse {
+            runCatching { storage.logout() }
+            newAnonymousSession()
+        }
     }
 }
 
 object AccountSessions {
     val manager = AccountSessionManager(KeyStorageAccountStorage)
 }
-
-fun accountScopedViewModelKey(base: String): String =
-    "$base@${AccountSessions.manager.currentSessionId}"

@@ -1,7 +1,6 @@
 package com.nostr.torinos.ui.live
 
 import com.nostr.torinos.account.AccountSession
-import com.nostr.torinos.account.AccountSessions
 import com.nostr.torinos.model.LiveActivityItem
 import com.nostr.torinos.model.LiveActivityStatus
 import com.nostr.torinos.model.NIP53_LIVE_ACTIVITY_KIND
@@ -243,7 +242,7 @@ class LiveListViewModel(private val relayUrl: String? = null) : SafeViewModel() 
 
 class LiveCreateViewModel(
     private val relayUrl: String? = null,
-    private val accountSession: AccountSession? = AccountSessions.manager.currentSession,
+    private val accountSession: AccountSession? = null,
 ) : SafeViewModel() {
     private val _state = MutableStateFlow(
         LiveCreateState(
@@ -446,7 +445,7 @@ class LiveDetailViewModel(
     private val pubkey: String,
     private val identifier: String,
     private val relayUrl: String? = null,
-    private val accountSession: AccountSession? = AccountSessions.manager.currentSession,
+    private val accountSession: AccountSession? = null,
 ) : SafeViewModel() {
     private val _state = MutableStateFlow(LiveDetailState())
     val state: StateFlow<LiveDetailState> = _state.asStateFlow()

@@ -1,19 +1,14 @@
 package com.nostr.torinos.network
 
-import com.nostr.torinos.crypto.KeyStorage
-import com.nostr.torinos.crypto.loadPublicKey
-import com.nostr.torinos.crypto.signEvent
+import com.nostr.torinos.account.AccountSession
 import com.nostr.torinos.model.NostrFilter
 import com.nostr.torinos.model.NostrEvent
 import com.nostr.torinos.util.logException
-import com.nostr.torinos.util.loggingExceptionHandler
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -28,13 +23,12 @@ import kotlin.time.Clock
 
 /**
  * 自分のフォローリスト（kind:3）を管理するリポジトリ。
- * アプリ全体でシングルトンとして使用する。
+ * AccountSession ごとに生成され、セッション終了時に購読と処理を破棄する。
  */
-object FollowRepository {
-    private val scope = CoroutineScope(
-        SupervisorJob() + Dispatchers.Main.immediate +
-            loggingExceptionHandler("FollowRepository", "Uncaught coroutine exception"),
-    )
+class FollowRepository internal constructor(
+    private val accountSession: AccountSession,
+    private val scope: CoroutineScope,
+) {
 
     private val _followedPubkeys = MutableStateFlow<Set<String>>(emptySet())
     val followedPubkeys: StateFlow<Set<String>> = _followedPubkeys.asStateFlow()
@@ -47,20 +41,25 @@ object FollowRepository {
     private var latestFollowEvent: NostrEvent? = null
     private var loadGeneration = 0L
     private var loadJob: Job? = null
+    private var started = false
     private val updateMutex = Mutex()
     private val json = Json { ignoreUnknownKeys = true }
 
-    init {
-        loadJob = startLoadJob()
+    internal fun start() {
+        if (started) return
+        started = true
+        restartLoad(reset = true)
     }
 
     /** アカウント切り替え時に呼ぶ。フォローリストをリセットして新アカウントのリストを再取得する。 */
     fun reload() {
+        if (!started) return
         restartLoad(reset = true)
     }
 
     /** 手動更新時に呼ぶ。既存のフォローリスト表示は残したままバックグラウンドで再取得する。 */
     fun refresh() {
+        if (!started) return
         restartLoad(reset = false)
     }
 
@@ -69,7 +68,7 @@ object FollowRepository {
         loadGeneration++
         if (reset) {
             _loaded.value = false
-            ownPubkey = null
+            ownPubkey = accountSession.pubkey
             latestFollowEvent = null
             _followedPubkeys.value = emptySet()
         }
@@ -80,9 +79,10 @@ object FollowRepository {
 
     private fun startLoadJob(): Job {
         val generation = loadGeneration
+        val session = accountSession
         return scope.launch {
             try {
-                load(generation)
+                load(generation, session)
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Throwable) {
@@ -91,14 +91,13 @@ object FollowRepository {
         }
     }
 
-    private fun subscriptionId(generation: Long): String = "follow-list-$generation"
+    private fun subscriptionId(generation: Long): String =
+        "follow-list-${accountSession.sessionId.takeLast(16)}-$generation"
 
-    private suspend fun load(generation: Long) {
-        ownPubkey = loadPublicKey()
-        val pk = ownPubkey ?: run {
-            if (generation == loadGeneration) _loaded.value = true
-            return
-        }
+    private suspend fun load(generation: Long, session: AccountSession) {
+        val pk = session.pubkey
+        if (generation != loadGeneration) return
+        ownPubkey = pk
         val subId = subscriptionId(generation)
 
         // EOSE を待ってから最新の kind:3 を採用する
@@ -181,7 +180,7 @@ object FollowRepository {
 
     internal suspend fun latestFollowListEvent(): NostrEvent? {
         latestFollowEvent?.let { return it }
-        val pubkey = loadPublicKey() ?: return null
+        val pubkey = ownPubkey ?: return null
         return loadFollowCache(pubkey)?.event
             ?.takeIf { it.kind == 3 && it.pubkey == pubkey }
             ?.also { latestFollowEvent = it }
@@ -189,10 +188,8 @@ object FollowRepository {
 
     /** Damus と同様に、新規アカウント作成時だけ空の kind:3 を初期化する。 */
     suspend fun initializeNewAccountFollowList(): Result<Unit> {
-        val privateKey = KeyStorage.loadPrivateKey()
-            ?: return Result.failure(Exception("秘密鍵が設定されていません"))
-        val event = signEvent(
-            privateKeyHex = privateKey,
+        val signer = accountSession.signer
+        val event = signer.sign(
             content = "",
             kind = 3,
             tags = emptyList(),
@@ -229,6 +226,7 @@ object FollowRepository {
         transform: (NostrEvent) -> FollowEventEdit?,
     ): Result<Unit> = updateMutex.withLock {
         val generation = loadGeneration
+        val session = accountSession
         val accountPubkey = ownPubkey
         if (!_loaded.value || accountPubkey == null) {
             return@withLock Result.failure(Exception("フォロー一覧の読み込みが完了していません"))
@@ -245,14 +243,10 @@ object FollowRepository {
             val targetRelayUrls = NostrRepository.targetRelayUrls(RelayTarget.AllEnabled)
             check(targetRelayUrls.isNotEmpty()) { "有効なリレーがありません" }
 
-            val privKey = checkNotNull(KeyStorage.loadPrivateKey()) {
-                "秘密鍵が設定されていません"
-            }
             val edit = transform(existingEvent) ?: return@runCatching
             val newSet = edit.tags.followedPubkeys()
             val createdAt = Clock.System.now().epochSeconds.coerceAtLeast(existingEvent.createdAt + 1L)
-            val event = signEvent(
-                privKey,
+            val event = session.signer.sign(
                 content = edit.content,
                 kind = 3,
                 tags = edit.tags,
@@ -262,6 +256,7 @@ object FollowRepository {
             check(
                 generation == loadGeneration &&
                     _loaded.value &&
+                    accountSession.sessionId == session.sessionId &&
                     event.pubkey == accountPubkey
             ) { "アカウントが切り替わったためフォロー更新を中止しました" }
 
@@ -314,6 +309,14 @@ object FollowRepository {
 
     private fun cacheKey(pubkey: String): String = "$FOLLOW_CACHE_KEY_PREFIX$pubkey"
 
+    internal fun close() {
+        started = false
+        loadGeneration++
+        loadJob?.cancel()
+        NostrRepository.close(subscriptionId(loadGeneration - 1))
+        loadJob = null
+    }
+
     @Serializable
     private data class FollowCache(
         val createdAt: Long = 0L,
@@ -321,6 +324,6 @@ object FollowRepository {
         val event: NostrEvent? = null,
     )
 
-    private const val FOLLOW_CACHE_KEY_PREFIX = "follow_list_cache_"
-    private const val FOLLOW_LIST_EOSE_TIMEOUT_MS = 10_000L
+    private val FOLLOW_CACHE_KEY_PREFIX = "follow_list_cache_"
+    private val FOLLOW_LIST_EOSE_TIMEOUT_MS = 10_000L
 }

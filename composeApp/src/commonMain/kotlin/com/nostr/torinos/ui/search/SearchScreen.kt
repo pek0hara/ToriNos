@@ -46,7 +46,6 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.runtime.collectAsState
 import androidx.lifecycle.viewmodel.compose.viewModel
-import com.nostr.torinos.account.accountScopedViewModelKey
 import com.nostr.torinos.model.NostrProfile
 import com.nostr.torinos.ui.components.NoteCard
 import com.nostr.torinos.ui.components.ProfileNameText
@@ -61,7 +60,7 @@ fun SearchScreen(
     onOpenReplies: (eventId: String) -> Unit = {},
     onOpenLikes: (eventId: String) -> Unit = {},
     onOpenReposts: (eventId: String) -> Unit = {},
-    viewModel: SearchViewModel = viewModel(key = accountScopedViewModelKey("search")) { SearchViewModel() },
+    viewModel: SearchViewModel = viewModel(key = "search") { SearchViewModel() },
 ) {
     var inputText by remember(initialQuery) { mutableStateOf(initialQuery) }
     var selectedTab by remember { mutableIntStateOf(0) }

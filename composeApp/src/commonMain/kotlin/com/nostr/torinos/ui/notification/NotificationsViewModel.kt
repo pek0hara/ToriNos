@@ -156,7 +156,7 @@ class NotificationsViewModel(private val ownPubkey: String) : SafeViewModel() {
         closeSubscriptions()
     }
 
-    fun stopForAccountChange() {
+    private fun stopAllSubscriptions() {
         collectorJobs.forEach { it.cancel() }
         cancelAuxiliaryFetches()
         startupSyncJob?.cancel()
@@ -345,7 +345,7 @@ class NotificationsViewModel(private val ownPubkey: String) : SafeViewModel() {
 
     override fun onCleared() {
         super.onCleared()
-        stopForAccountChange()
+        stopAllSubscriptions()
     }
 
     private fun canFetchAuxiliaryDetails(): Boolean =

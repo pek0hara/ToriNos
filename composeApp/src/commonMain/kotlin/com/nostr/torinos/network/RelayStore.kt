@@ -18,6 +18,36 @@ import kotlinx.serialization.json.Json
 @Serializable
 data class RelayEntry(val url: String, val enabled: Boolean)
 
+/**
+ * セッションに固定されたリレー設定アクセサ。
+ * RelayStoreの現在表示用StateFlowは共有しつつ、バックグラウンド処理が旧セッションから
+ * 設定を書き換えることをAccountSessionLeaseで防ぐ。
+ */
+class AccountRelayStore internal constructor(
+    private val session: com.nostr.torinos.account.AccountSession,
+) {
+    val defaults: List<RelayEntry> get() = RelayStore.defaults
+    val isLoaded: StateFlow<Boolean> get() = RelayStore.isLoaded
+
+    fun enabledRelayUrlsSnapshot(): List<String> {
+        session.ensureActive()
+        return RelayStore.enabledRelayUrlsSnapshot()
+    }
+
+    suspend fun applyPublishedRelayUrls(urls: List<String>) {
+        session.ensureActive()
+        RelayStore.applyPublishedRelayUrls(urls)
+        session.ensureActive()
+    }
+
+    suspend fun addDiscoveredRelayUrls(urls: Collection<String>): Int {
+        session.ensureActive()
+        val count = RelayStore.addDiscoveredRelayUrls(urls)
+        session.ensureActive()
+        return count
+    }
+}
+
 object RelayStore {
     private const val ENTRIES_KEY = "relay_entries"
     private const val SELECTED_RELAY_KEY = "selected_relay_url"

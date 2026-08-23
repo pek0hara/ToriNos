@@ -1,7 +1,6 @@
 package com.nostr.torinos.ui.profile
 
 import com.nostr.torinos.account.AccountSession
-import com.nostr.torinos.account.AccountSessions
 import com.nostr.torinos.ui.SafeViewModel
 import com.nostr.torinos.model.NostrProfile
 import com.nostr.torinos.network.CustomEmojiStore
@@ -33,7 +32,7 @@ data class EditProfileState(
 )
 
 class EditProfileViewModel(
-    private val accountSession: AccountSession? = AccountSessions.manager.currentSession,
+    private val accountSession: AccountSession? = null,
 ) : SafeViewModel() {
     companion object {
         private var instanceCounter = 0

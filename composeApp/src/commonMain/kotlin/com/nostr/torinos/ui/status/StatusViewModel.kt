@@ -1,12 +1,10 @@
 package com.nostr.torinos.ui.status
 
 import com.nostr.torinos.account.AccountSession
-import com.nostr.torinos.account.AccountSessions
 import com.nostr.torinos.model.NostrEvent
 import com.nostr.torinos.model.NostrFilter
 import com.nostr.torinos.model.NostrProfile
 import com.nostr.torinos.network.CustomEmojiStore
-import com.nostr.torinos.network.MuteStore
 import com.nostr.torinos.network.NostrRepository
 import com.nostr.torinos.network.ProfileFetchPolicy
 import com.nostr.torinos.network.ProfileRepository
@@ -45,7 +43,7 @@ data class StatusState(
 
 class StatusViewModel(
     private val relayUrl: String? = null,
-    private val accountSession: AccountSession? = AccountSessions.manager.currentSession,
+    private val accountSession: AccountSession? = null,
 ) : SafeViewModel() {
     private val _state = MutableStateFlow(StatusState())
     val state: StateFlow<StatusState> = _state.asStateFlow()
@@ -154,7 +152,7 @@ class StatusViewModel(
             }
         }
         jobs += launch {
-            MuteStore.mutedPubkeys.collect { rebuildStatuses() }
+            accountSession?.muteStore?.mutedPubkeys?.collect { rebuildStatuses() }
         }
         jobs += launch {
             NostrRepository.subscribe(
@@ -199,7 +197,7 @@ class StatusViewModel(
         val selected = _state.value.selectedCategories
         val visibleCandidates = rawStatuses.values
             .filter { it.expiration == null || it.expiration > now }
-            .filter { !MuteStore.isMuted(it.event.pubkey) }
+            .filter { accountSession?.muteStore?.isMuted(it.event.pubkey) != true }
         val extraCategories = visibleCandidates
             .map { it.statusTag }
             .distinct()

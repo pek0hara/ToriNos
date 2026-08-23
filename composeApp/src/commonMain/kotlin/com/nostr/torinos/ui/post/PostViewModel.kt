@@ -2,7 +2,6 @@ package com.nostr.torinos.ui.post
 
 import com.nostr.torinos.ui.SafeViewModel
 import com.nostr.torinos.account.AccountSession
-import com.nostr.torinos.account.AccountSessions
 import com.nostr.torinos.model.NoteContext
 import com.nostr.torinos.model.extractNostrEventReferences
 import com.nostr.torinos.network.CustomEmojiStore
@@ -93,7 +92,7 @@ internal fun PostMemoPayload.toPostMemoData(identifier: String? = null): PostMem
     )
 
 class PostViewModel(
-    private val accountSession: AccountSession? = AccountSessions.manager.currentSession,
+    private val accountSession: AccountSession? = null,
 ) : SafeViewModel() {
     private val _state = MutableStateFlow(PostState())
     val state: StateFlow<PostState> = _state.asStateFlow()

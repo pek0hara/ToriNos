@@ -1,6 +1,5 @@
 package com.nostr.torinos.network
 
-import com.nostr.torinos.crypto.loadPublicKey
 import com.nostr.torinos.model.NostrEvent
 import com.nostr.torinos.model.NostrFilter
 import kotlinx.coroutines.CompletableDeferred
@@ -29,17 +28,22 @@ object FollowedRelayDiscovery {
     private val json = Json { ignoreUnknownKeys = true }
     private var generation = 0L
 
-    suspend fun discover(forceRefresh: Boolean = false): FollowedRelayDiscoveryResult =
+    suspend fun discover(
+        ownPubkey: String?,
+        followRepository: FollowRepository,
+        relayStore: AccountRelayStore,
+        forceRefresh: Boolean = false,
+    ): FollowedRelayDiscoveryResult =
         mutex.withLock {
-            RelayStore.isLoaded.first { it }
+            relayStore.isLoaded.first { it }
             check(withTimeoutOrNull(FOLLOW_LOAD_TIMEOUT_MS) {
-                FollowRepository.loaded.first { it }
+                followRepository.loaded.first { it }
             } != null) {
                 "フォロー一覧を取得できませんでした"
             }
 
-            val ownPubkey = loadPublicKey() ?: return@withLock FollowedRelayDiscoveryResult.NothingToFetch
-            val followedPubkeys = FollowRepository.followedPubkeys.value
+            ownPubkey ?: return@withLock FollowedRelayDiscoveryResult.NothingToFetch
+            val followedPubkeys = followRepository.followedPubkeys.value
             if (followedPubkeys.isEmpty()) {
                 return@withLock FollowedRelayDiscoveryResult.NothingToFetch
             }
@@ -69,7 +73,7 @@ object FollowedRelayDiscovery {
                 "フォロー先のリレー情報を取得できませんでした"
             }
 
-            val addedCount = RelayStore.addDiscoveredRelayUrls(fetchResult.discoveredRelayUrls)
+            val addedCount = relayStore.addDiscoveredRelayUrls(fetchResult.discoveredRelayUrls)
             val nextFetchedAt = cache.fetchedAtByPubkey
                 .filterKeys { it in followedPubkeys }
                 .toMutableMap()

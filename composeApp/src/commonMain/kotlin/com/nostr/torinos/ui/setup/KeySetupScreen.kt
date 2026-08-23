@@ -69,11 +69,9 @@ import com.nostr.torinos.crypto.rememberPasswordManagerSaver
 import com.nostr.torinos.crypto.toHex
 import com.nostr.torinos.model.NostrFilter
 import com.nostr.torinos.model.NostrProfile
-import com.nostr.torinos.network.FollowRepository
 import com.nostr.torinos.network.NostrRepository
 import com.nostr.torinos.network.ProfileFetchPolicy
 import com.nostr.torinos.network.ProfileRepository
-import com.nostr.torinos.network.RelayListSynchronizer
 import com.nostr.torinos.ui.components.EditableImage
 import com.nostr.torinos.ui.components.ImageCropperDialog
 import com.nostr.torinos.ui.components.ProfileNameText
@@ -92,7 +90,6 @@ fun KeySetupScreen(onSetupComplete: (pubkeyHex: String) -> Unit, onDismiss: (() 
     var showImportForm by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
     var generatedInfo by remember { mutableStateOf<Pair<String, String>?>(null) } // priv, pub
-    var initialProfilePubkey by remember { mutableStateOf<String?>(null) }
     var pendingUsageConsentAction by remember { mutableStateOf<(() -> Unit)?>(null) }
     var storedAccounts by remember { mutableStateOf<List<StoredAccount>>(emptyList()) }
     var storedProfiles by remember { mutableStateOf<Map<String, NostrProfile>>(emptyMap()) }
@@ -218,29 +215,38 @@ fun KeySetupScreen(onSetupComplete: (pubkeyHex: String) -> Unit, onDismiss: (() 
                             scope.launch(uiExceptionHandler) {
                                 val err = runCatching {
                                     savePrivateKeyAndVerify(priv)
-                                    AccountSessions.manager.activateCurrentAccount(pub).getOrThrow()
-                                    saveToPasswordManager(nsec, npub)
-                                    FollowRepository.initializeNewAccountFollowList()
-                                        .onFailure { e ->
-                                            logException(
-                                                "KeySetupScreen",
-                                                e,
-                                                "Failed to publish initial follow list",
-                                            )
-                                        }
-                                    RelayListSynchronizer.initializeNewAccountRelayList()
-                                        .onFailure { e ->
-                                            logException(
-                                                "KeySetupScreen",
-                                                e,
-                                                "Failed to publish initial relay list",
-                                            )
-                                        }
+                                    val session = AccountSessions.manager.activateCurrentAccount(pub).getOrThrow()
+                                    session.resources.scope.launch {
+                                        runCatching { saveToPasswordManager(nsec, npub) }
+                                            .onFailure { e ->
+                                                logException(
+                                                    "KeySetupScreen",
+                                                    e,
+                                                    "Failed to save generated key to password manager",
+                                                )
+                                            }
+                                        session.followRepository.initializeNewAccountFollowList()
+                                            .onFailure { e ->
+                                                logException(
+                                                    "KeySetupScreen",
+                                                    e,
+                                                    "Failed to publish initial follow list",
+                                                )
+                                            }
+                                        session.relayListSynchronizer.initializeNewAccountRelayList()
+                                            .onFailure { e ->
+                                                logException(
+                                                    "KeySetupScreen",
+                                                    e,
+                                                    "Failed to publish initial relay list",
+                                                )
+                                            }
+                                    }
                                 }.exceptionOrNull()?.let {
                                     logException("KeySetupScreen", it, "Failed to save generated private key")
                                     "秘密鍵を保存できませんでした: ${it.message}"
                                 }
-                                if (err == null) initialProfilePubkey = pub else error = err
+                                if (err == null) onSetupComplete(pub) else error = err
                             }
                         },
                         modifier = Modifier.fillMaxWidth(),
@@ -351,15 +357,6 @@ fun KeySetupScreen(onSetupComplete: (pubkeyHex: String) -> Unit, onDismiss: (() 
         )
     }
 
-    initialProfilePubkey?.let { pubkey ->
-        InitialProfileDialog(
-            pubkey = pubkey,
-            onComplete = {
-                initialProfilePubkey = null
-                onSetupComplete(pubkey)
-            },
-        )
-    }
 }
 
 @Composable
@@ -757,8 +754,17 @@ private suspend fun validateAndSave(
         val npub = hexToNpub(pubkeyHex)
         try {
             savePrivateKeyAndVerify(hexKey)
-            AccountSessions.manager.activateCurrentAccount(pubkeyHex).getOrThrow()
-            saveToPasswordManager(nsec, npub)
+            val session = AccountSessions.manager.activateCurrentAccount(pubkeyHex).getOrThrow()
+            session.resources.scope.launch {
+                runCatching { saveToPasswordManager(nsec, npub) }
+                    .onFailure { e ->
+                        logException(
+                            "KeySetupScreen",
+                            e,
+                            "Failed to save imported key to password manager",
+                        )
+                    }
+            }
         } catch (e: Exception) {
             logException("KeySetupScreen", e, "Failed to save imported private key")
             return Pair("秘密鍵を保存できませんでした: ${e.message}", null)

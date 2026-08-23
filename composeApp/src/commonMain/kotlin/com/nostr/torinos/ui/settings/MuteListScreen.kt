@@ -31,13 +31,10 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.ViewModel
-import androidx.lifecycle.ViewModelProvider
 import androidx.compose.runtime.collectAsState
-import androidx.lifecycle.viewmodel.CreationExtras
 import androidx.lifecycle.viewmodel.compose.viewModel
-import com.nostr.torinos.account.accountScopedViewModelKey
 import com.nostr.torinos.model.NostrProfile
-import com.nostr.torinos.network.MuteStore
+import com.nostr.torinos.account.accountSessionViewModel
 import com.nostr.torinos.network.PrivateMuteListSyncState
 import com.nostr.torinos.network.ProfileFetchPolicy
 import com.nostr.torinos.network.ProfileRepository
@@ -49,23 +46,14 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.update
-import kotlin.reflect.KClass
 
-class MuteListViewModel : SafeViewModel() {
-    companion object {
-        val Factory: ViewModelProvider.Factory = object : ViewModelProvider.Factory {
-            @Suppress("UNCHECKED_CAST")
-            override fun <T : ViewModel> create(modelClass: KClass<T>, extras: CreationExtras): T =
-                MuteListViewModel() as T
-        }
-    }
-
+class MuteListViewModel(private val muteStore: com.nostr.torinos.network.MuteStore?) : SafeViewModel() {
     private val _profiles = MutableStateFlow<Map<String, NostrProfile>>(emptyMap())
     val profiles: StateFlow<Map<String, NostrProfile>> = _profiles.asStateFlow()
 
     init {
         launch {
-            MuteStore.mutedPubkeys.collectLatest { pubkeys ->
+            muteStore?.mutedPubkeys?.collectLatest { pubkeys ->
                 _profiles.value = ProfileRepository.getCached(pubkeys)
                 ProfileRepository.ensureProfiles(pubkeys, ProfileFetchPolicy.CacheFirst(15 * 60 * 1_000L))
                 ProfileRepository.observe(pubkeys).collect { _profiles.value = it }
@@ -79,13 +67,14 @@ class MuteListViewModel : SafeViewModel() {
 fun MuteListScreen(
     onBack: () -> Unit = {},
     onUserClick: (String) -> Unit = {},
-    viewModel: MuteListViewModel = viewModel(
-        key = accountScopedViewModelKey("mute-list"),
-        factory = MuteListViewModel.Factory,
-    ),
+    viewModel: MuteListViewModel = accountSessionViewModel(key = "mute-list") {
+        MuteListViewModel(it?.muteStore)
+    },
 ) {
-    val mutedPubkeys by MuteStore.mutedPubkeys.collectAsState()
-    val syncState by MuteStore.syncState.collectAsState()
+    val muteStore = com.nostr.torinos.account.LocalAccountSession.current?.muteStore
+    val mutedPubkeys = muteStore?.mutedPubkeys?.collectAsState()?.value.orEmpty()
+    val syncState = muteStore?.syncState?.collectAsState()?.value
+        ?: com.nostr.torinos.network.PrivateMuteListSyncState()
     val profiles by viewModel.profiles.collectAsState()
 
     Scaffold(
@@ -103,7 +92,7 @@ fun MuteListScreen(
                 },
                 actions = {
                     IconButton(
-                        onClick = { MuteStore.refresh() },
+                        onClick = { muteStore?.refresh() },
                         enabled = !syncState.isRefreshing,
                     ) {
                         Icon(
@@ -141,7 +130,7 @@ fun MuteListScreen(
                             pubkey = pubkey,
                             profile = profile,
                             onClick = { onUserClick(pubkey) },
-                            onUnmute = { MuteStore.unmute(pubkey) },
+                            onUnmute = { muteStore?.unmute(pubkey) },
                         )
                         HorizontalDivider()
                     }

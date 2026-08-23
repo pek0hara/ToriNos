@@ -23,8 +23,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.runtime.collectAsState
 import androidx.lifecycle.viewmodel.compose.viewModel
-import com.nostr.torinos.account.accountScopedViewModelKey
-import com.nostr.torinos.network.MuteStore
+import com.nostr.torinos.account.accountSessionViewModel
+import com.nostr.torinos.account.LocalAccountSession
 import com.nostr.torinos.network.RelayStore
 import com.nostr.torinos.ui.components.NoteTimeline
 import com.nostr.torinos.ui.components.AppFloatingActionButton
@@ -53,19 +53,19 @@ fun UserProfileScreen(
     )
     val contentRelayUrl = relays.firstOrNull()
     val ownerKey = ownPubkey ?: "anonymous"
+    val accountSession = LocalAccountSession.current
     val viewModel: UserProfileViewModel = viewModel(
-        key = accountScopedViewModelKey("profile-$pubkey-${contentRelayUrl ?: "all"}-$ownerKey"),
+        key = "profile-$pubkey-${contentRelayUrl ?: "all"}-$ownerKey",
     ) {
-        UserProfileViewModel(pubkey, deferredRelayUrl = contentRelayUrl)
+        UserProfileViewModel(pubkey, deferredRelayUrl = contentRelayUrl, accountSession = accountSession)
     }
     var showRelayList by remember(pubkey) { mutableStateOf(false) }
     var selectedTab by remember(pubkey) { mutableStateOf(ProfileTimelineTab.Posts) }
-    val feedViewModel: FeedViewModel = viewModel(
-        key = accountScopedViewModelKey(
-            "user-feed-$pubkey-${contentRelayUrl ?: "all"}-$ownerKey-${selectedTab.name}",
-        ),
-    ) {
+    val feedViewModel: FeedViewModel = accountSessionViewModel(
+        key = "user-feed-$pubkey-${contentRelayUrl ?: "all"}-$ownerKey-${selectedTab.name}",
+    ) { accountSession ->
         FeedViewModel(
+            accountSession = accountSession,
             authorPubkey = pubkey,
             relayUrl = contentRelayUrl,
             autoStart = false,
@@ -76,7 +76,7 @@ fun UserProfileScreen(
     }
     val state by viewModel.state.collectAsState()
     val feedState by feedViewModel.state.collectAsState()
-    val mutedPubkeys by MuteStore.mutedPubkeys.collectAsState()
+    val mutedPubkeys = accountSession?.muteStore?.mutedPubkeys?.collectAsState()?.value.orEmpty()
     val isMuted = mutedPubkeys.contains(pubkey)
     val snackbarHostState = remember { SnackbarHostState() }
     var deferredContentStarted by remember(pubkey) { mutableStateOf(false) }
@@ -150,7 +150,8 @@ fun UserProfileScreen(
                     onFollow = viewModel::follow,
                     onUnfollow = viewModel::unfollow,
                     onMuteToggle = {
-                        if (isMuted) MuteStore.unmute(pubkey) else MuteStore.mute(pubkey)
+                        if (isMuted) accountSession?.muteStore?.unmute(pubkey)
+                        else accountSession?.muteStore?.mute(pubkey)
                     },
                     onUserClick = onUserClick,
                     onBack = onBack,

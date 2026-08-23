@@ -34,7 +34,6 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.runtime.collectAsState
 import androidx.lifecycle.viewmodel.compose.viewModel
-import com.nostr.torinos.account.accountScopedViewModelKey
 import com.nostr.torinos.crypto.hexToNpub
 import com.nostr.torinos.model.NostrProfile
 import com.nostr.torinos.ui.components.ProfileNameText
@@ -47,7 +46,7 @@ fun FollowListScreen(
     onBack: () -> Unit,
     onUserClick: (pubkey: String) -> Unit,
     viewModel: FollowListViewModel = viewModel(
-        key = accountScopedViewModelKey("${mode.name}-$ownPubkey"),
+        key = "${mode.name}-$ownPubkey",
     ) { FollowListViewModel(mode, ownPubkey) },
 ) {
     val state by viewModel.state.collectAsState()

@@ -76,7 +76,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.lifecycle.viewmodel.compose.viewModel
-import com.nostr.torinos.account.accountScopedViewModelKey
+import com.nostr.torinos.account.accountSessionViewModel
 import com.nostr.torinos.model.LiveActivityItem
 import com.nostr.torinos.model.LiveActivityStatus
 import com.nostr.torinos.model.LiveParticipant
@@ -131,14 +131,17 @@ fun LiveHubScreen(
         return
     }
 
-    val viewModel: LiveListViewModel = viewModel(key = accountScopedViewModelKey("live-hub-$activeRelayUrl")) {
+    val viewModel: LiveListViewModel = viewModel(key = "live-hub-$activeRelayUrl") {
         LiveListViewModel(relayUrl = activeRelayUrl)
     }
     val state by viewModel.state.collectAsState()
-    val createViewModel: LiveCreateViewModel = viewModel(
-        key = accountScopedViewModelKey("live-create-$activeRelayUrl"),
-    ) {
-        LiveCreateViewModel(relayUrl = activeRelayUrl)
+    val createViewModel: LiveCreateViewModel = accountSessionViewModel(
+        key = "live-create-$activeRelayUrl",
+    ) { accountSession ->
+        LiveCreateViewModel(
+            relayUrl = activeRelayUrl,
+            accountSession = accountSession,
+        )
     }
     val createState by createViewModel.state.collectAsState()
     val headerBackgroundColor = MaterialTheme.colorScheme.background
@@ -328,10 +331,15 @@ fun LiveDetailScreen(
         return
     }
 
-    val viewModel: LiveDetailViewModel = viewModel(
-        key = accountScopedViewModelKey("live-detail-$pubkey-$identifier-$activeRelayUrl"),
-    ) {
-        LiveDetailViewModel(pubkey = pubkey, identifier = identifier, relayUrl = activeRelayUrl)
+    val viewModel: LiveDetailViewModel = accountSessionViewModel(
+        key = "live-detail-$pubkey-$identifier-$activeRelayUrl",
+    ) { accountSession ->
+        LiveDetailViewModel(
+            pubkey = pubkey,
+            identifier = identifier,
+            relayUrl = activeRelayUrl,
+            accountSession = accountSession,
+        )
     }
     val state by viewModel.state.collectAsState()
     val uriHandler = LocalUriHandler.current

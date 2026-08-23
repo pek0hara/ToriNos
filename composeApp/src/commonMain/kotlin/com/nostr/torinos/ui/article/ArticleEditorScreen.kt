@@ -52,7 +52,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
-import com.nostr.torinos.account.accountScopedViewModelKey
+import com.nostr.torinos.account.accountSessionViewModel
 import com.nostr.torinos.network.RelayEntry
 import com.nostr.torinos.network.RelayStore
 import com.nostr.torinos.ui.components.AppTopBar
@@ -77,15 +77,14 @@ fun ArticleEditorScreen(
     relayUrl: String? = null,
     viewModelOverride: ArticleEditorViewModel? = null,
 ) {
-    val editorViewModel = viewModelOverride ?: viewModel(
-        key = accountScopedViewModelKey(
-            "article-editor-${editPubkey.orEmpty()}-${editIdentifier.orEmpty()}-${relayUrl.orEmpty()}",
-        ),
-    ) {
+    val editorViewModel = viewModelOverride ?: accountSessionViewModel(
+        key = "article-editor-${editPubkey.orEmpty()}-${editIdentifier.orEmpty()}-${relayUrl.orEmpty()}",
+    ) { accountSession ->
         ArticleEditorViewModel(
             editPubkey = editPubkey,
             editIdentifier = editIdentifier,
             relayUrl = relayUrl,
+            accountSession = accountSession,
         )
     }
     val state by editorViewModel.state.collectAsState()
@@ -478,9 +477,9 @@ private fun ArticleEditContent(
 @Composable
 private fun ArticleRelaySettingsDialog(
     onDismiss: () -> Unit,
-    viewModel: RelaySettingsViewModel = viewModel(
-        key = accountScopedViewModelKey("article-post-relays"),
-    ) { RelaySettingsViewModel() },
+    viewModel: RelaySettingsViewModel = accountSessionViewModel(
+        key = "article-post-relays",
+    ) { accountSession -> RelaySettingsViewModel(accountSession) },
 ) {
     val relayEntries by viewModel.entries.collectAsState()
 
