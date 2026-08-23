@@ -202,6 +202,7 @@ private fun AccountSwitcherDialog(
                                 npub = account.npub,
                                 profile = profile,
                                 active = account.pubkeyHex == ownPubkey,
+                                isLoggedOut = account.isLoggedOut,
                                 enabled = !state.isAccountActionProcessing,
                                 onClick = {
                                     viewModel.switchAccount(account.pubkeyHex, onAccountChanged)
@@ -250,6 +251,7 @@ private fun AccountSwitchRow(
     npub: String,
     profile: NostrProfile?,
     active: Boolean,
+    isLoggedOut: Boolean,
     enabled: Boolean,
     onClick: () -> Unit,
 ) {
@@ -282,6 +284,13 @@ private fun AccountSwitchRow(
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
+            if (isLoggedOut) {
+                Text(
+                    text = "ログアウト済み・タップしてログイン",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.tertiary,
+                )
+            }
         }
         if (active) {
             Icon(

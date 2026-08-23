@@ -48,6 +48,19 @@ class AccountSessionManagerTest {
     }
 
     @Test
+    fun switchingLoggedOutAccountLogsInOnlyThatAccount() = runBlocking {
+        val storage = FakeAccountStorage(activePubkey = PUBKEY_A, initiallyLoggedOut = setOf(PUBKEY_B))
+        val manager = newManager(storage)
+        manager.initialize().getOrThrow()
+
+        manager.switchAccount(PUBKEY_B).getOrThrow()
+
+        assertEquals(PUBKEY_B, manager.currentPubkey)
+        assertEquals(false, storage.accountsForTest.single { it.pubkeyHex == PUBKEY_B }.isLoggedOut)
+        assertEquals(false, storage.accountsForTest.single { it.pubkeyHex == PUBKEY_A }.isLoggedOut)
+    }
+
+    @Test
     fun switchingAccountInvalidatesPreviousSigner() = runBlocking {
         val manager = newManager(FakeAccountStorage(activePubkey = PUBKEY_A))
         val first = manager.initialize().getOrThrow() as AccountSessionState.Active
@@ -90,14 +103,30 @@ class AccountSessionManagerTest {
     }
 
     @Test
-    fun logoutCreatesAnonymousSession() = runBlocking {
-        val manager = newManager(FakeAccountStorage(activePubkey = PUBKEY_A))
+    fun logoutActivatesRemainingLoggedInAccount() = runBlocking {
+        val storage = FakeAccountStorage(activePubkey = PUBKEY_A)
+        val manager = newManager(storage)
         val active = manager.initialize().getOrThrow() as AccountSessionState.Active
 
         manager.logout().getOrThrow()
 
-        assertTrue(manager.state.value is AccountSessionState.Anonymous)
+        val next = manager.state.value as AccountSessionState.Active
+        assertEquals(PUBKEY_B, next.session.pubkey)
+        assertEquals(true, storage.accountsForTest.single { it.pubkeyHex == PUBKEY_A }.isLoggedOut)
+        assertEquals(false, storage.accountsForTest.single { it.pubkeyHex == PUBKEY_B }.isLoggedOut)
         assertTrue(active.session.resources.isClosed)
+    }
+
+    @Test
+    fun logoutCreatesAnonymousSessionWhenAllAccountsAreLoggedOut() = runBlocking {
+        val storage = FakeAccountStorage(activePubkey = PUBKEY_A, initiallyLoggedOut = setOf(PUBKEY_B))
+        val manager = newManager(storage)
+        manager.initialize().getOrThrow()
+
+        manager.logout().getOrThrow()
+
+        assertTrue(manager.state.value is AccountSessionState.Anonymous)
+        assertTrue(storage.accountsForTest.all { it.isLoggedOut })
     }
 
     @Test
@@ -115,41 +144,50 @@ class AccountSessionManagerTest {
         activePubkey: String? = null,
         private val failSwitch: Boolean = false,
         private val failLoadForPubkey: String? = null,
+        initiallyLoggedOut: Set<String> = emptySet(),
     ) : AccountStorage {
         private val accounts = linkedMapOf(
             PUBKEY_A to PRIVATE_KEY_A,
             PUBKEY_B to PRIVATE_KEY_B,
         )
         private var activePubkey = activePubkey
-        private var loggedOut = activePubkey == null
+        private val loggedOutPubkeys = initiallyLoggedOut.toMutableSet()
         val activePubkeyForTest: String?
             get() = activePubkey
 
         override suspend fun loadActiveCredentials(): AccountCredentials? {
-            if (loggedOut) return null
             val pubkey = activePubkey ?: return null
+            if (pubkey in loggedOutPubkeys) return null
             if (pubkey == failLoadForPubkey) error("load failed")
             return AccountCredentials(pubkey, accounts.getValue(pubkey))
         }
 
         override suspend fun listAccounts(): List<StoredAccount> =
-            accounts.keys.map { StoredAccount(pubkeyHex = it, npub = it) }
+            accounts.keys.map {
+                StoredAccount(pubkeyHex = it, npub = it, isLoggedOut = it in loggedOutPubkeys)
+            }
+
+        val accountsForTest: List<StoredAccount>
+            get() = accounts.keys.map {
+                StoredAccount(pubkeyHex = it, npub = it, isLoggedOut = it in loggedOutPubkeys)
+            }
 
         override suspend fun switchAccount(pubkey: String) {
             if (failSwitch) error("switch failed")
             check(pubkey in accounts)
             activePubkey = pubkey
-            loggedOut = false
+            loggedOutPubkeys -= pubkey
         }
 
         override suspend fun logout() {
-            loggedOut = true
+            activePubkey?.let { loggedOutPubkeys += it }
+            activePubkey = accounts.keys.firstOrNull { it !in loggedOutPubkeys }
         }
 
         override suspend fun deleteActiveAccount() {
             activePubkey?.let(accounts::remove)
-            activePubkey = accounts.keys.firstOrNull()
-            loggedOut = activePubkey == null
+            loggedOutPubkeys.retainAll(accounts.keys)
+            activePubkey = accounts.keys.firstOrNull { it !in loggedOutPubkeys }
         }
     }
 

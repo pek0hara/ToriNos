@@ -157,7 +157,7 @@ class SettingsViewModel : SafeViewModel() {
                 )
             }
             try {
-                accountSessionManager.logout().getOrThrow()
+                val nextState = accountSessionManager.logout().getOrThrow()
                 val accounts = accountSessionManager.listAccounts()
                 _state.update {
                     it.copy(
@@ -168,7 +168,7 @@ class SettingsViewModel : SafeViewModel() {
                         accountActionError = null,
                     )
                 }
-                onCleared(null)
+                onCleared((nextState as? AccountSessionState.Active)?.session?.pubkey)
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Throwable) {

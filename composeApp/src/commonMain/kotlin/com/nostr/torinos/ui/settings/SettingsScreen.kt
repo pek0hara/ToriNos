@@ -198,7 +198,7 @@ fun SettingsScreen(
     if (showLogoutDialog) {
         ConfirmAccountDialog(
             title = "ログアウト",
-            text = "現在のアカウントからログアウトします。保存済みの秘密鍵はこの端末に残り、次回ログイン時に選択できます。",
+            text = "現在のアカウントだけをログアウトします。保存済みの秘密鍵はこの端末に残ります。ほかにログイン中のアカウントがある場合は、そのアカウントへ切り替わります。",
             confirmText = "ログアウト",
             isProcessing = state.isAccountActionProcessing,
             onDismiss = { showLogoutDialog = false },
@@ -251,7 +251,7 @@ private fun AccountSwitcherSection(
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
         Text(
-            text = "ログイン中のアカウント",
+            text = "アカウント",
             style = MaterialTheme.typography.titleSmall,
             fontWeight = FontWeight.Bold,
         )
@@ -289,6 +289,13 @@ private fun AccountSwitcherSection(
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
+                    if (account.isLoggedOut) {
+                        Text(
+                            text = "ログアウト済み・タップしてログイン",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.tertiary,
+                        )
+                    }
                 }
                 Icon(
                     imageVector = Icons.Default.Check,

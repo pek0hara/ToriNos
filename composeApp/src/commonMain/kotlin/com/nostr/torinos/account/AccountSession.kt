@@ -314,7 +314,7 @@ class AccountSessionManager internal constructor(
             result
         }
 
-    suspend fun logout(): Result<AccountSessionState.Anonymous> = transitionMutex.withLock {
+    suspend fun logout(): Result<AccountSessionState> = transitionMutex.withLock {
         _transitionError.value = null
         val previous = _state.value
         _state.value = AccountSessionState.Switching(
@@ -325,7 +325,7 @@ class AccountSessionManager internal constructor(
         previousSession?.resources?.close()
         runCatching {
             storage.logout()
-            newAnonymousSession().also { _state.value = it }
+            activeOrAnonymous(storage.loadActiveCredentials()).also { _state.value = it }
         }.onFailure {
             _state.value = restorePreviousSession(previousSession)
             _transitionError.value = "ログアウトできませんでした"

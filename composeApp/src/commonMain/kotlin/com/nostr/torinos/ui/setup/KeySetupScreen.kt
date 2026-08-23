@@ -19,6 +19,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AddPhotoAlternate
 import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
@@ -94,6 +95,8 @@ fun KeySetupScreen(onSetupComplete: (pubkeyHex: String) -> Unit, onDismiss: (() 
     var storedAccounts by remember { mutableStateOf<List<StoredAccount>>(emptyList()) }
     var storedProfiles by remember { mutableStateOf<Map<String, NostrProfile>>(emptyMap()) }
     var accountLoginError by remember { mutableStateOf<String?>(null) }
+    var pendingDeleteAccount by remember { mutableStateOf<StoredAccount?>(null) }
+    var deletingAccountPubkey by remember { mutableStateOf<String?>(null) }
     val scope = rememberCoroutineScope()
     val uiExceptionHandler = remember {
         loggingExceptionHandler("KeySetupScreen", "Uncaught UI coroutine exception")
@@ -166,11 +169,13 @@ fun KeySetupScreen(onSetupComplete: (pubkeyHex: String) -> Unit, onDismiss: (() 
                 )
                 Spacer(modifier = Modifier.height(24.dp))
 
-                if (generatedInfo == null && storedAccounts.isNotEmpty()) {
+                val loggedOutAccounts = storedAccounts.filter { it.isLoggedOut }
+                if (generatedInfo == null && loggedOutAccounts.isNotEmpty()) {
                     StoredAccountsSection(
-                        accounts = storedAccounts,
+                        accounts = loggedOutAccounts,
                         profiles = storedProfiles,
                         error = accountLoginError,
+                        deletingAccountPubkey = deletingAccountPubkey,
                         onAccountClick = { account ->
                             pendingUsageConsentAction = {
                                 scope.launch(uiExceptionHandler) {
@@ -184,6 +189,7 @@ fun KeySetupScreen(onSetupComplete: (pubkeyHex: String) -> Unit, onDismiss: (() 
                                 }
                             }
                         },
+                        onDeleteClick = { pendingDeleteAccount = it },
                     )
                     Spacer(modifier = Modifier.height(24.dp))
                     HorizontalDivider()
@@ -353,6 +359,58 @@ fun KeySetupScreen(onSetupComplete: (pubkeyHex: String) -> Unit, onDismiss: (() 
             onAgree = {
                 pendingUsageConsentAction = null
                 consentAction()
+            },
+        )
+    }
+
+    pendingDeleteAccount?.let { account ->
+        AlertDialog(
+            onDismissRequest = {
+                if (deletingAccountPubkey == null) pendingDeleteAccount = null
+            },
+            title = { Text("保存済みアカウントを削除") },
+            text = {
+                Text(
+                    if (isIosPlatform) {
+                        "${shortNpub(account.npub)} の秘密鍵を、この端末とiCloudキーチェーンから削除します。同じApple Accountの端末にも反映されます。Nostr上のアカウントや投稿は削除されません。"
+                    } else {
+                        "${shortNpub(account.npub)} の秘密鍵を、この端末の保存済みアカウントから削除します。Nostr上のアカウントや投稿は削除されません。"
+                    },
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        deletingAccountPubkey = account.pubkeyHex
+                        accountLoginError = null
+                        scope.launch(uiExceptionHandler) {
+                            runCatching { KeyStorage.deleteAccount(account.pubkeyHex) }
+                                .onSuccess {
+                                    storedAccounts = KeyStorage.listAccounts()
+                                    storedProfiles = storedProfiles - account.pubkeyHex
+                                    pendingDeleteAccount = null
+                                }
+                                .onFailure { e ->
+                                    logException("KeySetupScreen", e, "Failed to delete stored account backup")
+                                    accountLoginError = e.message
+                                        ?.let { "保存済みアカウントを削除できませんでした: $it" }
+                                        ?: "保存済みアカウントを削除できませんでした"
+                                }
+                            deletingAccountPubkey = null
+                        }
+                    },
+                    enabled = deletingAccountPubkey == null,
+                ) {
+                    Text("削除")
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = { pendingDeleteAccount = null },
+                    enabled = deletingAccountPubkey == null,
+                ) {
+                    Text("キャンセル")
+                }
             },
         )
     }
@@ -634,7 +692,9 @@ private fun StoredAccountsSection(
     accounts: List<StoredAccount>,
     profiles: Map<String, NostrProfile>,
     error: String?,
+    deletingAccountPubkey: String?,
     onAccountClick: (StoredAccount) -> Unit,
+    onDeleteClick: (StoredAccount) -> Unit,
 ) {
     Surface(
         modifier = Modifier.fillMaxWidth(),
@@ -647,20 +707,21 @@ private fun StoredAccountsSection(
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
             Text(
-                text = "保存済みアカウントでログイン",
+                text = "ログアウト済みアカウントでログイン",
                 style = MaterialTheme.typography.titleSmall,
                 color = MaterialTheme.colorScheme.onSurface,
             )
             accounts.forEach { account ->
                 val profile = profiles[account.pubkeyHex]
-                Button(
-                    onClick = { onAccountClick(account) },
+                Row(
                     modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
                 ) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    Button(
+                        onClick = { onAccountClick(account) },
+                        modifier = Modifier.weight(1f),
+                        enabled = deletingAccountPubkey == null,
                     ) {
                         AvatarCircle(
                             pubkey = account.pubkeyHex,
@@ -680,6 +741,18 @@ private fun StoredAccountsSection(
                             Text(
                                 text = shortNpub(account.npub),
                                 style = MaterialTheme.typography.bodySmall,
+                            )
+                        }
+                    }
+                    if (account.isLoggedOut) {
+                        IconButton(
+                            onClick = { onDeleteClick(account) },
+                            enabled = deletingAccountPubkey == null,
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Delete,
+                                contentDescription = "${profile?.bestName ?: shortNpub(account.npub)} の保存情報を削除",
+                                tint = MaterialTheme.colorScheme.error,
                             )
                         }
                     }
