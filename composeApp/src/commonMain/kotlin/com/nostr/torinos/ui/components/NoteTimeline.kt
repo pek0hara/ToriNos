@@ -16,7 +16,7 @@ import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Modifier
 import com.nostr.torinos.model.NostrEvent
 import com.nostr.torinos.model.ReactionOption
-import com.nostr.torinos.network.MuteStore
+import com.nostr.torinos.account.LocalAccountSession
 import com.nostr.torinos.ui.feed.FeedViewModel
 import androidx.compose.runtime.collectAsState
 import kotlinx.coroutines.flow.distinctUntilChanged
@@ -50,7 +50,8 @@ fun NoteTimeline(
     onRefresh: (() -> Unit)? = null,
     header: LazyListScope.() -> Unit = {},
 ) {
-    val mutedPubkeys by MuteStore.mutedPubkeys.collectAsState()
+    val muteStore = LocalAccountSession.current?.muteStore
+    val mutedPubkeys = muteStore?.mutedPubkeys?.collectAsState()?.value.orEmpty()
     val timelineListState = listState ?: rememberSaveable(saver = LazyListState.Saver) { LazyListState() }
     var handledScrollToTopRequest by rememberSaveable {
         mutableStateOf(scrollToTopRequest)
@@ -105,8 +106,8 @@ fun NoteTimeline(
                     state.events.find { it.id == eventId }?.let { onReport(it, reason, detail) }
                 },
                 onHashtagClick = onHashtagClick,
-                onMuteUser = MuteStore::mute,
-                onUnmuteUser = MuteStore::unmute,
+                onMuteUser = { muteStore?.mute(it) },
+                onUnmuteUser = { muteStore?.unmute(it) },
                 mutedPubkeys = mutedPubkeys,
                 emptyText = emptyText,
             )

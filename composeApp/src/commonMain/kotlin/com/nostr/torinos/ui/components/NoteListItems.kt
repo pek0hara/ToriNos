@@ -79,13 +79,13 @@ fun LazyListScope.noteListItems(
                     likeReactionCount = state.likeReactionCounts[event.id] ?: 0,
                     customReactions = state.customReactions[event.id].orEmpty(),
                     unicodeReactions = state.unicodeReactions[event.id].orEmpty(),
-                    isLiked = state.likedReactions.containsKey(event.id),
-                    ownEmojiReactionEventIds = state.ownEmojiReactionEventIds[event.id].orEmpty(),
-                    isReposted = state.repostedEvents.containsKey(event.id),
+                    isLiked = state.isLiked(event.id),
+                    ownEmojiReactionEventIds = state.displayOwnEmojiReactionEventIds(event.id),
+                    isReposted = state.isReposted(event.id),
                     onUserClick = onUserClick,
                     onLike = if (ownPubkey != null) {
                         {
-                            if (state.likedReactions.containsKey(event.id))
+                            if (state.isLiked(event.id))
                                 onUnlike(event.id)
                             else
                                 onLike(event.id, event.pubkey)
@@ -111,7 +111,7 @@ fun LazyListScope.noteListItems(
                     } else null,
                     onRepost = if (ownPubkey != null && onRepost != null) {
                         {
-                            if (state.repostedEvents.containsKey(event.id))
+                            if (state.isReposted(event.id))
                                 onUnrepost?.invoke(event.id)
                             else
                                 onRepost(event.id, event.pubkey)

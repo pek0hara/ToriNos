@@ -32,6 +32,8 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import com.nostr.torinos.ui.components.AppTopBar
@@ -48,9 +50,9 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.runtime.collectAsState
 import androidx.lifecycle.viewmodel.compose.viewModel
-import com.nostr.torinos.account.accountScopedViewModelKey
+import com.nostr.torinos.account.accountSessionViewModel
 import com.nostr.torinos.model.ChannelMeta
-import com.nostr.torinos.network.MuteStore
+import com.nostr.torinos.account.LocalAccountSession
 import com.nostr.torinos.network.RelayStore
 import com.nostr.torinos.ui.components.LazyListScrollbar
 import com.nostr.torinos.ui.components.LinkedText
@@ -93,18 +95,31 @@ fun ChannelScreen(
         return
     }
 
-    val viewModel: ChannelViewModel = viewModel(
-        key = accountScopedViewModelKey("$channelId-$activeRelayUrl"),
-    ) {
-        ChannelViewModel(channelId = channelId, relayUrl = activeRelayUrl)
+    val viewModel: ChannelViewModel = accountSessionViewModel(
+        key = "$channelId-$activeRelayUrl",
+    ) { accountSession ->
+        ChannelViewModel(
+            channelId = channelId,
+            relayUrl = activeRelayUrl,
+            accountSession = accountSession,
+        )
     }
     val state by viewModel.state.collectAsState()
-    val mutedPubkeys by MuteStore.mutedPubkeys.collectAsState()
+    val snackbarHostState = remember { SnackbarHostState() }
+    val mutedPubkeys = LocalAccountSession.current?.muteStore?.mutedPubkeys
+        ?.collectAsState()?.value.orEmpty()
     val listState = remember(channelId, selectedRelayUrl) { LazyListState() }
     var showThreadInfoDialog by remember(channelId, selectedRelayUrl) { mutableStateOf(false) }
 
+    LaunchedEffect((state as? ChannelViewModel.UiState.Ready)?.engagementError) {
+        val error = (state as? ChannelViewModel.UiState.Ready)?.engagementError ?: return@LaunchedEffect
+        snackbarHostState.showSnackbar(error)
+        viewModel.consumeEngagementError()
+    }
+
     Scaffold(
         contentWindowInsets = WindowInsets(0),
+        snackbarHost = { SnackbarHost(snackbarHostState) },
         topBar = {
             AppTopBar(
                 title = {
@@ -203,13 +218,13 @@ fun ChannelScreen(
                                         customReactions = s.customReactions[message.id].orEmpty(),
                                         unicodeReactions = s.unicodeReactions[message.id].orEmpty(),
                                         repostCount = s.repostCounts[message.id] ?: 0,
-                                        isLiked = s.likedReactions.containsKey(message.id),
-                                        ownEmojiReactionEventIds = s.ownEmojiReactionEventIds[message.id].orEmpty(),
-                                        isReposted = s.repostedEvents.containsKey(message.id),
+                                        isLiked = s.isLiked(message.id),
+                                        ownEmojiReactionEventIds = s.displayOwnEmojiReactionEventIds(message.id),
+                                        isReposted = s.isReposted(message.id),
                                         onUserClick = onUserClick,
                                         onLike = if (ownPubkey != null) {
                                             {
-                                                if (s.likedReactions.containsKey(message.id)) {
+                                                if (s.isLiked(message.id)) {
                                                     viewModel.unreact(message.id)
                                                 } else {
                                                     viewModel.react(message.id, message.pubkey)
@@ -230,7 +245,7 @@ fun ChannelScreen(
                                         onOpenReposts = { onOpenReposts(message.id) },
                                         onRepost = if (ownPubkey != null) {
                                             {
-                                                if (s.repostedEvents.containsKey(message.id)) {
+                                                if (s.isReposted(message.id)) {
                                                     viewModel.unrepost(message.id)
                                                 } else {
                                                     viewModel.repost(message)

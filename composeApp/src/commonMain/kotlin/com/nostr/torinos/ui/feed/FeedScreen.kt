@@ -30,6 +30,8 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.PrimaryTabRow
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Tab
 import androidx.compose.material3.Text
 import com.nostr.torinos.ui.components.AppTopBar
@@ -60,10 +62,9 @@ import androidx.compose.ui.unit.Velocity
 import androidx.compose.ui.unit.dp
 import androidx.compose.runtime.collectAsState
 import androidx.lifecycle.viewmodel.compose.viewModel
-import com.nostr.torinos.account.accountScopedViewModelKey
+import com.nostr.torinos.account.accountSessionViewModel
 import com.nostr.torinos.model.NostrProfile
-import com.nostr.torinos.network.FollowRepository
-import com.nostr.torinos.network.MuteStore
+import com.nostr.torinos.account.LocalAccountSession
 import com.nostr.torinos.network.RelayStore
 import com.nostr.torinos.ui.components.NoteTimeline
 import com.nostr.torinos.ui.profile.AvatarCircle
@@ -106,9 +107,10 @@ fun FeedScreen(
     val selectedFollowingRelayUrl by RelayStore.selectedFollowingRelayUrl.collectAsState()
     val selectedGlobalRelayUrl by RelayStore.selectedGlobalRelayUrl.collectAsState()
     val effectiveGlobalRelayUrl = selectedGlobalRelayUrl ?: relays.firstOrNull()
-    val followedPubkeys by FollowRepository.followedPubkeys.collectAsState()
-    val isFollowListLoaded by FollowRepository.loaded.collectAsState()
-    val mutedPubkeys by MuteStore.mutedPubkeys.collectAsState()
+    val accountSession = LocalAccountSession.current
+    val followedPubkeys = accountSession?.followRepository?.followedPubkeys?.collectAsState()?.value.orEmpty()
+    val isFollowListLoaded = accountSession?.followRepository?.loaded?.collectAsState()?.value ?: true
+    val mutedPubkeys = accountSession?.muteStore?.mutedPubkeys?.collectAsState()?.value.orEmpty()
     var showRelayMenu by remember { mutableStateOf(false) }
     var feedTab by rememberSaveable(accountResetKey, authorPubkey) { mutableStateOf(FeedTab.Following) }
     var followingFeedMode by rememberSaveable(accountResetKey, authorPubkey) {
@@ -532,7 +534,7 @@ fun FeedScreen(
                                 listState = followingListState,
                                 onRefresh = {
                                     if (followingFeedMode == FollowingFeedMode.Following) {
-                                        FollowRepository.refresh()
+                                        accountSession?.followRepository?.refresh()
                                     }
                                 },
                             )
@@ -608,8 +610,11 @@ private fun FeedTimelinePane(
     listState: LazyListState? = null,
     onRefresh: (() -> Unit)? = null,
 ) {
-    val viewModel: FeedViewModel = viewModel(key = accountScopedViewModelKey(viewModelKey)) {
+    val viewModel: FeedViewModel = accountSessionViewModel(
+        key = viewModelKey,
+    ) { accountSession ->
         FeedViewModel(
+            accountSession = accountSession,
             authorPubkey = authorPubkey,
             authorPubkeys = authorPubkeys,
             relayUrl = relayUrl,
@@ -619,6 +624,13 @@ private fun FeedTimelinePane(
         )
     }
     val state by viewModel.state.collectAsState()
+    val snackbarHostState = remember { SnackbarHostState() }
+
+    LaunchedEffect(state.engagementError) {
+        val error = state.engagementError ?: return@LaunchedEffect
+        snackbarHostState.showSnackbar(error)
+        viewModel.consumeEngagementError()
+    }
 
     LaunchedEffect(viewModel) {
         viewModel.startSubscriptions()
@@ -630,33 +642,39 @@ private fun FeedTimelinePane(
         }
     }
 
-    NoteTimeline(
-        state = state,
-        ownPubkey = ownPubkey,
-        onUserClick = onUserClick,
-        onLoadMore = viewModel::loadMore,
-        onLike = viewModel::react,
-        onUnlike = viewModel::unreact,
-        onEmojiReact = viewModel::reactWithEmoji,
-        onEmojiUnreact = viewModel::unreactWithEmoji,
-        onDelete = viewModel::deleteEvent,
-        modifier = modifier,
-        onReply = onReply,
-        onOpenReplies = onOpenReplies,
-        onOpenLikes = onOpenLikes,
-        onOpenReposts = onOpenReposts,
-        onRepost = viewModel::repost,
-        onUnrepost = viewModel::unrepost,
-        onReport = viewModel::reportEvent,
-        onHashtagClick = onHashtagClick,
-        scrollToTopRequest = scrollToTopRequest,
-        listState = listState,
-        isRefreshing = state.isRefreshing,
-        onRefresh = {
-            onRefresh?.invoke()
-            viewModel.refresh()
-        },
-    )
+    Box(modifier = Modifier.fillMaxSize()) {
+        NoteTimeline(
+            state = state,
+            ownPubkey = ownPubkey,
+            onUserClick = onUserClick,
+            onLoadMore = viewModel::loadMore,
+            onLike = viewModel::react,
+            onUnlike = viewModel::unreact,
+            onEmojiReact = viewModel::reactWithEmoji,
+            onEmojiUnreact = viewModel::unreactWithEmoji,
+            onDelete = viewModel::deleteEvent,
+            modifier = modifier,
+            onReply = onReply,
+            onOpenReplies = onOpenReplies,
+            onOpenLikes = onOpenLikes,
+            onOpenReposts = onOpenReposts,
+            onRepost = viewModel::repost,
+            onUnrepost = viewModel::unrepost,
+            onReport = viewModel::reportEvent,
+            onHashtagClick = onHashtagClick,
+            scrollToTopRequest = scrollToTopRequest,
+            listState = listState,
+            isRefreshing = state.isRefreshing,
+            onRefresh = {
+                onRefresh?.invoke()
+                viewModel.refresh()
+            },
+        )
+        SnackbarHost(
+            hostState = snackbarHostState,
+            modifier = Modifier.align(Alignment.BottomCenter),
+        )
+    }
 }
 
 enum class FeedTab(val label: String) {

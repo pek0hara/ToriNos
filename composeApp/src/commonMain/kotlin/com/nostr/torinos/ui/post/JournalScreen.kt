@@ -46,6 +46,8 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import com.nostr.torinos.ui.components.AppTopBar
@@ -71,7 +73,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
-import com.nostr.torinos.account.accountScopedViewModelKey
+import com.nostr.torinos.account.accountSessionViewModel
 import com.nostr.torinos.model.NostrEvent
 import com.nostr.torinos.model.NostrProfile
 import com.nostr.torinos.model.NIP23_ARTICLE_KIND
@@ -111,15 +113,14 @@ fun JournalScreen(
     ownProfile: NostrProfile? = null,
     onOpenRelaySettings: () -> Unit = {},
     targetPubkey: String? = null,
-    viewModel: JournalViewModel = viewModel(
-        key = accountScopedViewModelKey(
-            targetPubkey?.let { "journal-$it" } ?: "journal-${accountKey ?: "anonymous"}",
-        ),
-    ) {
-        JournalViewModel(targetPubkey)
+    viewModel: JournalViewModel = accountSessionViewModel(
+        key = targetPubkey?.let { "journal-$it" } ?: "journal-${accountKey ?: "anonymous"}",
+    ) { accountSession ->
+        JournalViewModel(targetPubkey, accountSession = accountSession)
     },
 ) {
     val state by viewModel.state.collectAsState()
+    val snackbarHostState = remember { SnackbarHostState() }
     val relays by RelayStore.relays.collectAsState(initial = emptyList())
     val selectedRelayUrl by RelayStore.selectedMemoRelayUrl.collectAsState()
     var showRelayMenu by remember { mutableStateOf(false) }
@@ -150,6 +151,12 @@ fun JournalScreen(
     }
     val isPullRefreshing = state.isLoading && (state.memos.isNotEmpty() || state.notes.isNotEmpty())
 
+    LaunchedEffect(state.engagementError) {
+        val error = state.engagementError ?: return@LaunchedEffect
+        snackbarHostState.showSnackbar(error)
+        viewModel.consumeEngagementError()
+    }
+
     LaunchedEffect(refreshTodayRequest) {
         if (refreshTodayRequest > 0) viewModel.refreshToday()
     }
@@ -178,6 +185,7 @@ fun JournalScreen(
 
     Scaffold(
         contentWindowInsets = WindowInsets(0),
+        snackbarHost = { SnackbarHost(snackbarHostState) },
         floatingActionButton = {
             if (!isUserJournal) AppFloatingActionButton(
                 onClick = onNewPost,
@@ -415,9 +423,9 @@ fun JournalScreen(
                                             customReactions = state.customReactions[entry.event.id].orEmpty(),
                                             unicodeReactions = state.unicodeReactions[entry.event.id].orEmpty(),
                                             repostCount = state.repostCounts[entry.event.id] ?: 0,
-                                            isLiked = state.likedReactions.containsKey(entry.event.id),
+                                            isLiked = state.isLiked(entry.event.id),
                                             ownEmojiReactionEventIds =
-                                                state.ownEmojiReactionEventIds[entry.event.id].orEmpty(),
+                                                state.displayOwnEmojiReactionEventIds(entry.event.id),
                                             onUserClick = onUserClick,
                                             ownPubkey = ownPubkey,
                                             onDelete = if (entry.event.pubkey == ownPubkey) {
@@ -425,7 +433,7 @@ fun JournalScreen(
                                             } else null,
                                             onLike = if (ownPubkey != null) {
                                                 {
-                                                    if (state.likedReactions.containsKey(entry.event.id)) {
+                                                    if (state.isLiked(entry.event.id)) {
                                                         viewModel.unreact(entry.event.id)
                                                     } else {
                                                         viewModel.react(entry.event.id, entry.event.pubkey)

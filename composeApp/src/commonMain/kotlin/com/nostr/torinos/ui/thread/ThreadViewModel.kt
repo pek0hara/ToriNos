@@ -1,8 +1,20 @@
 package com.nostr.torinos.ui.thread
 
 import com.nostr.torinos.account.AccountSession
-import com.nostr.torinos.account.AccountSessions
 import com.nostr.torinos.crypto.isWriteSupported
+import com.nostr.torinos.engagement.EngagementAction
+import com.nostr.torinos.engagement.EngagementOperationId
+import com.nostr.torinos.engagement.EngagementReducer
+import com.nostr.torinos.engagement.EngagementRequest
+import com.nostr.torinos.engagement.EngagementSlot
+import com.nostr.torinos.engagement.NoteEngagementCommand
+import com.nostr.torinos.engagement.NoteEngagementService
+import com.nostr.torinos.engagement.NoteEngagementState
+import com.nostr.torinos.engagement.NoteTarget
+import com.nostr.torinos.engagement.PendingEngagementOperation
+import com.nostr.torinos.engagement.displayOwnEmojiReactionEventIds
+import com.nostr.torinos.engagement.hasOwnReaction
+import com.nostr.torinos.engagement.isRepostedByMe
 import com.nostr.torinos.model.NostrEvent
 import com.nostr.torinos.model.NostrFilter
 import com.nostr.torinos.model.NostrProfile
@@ -10,9 +22,6 @@ import com.nostr.torinos.model.NoteContext
 import com.nostr.torinos.model.CustomReaction
 import com.nostr.torinos.model.ReactionOption
 import com.nostr.torinos.model.UnicodeReaction
-import com.nostr.torinos.model.decrementedWith
-import com.nostr.torinos.model.decrementedWithUnicodeReaction
-import com.nostr.torinos.model.eventTags
 import com.nostr.torinos.model.extractNpubReferences
 import com.nostr.torinos.model.incrementedWith
 import com.nostr.torinos.model.incrementedWithUnicodeReaction
@@ -25,14 +34,14 @@ import com.nostr.torinos.network.ProfileFetchPolicy
 import com.nostr.torinos.network.ProfileRepository
 import com.nostr.torinos.ui.SafeViewModel
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
-import kotlinx.serialization.json.Json
 
 class ThreadViewModel(
     private val eventId: String,
     private val noteContext: NoteContext = NoteContext.Timeline,
-    private val accountSession: AccountSession? = AccountSessions.manager.currentSession,
+    private val accountSession: AccountSession? = null,
 ) : SafeViewModel() {
 
     data class UiState(
@@ -53,12 +62,23 @@ class ThreadViewModel(
         val likedReactions: Map<String, String> = emptyMap(),
         val ownEmojiReactionEventIds: Map<String, Map<String, String>> = emptyMap(),
         val ownRepostEventId: String? = null,
+        val pendingEngagementOperations: Map<String, Map<EngagementSlot, PendingEngagementOperation>> = emptyMap(),
+        val engagementError: String? = null,
         val isLoading: Boolean = true,
         val quotedEvents: Map<String, NostrEvent> = emptyMap(),
         val replyText: String = "",
         val isReplying: Boolean = false,
         val replyError: String? = null,
-    )
+    ) {
+        fun isLiked(eventId: String): Boolean = likedReactions.containsKey(eventId) ||
+            pendingEngagementOperations[eventId]?.get(EngagementSlot.Reaction)?.request is EngagementRequest.AddLike
+
+        fun displayOwnEmojiReactionEventIds(eventId: String): Map<String, String> =
+            noteEngagement(eventId, rootEventId = null).displayOwnEmojiReactionEventIds
+
+        fun isRootReposted(rootEventId: String): Boolean =
+            noteEngagement(rootEventId, rootEventId).isRepostedByMe
+    }
 
     private val _state = kotlinx.coroutines.flow.MutableStateFlow(UiState())
     val state: kotlinx.coroutines.flow.StateFlow<UiState> = _state
@@ -90,6 +110,8 @@ class ThreadViewModel(
     private var reactionBatchJob: Job? = null
     private var started = false
     private var ownPubkey: String? = null
+    private val noteEngagementService = NoteEngagementService(accountSession?.signer)
+    private var nextEngagementOperationId = 0L
 
     init {
         if (isWriteSupported) {
@@ -111,6 +133,10 @@ class ThreadViewModel(
 
     fun onReplyTextChange(text: String) {
         _state.value = _state.value.copy(replyText = text, replyError = null)
+    }
+
+    fun consumeEngagementError() {
+        _state.value = _state.value.copy(engagementError = null)
     }
 
     fun submitReply() {
@@ -141,188 +167,126 @@ class ThreadViewModel(
     }
 
     fun react(eventId: String, eventPubkey: String) {
-        val cur = _state.value
-        if (
-            cur.likedReactions.containsKey(eventId) ||
-            cur.ownEmojiReactionEventIds[eventId].orEmpty().isNotEmpty()
-        ) return
-        _state.value = cur.copy(
-            likedReactions = cur.likedReactions + (eventId to ""),
-            reactionCounts = cur.reactionCounts + (eventId to (cur.reactionCounts[eventId] ?: 0) + 1),
-            likeReactionCounts = cur.likeReactionCounts +
-                (eventId to (cur.likeReactionCounts[eventId] ?: 0) + 1),
-            reactionPubkeys = if (eventId == this.eventId && ownPubkey != null && ownPubkey !in cur.reactionPubkeys) {
-                cur.reactionPubkeys + ownPubkey!!
-            } else {
-                cur.reactionPubkeys
-            },
+        runEngagementOperation(
+            eventId,
+            EngagementRequest.AddLike,
+            NoteEngagementCommand.AddLike(NoteTarget(eventId, eventPubkey)),
+            "リアクションの送信に失敗しました",
         )
-        launch {
-            val signer = accountSession?.signer ?: run {
-                _state.value = _state.value.withoutOptimisticLike(eventId, ownPubkey)
-                return@launch
-            }
-            runCatching {
-                val reaction = signer.sign(
-                    content = "+",
-                    kind = 7,
-                    tags = listOf(listOf("e", eventId), listOf("p", eventPubkey)),
-                )
-                seenReactionIds.add(reaction.id)
-                NostrRepository.publish(reaction)
-                _state.value = _state.value.copy(
-                    likedReactions = _state.value.likedReactions + (eventId to reaction.id),
-                    rootReactionsByPubkey = if (eventId == this@ThreadViewModel.eventId) {
-                        _state.value.rootReactionsByPubkey + (reaction.pubkey to reaction)
-                    } else {
-                        _state.value.rootReactionsByPubkey
-                    },
-                )
-            }.onFailure {
-                _state.value = _state.value.withoutOptimisticLike(eventId, ownPubkey)
-            }
-        }
     }
 
     fun unreact(eventId: String) {
-        val cur = _state.value
-        val reactionEventId = cur.likedReactions[eventId] ?: return
-        _state.value = cur.copy(
-            likedReactions = cur.likedReactions - eventId,
-            reactionCounts = cur.reactionCounts + (eventId to maxOf(0, (cur.reactionCounts[eventId] ?: 0) - 1)),
-            likeReactionCounts = cur.likeReactionCounts + (
-                eventId to maxOf(0, (cur.likeReactionCounts[eventId] ?: 0) - 1)
-                ),
-            reactionPubkeys = if (eventId == this.eventId && ownPubkey != null) {
-                cur.reactionPubkeys - ownPubkey!!
-            } else {
-                cur.reactionPubkeys
-            },
-            rootReactionsByPubkey = if (eventId == this.eventId && ownPubkey != null) {
-                cur.rootReactionsByPubkey - ownPubkey!!
-            } else {
-                cur.rootReactionsByPubkey
-            },
+        val reactionEventId = _state.value.likedReactions[eventId] ?: return
+        runEngagementOperation(
+            eventId,
+            EngagementRequest.RemoveLike,
+            NoteEngagementCommand.RemoveReaction(reactionEventId),
+            "リアクションの解除に失敗しました",
         )
-        if (reactionEventId.isEmpty()) return
-        launch {
-            val signer = accountSession?.signer ?: return@launch
-            runCatching {
-                val deletion = signer.sign(
-                    content = "",
-                    kind = 5,
-                    tags = listOf(listOf("e", reactionEventId)),
-                )
-                NostrRepository.publish(deletion)
-            }
-        }
     }
 
     fun reactWithEmoji(eventId: String, eventPubkey: String, option: ReactionOption) {
-        val cur = _state.value
-        if (
-            cur.likedReactions.containsKey(eventId) ||
-            cur.ownEmojiReactionEventIds[eventId].orEmpty().isNotEmpty()
-        ) return
-        _state.value = cur.withOptimisticEmojiReaction(eventId, option, "")
-        launch {
-            val signer = accountSession?.signer ?: run {
-                _state.value = _state.value.withoutOptimisticEmojiReaction(eventId, option)
-                return@launch
-            }
-            runCatching {
-                signer.sign(
-                    content = option.eventContent,
-                    kind = 7,
-                    tags = option.eventTags(eventId, eventPubkey),
-                ).also { reaction ->
-                    seenReactionIds.add(reaction.id)
-                    NostrRepository.publish(reaction)
-                }
-            }.onSuccess { reaction ->
-                val state = _state.value
-                _state.value = state.copy(
-                    ownEmojiReactionEventIds = state.ownEmojiReactionEventIds + (
-                        eventId to state.ownEmojiReactionEventIds[eventId].orEmpty()
-                            .plus(option.key to reaction.id)
-                        ),
-                )
-            }.onFailure {
-                _state.value = _state.value.withoutOptimisticEmojiReaction(eventId, option)
-            }
-        }
+        runEngagementOperation(
+            eventId,
+            EngagementRequest.AddEmoji(option),
+            NoteEngagementCommand.AddEmoji(NoteTarget(eventId, eventPubkey), option),
+            "リアクションの送信に失敗しました",
+        )
     }
 
     fun unreactWithEmoji(eventId: String, option: ReactionOption) {
-        val cur = _state.value
-        val reactionEventId = cur.ownEmojiReactionEventIds[eventId]?.get(option.key) ?: return
-        _state.value = cur.withoutOptimisticEmojiReaction(eventId, option)
-        if (reactionEventId.isEmpty()) return
-        launch {
-            val signer = accountSession?.signer ?: return@launch
-            runCatching {
-                val deletion = signer.sign(
-                    content = "",
-                    kind = 5,
-                    tags = listOf(listOf("e", reactionEventId)),
-                )
-                NostrRepository.publish(deletion)
-            }
-        }
+        val reactionEventId = _state.value.ownEmojiReactionEventIds[eventId]?.get(option.key) ?: return
+        runEngagementOperation(
+            eventId,
+            EngagementRequest.RemoveEmoji(option),
+            NoteEngagementCommand.RemoveReaction(reactionEventId),
+            "リアクションの解除に失敗しました",
+        )
     }
 
     fun repost(event: NostrEvent) {
-        val cur = _state.value
-        if (cur.ownRepostEventId != null) return
-        val currentOwnPubkey = ownPubkey
-        _state.value = cur.copy(
-            repostPubkeys = if (currentOwnPubkey != null && currentOwnPubkey !in cur.repostPubkeys) {
-                cur.repostPubkeys + currentOwnPubkey
-            } else {
-                cur.repostPubkeys
-            },
-            repostCount = cur.repostCount + 1,
-            ownRepostEventId = "",
+        runEngagementOperation(
+            event.id,
+            EngagementRequest.AddRepost,
+            NoteEngagementCommand.AddRepost(event),
+            "リポストの送信に失敗しました",
         )
-        launch {
-            val signer = accountSession?.signer ?: return@launch
-            runCatching {
-                val repostEvent = signer.sign(
-                    content = Json.encodeToString(NostrEvent.serializer(), event),
-                    kind = 6,
-                    tags = listOf(listOf("e", event.id), listOf("p", event.pubkey)),
-                )
-                seenRepostIds.add(repostEvent.id)
-                NostrRepository.publish(repostEvent)
-                _state.value = _state.value.copy(ownRepostEventId = repostEvent.id)
-            }
-        }
     }
 
     fun unrepost() {
-        val cur = _state.value
-        val repostEventId = cur.ownRepostEventId ?: return
-        val currentOwnPubkey = ownPubkey
-        _state.value = cur.copy(
-            repostPubkeys = if (currentOwnPubkey != null) {
-                cur.repostPubkeys - currentOwnPubkey
-            } else {
-                cur.repostPubkeys
-            },
-            repostCount = maxOf(0, cur.repostCount - 1),
-            ownRepostEventId = null,
+        val repostEventId = _state.value.ownRepostEventId ?: return
+        runEngagementOperation(
+            eventId,
+            EngagementRequest.RemoveRepost,
+            NoteEngagementCommand.RemoveRepost(repostEventId),
+            "リポストの解除に失敗しました",
         )
-        if (repostEventId.isEmpty()) return
+    }
+
+    private fun runEngagementOperation(
+        targetEventId: String,
+        request: EngagementRequest,
+        command: NoteEngagementCommand,
+        failureMessage: String,
+    ) {
+        val operationId = EngagementOperationId("thread-${++nextEngagementOperationId}")
+        val before = _state.value.noteEngagement(targetEventId, eventId)
+        val optimistic = EngagementReducer.reduce(before, EngagementAction.Begin(operationId, request))
+        if (optimistic == before) return
+        _state.value = _state.value.withEngagement(targetEventId, eventId, optimistic, ownPubkey)
+            .copy(engagementError = null)
         launch {
-            val signer = accountSession?.signer ?: return@launch
-            runCatching {
-                val deletion = signer.sign(
-                    content = "",
-                    kind = 5,
-                    tags = listOf(listOf("e", repostEventId)),
+            var committed = false
+            var failure: Throwable? = null
+            var signedEvent: NostrEvent? = null
+            try {
+                val published = noteEngagementService.execute(command) { signed ->
+                    signedEvent = signed
+                    when (command) {
+                        is NoteEngagementCommand.AddLike,
+                        is NoteEngagementCommand.AddEmoji,
+                        -> seenReactionIds.add(signed.id)
+                        is NoteEngagementCommand.AddRepost -> seenRepostIds.add(signed.id)
+                        is NoteEngagementCommand.RemoveReaction,
+                        is NoteEngagementCommand.RemoveRepost,
+                        -> Unit
+                    }
+                }.getOrThrow()
+                val current = _state.value.noteEngagement(targetEventId, eventId)
+                var next = _state.value.withEngagement(
+                    targetEventId,
+                    eventId,
+                    EngagementReducer.reduce(current, EngagementAction.Commit(operationId, published.id)),
+                    ownPubkey,
                 )
-                NostrRepository.publish(deletion)
+                if (targetEventId == eventId && command is NoteEngagementCommand.AddLike) {
+                    signedEvent?.let { reaction ->
+                        next = next.copy(
+                            rootReactionsByPubkey = next.rootReactionsByPubkey + (reaction.pubkey to reaction),
+                        )
+                    }
+                }
+                if (targetEventId == eventId && command is NoteEngagementCommand.RemoveReaction && request is EngagementRequest.RemoveLike) {
+                    ownPubkey?.let { next = next.copy(rootReactionsByPubkey = next.rootReactionsByPubkey - it) }
+                }
+                _state.value = next
+                committed = true
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Throwable) {
+                failure = error
+            } finally {
+                if (!committed) {
+                    val current = _state.value.noteEngagement(targetEventId, eventId)
+                    _state.value = _state.value.withEngagement(
+                        targetEventId,
+                        eventId,
+                        EngagementReducer.reduce(current, EngagementAction.Rollback(operationId)),
+                        ownPubkey,
+                    )
+                }
             }
+            if (failure != null) _state.value = _state.value.copy(engagementError = failureMessage)
         }
     }
 
@@ -709,85 +673,64 @@ class ThreadViewModel(
     }
 }
 
-private fun ThreadViewModel.UiState.withoutOptimisticLike(
+private fun ThreadViewModel.UiState.noteEngagement(
     eventId: String,
-    ownPubkey: String?,
-): ThreadViewModel.UiState {
-    if (likedReactions[eventId] != "") return this
-    return copy(
-        likedReactions = likedReactions - eventId,
-        reactionCounts = reactionCounts + (
-            eventId to maxOf(0, (reactionCounts[eventId] ?: 0) - 1)
-            ),
-        likeReactionCounts = likeReactionCounts + (
-            eventId to maxOf(0, (likeReactionCounts[eventId] ?: 0) - 1)
-            ),
-        reactionPubkeys = if (eventId == root?.id && ownPubkey != null) {
-            reactionPubkeys - ownPubkey
-        } else {
-            reactionPubkeys
-        },
-    )
-}
-
-private fun ThreadViewModel.UiState.withOptimisticEmojiReaction(
-    eventId: String,
-    option: ReactionOption,
-    reactionEventId: String,
-): ThreadViewModel.UiState = copy(
-    reactionCounts = reactionCounts + (eventId to (reactionCounts[eventId] ?: 0) + 1),
-    customReactions = if (option is ReactionOption.Custom) {
-        customReactions + (
-            eventId to customReactions[eventId].orEmpty().incrementedWith(
-                CustomReaction(option.shortcode.trim().trim(':'), option.imageUrl.trim()),
-            )
-            )
-    } else {
-        customReactions
-    },
-    unicodeReactions = if (option is ReactionOption.Unicode) {
-        unicodeReactions + (
-            eventId to unicodeReactions[eventId].orEmpty().incrementedWithUnicodeReaction(
-                UnicodeReaction(option.value.trim()),
-            )
-            )
-    } else {
-        unicodeReactions
-    },
-    ownEmojiReactionEventIds = ownEmojiReactionEventIds + (
-        eventId to ownEmojiReactionEventIds[eventId].orEmpty()
-            .plus(option.key to reactionEventId)
-        ),
+    rootEventId: String?,
+): NoteEngagementState = NoteEngagementState(
+    reactionCount = reactionCounts[eventId] ?: 0,
+    likeReactionCount = likeReactionCounts[eventId] ?: 0,
+    customReactions = customReactions[eventId].orEmpty(),
+    unicodeReactions = unicodeReactions[eventId].orEmpty(),
+    ownLikeEventId = likedReactions[eventId],
+    ownEmojiReactionEventIds = ownEmojiReactionEventIds[eventId].orEmpty(),
+    repostCount = if (eventId == rootEventId) repostCount else 0,
+    ownRepostEventId = if (eventId == rootEventId) ownRepostEventId else null,
+    pendingOperations = pendingEngagementOperations[eventId].orEmpty(),
 )
 
-private fun ThreadViewModel.UiState.withoutOptimisticEmojiReaction(
+private fun ThreadViewModel.UiState.withEngagement(
     eventId: String,
-    option: ReactionOption,
+    rootEventId: String,
+    engagement: NoteEngagementState,
+    ownPubkey: String?,
 ): ThreadViewModel.UiState {
-    val remaining = ownEmojiReactionEventIds[eventId].orEmpty() - option.key
+    val isRoot = eventId == rootEventId
     return copy(
-        reactionCounts = reactionCounts + (
-            eventId to maxOf(0, (reactionCounts[eventId] ?: 0) - 1)
-            ),
-        customReactions = if (option is ReactionOption.Custom) {
-            customReactions + (
-                eventId to customReactions[eventId].orEmpty().decrementedWith(option)
-                )
+        reactionCounts = reactionCounts + (eventId to engagement.reactionCount),
+        likeReactionCounts = likeReactionCounts + (eventId to engagement.likeReactionCount),
+    customReactions = customReactions.putListOrRemove(eventId, engagement.customReactions),
+    unicodeReactions = unicodeReactions.putListOrRemove(eventId, engagement.unicodeReactions),
+        likedReactions = likedReactions.putOrRemove(eventId, engagement.ownLikeEventId),
+    ownEmojiReactionEventIds = ownEmojiReactionEventIds.putMapOrRemove(
+            eventId,
+            engagement.ownEmojiReactionEventIds,
+        ),
+        repostCount = if (isRoot) engagement.repostCount else repostCount,
+        ownRepostEventId = if (isRoot) engagement.ownRepostEventId else ownRepostEventId,
+    pendingEngagementOperations = pendingEngagementOperations.putMapOrRemove(
+            eventId,
+            engagement.pendingOperations,
+        ),
+        reactionPubkeys = if (isRoot && ownPubkey != null) {
+            if (engagement.hasOwnReaction) reactionPubkeys + ownPubkey else reactionPubkeys - ownPubkey
         } else {
-            customReactions
-        },
-        unicodeReactions = if (option is ReactionOption.Unicode) {
-            unicodeReactions + (
-                eventId to unicodeReactions[eventId].orEmpty()
-                    .decrementedWithUnicodeReaction(option)
-                )
+            reactionPubkeys
+        }.distinct(),
+        repostPubkeys = if (isRoot && ownPubkey != null) {
+            if (engagement.isRepostedByMe) repostPubkeys + ownPubkey else repostPubkeys - ownPubkey
         } else {
-            unicodeReactions
-        },
-        ownEmojiReactionEventIds = if (remaining.isEmpty()) {
-            ownEmojiReactionEventIds - eventId
-        } else {
-            ownEmojiReactionEventIds + (eventId to remaining)
-        },
+            repostPubkeys
+        }.distinct(),
     )
 }
+
+private fun <K, V> Map<K, V>.putOrRemove(key: K, value: V?): Map<K, V> =
+    if (value == null) this - key else this + (key to value)
+
+private fun <K, V> Map<K, List<V>>.putListOrRemove(key: K, value: List<V>): Map<K, List<V>> =
+    if (value.isEmpty()) this - key else this + (key to value)
+
+private fun <K, K2, V2> Map<K, Map<K2, V2>>.putMapOrRemove(
+    key: K,
+    value: Map<K2, V2>,
+): Map<K, Map<K2, V2>> = if (value.isEmpty()) this - key else this + (key to value)

@@ -24,6 +24,8 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.PrimaryTabRow
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Tab
 import androidx.compose.material3.Text
 import com.nostr.torinos.ui.components.AppTopBar
@@ -45,7 +47,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.runtime.collectAsState
 import androidx.lifecycle.viewmodel.compose.viewModel
-import com.nostr.torinos.account.accountScopedViewModelKey
+import com.nostr.torinos.account.accountSessionViewModel
 import com.nostr.torinos.model.noteContextForChannel
 import com.nostr.torinos.model.quotedEventIds
 import com.nostr.torinos.model.stripNostrEventUris
@@ -71,14 +73,19 @@ fun ThreadScreen(
     onOpenLikes: (eventId: String) -> Unit = {},
     onOpenReposts: (eventId: String) -> Unit = {},
     ownPubkey: String? = null,
-    viewModel: ThreadViewModel = viewModel(
-        key = accountScopedViewModelKey("thread-$eventId-${channelId ?: "note"}"),
-    ) {
-        ThreadViewModel(eventId, noteContextForChannel(channelId))
+    viewModel: ThreadViewModel = accountSessionViewModel(
+        key = "thread-$eventId-${channelId ?: "note"}",
+    ) { accountSession ->
+        ThreadViewModel(
+            eventId,
+            noteContextForChannel(channelId),
+            accountSession = accountSession,
+        )
     },
 ) {
     val noteContext = remember(channelId) { noteContextForChannel(channelId) }
     val state by viewModel.state.collectAsState()
+    val snackbarHostState = remember { SnackbarHostState() }
     var selectedTab by remember(initialTab) { mutableStateOf(ThreadTab.fromRouteValue(initialTab)) }
     var didSelectTabManually by remember(eventId) { mutableStateOf(false) }
     val listState = rememberSaveable(eventId, saver = LazyListState.Saver) { LazyListState() }
@@ -88,6 +95,12 @@ fun ThreadScreen(
     DisposableEffect(viewModel) {
         viewModel.startSubscriptions()
         onDispose { viewModel.stopSubscriptions() }
+    }
+
+    LaunchedEffect(state.engagementError) {
+        val error = state.engagementError ?: return@LaunchedEffect
+        snackbarHostState.showSnackbar(error)
+        viewModel.consumeEngagementError()
     }
 
     LaunchedEffect(
@@ -128,6 +141,7 @@ fun ThreadScreen(
 
     Scaffold(
         contentWindowInsets = WindowInsets(0),
+        snackbarHost = { SnackbarHost(snackbarHostState) },
         topBar = {
             AppTopBar(
                 title = { Text("ポスト詳細") },
@@ -231,13 +245,13 @@ fun ThreadScreen(
                                 customReactions = state.customReactions[root.id].orEmpty(),
                                 unicodeReactions = state.unicodeReactions[root.id].orEmpty(),
                                 repostCount = state.repostCount,
-                                isLiked = state.likedReactions.containsKey(root.id),
-                                ownEmojiReactionEventIds = state.ownEmojiReactionEventIds[root.id].orEmpty(),
-                                isReposted = state.ownRepostEventId != null,
+                                isLiked = state.isLiked(root.id),
+                                ownEmojiReactionEventIds = state.displayOwnEmojiReactionEventIds(root.id),
+                                isReposted = state.isRootReposted(root.id),
                                 onUserClick = onUserClick,
                                 onLike = if (ownPubkey != null) {
                                     {
-                                        if (state.likedReactions.containsKey(root.id)) {
+                                        if (state.isLiked(root.id)) {
                                             viewModel.unreact(root.id)
                                         } else {
                                             viewModel.react(root.id, root.pubkey)
@@ -267,7 +281,7 @@ fun ThreadScreen(
                                 },
                                 onRepost = if (ownPubkey != null) {
                                     {
-                                        if (state.ownRepostEventId != null) {
+                                        if (state.isRootReposted(root.id)) {
                                             viewModel.unrepost()
                                         } else {
                                             viewModel.repost(root)
@@ -329,12 +343,12 @@ fun ThreadScreen(
                                             likeReactionCount = state.likeReactionCounts[reply.id] ?: 0,
                                             customReactions = state.customReactions[reply.id].orEmpty(),
                                             unicodeReactions = state.unicodeReactions[reply.id].orEmpty(),
-                                            isLiked = state.likedReactions.containsKey(reply.id),
-                                            ownEmojiReactionEventIds = state.ownEmojiReactionEventIds[reply.id].orEmpty(),
+                                            isLiked = state.isLiked(reply.id),
+                                            ownEmojiReactionEventIds = state.displayOwnEmojiReactionEventIds(reply.id),
                                             onUserClick = onUserClick,
                                             onLike = if (ownPubkey != null) {
                                                 {
-                                                    if (state.likedReactions.containsKey(reply.id)) {
+                                                    if (state.isLiked(reply.id)) {
                                                         viewModel.unreact(reply.id)
                                                     } else {
                                                         viewModel.react(reply.id, reply.pubkey)

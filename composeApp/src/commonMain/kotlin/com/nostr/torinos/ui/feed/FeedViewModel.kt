@@ -3,27 +3,28 @@ package com.nostr.torinos.ui.feed
 import androidx.lifecycle.ViewModel
 import com.nostr.torinos.ui.SafeViewModel
 import com.nostr.torinos.account.AccountSession
-import com.nostr.torinos.account.AccountSessions
 import com.nostr.torinos.crypto.isWriteSupported
+import com.nostr.torinos.engagement.EngagementAction
+import com.nostr.torinos.engagement.EngagementOperationId
+import com.nostr.torinos.engagement.EngagementReducer
+import com.nostr.torinos.engagement.EngagementRequest
+import com.nostr.torinos.engagement.EngagementSlot
+import com.nostr.torinos.engagement.NoteEngagementCommand
+import com.nostr.torinos.engagement.NoteEngagementService
+import com.nostr.torinos.engagement.NoteEngagementState
+import com.nostr.torinos.engagement.NoteTarget
+import com.nostr.torinos.engagement.PendingEngagementOperation
+import com.nostr.torinos.engagement.displayOwnEmojiReactionEventIds
+import com.nostr.torinos.engagement.isRepostedByMe
 import com.nostr.torinos.model.NostrEvent
 import com.nostr.torinos.model.NostrFilter
 import com.nostr.torinos.model.NostrProfile
 import com.nostr.torinos.model.CustomReaction
 import com.nostr.torinos.model.ReactionOption
 import com.nostr.torinos.model.UnicodeReaction
-import com.nostr.torinos.model.decrementedWith
-import com.nostr.torinos.model.decrementedWithUnicodeReaction
-import com.nostr.torinos.model.eventTags
 import com.nostr.torinos.model.extractNpubReferences
-import com.nostr.torinos.model.incrementedWith
-import com.nostr.torinos.model.incrementedWithUnicodeReaction
 import com.nostr.torinos.model.quotedEventIds
 import com.nostr.torinos.model.replyTargetId
-import com.nostr.torinos.model.toCustomReaction
-import com.nostr.torinos.model.toUnicodeReaction
-import com.nostr.torinos.model.toReactionOption
-import com.nostr.torinos.network.MuteStore
-import com.nostr.torinos.network.NgWordStore
 import com.nostr.torinos.network.NostrRepository
 import com.nostr.torinos.network.ProfileFetchPolicy
 import com.nostr.torinos.network.ProfileRepository
@@ -34,6 +35,7 @@ import com.nostr.torinos.network.SubscriptionSession
 import com.nostr.torinos.network.SubscriptionSignal
 import com.nostr.torinos.network.SubscriptionSpec
 import kotlinx.serialization.json.Json
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlin.time.Clock
 import kotlinx.coroutines.delay
@@ -43,7 +45,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 
 class FeedViewModel(
-    private val accountSession: AccountSession? = AccountSessions.manager.currentSession,
+    private val accountSession: AccountSession? = null,
     private val authorPubkey: String? = null,
     private val authorPubkeys: List<String>? = authorPubkey?.let { listOf(it) },
     private val relayUrl: String? = null,
@@ -72,13 +74,23 @@ class FeedViewModel(
         val ownEmojiReactionEventIds: Map<String, Map<String, String>> = emptyMap(),
         /** postId → 自分のリポストイベントID */
         val repostedEvents: Map<String, String> = emptyMap(),
+        val pendingEngagementOperations: Map<String, Map<EngagementSlot, PendingEngagementOperation>> = emptyMap(),
+        val engagementError: String? = null,
         val canLoadMore: Boolean = false,
         val isLoadingMore: Boolean = false,
         /** true = 初回 EOSE 待ち（ローディングスピナー表示） */
         val isInitialLoad: Boolean = true,
         /** true = 先頭からの手動更新中 */
         val isRefreshing: Boolean = false,
-    )
+    ) {
+        fun isLiked(eventId: String): Boolean = likedReactions.containsKey(eventId) ||
+            pendingEngagementOperations[eventId]?.get(EngagementSlot.Reaction)?.request is EngagementRequest.AddLike
+
+        fun displayOwnEmojiReactionEventIds(eventId: String): Map<String, String> =
+            noteEngagement(eventId).displayOwnEmojiReactionEventIds
+
+        fun isReposted(eventId: String): Boolean = noteEngagement(eventId).isRepostedByMe
+    }
 
     private val _state = MutableStateFlow(UiState())
     val state: StateFlow<UiState> = _state.asStateFlow()
@@ -113,6 +125,8 @@ class FeedViewModel(
     private val pendingRepostTargets = mutableMapOf<String, PendingRepostTarget>()
     private var subscriptionsStarted = false
     private var ownPubkey: String? = null
+    private val noteEngagementService = NoteEngagementService(accountSession?.signer)
+    private var nextEngagementOperationId = 0L
 
     private var oldestCreatedAt: Long? = null
     private var nextHistoryUntil: Long? = null
@@ -212,171 +226,123 @@ class FeedViewModel(
         }
     }
 
+    fun consumeEngagementError() {
+        updateFeedState { it.copy(engagementError = null) }
+    }
+
     fun react(eventId: String, eventPubkey: String) {
-        val cur = currentFeedState()
-        if (
-            cur.likedReactions.containsKey(eventId) ||
-            cur.ownEmojiReactionEventIds[eventId].orEmpty().isNotEmpty()
-        ) return
-        // 楽観的UI更新（reactionEventIdは署名後に確定）
-        setFeedState(cur.copy(
-            likedReactions = cur.likedReactions + (eventId to ""),
-            reactionCounts = cur.reactionCounts + (eventId to (cur.reactionCounts[eventId] ?: 0) + 1),
-            likeReactionCounts = cur.likeReactionCounts +
-                (eventId to (cur.likeReactionCounts[eventId] ?: 0) + 1),
-        ))
-        launch {
-            val signer = accountSession?.signer ?: run {
-                updateFeedState { it.withoutOptimisticLike(eventId) }
-                return@launch
-            }
-            runCatching {
-                val reaction = signer.sign(
-                    content = "+",
-                    kind = 7,
-                    tags = listOf(listOf("e", eventId), listOf("p", eventPubkey)),
-                )
-                rememberSeenId(seenReactionIds, reaction.id)
-                NostrRepository.publish(reaction)
-                // 署名済みイベントIDを保存（後でキャンセルに使用）
-                updateFeedState { state ->
-                    state.copy(likedReactions = state.likedReactions + (eventId to reaction.id))
-                }
-            }.onFailure {
-                updateFeedState { it.withoutOptimisticLike(eventId) }
-            }
-        }
+        runEngagementOperation(
+            eventId = eventId,
+            request = EngagementRequest.AddLike,
+            command = NoteEngagementCommand.AddLike(NoteTarget(eventId, eventPubkey)),
+            failureMessage = "リアクションの送信に失敗しました",
+        )
     }
 
     fun unreact(eventId: String) {
-        val cur = currentFeedState()
-        val reactionEventId = cur.likedReactions[eventId] ?: return
-        // 楽観的UI更新
-        setFeedState(cur.copy(
-            likedReactions = cur.likedReactions - eventId,
-            reactionCounts = cur.reactionCounts + (eventId to maxOf(0, (cur.reactionCounts[eventId] ?: 0) - 1)),
-            likeReactionCounts = cur.likeReactionCounts + (
-                eventId to maxOf(0, (cur.likeReactionCounts[eventId] ?: 0) - 1)
-                ),
-        ))
-        if (reactionEventId.isEmpty()) return
-        launch {
-            val signer = accountSession?.signer ?: return@launch
-            runCatching {
-                val deletion = signer.sign(
-                    content = "",
-                    kind = 5,
-                    tags = listOf(listOf("e", reactionEventId)),
-                )
-                NostrRepository.publish(deletion)
-            }
-        }
+        val reactionEventId = currentFeedState().likedReactions[eventId] ?: return
+        runEngagementOperation(
+            eventId = eventId,
+            request = EngagementRequest.RemoveLike,
+            command = NoteEngagementCommand.RemoveReaction(reactionEventId),
+            failureMessage = "リアクションの解除に失敗しました",
+        )
     }
 
     fun reactWithEmoji(eventId: String, eventPubkey: String, option: ReactionOption) {
-        val cur = currentFeedState()
-        if (
-            cur.likedReactions.containsKey(eventId) ||
-            cur.ownEmojiReactionEventIds[eventId].orEmpty().isNotEmpty()
-        ) return
-        setFeedState(
-            cur.withOptimisticEmojiReaction(eventId, option, eventIdValue = ""),
+        runEngagementOperation(
+            eventId = eventId,
+            request = EngagementRequest.AddEmoji(option),
+            command = NoteEngagementCommand.AddEmoji(NoteTarget(eventId, eventPubkey), option),
+            failureMessage = "リアクションの送信に失敗しました",
         )
-        launch {
-            val signer = accountSession?.signer ?: run {
-                updateFeedState { it.withoutOptimisticEmojiReaction(eventId, option) }
-                return@launch
-            }
-            runCatching {
-                signer.sign(
-                    content = option.eventContent,
-                    kind = 7,
-                    tags = option.eventTags(eventId, eventPubkey),
-                ).also { reaction ->
-                    rememberSeenId(seenReactionIds, reaction.id)
-                    NostrRepository.publish(reaction)
-                }
-            }.onSuccess { reaction ->
-                updateFeedState {
-                    it.copy(
-                        ownEmojiReactionEventIds = it.ownEmojiReactionEventIds + (
-                            eventId to it.ownEmojiReactionEventIds[eventId].orEmpty()
-                                .plus(option.key to reaction.id)
-                            ),
-                    )
-                }
-            }.onFailure {
-                updateFeedState { it.withoutOptimisticEmojiReaction(eventId, option) }
-            }
-        }
     }
 
     fun unreactWithEmoji(eventId: String, option: ReactionOption) {
-        val cur = currentFeedState()
-        val reactionEventId = cur.ownEmojiReactionEventIds[eventId]?.get(option.key) ?: return
-        setFeedState(cur.withoutOptimisticEmojiReaction(eventId, option))
-        if (reactionEventId.isEmpty()) return
-        launch {
-            val signer = accountSession?.signer ?: return@launch
-            runCatching {
-                val deletion = signer.sign(
-                    content = "",
-                    kind = 5,
-                    tags = listOf(listOf("e", reactionEventId)),
-                )
-                NostrRepository.publish(deletion)
-            }
-        }
+        val reactionEventId = currentFeedState().ownEmojiReactionEventIds[eventId]?.get(option.key) ?: return
+        runEngagementOperation(
+            eventId = eventId,
+            request = EngagementRequest.RemoveEmoji(option),
+            command = NoteEngagementCommand.RemoveReaction(reactionEventId),
+            failureMessage = "リアクションの解除に失敗しました",
+        )
     }
 
     fun repost(event: NostrEvent) {
-        val cur = currentFeedState()
-        if (cur.repostedEvents.containsKey(event.id)) return
         val eventToRepost = canonicalEvents[event.id] ?: event
-        setFeedState(cur.copy(
-            repostedEvents = cur.repostedEvents + (event.id to ""),
-            repostCounts = cur.repostCounts + (event.id to (cur.repostCounts[event.id] ?: 0) + 1),
-        ))
-        launch {
-            val signer = accountSession?.signer ?: return@launch
-            runCatching {
-                val repostEvent = signer.sign(
-                    content = Json.encodeToString(NostrEvent.serializer(), eventToRepost),
-                    kind = 6,
-                    tags = listOf(listOf("e", eventToRepost.id), listOf("p", eventToRepost.pubkey)),
-                )
-                rememberSeenId(seenRepostIds, repostEvent.id)
-                NostrRepository.publish(repostEvent)
-                updateFeedState { state ->
-                    state.copy(repostedEvents = state.repostedEvents + (event.id to repostEvent.id))
-                }
-            }
-        }
+        runEngagementOperation(
+            eventId = event.id,
+            request = EngagementRequest.AddRepost,
+            command = NoteEngagementCommand.AddRepost(eventToRepost),
+            failureMessage = "リポストの送信に失敗しました",
+        )
     }
 
     fun unrepost(eventId: String) {
-        val cur = currentFeedState()
-        val repostEventId = cur.repostedEvents[eventId] ?: return
-        setFeedState(cur.copy(
-            repostedEvents = cur.repostedEvents - eventId,
-            repostCounts = cur.repostCounts + (eventId to maxOf(0, (cur.repostCounts[eventId] ?: 0) - 1)),
-        ))
-        if (repostEventId.isEmpty()) return
+        val repostEventId = currentFeedState().repostedEvents[eventId] ?: return
+        runEngagementOperation(
+            eventId = eventId,
+            request = EngagementRequest.RemoveRepost,
+            command = NoteEngagementCommand.RemoveRepost(repostEventId),
+            failureMessage = "リポストの解除に失敗しました",
+        )
+    }
+
+    private fun runEngagementOperation(
+        eventId: String,
+        request: EngagementRequest,
+        command: NoteEngagementCommand,
+        failureMessage: String,
+    ) {
+        val operationId = EngagementOperationId("feed-${++nextEngagementOperationId}")
+        val before = currentFeedState().noteEngagement(eventId)
+        val optimistic = EngagementReducer.reduce(before, EngagementAction.Begin(operationId, request))
+        if (optimistic == before) return
+        updateFeedState { it.withEngagement(eventId, optimistic).copy(engagementError = null) }
         launch {
-            val signer = accountSession?.signer ?: return@launch
-            runCatching {
-                val deletion = signer.sign(
-                    content = "",
-                    kind = 5,
-                    tags = listOf(listOf("e", repostEventId)),
-                )
-                NostrRepository.publish(deletion)
+            var committed = false
+            var failure: Throwable? = null
+            try {
+                val published = noteEngagementService.execute(command) { signed ->
+                    when (command) {
+                        is NoteEngagementCommand.AddLike,
+                        is NoteEngagementCommand.AddEmoji,
+                        -> rememberSeenId(seenReactionIds, signed.id)
+                        is NoteEngagementCommand.AddRepost -> rememberSeenId(seenRepostIds, signed.id)
+                        is NoteEngagementCommand.RemoveReaction,
+                        is NoteEngagementCommand.RemoveRepost,
+                        -> Unit
+                    }
+                }.getOrThrow()
+                updateFeedState {
+                    val current = it.noteEngagement(eventId)
+                    it.withEngagement(
+                        eventId,
+                        EngagementReducer.reduce(current, EngagementAction.Commit(operationId, published.id)),
+                    )
+                }
+                committed = true
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Throwable) {
+                failure = error
+            } finally {
+                if (!committed) {
+                    updateFeedState {
+                        val current = it.noteEngagement(eventId)
+                        it.withEngagement(
+                            eventId,
+                            EngagementReducer.reduce(current, EngagementAction.Rollback(operationId)),
+                        )
+                    }
+                }
             }
+            if (failure != null) updateFeedState { it.copy(engagementError = failureMessage) }
         }
     }
 
     fun reportEvent(event: NostrEvent, reason: String, detail: String) {
-        MuteStore.mute(event.pubkey)
+        accountSession?.muteStore?.mute(event.pubkey)
         rebuildFilteredEvents()
         launch {
             val signer = accountSession?.signer ?: return@launch
@@ -434,11 +400,11 @@ class FeedViewModel(
         // ミュート・NGワード変更時にフィルタ済みリストを再構築
         if (filterMutedUsers) {
             subscriptionJobs += launch {
-                MuteStore.mutedPubkeys.collect { rebuildFilteredEvents() }
+                accountSession?.muteStore?.mutedPubkeys?.collect { rebuildFilteredEvents() }
             }
         }
         subscriptionJobs += launch {
-            NgWordStore.ngWords.collect { rebuildFilteredEvents() }
+            accountSession?.ngWordStore?.ngWords?.collect { rebuildFilteredEvents() }
         }
 
         // content が空のリポストから元ポストを追加取得
@@ -825,8 +791,8 @@ class FeedViewModel(
     }
 
     private fun isFiltered(event: NostrEvent): Boolean {
-        if (filterMutedUsers && MuteStore.isMuted(event.pubkey)) return true
-        return NgWordStore.matches(event.content)
+        if (filterMutedUsers && accountSession?.muteStore?.isMuted(event.pubkey) == true) return true
+        return accountSession?.ngWordStore?.matches(event.content) == true
     }
 
     private fun rebuildFilteredEvents() {
@@ -881,13 +847,10 @@ class FeedViewModel(
         if (targetId == null) return
         val cur = currentFeedState()
         val isOwn = ownPubkey != null && repost.pubkey == ownPubkey
-        setFeedState(cur.copy(
-            repostCounts = cur.repostCounts +
-                (targetId to (cur.repostCounts[targetId] ?: 0) + 1),
-            repostedEvents = if (isOwn && !cur.repostedEvents.containsKey(targetId))
-                cur.repostedEvents + (targetId to repost.id)
-            else cur.repostedEvents,
-        ), immediate = false)
+        setFeedState(
+            EngagementAccumulator.repost(cur, targetId, repost, isOwn),
+            immediate = false,
+        )
     }
 
     private fun markRepostedBy(eventId: String, reposterPubkey: String) {
@@ -982,30 +945,14 @@ class FeedViewModel(
 
     private fun reconcileOwnEngagement() {
         val pubkey = ownPubkey ?: return
-        val current = currentFeedState()
-        var likedReactions = current.likedReactions
-        var ownEmojiReactionEventIds = current.ownEmojiReactionEventIds
-        var repostedEvents = current.repostedEvents
-        receivedReactionEvents.values.filter { it.pubkey == pubkey }.forEach { event ->
-            val targetId = event.tags.lastOrNull { it.firstOrNull() == "e" }?.getOrNull(1)
-                ?: return@forEach
-            if (event.content.trim() == "+") likedReactions = likedReactions + (targetId to event.id)
-            event.toReactionOption()?.let { option ->
-                ownEmojiReactionEventIds = ownEmojiReactionEventIds + (
-                    targetId to ownEmojiReactionEventIds[targetId].orEmpty().plus(option.key to event.id)
-                )
-            }
-        }
-        receivedRepostEvents.values.filter { it.pubkey == pubkey }.forEach { event ->
-            val targetId = event.tags.lastOrNull { it.firstOrNull() == "e" }?.getOrNull(1)
-                ?: return@forEach
-            repostedEvents = repostedEvents + (targetId to event.id)
-        }
-        setFeedState(current.copy(
-            likedReactions = likedReactions,
-            ownEmojiReactionEventIds = ownEmojiReactionEventIds,
-            repostedEvents = repostedEvents,
-        ))
+        setFeedState(
+            EngagementAccumulator.reconcileOwnEngagement(
+                state = currentFeedState(),
+                ownPubkey = pubkey,
+                reactionEvents = receivedReactionEvents.values,
+                repostEvents = receivedRepostEvents.values,
+            ),
+        )
     }
 
     private fun scheduleProfileFetch(pubkey: String) {
@@ -1100,48 +1047,10 @@ class FeedViewModel(
         rememberReceivedEvent(receivedReactionEvents, event)
         val cur = currentFeedState()
         val isOwn = ownPubkey != null && event.pubkey == ownPubkey
-        val customReaction = event.toCustomReaction()
-        val unicodeReaction = event.toUnicodeReaction()
-        val reactionOption = event.toReactionOption()
-        setFeedState(cur.copy(
-            reactionCounts = cur.reactionCounts +
-                (targetId to (cur.reactionCounts[targetId] ?: 0) + 1),
-            likeReactionCounts = if (event.content.trim() == "+") {
-                cur.likeReactionCounts + (targetId to (cur.likeReactionCounts[targetId] ?: 0) + 1)
-            } else {
-                cur.likeReactionCounts
-            },
-            customReactions = if (customReaction != null) {
-                cur.customReactions + (
-                    targetId to cur.customReactions[targetId].orEmpty().incrementedWith(customReaction)
-                )
-            } else {
-                cur.customReactions
-            },
-            unicodeReactions = if (unicodeReaction != null) {
-                cur.unicodeReactions + (
-                    targetId to cur.unicodeReactions[targetId].orEmpty()
-                        .incrementedWithUnicodeReaction(unicodeReaction)
-                )
-            } else {
-                cur.unicodeReactions
-            },
-            likedReactions = if (
-                isOwn && event.content.trim() == "+" && !cur.likedReactions.containsKey(targetId)
-            ) {
-                cur.likedReactions + (targetId to event.id)
-            } else {
-                cur.likedReactions
-            },
-            ownEmojiReactionEventIds = if (isOwn && reactionOption != null) {
-                cur.ownEmojiReactionEventIds + (
-                    targetId to cur.ownEmojiReactionEventIds[targetId].orEmpty()
-                        .plus(reactionOption.key to event.id)
-                )
-            } else {
-                cur.ownEmojiReactionEventIds
-            },
-        ), immediate = false)
+        setFeedState(
+            EngagementAccumulator.reaction(cur, targetId, event, isOwn),
+            immediate = false,
+        )
     }
 
     private fun handleReplyEvent(event: NostrEvent) {
@@ -1151,17 +1060,10 @@ class FeedViewModel(
         if (!rememberSeenId(seenReplyIds, event.id)) return
         scheduleProfileFetch(event.pubkey)
         scheduleMentionedProfileFetch(event.content)
-        val cur = currentFeedState()
-        val replies = cur.replies[targetId].orEmpty()
-        val updatedReplies = if (replies.any { it.id == event.id }) {
-            replies
-        } else {
-            (replies + event).sortedBy { it.createdAt }
-        }
-        setFeedState(cur.copy(
-            replyCounts = cur.replyCounts + (targetId to (cur.replyCounts[targetId] ?: 0) + 1),
-            replies = cur.replies + (targetId to updatedReplies),
-        ), immediate = false)
+        setFeedState(
+            EngagementAccumulator.reply(currentFeedState(), targetId, event),
+            immediate = false,
+        )
     }
 
     private fun handleEngagementRepostEvent(event: NostrEvent) {
@@ -1172,14 +1074,10 @@ class FeedViewModel(
         rememberReceivedEvent(receivedRepostEvents, event)
         val cur = currentFeedState()
         val isOwn = ownPubkey != null && event.pubkey == ownPubkey
-        setFeedState(cur.copy(
-            repostCounts = cur.repostCounts + (targetId to (cur.repostCounts[targetId] ?: 0) + 1),
-            repostedEvents = if (isOwn && !cur.repostedEvents.containsKey(targetId)) {
-                cur.repostedEvents + (targetId to event.id)
-            } else {
-                cur.repostedEvents
-            },
-        ), immediate = false)
+        setFeedState(
+            EngagementAccumulator.repost(cur, targetId, event, isOwn),
+            immediate = false,
+        )
     }
 
     private fun handleQuoteRepostEvent(event: NostrEvent) {
@@ -1190,10 +1088,10 @@ class FeedViewModel(
             .filter { it in watchedEventIds }
             .filter { rememberSeenId(seenQuoteRepostIds, "${event.id}:$it") }
         if (targetIds.isEmpty()) return
-        val cur = currentFeedState()
-        val counts = cur.repostCounts.toMutableMap()
-        targetIds.forEach { targetId -> counts[targetId] = (counts[targetId] ?: 0) + 1 }
-        setFeedState(cur.copy(repostCounts = counts), immediate = false)
+        setFeedState(
+            EngagementAccumulator.quoteReposts(currentFeedState(), targetIds),
+            immediate = false,
+        )
     }
 
     private fun scheduleQuoteFetch(eventIds: List<String>) {
@@ -1244,79 +1142,49 @@ class FeedViewModel(
     }
 }
 
-private fun FeedViewModel.UiState.withoutOptimisticLike(eventId: String): FeedViewModel.UiState {
-    if (likedReactions[eventId] != "") return this
-    return copy(
-        likedReactions = likedReactions - eventId,
-        reactionCounts = reactionCounts + (
-            eventId to maxOf(0, (reactionCounts[eventId] ?: 0) - 1)
-            ),
-        likeReactionCounts = likeReactionCounts + (
-            eventId to maxOf(0, (likeReactionCounts[eventId] ?: 0) - 1)
-            ),
-    )
-}
-
-private fun FeedViewModel.UiState.withOptimisticEmojiReaction(
-    eventId: String,
-    option: ReactionOption,
-    eventIdValue: String,
-): FeedViewModel.UiState = copy(
-    reactionCounts = reactionCounts + (eventId to (reactionCounts[eventId] ?: 0) + 1),
-    customReactions = if (option is ReactionOption.Custom) {
-        customReactions + (
-            eventId to customReactions[eventId].orEmpty().incrementedWith(
-                CustomReaction(option.shortcode.trim().trim(':'), option.imageUrl.trim()),
-            )
-            )
-    } else {
-        customReactions
-    },
-    unicodeReactions = if (option is ReactionOption.Unicode) {
-        unicodeReactions + (
-            eventId to unicodeReactions[eventId].orEmpty().incrementedWithUnicodeReaction(
-                UnicodeReaction(option.value.trim()),
-            )
-            )
-    } else {
-        unicodeReactions
-    },
-    ownEmojiReactionEventIds = ownEmojiReactionEventIds + (
-        eventId to ownEmojiReactionEventIds[eventId].orEmpty().plus(option.key to eventIdValue)
-        ),
+private fun FeedViewModel.UiState.noteEngagement(eventId: String): NoteEngagementState = NoteEngagementState(
+    reactionCount = reactionCounts[eventId] ?: 0,
+    likeReactionCount = likeReactionCounts[eventId] ?: 0,
+    customReactions = customReactions[eventId].orEmpty(),
+    unicodeReactions = unicodeReactions[eventId].orEmpty(),
+    ownLikeEventId = likedReactions[eventId],
+    ownEmojiReactionEventIds = ownEmojiReactionEventIds[eventId].orEmpty(),
+    repostCount = repostCounts[eventId] ?: 0,
+    ownRepostEventId = repostedEvents[eventId],
+    pendingOperations = pendingEngagementOperations[eventId].orEmpty(),
 )
 
-private fun FeedViewModel.UiState.withoutOptimisticEmojiReaction(
+private fun FeedViewModel.UiState.withEngagement(
     eventId: String,
-    option: ReactionOption,
-): FeedViewModel.UiState {
-    val remainingOwnReactions = ownEmojiReactionEventIds[eventId].orEmpty() - option.key
-    return copy(
-        reactionCounts = reactionCounts + (
-            eventId to maxOf(0, (reactionCounts[eventId] ?: 0) - 1)
-            ),
-        customReactions = if (option is ReactionOption.Custom) {
-            customReactions + (
-                eventId to customReactions[eventId].orEmpty().decrementedWith(option)
-                )
-        } else {
-            customReactions
-        },
-        unicodeReactions = if (option is ReactionOption.Unicode) {
-            unicodeReactions + (
-                eventId to unicodeReactions[eventId].orEmpty()
-                    .decrementedWithUnicodeReaction(option)
-                )
-        } else {
-            unicodeReactions
-        },
-        ownEmojiReactionEventIds = if (remainingOwnReactions.isEmpty()) {
-            ownEmojiReactionEventIds - eventId
-        } else {
-            ownEmojiReactionEventIds + (eventId to remainingOwnReactions)
-        },
-    )
-}
+    engagement: NoteEngagementState,
+): FeedViewModel.UiState = copy(
+    reactionCounts = reactionCounts + (eventId to engagement.reactionCount),
+    likeReactionCounts = likeReactionCounts + (eventId to engagement.likeReactionCount),
+    customReactions = customReactions.putListOrRemove(eventId, engagement.customReactions),
+    unicodeReactions = unicodeReactions.putListOrRemove(eventId, engagement.unicodeReactions),
+    likedReactions = likedReactions.putOrRemove(eventId, engagement.ownLikeEventId),
+    ownEmojiReactionEventIds = ownEmojiReactionEventIds.putMapOrRemove(
+        eventId,
+        engagement.ownEmojiReactionEventIds,
+    ),
+    repostCounts = repostCounts + (eventId to engagement.repostCount),
+    repostedEvents = repostedEvents.putOrRemove(eventId, engagement.ownRepostEventId),
+    pendingEngagementOperations = pendingEngagementOperations.putMapOrRemove(
+        eventId,
+        engagement.pendingOperations,
+    ),
+)
+
+private fun <K, V> Map<K, V>.putOrRemove(key: K, value: V?): Map<K, V> =
+    if (value == null) this - key else this + (key to value)
+
+private fun <K, V> Map<K, List<V>>.putListOrRemove(key: K, value: List<V>): Map<K, List<V>> =
+    if (value.isEmpty()) this - key else this + (key to value)
+
+private fun <K, K2, V2> Map<K, Map<K2, V2>>.putMapOrRemove(
+    key: K,
+    value: Map<K2, V2>,
+): Map<K, Map<K2, V2>> = if (value.isEmpty()) this - key else this + (key to value)
 
 private data class PendingRepostTarget(
     val repostedAt: Long,
