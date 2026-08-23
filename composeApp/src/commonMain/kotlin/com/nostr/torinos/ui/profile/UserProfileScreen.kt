@@ -16,16 +16,15 @@ import androidx.compose.material3.Tab
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
-import androidx.compose.runtime.collectAsState
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.nostr.torinos.account.accountSessionViewModel
 import com.nostr.torinos.account.LocalAccountSession
-import com.nostr.torinos.network.RelayStore
 import com.nostr.torinos.ui.components.NoteTimeline
 import com.nostr.torinos.ui.components.AppFloatingActionButton
 import com.nostr.torinos.ui.feed.FeedViewModel
@@ -48,26 +47,22 @@ fun UserProfileScreen(
     onOpenReposts: (eventId: String) -> Unit = {},
     onOpenJournal: (() -> Unit)? = null,
 ) {
-    val relays by RelayStore.relays.collectAsState(
-        initial = RelayStore.defaults.filter { it.enabled }.map { it.url },
-    )
-    val contentRelayUrl = relays.firstOrNull()
     val ownerKey = ownPubkey ?: "anonymous"
     val accountSession = LocalAccountSession.current
     val viewModel: UserProfileViewModel = viewModel(
-        key = "profile-$pubkey-${contentRelayUrl ?: "all"}-$ownerKey",
+        key = "profile-$pubkey-$ownerKey",
     ) {
-        UserProfileViewModel(pubkey, deferredRelayUrl = contentRelayUrl, accountSession = accountSession)
+        UserProfileViewModel(pubkey, accountSession = accountSession)
     }
     var showRelayList by remember(pubkey) { mutableStateOf(false) }
     var selectedTab by remember(pubkey) { mutableStateOf(ProfileTimelineTab.Posts) }
     val feedViewModel: FeedViewModel = accountSessionViewModel(
-        key = "user-feed-$pubkey-${contentRelayUrl ?: "all"}-$ownerKey-${selectedTab.name}",
+        key = "user-feed-$pubkey-$ownerKey-${selectedTab.name}",
     ) { accountSession ->
         FeedViewModel(
             accountSession = accountSession,
             authorPubkey = pubkey,
-            relayUrl = contentRelayUrl,
+            relayUrl = null,
             autoStart = false,
             includeRepostsInFeed = true,
             includeRepliesInFeed = selectedTab == ProfileTimelineTab.PostsAndReplies,
