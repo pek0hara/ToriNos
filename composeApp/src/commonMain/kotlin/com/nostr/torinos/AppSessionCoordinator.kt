@@ -1069,6 +1069,7 @@ internal fun AppSessionCoordinator(
                             initialQuery = route.query,
                             onBack = { nav.popBackStack() },
                             onUserClick = ::openProfileDrawer,
+                            onOpenThread = { eventId -> nav.navigate(ThreadRoute(eventId)) },
                             onOpenReplies = { eventId -> nav.navigate(ThreadRoute(eventId)) },
                             onOpenLikes = { eventId -> nav.navigate(ThreadRoute(eventId, "likes")) },
                             onOpenReposts = { eventId -> nav.navigate(ThreadRoute(eventId, "reposts")) },
