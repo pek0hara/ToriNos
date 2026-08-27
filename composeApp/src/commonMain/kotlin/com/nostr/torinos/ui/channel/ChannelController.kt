@@ -33,6 +33,7 @@ import com.nostr.torinos.network.ChannelCacheStore
 import com.nostr.torinos.network.NostrRepository
 import com.nostr.torinos.network.ProfileFetchPolicy
 import com.nostr.torinos.network.ProfileRepository
+import com.nostr.torinos.ui.SafeCoroutineLauncher
 import com.nostr.torinos.ui.timeline.NoteEngagementCoordinator
 import com.nostr.torinos.ui.timeline.StateStore
 import com.nostr.torinos.ui.timeline.SignedEventPublisher
@@ -43,7 +44,6 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.launch
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 
@@ -54,8 +54,9 @@ internal class ChannelController(
     private val scope: CoroutineScope,
     private val autoStart: Boolean = true,
 ) {
-
-    private fun launch(block: suspend CoroutineScope.() -> Unit): Job = scope.launch(block = block)
+    private val safeCoroutineLauncher = SafeCoroutineLauncher(scope, "ChannelController")
+    private fun launch(block: suspend CoroutineScope.() -> Unit): Job =
+        safeCoroutineLauncher.launch(block = block)
 
     private val _state = StateStore<UiState>(UiState.Loading)
     val state: StateFlow<UiState> = _state.state
