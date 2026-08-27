@@ -29,6 +29,7 @@ import com.nostr.torinos.model.toUnicodeReaction
 import com.nostr.torinos.model.toReactionOption
 import com.nostr.torinos.network.NostrRepository
 import com.nostr.torinos.network.ProfileFetchPolicy
+import com.nostr.torinos.ui.SafeCoroutineLauncher
 import com.nostr.torinos.ui.timeline.ProfileHydrator
 import com.nostr.torinos.ui.timeline.NoteEngagementCoordinator
 import com.nostr.torinos.ui.timeline.QuoteResolver
@@ -37,7 +38,6 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.launch
 
 internal class ThreadController(
     private val eventId: String,
@@ -46,8 +46,9 @@ internal class ThreadController(
     private val scope: CoroutineScope,
     private val autoStart: Boolean = true,
 ) {
-
-    private fun launch(block: suspend CoroutineScope.() -> Unit): Job = scope.launch(block = block)
+    private val safeCoroutineLauncher = SafeCoroutineLauncher(scope, "ThreadController")
+    private fun launch(block: suspend CoroutineScope.() -> Unit): Job =
+        safeCoroutineLauncher.launch(block = block)
 
     private val store = ThreadStore()
     private val _state = store
@@ -74,9 +75,11 @@ internal class ThreadController(
     private val receivedRepostEvents = linkedMapOf<String, NostrEvent>()
     private val watchedEventIds = linkedSetOf<String>()
     private val watchedReactionEventIds = linkedSetOf<String>()
+    private val watchedRepostEventIds = linkedSetOf<String>()
     private val pendingQuotedEventIds = linkedSetOf<String>()
     private var replyCountBatchJob: Job? = null
     private var reactionBatchJob: Job? = null
+    private var repostBatchJob: Job? = null
     private var started = false
     private var ownPubkey: String? = null
     private val engagementCoordinator = NoteEngagementCoordinator(accountSession?.signer)
@@ -197,10 +200,14 @@ internal class ThreadController(
         )
     }
 
-    fun unrepost() {
-        val repostEventId = _state.value.ownRepostEventId ?: return
+    fun unrepost(targetEventId: String) {
+        val repostEventId = if (targetEventId == eventId) {
+            _state.value.ownRepostEventId
+        } else {
+            _state.value.repostedEvents[targetEventId]
+        } ?: return
         runEngagementOperation(
-            eventId,
+            targetEventId,
             EngagementRequest.RemoveRepost,
             NoteEngagementCommand.RemoveRepost(repostEventId),
             "リポストの解除に失敗しました",
@@ -280,15 +287,11 @@ internal class ThreadController(
 
         scheduleReplyCountFetch(eventId)
         scheduleReactionFetch(eventId)
+        scheduleRepostFetch(eventId)
 
         subscriptionJobs += launch {
             NostrRepository.subscribe(rootSubId, NostrFilter(ids = listOf(eventId), kinds = listOf(noteContext.eventKind), limit = 1))
             NostrRepository.subscribe(repliesSubId, NostrFilter(kinds = listOf(noteContext.eventKind), eTags = listOf(eventId), limit = 100))
-            NostrRepository.subscribe(repostSubId, NostrFilter(kinds = listOf(6), eTags = listOf(eventId), limit = 500))
-            NostrRepository.subscribe(
-                quoteRepostSubId,
-                NostrFilter(kinds = listOf(noteContext.eventKind), qTags = listOf(eventId), limit = 500),
-            )
         }
 
         subscriptionJobs += launch {
@@ -335,6 +338,9 @@ internal class ThreadController(
                     ThreadTreeAction.DirectReplyReceived(event),
                 )
                 _state.value = _state.value.withThreadTree(tree).copy(isLoading = false)
+                scheduleReplyCountFetch(event.id)
+                scheduleReactionFetch(event.id)
+                scheduleRepostFetch(event.id)
                 scheduleProfileFetch(event.pubkey)
                 scheduleMentionedProfileFetch(event.content)
                 val replyParentId = noteContext.replyTargetId(event)
@@ -444,22 +450,28 @@ internal class ThreadController(
         subscriptionJobs += launch {
             NostrRepository.events(repostSubId).collect { event ->
                 if (event.kind != 6 || !seenRepostIds.add(event.id)) return@collect
+                val targetId = event.tags.lastOrNull { it.firstOrNull() == "e" }?.getOrNull(1)
+                    ?.takeIf { it in watchedRepostEventIds }
+                    ?: return@collect
                 rememberReceivedEvent(receivedRepostEvents, event)
-                if (event.tags.lastOrNull { it.firstOrNull() == "e" }?.getOrNull(1) != eventId) return@collect
                 val cur = _state.value
-                val ownRepostEventId = if (ownPubkey != null && event.pubkey == ownPubkey) {
-                    event.id
-                } else {
-                    cur.ownRepostEventId
-                }
+                val isRoot = targetId == eventId
+                val isOwn = ownPubkey != null && event.pubkey == ownPubkey
                 _state.value = cur.copy(
-                    repostPubkeys = if (event.pubkey in cur.repostPubkeys) {
+                    repostPubkeys = if (!isRoot || event.pubkey in cur.repostPubkeys) {
                         cur.repostPubkeys
                     } else {
                         cur.repostPubkeys + event.pubkey
                     },
-                    repostCount = cur.repostCount + 1,
-                    ownRepostEventId = ownRepostEventId,
+                    repostCount = if (isRoot) cur.repostCount + 1 else cur.repostCount,
+                    repostCounts = if (isRoot) cur.repostCounts else cur.repostCounts +
+                        (targetId to (cur.repostCounts[targetId] ?: 0) + 1),
+                    ownRepostEventId = if (isRoot && isOwn) event.id else cur.ownRepostEventId,
+                    repostedEvents = if (!isRoot && isOwn) {
+                        cur.repostedEvents + (targetId to event.id)
+                    } else {
+                        cur.repostedEvents
+                    },
                 )
                 scheduleProfileFetch(event.pubkey)
             }
@@ -467,19 +479,36 @@ internal class ThreadController(
 
         subscriptionJobs += launch {
             NostrRepository.events(quoteRepostSubId).collect { event ->
-                if (!noteContext.matches(event) || !seenQuoteRepostIds.add(event.id)) return@collect
-                if (event.tags.none { it.firstOrNull() == "q" && it.getOrNull(1) == eventId }) return@collect
+                if (!noteContext.matches(event)) return@collect
+                val targetIds = event.tags
+                    .filter { it.firstOrNull() == "q" }
+                    .mapNotNull { it.getOrNull(1) }
+                    .filter { it in watchedRepostEventIds }
+                    .distinct()
+                    .filter { seenQuoteRepostIds.add("${event.id}:$it") }
+                if (targetIds.isEmpty()) return@collect
                 val cur = _state.value
+                val quotesRoot = eventId in targetIds
+                val counts = cur.repostCounts.toMutableMap()
+                targetIds.filter { it != eventId }.forEach { targetId ->
+                    counts[targetId] = (counts[targetId] ?: 0) + 1
+                }
                 _state.value = cur.copy(
-                    quoteReposts = (cur.quoteReposts + event)
-                        .distinctBy { it.id }
-                        .sortedByDescending { it.createdAt },
-                    repostCount = cur.repostCount + 1,
+                    quoteReposts = if (quotesRoot) {
+                        (cur.quoteReposts + event).distinctBy { it.id }.sortedByDescending { it.createdAt }
+                    } else {
+                        cur.quoteReposts
+                    },
+                    repostCount = if (quotesRoot) cur.repostCount + 1 else cur.repostCount,
+                    repostCounts = counts,
                 )
                 scheduleProfileFetch(event.pubkey)
                 scheduleMentionedProfileFetch(event.content)
-                scheduleReplyCountFetch(event.id)
-                scheduleReactionFetch(event.id)
+                if (quotesRoot) {
+                    scheduleReplyCountFetch(event.id)
+                    scheduleReactionFetch(event.id)
+                    scheduleRepostFetch(event.id)
+                }
             }
         }
 
@@ -498,6 +527,7 @@ internal class ThreadController(
         subscriptionJobs.clear()
         replyCountBatchJob?.cancel()
         reactionBatchJob?.cancel()
+        repostBatchJob?.cancel()
         pendingQuotedEventIds.clear()
         NostrRepository.close(rootSubId)
         NostrRepository.close(repliesSubId)
@@ -561,10 +591,17 @@ internal class ThreadController(
             }
             ?.id
             ?: current.ownRepostEventId
+        val repostedEvents = current.repostedEvents.toMutableMap()
+        receivedRepostEvents.values.filter { it.pubkey == pubkey }.forEach { event ->
+            val targetId = event.tags.lastOrNull { it.firstOrNull() == "e" }?.getOrNull(1)
+                ?: return@forEach
+            if (targetId != eventId) repostedEvents[targetId] = event.id
+        }
         _state.value = current.copy(
             likedReactions = likedReactions,
             ownEmojiReactionEventIds = ownEmojiReactionEventIds,
             ownRepostEventId = ownRepostEventId,
+            repostedEvents = repostedEvents,
         )
     }
 
@@ -595,6 +632,7 @@ internal class ThreadController(
         scheduleMentionedProfileFetch(event.content)
         scheduleReplyCountFetch(event.id)
         scheduleReactionFetch(event.id)
+        scheduleRepostFetch(event.id)
     }
 
     private fun scheduleReplyCountFetch(eventId: String) {
@@ -625,6 +663,26 @@ internal class ThreadController(
         }
     }
 
+    private fun scheduleRepostFetch(eventId: String) {
+        if (!watchedRepostEventIds.add(eventId)) return
+        while (watchedRepostEventIds.size > MAX_WATCHED_EVENTS) {
+            watchedRepostEventIds.remove(watchedRepostEventIds.first())
+        }
+        repostBatchJob?.cancel()
+        repostBatchJob = launch {
+            delay(300)
+            val ids = watchedRepostEventIds.toList()
+            NostrRepository.subscribe(
+                repostSubId,
+                NostrFilter(kinds = listOf(6), eTags = ids, limit = 500),
+            )
+            NostrRepository.subscribe(
+                quoteRepostSubId,
+                NostrFilter(kinds = listOf(noteContext.eventKind), qTags = ids, limit = 500),
+            )
+        }
+    }
+
     companion object {
         private const val MAX_RECEIVED_ENGAGEMENT_EVENTS = 2_000
         private const val MAX_WATCHED_EVENTS = 100
@@ -642,8 +700,8 @@ internal fun ThreadViewModel.UiState.noteEngagement(
     unicodeReactions = unicodeReactions[eventId].orEmpty(),
     ownLikeEventId = likedReactions[eventId],
     ownEmojiReactionEventIds = ownEmojiReactionEventIds[eventId].orEmpty(),
-    repostCount = if (eventId == rootEventId) repostCount else 0,
-    ownRepostEventId = if (eventId == rootEventId) ownRepostEventId else null,
+    repostCount = if (eventId == rootEventId) repostCount else repostCounts[eventId] ?: 0,
+    ownRepostEventId = if (eventId == rootEventId) ownRepostEventId else repostedEvents[eventId],
     pendingOperations = pendingEngagementOperations[eventId].orEmpty(),
 )
 
@@ -666,6 +724,9 @@ private fun ThreadViewModel.UiState.withEngagement(
         ),
         repostCount = if (isRoot) engagement.repostCount else repostCount,
         ownRepostEventId = if (isRoot) engagement.ownRepostEventId else ownRepostEventId,
+        repostCounts = if (isRoot) repostCounts else repostCounts + (eventId to engagement.repostCount),
+        repostedEvents = if (isRoot) repostedEvents else
+            repostedEvents.putOrRemove(eventId, engagement.ownRepostEventId),
     pendingEngagementOperations = pendingEngagementOperations.putMapOrRemove(
             eventId,
             engagement.pendingOperations,

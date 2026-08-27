@@ -37,9 +37,11 @@ class ThreadViewModel(
         val repostPubkeys: List<String> = emptyList(),
         val quoteReposts: List<NostrEvent> = emptyList(),
         val repostCount: Int = 0,
+        val repostCounts: Map<String, Int> = emptyMap(),
         val likedReactions: Map<String, String> = emptyMap(),
         val ownEmojiReactionEventIds: Map<String, Map<String, String>> = emptyMap(),
         val ownRepostEventId: String? = null,
+        val repostedEvents: Map<String, String> = emptyMap(),
         val pendingEngagementOperations: Map<String, Map<EngagementSlot, PendingEngagementOperation>> = emptyMap(),
         val engagementError: String? = null,
         val isLoading: Boolean = true,
@@ -56,6 +58,12 @@ class ThreadViewModel(
 
         fun isRootReposted(rootEventId: String): Boolean =
             noteEngagement(rootEventId, rootEventId).isRepostedByMe
+
+        fun isReposted(eventId: String, rootEventId: String): Boolean =
+            noteEngagement(eventId, rootEventId).isRepostedByMe
+
+        fun repostCount(eventId: String, rootEventId: String): Int =
+            if (eventId == rootEventId) repostCount else repostCounts[eventId] ?: 0
     }
 
     private val controller = ThreadController(eventId, noteContext, accountSession, viewModelScope)
@@ -71,7 +79,7 @@ class ThreadViewModel(
     fun unreactWithEmoji(eventId: String, option: ReactionOption) =
         controller.unreactWithEmoji(eventId, option)
     fun repost(event: NostrEvent) = controller.repost(event)
-    fun unrepost() = controller.unrepost()
+    fun unrepost(eventId: String) = controller.unrepost(eventId)
     fun startSubscriptions() = controller.startSubscriptions()
     fun stopSubscriptions() = controller.stopSubscriptions()
 

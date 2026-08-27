@@ -139,6 +139,8 @@ fun NoteCard(
     onUnmute: (() -> Unit)? = null,
     onReport: ((reason: String, detail: String) -> Unit)? = null,
     onNoteClick: ((eventId: String) -> Unit)? = null,
+    onQuotedNoteClick: ((eventId: String) -> Unit)? = onNoteClick,
+    onReplyParentClick: ((eventId: String) -> Unit)? = onNoteClick,
 ) {
     val onQuote = LocalQuotePostHandler.current
     var showMenu by remember { mutableStateOf(false) }
@@ -374,7 +376,7 @@ fun NoteCard(
                     profiles = profiles,
                     onUserClick = onUserClick,
                     onImageClick = { urls, index -> expandedImageState = ExpandedImageState(urls, index) },
-                    onNoteClick = onNoteClick,
+                    onNoteClick = onReplyParentClick,
                 )
                 Spacer(modifier = Modifier.height(4.dp))
             }
@@ -406,7 +408,7 @@ fun NoteCard(
                     profiles = profiles,
                     onUserClick = onUserClick,
                     onImageClick = { urls, index -> expandedImageState = ExpandedImageState(urls, index) },
-                    onNoteClick = onNoteClick,
+                    onNoteClick = onQuotedNoteClick,
                 )
             }
             if (reactionCount > 0) {

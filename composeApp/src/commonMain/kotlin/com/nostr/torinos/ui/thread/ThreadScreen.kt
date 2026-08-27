@@ -52,6 +52,7 @@ import com.nostr.torinos.model.noteContextForChannel
 import com.nostr.torinos.model.quotedEventIds
 import com.nostr.torinos.model.stripNostrEventUris
 import com.nostr.torinos.model.toCustomReaction
+import com.nostr.torinos.network.CustomEmojiStore
 import com.nostr.torinos.ui.components.NetworkImage
 import com.nostr.torinos.ui.components.NoteCard
 import com.nostr.torinos.ui.components.ProfileNameText
@@ -91,7 +92,6 @@ fun ThreadScreen(
     val listState = rememberSaveable(eventId, saver = LazyListState.Saver) { LazyListState() }
     var didApplyInitialBottomScroll by remember(eventId) { mutableStateOf(false) }
     var previousRepliesBottomIndex by remember(eventId) { mutableStateOf<Int?>(null) }
-
     DisposableEffect(viewModel) {
         viewModel.startSubscriptions()
         onDispose { viewModel.stopSubscriptions() }
@@ -282,12 +282,14 @@ fun ThreadScreen(
                                 onRepost = if (ownPubkey != null) {
                                     {
                                         if (state.isRootReposted(root.id)) {
-                                            viewModel.unrepost()
+                                            viewModel.unrepost(root.id)
                                         } else {
                                             viewModel.repost(root)
                                         }
                                     }
                                 } else null,
+                                onQuotedNoteClick = onOpenThread,
+                                onReplyParentClick = onOpenThread,
                                 ownPubkey = ownPubkey,
                             )
                             HorizontalDivider()
@@ -418,8 +420,27 @@ fun ThreadScreen(
                                             likeReactionCount = state.likeReactionCounts[quoteRepost.id] ?: 0,
                                             customReactions = state.customReactions[quoteRepost.id].orEmpty(),
                                             unicodeReactions = state.unicodeReactions[quoteRepost.id].orEmpty(),
+                                            repostCount = state.repostCount(quoteRepost.id, eventId),
+                                            isLiked = state.isLiked(quoteRepost.id),
+                                            ownEmojiReactionEventIds = state.displayOwnEmojiReactionEventIds(quoteRepost.id),
+                                            isReposted = state.isReposted(quoteRepost.id, eventId),
                                             quotedEvents = listOfNotNull(quotedRoot),
                                             onUserClick = onUserClick,
+                                            onLike = if (ownPubkey != null) {
+                                                {
+                                                    if (state.isLiked(quoteRepost.id)) {
+                                                        viewModel.unreact(quoteRepost.id)
+                                                    } else {
+                                                        viewModel.react(quoteRepost.id, quoteRepost.pubkey)
+                                                    }
+                                                }
+                                            } else null,
+                                            onEmojiReact = if (ownPubkey != null) {
+                                                { option -> viewModel.reactWithEmoji(quoteRepost.id, quoteRepost.pubkey, option) }
+                                            } else null,
+                                            onEmojiUnreact = if (ownPubkey != null) {
+                                                { option -> viewModel.unreactWithEmoji(quoteRepost.id, option) }
+                                            } else null,
                                             onReply = if (ownPubkey != null && onReply != null) {
                                                 {
                                                     onReply(
@@ -433,7 +454,17 @@ fun ThreadScreen(
                                             onOpenReplies = { onOpenThread(quoteRepost.id) },
                                             onOpenLikes = { onOpenLikes(quoteRepost.id) },
                                             onOpenReposts = { onOpenReposts(quoteRepost.id) },
+                                            onRepost = if (ownPubkey != null) {
+                                                {
+                                                    if (state.isReposted(quoteRepost.id, eventId)) {
+                                                        viewModel.unrepost(quoteRepost.id)
+                                                    } else {
+                                                        viewModel.repost(quoteRepost)
+                                                    }
+                                                }
+                                            } else null,
                                             onNoteClick = onOpenThread,
+                                            onQuotedNoteClick = { onOpenThread(quoteRepost.id) },
                                             ownPubkey = ownPubkey,
                                         )
                                         HorizontalDivider()
@@ -586,7 +617,9 @@ private fun ReactionUserRow(
             }
         }
         if (reaction != null) {
-            ReactionValue(reaction)
+            ReactionValue(
+                reaction = reaction,
+            )
         } else if (showReaction) {
             Text(
                 text = "❤️",
@@ -597,14 +630,23 @@ private fun ReactionUserRow(
 }
 
 @Composable
-private fun ReactionValue(reaction: com.nostr.torinos.model.NostrEvent) {
+private fun ReactionValue(
+    reaction: com.nostr.torinos.model.NostrEvent,
+) {
     val customReaction = remember(reaction.id) { reaction.toCustomReaction() }
     if (customReaction != null) {
         NetworkImage(
             url = customReaction.imageUrl,
             contentDescription = ":${customReaction.shortcode}:",
             contentScale = ContentScale.Fit,
-            modifier = Modifier.size(28.dp),
+            modifier = Modifier
+                .size(28.dp)
+                .clickable {
+                    CustomEmojiStore.requestOpenSearch(
+                        shortcode = customReaction.shortcode,
+                        imageUrl = customReaction.imageUrl,
+                    )
+                },
         )
     } else {
         Text(
