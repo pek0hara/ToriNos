@@ -8,6 +8,7 @@ import com.nostr.torinos.network.FollowedRelayDiscoveryResult
 import com.nostr.torinos.network.RelayEntry
 import com.nostr.torinos.network.RelayInformation
 import com.nostr.torinos.network.RelayInformationRepository
+import com.nostr.torinos.network.NostrRepository
 import com.nostr.torinos.network.RelayStore
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.CancellationException
@@ -54,6 +55,9 @@ class RelaySettingsViewModel(
     val entries: StateFlow<List<RelayEntry>> = _entries.asStateFlow()
     private val _informationState = MutableStateFlow(RelayInformationUiState())
     val informationState: StateFlow<RelayInformationUiState> = _informationState.asStateFlow()
+    private val _relayInformation = MutableStateFlow<Map<String, RelayInformation>>(emptyMap())
+    val relayInformation: StateFlow<Map<String, RelayInformation>> = _relayInformation.asStateFlow()
+    val connectionStates = NostrRepository.relayConnectionStates
     private val _discoveryState = MutableStateFlow(FollowedRelayDiscoveryUiState())
     val discoveryState: StateFlow<FollowedRelayDiscoveryUiState> = _discoveryState.asStateFlow()
     private val _publishedRelayListState = MutableStateFlow(
@@ -67,6 +71,7 @@ class RelaySettingsViewModel(
         _publishedRelayListState.asStateFlow()
 
     private var fetchInformationJob: Job? = null
+    private val relayInformationJobs = mutableMapOf<String, Job>()
     private var discoverFollowedRelaysJob: Job? = null
     private val changedRelayUrls = mutableSetOf<String>()
     private var committedEntries = RelayStore.entries.value
@@ -74,6 +79,7 @@ class RelaySettingsViewModel(
 
     init {
         observeStoredEntries()
+        loadRelayInformation(_entries.value.mapTo(linkedSetOf()) { it.url })
         discoverFollowedRelays()
         if (isWriteSupported) refreshPublishedRelayList()
     }
@@ -83,6 +89,7 @@ class RelaySettingsViewModel(
         val trimmed = url.trim()
         if (trimmed.isBlank() || entries.value.any { it.url == trimmed }) return
         _entries.update { it + RelayEntry(trimmed, enabled = true) }
+        loadRelayInformation(setOf(trimmed))
         changedRelayUrls += trimmed
         reconcilePublishedRelayChanges()
     }
@@ -240,6 +247,7 @@ class RelaySettingsViewModel(
         launch {
             RelayStore.entries.collect { storedEntries ->
                 if (isApplyingDraft) return@collect
+                loadRelayInformation(storedEntries.mapTo(linkedSetOf()) { it.url })
                 if (changedRelayUrls.isEmpty()) {
                     committedEntries = storedEntries
                     _entries.value = storedEntries
@@ -317,6 +325,7 @@ class RelaySettingsViewModel(
                 } else {
                     result.fold(
                         onSuccess = {
+                            _relayInformation.update { information -> information + (url to it) }
                             current.copy(isLoading = false, information = it, errorMessage = null)
                         },
                         onFailure = {
@@ -327,6 +336,21 @@ class RelaySettingsViewModel(
                             )
                         },
                     )
+                }
+            }
+        }
+    }
+
+    private fun loadRelayInformation(urls: Set<String>) {
+        urls.forEach { url ->
+            if (url in _relayInformation.value || relayInformationJobs[url]?.isActive == true) return@forEach
+            relayInformationJobs[url] = launch {
+                try {
+                    RelayInformationRepository.fetch(url).onSuccess { information ->
+                        _relayInformation.update { current -> current + (url to information) }
+                    }
+                } finally {
+                    relayInformationJobs.remove(url)
                 }
             }
         }

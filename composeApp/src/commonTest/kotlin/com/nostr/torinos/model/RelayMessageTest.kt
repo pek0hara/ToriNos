@@ -58,6 +58,24 @@ class RelayMessageTest {
     }
 
     @Test
+    fun parse_acceptedOkMessage_returnsOk() {
+        val parsed = parseRelayMessage("""["OK","$zeroId",true,"saved"]""")
+        assertIs<RelayMessage.Ok>(parsed)
+        assertEquals(zeroId, parsed.eventId)
+        assertTrue(parsed.accepted)
+        assertEquals("saved", parsed.message)
+    }
+
+    @Test
+    fun parse_rejectedOkMessage_returnsOk() {
+        val parsed = parseRelayMessage("""["OK","$zeroId",false,"blocked: unsupported kind"]""")
+        assertIs<RelayMessage.Ok>(parsed)
+        assertEquals(zeroId, parsed.eventId)
+        assertEquals(false, parsed.accepted)
+        assertEquals("blocked: unsupported kind", parsed.message)
+    }
+
+    @Test
     fun parse_unknownType_returnsUnknown() {
         val raw = """["AUTH","challenge-token"]"""
         val parsed = parseRelayMessage(raw)

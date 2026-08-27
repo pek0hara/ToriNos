@@ -24,6 +24,9 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
@@ -73,6 +76,9 @@ object NostrRepository {
     private val temporaryRelays = mutableMapOf<String, TemporaryRelayHandle>()
     private val temporarySubscriptions = mutableMapOf<String, Pair<NostrFilter, String>>()
     private val activeRelayCount = MutableStateFlow(0)
+    private val _relayConnectionStates = MutableStateFlow<Map<String, RelayConnectionState>>(emptyMap())
+    val relayConnectionStates: StateFlow<Map<String, RelayConnectionState>> =
+        _relayConnectionStates.asStateFlow()
 
     init {
         scope.launch {
@@ -141,7 +147,18 @@ object NostrRepository {
                 appLog("[NostrRepository] connected collector error for ${relay.url}: ${e::class.simpleName}: ${e.message}")
             }
         }
-        return ActiveRelayHandle(relay, listOf(messageJob, connectedJob))
+        val connectionStateJob = scope.launch {
+            relay.connectionState.collect { connectionState ->
+                stateMutex.withLock {
+                    if (activeRelays[relay.url]?.relay === relay) {
+                        _relayConnectionStates.update { states ->
+                            states + (relay.url to connectionState)
+                        }
+                    }
+                }
+            }
+        }
+        return ActiveRelayHandle(relay, listOf(messageJob, connectedJob, connectionStateJob))
     }
 
     private fun desiredActiveRelayUrlsLocked(): Set<String> =
@@ -159,6 +176,7 @@ object NostrRepository {
             createActiveRelayHandle(relay).also { activeRelays[url] = it }
         }
         activeRelayCount.value = activeRelays.size
+        _relayConnectionStates.update { states -> states.filterKeys { it in desiredUrls } }
         return removed to added
     }
 
@@ -609,9 +627,21 @@ object NostrRepository {
         }
     }
 
+    /** 指定リレーがイベントを受理したことを OK 応答で確認する。 */
+    suspend fun publishToRelaysAndAwaitAcceptance(
+        event: NostrEvent,
+        relayUrls: Collection<String>,
+    ) {
+        val result = publishToRelaysWithResult(event, relayUrls, awaitAcceptance = true)
+        check(result.failedRelays.isEmpty()) {
+            "受理されなかったリレーがあります: ${result.failedRelays.entries.joinToString { "${it.key} (${it.value})" }}"
+        }
+    }
+
     internal suspend fun publishToRelaysWithResult(
         event: NostrEvent,
         relayUrls: Collection<String>,
+        awaitAcceptance: Boolean = false,
     ): RelayPublishResult = coroutineScope {
         val targets = relayUrls.map { it.trim() }.filter { it.isNotBlank() }.distinct()
         if (targets.isEmpty()) {
@@ -627,16 +657,29 @@ object NostrRepository {
                     val activeRelay = stateMutex.withLock { activeRelays[url]?.relay }
                     if (activeRelay != null) {
                         check(withTimeoutOrNull(PUBLISH_TIMEOUT_MS) {
-                            activeRelay.sendAndAwait(message)
+                            if (awaitAcceptance) {
+                                val response = activeRelay.sendEventAndAwaitOk(message, event.id)
+                                check(response.accepted) { response.message.ifBlank { "リレーに拒否されました" } }
+                            } else {
+                                activeRelay.sendAndAwait(message)
+                            }
                             true
                         } == true) { "送信がタイムアウトしました" }
                     } else {
                         val relay = NostrRelay(url, httpClient)
                         try {
-                            relay.connect(this)
+                            // 一時リレーの再接続ループをこの publish の子ジョブにすると、
+                            // タイムアウト後も子ジョブの終了待ちで publish 自体が戻らないことがある。
+                            // リポジトリのライフサイクルへ分離し、finally で明示的に停止する。
+                            relay.connect(scope)
                             check(withTimeoutOrNull(PUBLISH_TIMEOUT_MS) {
                                 relay.connected.first()
-                                relay.sendAndAwait(message)
+                                if (awaitAcceptance) {
+                                    val response = relay.sendEventAndAwaitOk(message, event.id)
+                                    check(response.accepted) { response.message.ifBlank { "リレーに拒否されました" } }
+                                } else {
+                                    relay.sendAndAwait(message)
+                                }
                                 true
                             } == true) { "接続または送信がタイムアウトしました" }
                         } finally {

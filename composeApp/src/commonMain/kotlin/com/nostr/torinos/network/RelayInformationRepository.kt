@@ -16,6 +16,7 @@ import kotlinx.serialization.json.Json
 @Serializable
 data class RelayInformation(
     val name: String? = null,
+    val icon: String? = null,
     val description: String? = null,
     val pubkey: String? = null,
     val contact: String? = null,

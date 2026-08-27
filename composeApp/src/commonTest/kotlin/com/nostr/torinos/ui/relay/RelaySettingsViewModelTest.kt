@@ -97,4 +97,24 @@ class RelaySettingsViewModelTest {
             result,
         )
     }
+
+    @Test
+    fun relayPresentationUsesNip11MetadataWithHostFallbacks() {
+        assertEquals(
+            "damus.io",
+            relayDisplayName("wss://relay.damus.io", " damus.io "),
+        )
+        assertEquals(
+            "relay.damus.io",
+            relayDisplayName("wss://relay.damus.io", null),
+        )
+        assertEquals(
+            "https://cdn.example.com/relay.png",
+            relayIconUrl("wss://relay.damus.io", " https://cdn.example.com/relay.png "),
+        )
+        assertEquals(
+            "https://relay.damus.io/favicon.ico",
+            relayIconUrl("wss://relay.damus.io", null),
+        )
+    }
 }

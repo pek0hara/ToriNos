@@ -1,6 +1,9 @@
 package com.nostr.torinos.ui.relay
 
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.background
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -10,6 +13,7 @@ import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
@@ -20,7 +24,6 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
-import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Remove
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -33,6 +36,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import com.nostr.torinos.ui.components.AppTopBar
@@ -43,13 +47,20 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.runtime.collectAsState
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.nostr.torinos.account.accountSessionViewModel
 import com.nostr.torinos.network.RelayEntry
+import com.nostr.torinos.network.RelayConnectionState
 import com.nostr.torinos.network.RelayInformation
 import com.nostr.torinos.network.RelayLimitation
+import com.nostr.torinos.ui.components.NetworkImage
+import io.ktor.http.Url
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -61,6 +72,8 @@ fun RelaySettingsScreen(
 ) {
     val entries by viewModel.entries.collectAsState()
     val informationState by viewModel.informationState.collectAsState()
+    val relayInformation by viewModel.relayInformation.collectAsState()
+    val connectionStates by viewModel.connectionStates.collectAsState()
     val discoveryState by viewModel.discoveryState.collectAsState()
     val publishedRelayListState by viewModel.publishedRelayListState.collectAsState()
     var input by remember { mutableStateOf("") }
@@ -243,6 +256,8 @@ fun RelaySettingsScreen(
                 items(enabledEntries, key = { it.url }) { entry ->
                     RelayRow(
                         entry = entry,
+                        information = relayInformation[entry.url],
+                        connectionState = connectionStates[entry.url],
                         onToggle = { viewModel.setEnabled(entry.url, it) },
                         enabled = !publishedRelayListState.isPublishing,
                         onShowInformation = { viewModel.showRelayInformation(entry.url) },
@@ -264,6 +279,8 @@ fun RelaySettingsScreen(
                     items(disabledEntries, key = { it.url }) { entry ->
                         RelayRow(
                             entry = entry,
+                            information = relayInformation[entry.url],
+                            connectionState = connectionStates[entry.url],
                             onToggle = { viewModel.setEnabled(entry.url, it) },
                             enabled = !publishedRelayListState.isPublishing,
                             onShowInformation = { viewModel.showRelayInformation(entry.url) },
@@ -416,6 +433,8 @@ private fun DisabledRelaysHeader(
 @Composable
 private fun RelayRow(
     entry: RelayEntry,
+    information: RelayInformation?,
+    connectionState: RelayConnectionState?,
     onToggle: (Boolean) -> Unit,
     enabled: Boolean,
     onShowInformation: () -> Unit,
@@ -426,25 +445,108 @@ private fun RelayRow(
             .clickable(onClick = onShowInformation)
             .padding(vertical = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.SpaceBetween,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
     ) {
         Checkbox(
             checked = entry.enabled,
             onCheckedChange = onToggle,
             enabled = enabled,
         )
-        Text(
-            text = entry.url,
-            style = MaterialTheme.typography.bodySmall,
-            modifier = Modifier.weight(1f),
+        RelayIcon(
+            relayUrl = entry.url,
+            iconUrl = relayIconUrl(entry.url, information?.icon),
         )
-        IconButton(onClick = onShowInformation) {
-            Icon(
-                Icons.Default.Info,
-                contentDescription = "リレー情報",
+        Column(
+            modifier = Modifier.weight(1f),
+            verticalArrangement = Arrangement.spacedBy(2.dp),
+        ) {
+            Text(
+                text = relayDisplayName(entry.url, information?.name),
+                style = MaterialTheme.typography.bodyLarge,
+                fontWeight = FontWeight.SemiBold,
+                maxLines = 1,
+            )
+            Text(
+                text = entry.url,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+            )
+        }
+        RelayConnectionBadge(
+            state = connectionState ?: RelayConnectionState.Disconnected,
+        )
+    }
+}
+
+@Composable
+private fun RelayIcon(
+    relayUrl: String,
+    iconUrl: String?,
+) {
+    val shape = RoundedCornerShape(12.dp)
+    Box(
+        contentAlignment = Alignment.Center,
+        modifier = Modifier
+            .size(48.dp)
+            .clip(shape)
+            .background(MaterialTheme.colorScheme.surfaceVariant),
+    ) {
+        Text(
+            text = relayDisplayName(relayUrl, null).firstOrNull()?.uppercase() ?: "R",
+            style = MaterialTheme.typography.titleLarge,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            fontWeight = FontWeight.Bold,
+        )
+        if (iconUrl != null) {
+            NetworkImage(
+                url = iconUrl,
+                contentDescription = "${relayDisplayName(relayUrl, null)} のアイコン",
+                contentScale = ContentScale.Crop,
+                maxDecodeSizePx = 144,
+                animate = false,
+                modifier = Modifier
+                    .size(48.dp)
+                    .clip(shape),
             )
         }
     }
+}
+
+@Composable
+private fun RelayConnectionBadge(state: RelayConnectionState) {
+    val (label, color) = when (state) {
+        RelayConnectionState.Connected -> "オンライン" to Color(0xFF0B8F55)
+        RelayConnectionState.Connecting -> "接続中" to Color(0xFFC47700)
+        RelayConnectionState.Disconnected -> "オフライン" to MaterialTheme.colorScheme.onSurfaceVariant
+    }
+    Surface(
+        color = color.copy(alpha = 0.12f),
+        contentColor = color,
+        shape = RoundedCornerShape(50),
+        border = BorderStroke(1.dp, color.copy(alpha = 0.45f)),
+    ) {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelSmall,
+            modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
+            maxLines = 1,
+        )
+    }
+}
+
+internal fun relayDisplayName(relayUrl: String, metadataName: String?): String =
+    metadataName?.trim()?.takeIf { it.isNotEmpty() }
+        ?: runCatching { Url(relayUrl).host }.getOrNull()?.takeIf { it.isNotBlank() }
+        ?: relayUrl
+
+internal fun relayIconUrl(relayUrl: String, metadataIcon: String?): String? {
+    metadataIcon?.trim()?.takeIf { icon ->
+        icon.startsWith("https://", ignoreCase = true) ||
+            icon.startsWith("http://", ignoreCase = true)
+    }?.let { return it }
+    val host = runCatching { Url(relayUrl).host }.getOrNull()?.takeIf { it.isNotBlank() } ?: return null
+    return "https://$host/favicon.ico"
 }
 
 @Composable
