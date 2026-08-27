@@ -1591,7 +1591,7 @@ private fun GridImage(
         url = url,
         contentDescription = null,
         contentScale = ContentScale.Fit,
-        alignment = Alignment.CenterStart,
+        alignment = Alignment.Center,
         maxDecodeSizePx = TimelineGridImageMaxDecodeSizePx,
         filterQuality = FilterQuality.Low,
         animate = false,
