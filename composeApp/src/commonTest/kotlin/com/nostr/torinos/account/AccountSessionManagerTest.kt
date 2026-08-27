@@ -7,7 +7,15 @@ import kotlin.test.assertEquals
 import kotlin.test.assertNotEquals
 import kotlin.test.assertTrue
 import kotlin.test.assertFailsWith
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeout
 
 class AccountSessionManagerTest {
     @Test
@@ -58,6 +66,36 @@ class AccountSessionManagerTest {
         assertEquals(PUBKEY_B, manager.currentPubkey)
         assertEquals(false, storage.accountsForTest.single { it.pubkeyHex == PUBKEY_B }.isLoggedOut)
         assertEquals(false, storage.accountsForTest.single { it.pubkeyHex == PUBKEY_A }.isLoggedOut)
+    }
+
+    @Test
+    fun callerCancellationDoesNotLeaveAccountSwitching() = runBlocking {
+        val manager = newManager(FakeAccountStorage(activePubkey = PUBKEY_A))
+        val active = manager.initialize().getOrThrow() as AccountSessionState.Active
+        val childStarted = CompletableDeferred<Unit>()
+        val allowSessionClose = CompletableDeferred<Unit>()
+        active.session.resources.scope.launch {
+            childStarted.complete(Unit)
+            try {
+                awaitCancellation()
+            } finally {
+                withContext(NonCancellable) { allowSessionClose.await() }
+            }
+        }
+        childStarted.await()
+
+        val caller = launch { manager.switchAccount(PUBKEY_B) }
+        withTimeout(2_000L) {
+            manager.state.first { it is AccountSessionState.Switching }
+        }
+
+        caller.cancelAndJoin()
+        allowSessionClose.complete(Unit)
+
+        val switched = withTimeout(2_000L) {
+            manager.state.first { it is AccountSessionState.Active && it.session.pubkey == PUBKEY_B }
+        } as AccountSessionState.Active
+        assertEquals(PUBKEY_B, switched.session.pubkey)
     }
 
     @Test

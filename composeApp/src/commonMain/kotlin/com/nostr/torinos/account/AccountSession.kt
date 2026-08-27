@@ -23,7 +23,8 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.async
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 
@@ -110,13 +111,20 @@ internal class AccountSessionResources(
         closeActions.toList().also { closeActions.clear() }.forEach { action ->
             runCatching(action)
         }
-        sessionJob.cancelAndJoin()
+        // ネットワーク処理などの子ジョブがキャンセル完了を返さなくても、
+        // アカウント操作のインジケータを永続的に止めない。
+        sessionJob.cancel()
+        withTimeoutOrNull(SESSION_CLOSE_TIMEOUT_MS) {
+            sessionJob.join()
+        }
     }
 
     fun onClose(action: () -> Unit) {
         if (isClosed) action() else closeActions += action
     }
 }
+
+private const val SESSION_CLOSE_TIMEOUT_MS = 2_000L
 
 /** 秘密鍵を画面や ViewModel に公開せず、セッションに固定した鍵で署名する。 */
 interface AccountSigner {
@@ -223,6 +231,9 @@ class AccountSessionManager internal constructor(
         PrivateKeyAccountSigner(credentials.privateKeyHex, lease)
     },
 ) {
+    // AccountSessionHost の破棄で呼び出し元 ViewModel がキャンセルされても、
+    // Switching に入った遷移は必ず終端状態まで完了させる。
+    private val transitionScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private val transitionMutex = Mutex()
     private val _state = MutableStateFlow<AccountSessionState>(AccountSessionState.Loading)
     val state: StateFlow<AccountSessionState> = _state.asStateFlow()
@@ -257,7 +268,10 @@ class AccountSessionManager internal constructor(
         }
     }
 
-    suspend fun switchAccount(pubkey: String): Result<AccountSession> = transitionMutex.withLock {
+    suspend fun switchAccount(pubkey: String): Result<AccountSession> =
+        transitionScope.async { switchAccountInternal(pubkey) }.await()
+
+    private suspend fun switchAccountInternal(pubkey: String): Result<AccountSession> = transitionMutex.withLock {
         _transitionError.value = null
         val previous = _state.value
         val current = (previous as? AccountSessionState.Active)?.session
@@ -267,8 +281,8 @@ class AccountSessionManager internal constructor(
             fromPubkey = current?.pubkey,
             toPubkey = pubkey,
         )
-        current?.resources?.close()
         val result = runCatching {
+            current?.resources?.close()
             storage.switchAccount(pubkey)
             val credentials = checkNotNull(storage.loadActiveCredentials()) {
                 "切り替え先アカウントの鍵を読み込めませんでした"
@@ -287,6 +301,9 @@ class AccountSessionManager internal constructor(
 
     /** 鍵追加直後など、KeyStorage の現在値から新しいセッションを開始する。 */
     suspend fun activateCurrentAccount(expectedPubkey: String? = null): Result<AccountSession> =
+        transitionScope.async { activateCurrentAccountInternal(expectedPubkey) }.await()
+
+    private suspend fun activateCurrentAccountInternal(expectedPubkey: String?): Result<AccountSession> =
         transitionMutex.withLock {
             _transitionError.value = null
             val previous = _state.value
@@ -295,8 +312,8 @@ class AccountSessionManager internal constructor(
                 toPubkey = expectedPubkey,
             )
             val previousSession = (previous as? AccountSessionState.Active)?.session
-            previousSession?.resources?.close()
             val result = runCatching {
+                previousSession?.resources?.close()
                 val credentials = checkNotNull(storage.loadActiveCredentials()) {
                     "アカウントの鍵を読み込めませんでした"
                 }
@@ -314,7 +331,10 @@ class AccountSessionManager internal constructor(
             result
         }
 
-    suspend fun logout(): Result<AccountSessionState> = transitionMutex.withLock {
+    suspend fun logout(): Result<AccountSessionState> =
+        transitionScope.async { logoutInternal() }.await()
+
+    private suspend fun logoutInternal(): Result<AccountSessionState> = transitionMutex.withLock {
         _transitionError.value = null
         val previous = _state.value
         _state.value = AccountSessionState.Switching(
@@ -322,8 +342,8 @@ class AccountSessionManager internal constructor(
             toPubkey = null,
         )
         val previousSession = (previous as? AccountSessionState.Active)?.session
-        previousSession?.resources?.close()
         runCatching {
+            previousSession?.resources?.close()
             storage.logout()
             activeOrAnonymous(storage.loadActiveCredentials()).also { _state.value = it }
         }.onFailure {
@@ -332,7 +352,10 @@ class AccountSessionManager internal constructor(
         }
     }
 
-    suspend fun deleteCurrentAccount(): Result<AccountSessionState> = transitionMutex.withLock {
+    suspend fun deleteCurrentAccount(): Result<AccountSessionState> =
+        transitionScope.async { deleteCurrentAccountInternal() }.await()
+
+    private suspend fun deleteCurrentAccountInternal(): Result<AccountSessionState> = transitionMutex.withLock {
         _transitionError.value = null
         val previous = _state.value
         _state.value = AccountSessionState.Switching(
@@ -340,8 +363,8 @@ class AccountSessionManager internal constructor(
             toPubkey = null,
         )
         val previousSession = (previous as? AccountSessionState.Active)?.session
-        previousSession?.resources?.close()
         runCatching {
+            previousSession?.resources?.close()
             storage.deleteActiveAccount()
             activeOrAnonymous(storage.loadActiveCredentials()).also { _state.value = it }
         }.onFailure {
