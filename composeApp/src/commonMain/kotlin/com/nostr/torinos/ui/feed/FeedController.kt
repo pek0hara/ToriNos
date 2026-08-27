@@ -32,6 +32,7 @@ import com.nostr.torinos.network.SubscriptionBehavior
 import com.nostr.torinos.network.SubscriptionSession
 import com.nostr.torinos.network.SubscriptionSignal
 import com.nostr.torinos.network.SubscriptionSpec
+import com.nostr.torinos.ui.SafeCoroutineLauncher
 import com.nostr.torinos.ui.timeline.NoteEngagementCoordinator
 import com.nostr.torinos.ui.timeline.StateStore
 import com.nostr.torinos.ui.timeline.SignedEventPublisher
@@ -43,7 +44,6 @@ import kotlinx.coroutines.Job
 import kotlin.time.Clock
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.launch
 
 internal class FeedController(
     private val accountSession: AccountSession? = null,
@@ -57,8 +57,9 @@ internal class FeedController(
     private val filterMutedUsers: Boolean = true,
     private val scope: CoroutineScope,
 ) {
-
-    private fun launch(block: suspend CoroutineScope.() -> Unit): Job = scope.launch(block = block)
+    private val safeCoroutineLauncher = SafeCoroutineLauncher(scope, "FeedController")
+    private fun launch(block: suspend CoroutineScope.() -> Unit): Job =
+        safeCoroutineLauncher.launch(block = block)
 
     private val _state = StateStore(UiState())
     val state: StateFlow<UiState> = _state.state
@@ -104,9 +105,9 @@ internal class FeedController(
     private var shouldRetryHistoryPage = false
     private var loadingMore = false
     private var isGapFill = false
-    private var lastHistoryBatchReceivedCount = 0
     private var lastHistoryBatchUniqueCount = 0
-    private var lastHistoryBatchOldestCreatedAt: Long? = null
+    private val lastHistoryBatchCreatedAts = mutableListOf<Long>()
+    private var historyRevealOldestAt: Long? = null
     private var consecutiveEmptyHistoryPages = 0
     private var initialHistoryRequested = false
     private var manualRefreshRequested = false
@@ -390,8 +391,16 @@ internal class FeedController(
                 val nowSec = Clock.System.now().epochSeconds
                 subscribeLiveFeed(since = nowSec)
                 val gapSince = eventSortTimes.values.maxOrNull()
-                if (gapSince != null && gapSince < nowSec - 5) {
-                    requestGapFill(since = gapSince, until = nowSec)
+                when (resumeSyncStrategy(gapSince = gapSince, nowSec = nowSec)) {
+                    ResumeSyncStrategy.None -> Unit
+                    ResumeSyncStrategy.GapFill -> requestBackgroundSync(
+                        since = gapSince,
+                        until = nowSec,
+                    )
+                    ResumeSyncStrategy.LatestPage -> requestBackgroundSync(
+                        since = null,
+                        until = nowSec,
+                    )
                 }
                 resubscribeEngagement()
             }
@@ -466,9 +475,8 @@ internal class FeedController(
         isGapFill = false
         activeHistoryUntil = until
         loadingMore = true
-        lastHistoryBatchReceivedCount = 0
         lastHistoryBatchUniqueCount = 0
-        lastHistoryBatchOldestCreatedAt = null
+        lastHistoryBatchCreatedAts.clear()
 
         // 初回のみライブ購読も開始（since=現在時刻でライブイベントのみ）
         if (until == null) {
@@ -496,16 +504,16 @@ internal class FeedController(
         startHistoryCollector(session)
     }
 
-    private suspend fun requestGapFill(since: Long, until: Long) {
+    /** 既存の表示を維持したまま、復帰後に必要な範囲だけ同期する。 */
+    private suspend fun requestBackgroundSync(since: Long?, until: Long) {
         val ids = subscriptionIds ?: return
         if (authorPubkeys?.isEmpty() == true) return
         currentHistorySession?.close()
         val historySubId = nextHistorySubscriptionId(ids)
         isGapFill = true
         loadingMore = true
-        lastHistoryBatchReceivedCount = 0
         lastHistoryBatchUniqueCount = 0
-        lastHistoryBatchOldestCreatedAt = null
+        lastHistoryBatchCreatedAts.clear()
         val session = NostrRepository.openSubscription(
             SubscriptionSpec(
                 id = historySubId,
@@ -531,12 +539,13 @@ internal class FeedController(
         if (!loadingMore) return
         loadingMore = false
         // リプライ等がフィルタされても受信件数が上限に達していれば次ページがある
-        val hasMore = lastHistoryBatchReceivedCount >= FEED_PAGE_SIZE
-        val oldestReceivedAt = lastHistoryBatchOldestCreatedAt
+        val pageWindow = historyPageWindow(lastHistoryBatchCreatedAts, FEED_PAGE_SIZE)
+        val hasMore = pageWindow.hasMore
         val loadedVisibleEvents = lastHistoryBatchUniqueCount > 0
         if (!isGapFill) {
             shouldRetryHistoryPage = false
-            nextHistoryUntil = if (hasMore && oldestReceivedAt != null) oldestReceivedAt - 1 else null
+            nextHistoryUntil = pageWindow.nextUntil
+            revealHistoryThrough(pageWindow.revealOldestAt)
         }
         val cur = currentFeedState()
         // ギャップ補完は期間が限定されるため件数で過去ページの有無を判断できない
@@ -559,14 +568,18 @@ internal class FeedController(
     private fun onHistoryFetchIncomplete() {
         if (!loadingMore) return
         loadingMore = false
-        val hasMore = lastHistoryBatchReceivedCount >= FEED_PAGE_SIZE
-        val oldestReceivedAt = lastHistoryBatchOldestCreatedAt
+        val pageWindow = historyPageWindow(lastHistoryBatchCreatedAts, FEED_PAGE_SIZE)
         val loadedVisibleEvents = lastHistoryBatchUniqueCount > 0
-        val canAdvanceFromPartialResponse = lastHistoryBatchReceivedCount > 0 && oldestReceivedAt != null
+        val canAdvanceFromPartialResponse = pageWindow.revealOldestAt != null
         val shouldRetryCurrentPage = !canAdvanceFromPartialResponse
         if (!isGapFill) {
             shouldRetryHistoryPage = shouldRetryCurrentPage
-            nextHistoryUntil = if (shouldRetryCurrentPage) activeHistoryUntil else oldestReceivedAt - 1
+            nextHistoryUntil = when {
+                shouldRetryCurrentPage -> activeHistoryUntil
+                pageWindow.hasMore -> pageWindow.nextUntil
+                else -> pageWindow.revealOldestAt - 1
+            }
+            revealHistoryThrough(pageWindow.revealOldestAt)
         }
         val current = currentFeedState()
         setFeedState(current.copy(
@@ -574,7 +587,7 @@ internal class FeedController(
             canLoadMore = if (isGapFill) {
                 current.canLoadMore
             } else {
-                hasMore || shouldRetryCurrentPage || canAdvanceFromPartialResponse
+                pageWindow.hasMore || shouldRetryCurrentPage || canAdvanceFromPartialResponse
             },
             isLoadingMore = false,
             isRefreshing = false,
@@ -583,7 +596,7 @@ internal class FeedController(
         refreshIndicatorTimeoutJob = null
         if (!isGapFill && !shouldRetryCurrentPage) {
             continuePastEmptyHistoryPageIfNeeded(
-                hasMore = hasMore || canAdvanceFromPartialResponse,
+                hasMore = pageWindow.hasMore || canAdvanceFromPartialResponse,
                 loadedVisibleEvents = loadedVisibleEvents,
             )
         }
@@ -617,11 +630,7 @@ internal class FeedController(
                 when (signal) {
                     is SubscriptionSignal.Event -> {
                         val event = signal.event
-                        lastHistoryBatchReceivedCount++
-                        lastHistoryBatchOldestCreatedAt = minOf(
-                            lastHistoryBatchOldestCreatedAt ?: event.createdAt,
-                            event.createdAt,
-                        )
+                        lastHistoryBatchCreatedAts += event.createdAt
                         lastHistoryBatchUniqueCount += appendFeedEvent(event)
                         if (currentFeedState().isRefreshing && lastHistoryBatchUniqueCount > 0) {
                             clearRefreshIndicator()
@@ -834,7 +843,15 @@ internal class FeedController(
     }
 
     private fun updateEvents(events: List<NostrEvent>, immediate: Boolean = false) {
-        val visibleEvents = events.take(MAX_TIMELINE_EVENTS)
+        val visibleEvents = events
+            .let { timelineEvents ->
+                historyRevealOldestAt?.let { oldestVisibleAt ->
+                    timelineEvents.filter { event ->
+                        (eventSortTimes[event.id] ?: event.createdAt) >= oldestVisibleAt
+                    }
+                } ?: timelineEvents
+            }
+            .take(MAX_TIMELINE_EVENTS)
         val visibleEventIds = visibleEvents.mapTo(linkedSetOf()) { it.id }
         val retainedEventIds = visibleEventIds + visibleEvents.mapNotNull { it.replyTargetId() } +
             visibleEvents.flatMap { quotedEventIds(it) }
@@ -885,6 +902,12 @@ internal class FeedController(
         if (!seenIds.add(eventId)) return false
         while (seenIds.size > MAX_SEEN_IDS) seenIds.remove(seenIds.first())
         return true
+    }
+
+    private fun revealHistoryThrough(createdAt: Long?) {
+        if (createdAt == null) return
+        historyRevealOldestAt = historyRevealOldestAt?.let { minOf(it, createdAt) } ?: createdAt
+        rebuildFilteredEvents()
     }
 
     private fun rememberReceivedEvent(events: LinkedHashMap<String, NostrEvent>, event: NostrEvent) {
@@ -1090,6 +1113,29 @@ internal class FeedController(
         private fun nextInstanceKey(): Int = ++nextInstanceKeyValue
     }
 }
+
+internal enum class ResumeSyncStrategy {
+    None,
+    GapFill,
+    LatestPage,
+}
+
+/**
+ * 復帰時の見せ方は変えず、裏側で取得する範囲だけを経過時間に応じて制限する。
+ * 長期間の全件gap fillは復帰直後の負荷が大きいため、直近ページの取得へ切り替える。
+ */
+internal fun resumeSyncStrategy(gapSince: Long?, nowSec: Long): ResumeSyncStrategy {
+    if (gapSince == null) return ResumeSyncStrategy.LatestPage
+    val gapSeconds = (nowSec - gapSince).coerceAtLeast(0)
+    return when {
+        gapSeconds <= RESUME_SYNC_GRACE_PERIOD_SECONDS -> ResumeSyncStrategy.None
+        gapSeconds <= MAX_GAP_FILL_DURATION_SECONDS -> ResumeSyncStrategy.GapFill
+        else -> ResumeSyncStrategy.LatestPage
+    }
+}
+
+private const val RESUME_SYNC_GRACE_PERIOD_SECONDS = 5L
+private const val MAX_GAP_FILL_DURATION_SECONDS = 24L * 60L * 60L
 
 internal fun FeedViewModel.UiState.noteEngagement(eventId: String): NoteEngagementState = NoteEngagementState(
     reactionCount = reactionCounts[eventId] ?: 0,

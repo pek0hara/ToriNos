@@ -36,7 +36,6 @@ import androidx.compose.material3.Tab
 import androidx.compose.material3.Text
 import com.nostr.torinos.ui.components.AppTopBar
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -62,6 +61,7 @@ import androidx.compose.ui.unit.Velocity
 import androidx.compose.ui.unit.dp
 import androidx.compose.runtime.collectAsState
 import androidx.lifecycle.viewmodel.compose.viewModel
+import androidx.lifecycle.compose.LifecycleStartEffect
 import com.nostr.torinos.account.accountSessionViewModel
 import com.nostr.torinos.model.NostrProfile
 import com.nostr.torinos.account.LocalAccountSession
@@ -618,6 +618,7 @@ private fun FeedTimelinePane(
             authorPubkey = authorPubkey,
             authorPubkeys = authorPubkeys,
             relayUrl = relayUrl,
+            autoStart = false,
             includeRepostsInFeed = includeRepostsInFeed,
             hashtag = hashtag,
             filterMutedUsers = filterMutedUsers,
@@ -632,12 +633,9 @@ private fun FeedTimelinePane(
         viewModel.consumeEngagementError()
     }
 
-    LaunchedEffect(viewModel) {
+    LifecycleStartEffect(viewModel) {
         viewModel.startSubscriptions()
-    }
-
-    DisposableEffect(viewModel) {
-        onDispose {
+        onStopOrDispose {
             viewModel.stopSubscriptions()
         }
     }
