@@ -5,6 +5,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyListScope
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.OutlinedTextField
@@ -17,7 +18,9 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.runtime.collectAsState
@@ -77,10 +80,18 @@ fun MyProfileScreen(
     var showNameEdit by remember(ownPubkey) { mutableStateOf(false) }
     var showAboutEdit by remember(ownPubkey) { mutableStateOf(false) }
     var showStatusEdit by remember(ownPubkey) { mutableStateOf(false) }
-    var selectedTab by remember(ownPubkey) { mutableStateOf(ProfileTimelineTab.Posts) }
+    var bannerHeightPx by remember(ownPubkey) { mutableIntStateOf(0) }
+    var selectedTabName by rememberSaveable(ownPubkey) {
+        mutableStateOf(ProfileTimelineTab.Posts.name)
+    }
+    val selectedTab = ProfileTimelineTab.entries.firstOrNull { it.name == selectedTabName }
+        ?: ProfileTimelineTab.Posts
     val editProfileViewModel = accountSessionViewModel<EditProfileViewModel>(
         key = "edit-profile-$ownPubkey",
     ) { accountSession -> EditProfileViewModel(accountSession = accountSession) }
+    val profileListState = rememberSaveable(ownPubkey, saver = LazyListState.Saver) {
+        LazyListState()
+    }
 
     LaunchedEffect(viewModel) {
         viewModel.refreshProfile()
@@ -90,12 +101,12 @@ fun MyProfileScreen(
         val profile = state.profile ?: return@LaunchedEffect
         postsViewModel.injectProfile(ownPubkey, profile)
         postsAndRepliesViewModel.injectProfile(ownPubkey, profile)
-        postsViewModel.startSubscriptions()
     }
 
-    LaunchedEffect(selectedTab) {
-        if (selectedTab == ProfileTimelineTab.PostsAndReplies) {
-            postsAndRepliesViewModel.startSubscriptions()
+    LaunchedEffect(selectedTab, postsViewModel, postsAndRepliesViewModel) {
+        when (selectedTab) {
+            ProfileTimelineTab.Posts -> postsViewModel.startSubscriptions()
+            ProfileTimelineTab.PostsAndReplies -> postsAndRepliesViewModel.startSubscriptions()
         }
     }
 
@@ -173,11 +184,12 @@ fun MyProfileScreen(
                     onEditGeneralStatus = { showStatusEdit = true },
                     onUserClick = onUserClick,
                     onBack = onBack,
-                    onOpenSettings = onOpenSettings,
                     onEditBanner = { showBannerEdit = true },
                     onEditAvatar = { showAvatarEdit = true },
                     onEditName = { showNameEdit = true },
                     onEditAbout = { showAboutEdit = true },
+                    showBackButton = false,
+                    onBannerHeightChanged = { bannerHeightPx = it },
                 )
                 HorizontalDivider()
             }
@@ -202,7 +214,7 @@ fun MyProfileScreen(
                     ProfileTimelineTab.entries.forEach { tab ->
                         Tab(
                             selected = selectedTab == tab,
-                            onClick = { selectedTab = tab },
+                            onClick = { selectedTabName = tab.name },
                             text = { Text(tab.label) },
                         )
                     }
@@ -211,51 +223,62 @@ fun MyProfileScreen(
             }
         }
 
-        when (selectedTab) {
-            ProfileTimelineTab.Posts -> NoteTimeline(
-                state = postsState,
-                ownPubkey = ownPubkey,
-                onUserClick = onUserClick,
-                onLoadMore = postsViewModel::loadMore,
-                onLike = postsViewModel::react,
-                onUnlike = postsViewModel::unreact,
-                onEmojiReact = postsViewModel::reactWithEmoji,
-                onEmojiUnreact = postsViewModel::unreactWithEmoji,
-                onDelete = postsViewModel::deleteEvent,
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(padding),
-                onReply = onReply,
-                onOpenReplies = onOpenReplies,
-                onOpenLikes = onOpenLikes,
-                onOpenReposts = onOpenReposts,
-                onRepost = postsViewModel::repost,
-                onUnrepost = postsViewModel::unrepost,
-                onReport = postsViewModel::reportEvent,
-                header = profileHeader,
-            )
-            ProfileTimelineTab.PostsAndReplies -> NoteTimeline(
-                state = postsAndRepliesState,
-                ownPubkey = ownPubkey,
-                onUserClick = onUserClick,
-                onLoadMore = postsAndRepliesViewModel::loadMore,
-                onLike = postsAndRepliesViewModel::react,
-                onUnlike = postsAndRepliesViewModel::unreact,
-                onEmojiReact = postsAndRepliesViewModel::reactWithEmoji,
-                onEmojiUnreact = postsAndRepliesViewModel::unreactWithEmoji,
-                onDelete = postsAndRepliesViewModel::deleteEvent,
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(padding),
-                onReply = onReply,
-                onOpenReplies = onOpenReplies,
-                onOpenLikes = onOpenLikes,
-                onOpenReposts = onOpenReposts,
-                onRepost = postsAndRepliesViewModel::repost,
-                onUnrepost = postsAndRepliesViewModel::unrepost,
-                onReport = postsAndRepliesViewModel::reportEvent,
-                header = profileHeader,
-            )
+        ProfileTimelineWithCollapsingHeader(
+            listState = profileListState,
+            pubkey = ownPubkey,
+            profile = state.profile,
+            onBack = onBack,
+            onOpenSettings = onOpenSettings,
+            bannerHeightPx = bannerHeightPx,
+        ) {
+            when (selectedTab) {
+                ProfileTimelineTab.Posts -> NoteTimeline(
+                    state = postsState,
+                    ownPubkey = ownPubkey,
+                    onUserClick = onUserClick,
+                    onLoadMore = postsViewModel::loadMore,
+                    onLike = postsViewModel::react,
+                    onUnlike = postsViewModel::unreact,
+                    onEmojiReact = postsViewModel::reactWithEmoji,
+                    onEmojiUnreact = postsViewModel::unreactWithEmoji,
+                    onDelete = postsViewModel::deleteEvent,
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(padding),
+                    onReply = onReply,
+                    onOpenReplies = onOpenReplies,
+                    onOpenLikes = onOpenLikes,
+                    onOpenReposts = onOpenReposts,
+                    onRepost = postsViewModel::repost,
+                    onUnrepost = postsViewModel::unrepost,
+                    onReport = postsViewModel::reportEvent,
+                    listState = profileListState,
+                    header = profileHeader,
+                )
+                ProfileTimelineTab.PostsAndReplies -> NoteTimeline(
+                    state = postsAndRepliesState,
+                    ownPubkey = ownPubkey,
+                    onUserClick = onUserClick,
+                    onLoadMore = postsAndRepliesViewModel::loadMore,
+                    onLike = postsAndRepliesViewModel::react,
+                    onUnlike = postsAndRepliesViewModel::unreact,
+                    onEmojiReact = postsAndRepliesViewModel::reactWithEmoji,
+                    onEmojiUnreact = postsAndRepliesViewModel::unreactWithEmoji,
+                    onDelete = postsAndRepliesViewModel::deleteEvent,
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(padding),
+                    onReply = onReply,
+                    onOpenReplies = onOpenReplies,
+                    onOpenLikes = onOpenLikes,
+                    onOpenReposts = onOpenReposts,
+                    onRepost = postsAndRepliesViewModel::repost,
+                    onUnrepost = postsAndRepliesViewModel::unrepost,
+                    onReport = postsAndRepliesViewModel::reportEvent,
+                    listState = profileListState,
+                    header = profileHeader,
+                )
+            }
         }
     }
 }

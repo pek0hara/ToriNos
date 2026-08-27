@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -34,10 +35,13 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.State
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -47,7 +51,9 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.platform.LocalClipboard
@@ -66,6 +72,147 @@ import com.nostr.torinos.ui.components.ProfileNameText
 import com.nostr.torinos.ui.settings.setPlainText
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+
+internal fun calculateProfileCollapseProgress(
+    firstVisibleItemIndex: Int,
+    firstVisibleItemScrollOffset: Int,
+    bannerHeightPx: Int,
+    compactHeaderHeightPx: Int,
+): Float {
+    if (firstVisibleItemIndex > 0) return 1f
+    if (bannerHeightPx <= 0 || compactHeaderHeightPx <= 0) return 0f
+
+    val collapseStartPx = (bannerHeightPx - compactHeaderHeightPx).coerceAtLeast(0)
+    return ((firstVisibleItemScrollOffset - collapseStartPx).toFloat() /
+        compactHeaderHeightPx).coerceIn(0f, 1f)
+}
+
+@Composable
+internal fun ProfileTimelineWithCollapsingHeader(
+    listState: LazyListState,
+    pubkey: String,
+    profile: NostrProfile?,
+    onBack: (() -> Unit)?,
+    onOpenSettings: (() -> Unit)? = null,
+    bannerHeightPx: Int,
+    content: @Composable () -> Unit,
+) {
+    var compactHeaderHeightPx by remember { mutableStateOf(0) }
+    val collapseProgress: State<Float> = remember(listState, bannerHeightPx, compactHeaderHeightPx) {
+        derivedStateOf {
+            calculateProfileCollapseProgress(
+                firstVisibleItemIndex = listState.firstVisibleItemIndex,
+                firstVisibleItemScrollOffset = listState.firstVisibleItemScrollOffset,
+                bannerHeightPx = bannerHeightPx,
+                compactHeaderHeightPx = compactHeaderHeightPx,
+            )
+        }
+    }
+
+    Box(modifier = Modifier.fillMaxSize()) {
+        content()
+        CompactProfileHeader(
+            pubkey = pubkey,
+            profile = profile,
+            onBack = onBack,
+            onOpenSettings = onOpenSettings,
+            collapseProgress = collapseProgress,
+            modifier = Modifier
+                .align(Alignment.TopStart)
+                .onSizeChanged { compactHeaderHeightPx = it.height },
+        )
+    }
+}
+
+@Composable
+private fun CompactProfileHeader(
+    pubkey: String,
+    profile: NostrProfile?,
+    onBack: (() -> Unit)?,
+    onOpenSettings: (() -> Unit)?,
+    collapseProgress: State<Float>,
+    modifier: Modifier = Modifier,
+) {
+    Box(modifier = modifier.fillMaxWidth()) {
+        Surface(
+            modifier = Modifier
+                .matchParentSize()
+                .graphicsLayer { alpha = collapseProgress.value },
+            color = MaterialTheme.colorScheme.surface,
+            shadowElevation = 2.dp,
+            content = {},
+        )
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .statusBarsPadding()
+                .height(56.dp)
+                .padding(start = 8.dp, end = 16.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            if (onBack != null) {
+                IconButton(
+                    onClick = onBack,
+                    modifier = Modifier.background(Color.Black.copy(alpha = 0.35f), CircleShape),
+                ) {
+                    Icon(
+                        Icons.AutoMirrored.Filled.ArrowBack,
+                        contentDescription = "戻る",
+                        tint = Color.White,
+                    )
+                }
+            } else {
+                androidx.compose.foundation.layout.Spacer(modifier = Modifier.size(16.dp))
+            }
+            Row(
+                modifier = Modifier
+                    .weight(1f)
+                    .graphicsLayer { alpha = collapseProgress.value },
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                AvatarCircle(
+                    pubkey = pubkey,
+                    name = profile?.bestName,
+                    pictureUrl = profile?.picture,
+                    size = 32,
+                )
+                Column(modifier = Modifier.weight(1f)) {
+                    ProfileNameText(
+                        profile = profile,
+                        fallback = pubkey.take(8) + "…" + pubkey.takeLast(8),
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.Bold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    Text(
+                        text = profile?.name
+                            ?.takeIf { it.isNotBlank() }
+                            ?.let { if (it.startsWith("@")) it else "@$it" }
+                            ?: ("@" + pubkey.take(8) + "…" + pubkey.takeLast(8)),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+            }
+            if (onOpenSettings != null) {
+                IconButton(
+                    onClick = onOpenSettings,
+                    modifier = Modifier.background(Color.Black.copy(alpha = 0.35f), CircleShape),
+                ) {
+                    Icon(
+                        Icons.Default.Settings,
+                        contentDescription = "設定",
+                        tint = Color.White,
+                    )
+                }
+            }
+        }
+    }
+}
 
 @Composable
 internal fun ProfileHeader(
@@ -90,6 +237,8 @@ internal fun ProfileHeader(
     onEditAbout: (() -> Unit)? = null,
     generalStatus: ProfileGeneralStatus? = null,
     onEditGeneralStatus: (() -> Unit)? = null,
+    showBackButton: Boolean = true,
+    onBannerHeightChanged: (Int) -> Unit = {},
 ) {
     val clipboard = LocalClipboard.current
     val coroutineScope = rememberCoroutineScope()
@@ -116,14 +265,19 @@ internal fun ProfileHeader(
                     .fillMaxWidth()
                     .height(222.dp),
             ) {
-                ProfileBanner(
-                    bannerUrl = profile?.banner,
-                    isOwnProfile = isOwnProfile,
-                    onEditBanner = onEditBanner,
+                Box(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(176.dp),
-                )
+                        .height(176.dp)
+                        .onSizeChanged { onBannerHeightChanged(it.height) },
+                ) {
+                    ProfileBanner(
+                        bannerUrl = profile?.banner,
+                        isOwnProfile = isOwnProfile,
+                        onEditBanner = onEditBanner,
+                        modifier = Modifier.fillMaxSize(),
+                    )
+                }
                 ProfileAvatar(
                     pubkey = pubkey,
                     profile = profile,
@@ -146,7 +300,7 @@ internal fun ProfileHeader(
                         .align(Alignment.BottomEnd)
                         .padding(end = 16.dp),
                 )
-                if (onBack != null) {
+                if (showBackButton && onBack != null) {
                     IconButton(
                         onClick = onBack,
                         modifier = Modifier

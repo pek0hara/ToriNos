@@ -25,19 +25,54 @@ internal class DrawerCoordinator(
         private set
     var notificationsScrollToTopRequest by mutableStateOf(0)
         private set
+    var profileNavigationSessionId by mutableStateOf(0)
+        private set
 
     private var hasProfileOpened = false
+    private val profileHistory = mutableListOf<String>()
     private val transitionMutex = Mutex()
 
     fun openProfile(pubkey: String) {
         scope.launch {
             transitionMutex.withLock {
+                val isProfileActive = profilePubkey != null &&
+                    (profileState.currentValue == DrawerValue.Open ||
+                        profileState.targetValue == DrawerValue.Open)
+                if (
+                    profilePubkey == pubkey &&
+                    isProfileActive
+                ) {
+                    return@withLock
+                }
+
+                if (isProfileActive) {
+                    profilePubkey?.let(profileHistory::add)
+                    profilePubkey = pubkey
+                    isProfileContentReady = true
+                    return@withLock
+                }
+
+                profileHistory.clear()
                 isProfileContentReady = false
                 notificationsState.close()
                 profileState.close()
                 profilePubkey = pubkey
+                profileNavigationSessionId++
                 profileState.open()
                 isProfileContentReady = true
+            }
+        }
+    }
+
+    fun navigateBackOrCloseProfile() {
+        scope.launch {
+            transitionMutex.withLock {
+                if (profileHistory.isNotEmpty()) {
+                    profilePubkey = profileHistory.removeAt(profileHistory.lastIndex)
+                    isProfileContentReady = true
+                } else {
+                    profileState.close()
+                }
             }
         }
     }
@@ -67,6 +102,7 @@ internal class DrawerCoordinator(
                 hasProfileOpened = false
                 isProfileContentReady = false
                 profilePubkey = null
+                profileHistory.clear()
             }
         }
     }

@@ -4,6 +4,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyListScope
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Today
 import androidx.compose.material3.HorizontalDivider
@@ -19,7 +20,9 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -55,7 +58,11 @@ fun UserProfileScreen(
         UserProfileViewModel(pubkey, accountSession = accountSession)
     }
     var showRelayList by remember(pubkey) { mutableStateOf(false) }
-    var selectedTab by remember(pubkey) { mutableStateOf(ProfileTimelineTab.Posts) }
+    var selectedTabName by rememberSaveable(pubkey) {
+        mutableStateOf(ProfileTimelineTab.Posts.name)
+    }
+    val selectedTab = ProfileTimelineTab.entries.firstOrNull { it.name == selectedTabName }
+        ?: ProfileTimelineTab.Posts
     val feedViewModel: FeedViewModel = accountSessionViewModel(
         key = "user-feed-$pubkey-$ownerKey-${selectedTab.name}",
     ) { accountSession ->
@@ -75,6 +82,10 @@ fun UserProfileScreen(
     val isMuted = mutedPubkeys.contains(pubkey)
     val snackbarHostState = remember { SnackbarHostState() }
     var deferredContentStarted by remember(pubkey) { mutableStateOf(false) }
+    var bannerHeightPx by remember(pubkey) { mutableIntStateOf(0) }
+    val profileListState = rememberSaveable(pubkey, saver = LazyListState.Saver) {
+        LazyListState()
+    }
 
     LaunchedEffect(viewModel) {
         viewModel.refreshProfile()
@@ -150,6 +161,8 @@ fun UserProfileScreen(
                     },
                     onUserClick = onUserClick,
                     onBack = onBack,
+                    showBackButton = false,
+                    onBannerHeightChanged = { bannerHeightPx = it },
                 )
                 HorizontalDivider()
             }
@@ -175,7 +188,7 @@ fun UserProfileScreen(
                     ProfileTimelineTab.entries.forEach { tab ->
                         Tab(
                             selected = selectedTab == tab,
-                            onClick = { selectedTab = tab },
+                            onClick = { selectedTabName = tab.name },
                             text = { Text(tab.label) },
                         )
                     }
@@ -184,53 +197,63 @@ fun UserProfileScreen(
             }
         }
 
-        when (selectedTab) {
-            ProfileTimelineTab.Posts -> NoteTimeline(
-                state = feedState,
-                ownPubkey = ownPubkey,
-                onUserClick = onUserClick,
-                onLoadMore = feedViewModel::loadMore,
-                onLike = feedViewModel::react,
-                onUnlike = feedViewModel::unreact,
-                onEmojiReact = feedViewModel::reactWithEmoji,
-                onEmojiUnreact = feedViewModel::unreactWithEmoji,
-                onDelete = feedViewModel::deleteEvent,
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(padding),
-                onReply = onReply,
-                onOpenReplies = onOpenReplies,
-                onOpenLikes = onOpenLikes,
-                onOpenReposts = onOpenReposts,
-                onRepost = feedViewModel::repost,
-                onUnrepost = feedViewModel::unrepost,
-                onReport = feedViewModel::reportEvent,
-                emptyText = "このユーザーのポストはありません",
-                header = profileHeader,
-            )
-            ProfileTimelineTab.PostsAndReplies -> NoteTimeline(
-                state = feedState,
-                ownPubkey = ownPubkey,
-                onUserClick = onUserClick,
-                onLoadMore = feedViewModel::loadMore,
-                onLike = feedViewModel::react,
-                onUnlike = feedViewModel::unreact,
-                onEmojiReact = feedViewModel::reactWithEmoji,
-                onEmojiUnreact = feedViewModel::unreactWithEmoji,
-                onDelete = feedViewModel::deleteEvent,
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(padding),
-                onReply = onReply,
-                onOpenReplies = onOpenReplies,
-                onOpenLikes = onOpenLikes,
-                onOpenReposts = onOpenReposts,
-                onRepost = feedViewModel::repost,
-                onUnrepost = feedViewModel::unrepost,
-                onReport = feedViewModel::reportEvent,
-                emptyText = "このユーザーのポストと返信はありません",
-                header = profileHeader,
-            )
+        ProfileTimelineWithCollapsingHeader(
+            listState = profileListState,
+            pubkey = pubkey,
+            profile = state.profile,
+            onBack = onBack,
+            bannerHeightPx = bannerHeightPx,
+        ) {
+            when (selectedTab) {
+                ProfileTimelineTab.Posts -> NoteTimeline(
+                    state = feedState,
+                    ownPubkey = ownPubkey,
+                    onUserClick = onUserClick,
+                    onLoadMore = feedViewModel::loadMore,
+                    onLike = feedViewModel::react,
+                    onUnlike = feedViewModel::unreact,
+                    onEmojiReact = feedViewModel::reactWithEmoji,
+                    onEmojiUnreact = feedViewModel::unreactWithEmoji,
+                    onDelete = feedViewModel::deleteEvent,
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(padding),
+                    onReply = onReply,
+                    onOpenReplies = onOpenReplies,
+                    onOpenLikes = onOpenLikes,
+                    onOpenReposts = onOpenReposts,
+                    onRepost = feedViewModel::repost,
+                    onUnrepost = feedViewModel::unrepost,
+                    onReport = feedViewModel::reportEvent,
+                    emptyText = "このユーザーのポストはありません",
+                    listState = profileListState,
+                    header = profileHeader,
+                )
+                ProfileTimelineTab.PostsAndReplies -> NoteTimeline(
+                    state = feedState,
+                    ownPubkey = ownPubkey,
+                    onUserClick = onUserClick,
+                    onLoadMore = feedViewModel::loadMore,
+                    onLike = feedViewModel::react,
+                    onUnlike = feedViewModel::unreact,
+                    onEmojiReact = feedViewModel::reactWithEmoji,
+                    onEmojiUnreact = feedViewModel::unreactWithEmoji,
+                    onDelete = feedViewModel::deleteEvent,
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(padding),
+                    onReply = onReply,
+                    onOpenReplies = onOpenReplies,
+                    onOpenLikes = onOpenLikes,
+                    onOpenReposts = onOpenReposts,
+                    onRepost = feedViewModel::repost,
+                    onUnrepost = feedViewModel::unrepost,
+                    onReport = feedViewModel::reportEvent,
+                    emptyText = "このユーザーのポストと返信はありません",
+                    listState = profileListState,
+                    header = profileHeader,
+                )
+            }
         }
     }
 }
