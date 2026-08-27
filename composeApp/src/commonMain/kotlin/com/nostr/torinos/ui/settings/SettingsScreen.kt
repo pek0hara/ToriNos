@@ -7,7 +7,6 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
@@ -25,7 +24,6 @@ import com.nostr.torinos.ui.components.ProfileNameText
 import com.nostr.torinos.ui.profile.AvatarCircle
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
@@ -51,11 +49,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.runtime.collectAsState
 import androidx.lifecycle.viewmodel.compose.viewModel
-import com.nostr.torinos.account.accountSessionViewModel
 import com.nostr.torinos.crypto.hexToNpub
 import com.nostr.torinos.crypto.StoredAccount
-import com.nostr.torinos.network.RelayEntry
-import com.nostr.torinos.ui.relay.RelaySettingsViewModel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
@@ -69,9 +64,6 @@ fun SettingsScreen(
     onMuteListClick: () -> Unit = {},
     onNgWordClick: () -> Unit = {},
     onCustomEmojiClick: () -> Unit = {},
-    relayViewModel: RelaySettingsViewModel = accountSessionViewModel(
-        key = "settings-relays",
-    ) { accountSession -> RelaySettingsViewModel(accountSession) },
 ) {
     val accountViewModel = if (ownPubkey != null) {
         viewModel(key = "settings-account") { SettingsViewModel() }
@@ -80,11 +72,9 @@ fun SettingsScreen(
     }
     val state by accountViewModel?.state?.collectAsState()
         ?: remember { mutableStateOf(SettingsState()) }
-    val relayEntries by relayViewModel.entries.collectAsState()
     var nsec by remember { mutableStateOf<String?>(null) }
     var showLogoutDialog by remember { mutableStateOf(false) }
     var showDeleteAccountDialog by remember { mutableStateOf(false) }
-    var selectedVanishRelays by remember { mutableStateOf<Set<String>>(emptySet()) }
     val npub = remember(ownPubkey) {
         ownPubkey?.let { pubkey -> runCatching { hexToNpub(pubkey) }.getOrDefault(pubkey) }
     }
@@ -182,11 +172,6 @@ fun SettingsScreen(
                         },
                         onDeleteAccountClick = {
                             account.clearAccountActionError()
-                            selectedVanishRelays = relayEntries
-                                .filter { it.enabled }
-                                .map { it.url }
-                                .toSet()
-                                .ifEmpty { relayEntries.map { it.url }.toSet() }
                             showDeleteAccountDialog = true
                         },
                     )
@@ -212,21 +197,16 @@ fun SettingsScreen(
     }
 
     if (showDeleteAccountDialog) {
-        ConfirmDeleteAccountDialog(
-            relayEntries = relayEntries,
-            selectedRelayUrls = selectedVanishRelays,
+        ConfirmAccountDialog(
+            title = "アカウントを完全に削除",
+            text = "プロフィールを削除済みの状態に更新してから、この端末に保存されている秘密鍵を削除します。この操作は取り消せません。Nostr上の投稿や、リレー・他のクライアントに保存されたデータが完全に消えることは保証されません。",
+            confirmText = "削除する",
             isProcessing = state.isAccountActionProcessing,
             error = state.accountActionError,
             onDismiss = { showDeleteAccountDialog = false },
-            onRelayToggle = { url, checked ->
-                selectedVanishRelays = if (checked) {
-                    selectedVanishRelays + url
-                } else {
-                    selectedVanishRelays - url
-                }
-            },
+            destructive = true,
             onConfirm = {
-                accountViewModel?.requestVanishAndClearAccount(selectedVanishRelays) {
+                accountViewModel?.deleteAccount {
                     showDeleteAccountDialog = false
                     onAccountChanged(it)
                 }
@@ -322,87 +302,6 @@ private fun AccountSwitcherSection(
             Text("アカウントを追加")
         }
     }
-}
-
-@Composable
-private fun ConfirmDeleteAccountDialog(
-    relayEntries: List<RelayEntry>,
-    selectedRelayUrls: Set<String>,
-    isProcessing: Boolean,
-    error: String?,
-    onDismiss: () -> Unit,
-    onRelayToggle: (String, Boolean) -> Unit,
-    onConfirm: () -> Unit,
-) {
-    AlertDialog(
-        onDismissRequest = { if (!isProcessing) onDismiss() },
-        title = { Text("アカウント削除") },
-        text = {
-            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                Text("選択したリレーへ NIP-62 の削除要求を送信してから、この端末に保存されている秘密鍵を削除します。対応していないリレーやキャッシュ済みデータからの削除は保証されません。")
-                Text(
-                    text = "送信先リレー",
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                LazyColumn(
-                    modifier = Modifier.heightIn(max = 260.dp),
-                    verticalArrangement = Arrangement.spacedBy(2.dp),
-                ) {
-                    items(relayEntries.size) { index ->
-                        val entry = relayEntries[index]
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            Checkbox(
-                                checked = entry.url in selectedRelayUrls,
-                                onCheckedChange = { checked -> onRelayToggle(entry.url, checked) },
-                                enabled = !isProcessing,
-                            )
-                            Text(
-                                text = entry.url,
-                                style = MaterialTheme.typography.bodySmall,
-                                modifier = Modifier.weight(1f),
-                            )
-                        }
-                    }
-                }
-                if (error != null) {
-                    Text(
-                        text = error,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.error,
-                    )
-                }
-            }
-        },
-        confirmButton = {
-            TextButton(
-                onClick = onConfirm,
-                enabled = !isProcessing && selectedRelayUrls.isNotEmpty(),
-                colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error),
-            ) {
-                if (isProcessing) {
-                    CircularProgressIndicator(
-                        modifier = Modifier
-                            .padding(end = 8.dp)
-                            .size(16.dp),
-                        strokeWidth = 2.dp,
-                    )
-                }
-                Text("削除要求を送信")
-            }
-        },
-        dismissButton = {
-            TextButton(
-                onClick = onDismiss,
-                enabled = !isProcessing,
-            ) {
-                Text("キャンセル")
-            }
-        },
-    )
 }
 
 @Composable
@@ -636,6 +535,7 @@ private fun ConfirmAccountDialog(
     text: String,
     confirmText: String,
     isProcessing: Boolean,
+    error: String? = null,
     destructive: Boolean = false,
     onDismiss: () -> Unit,
     onConfirm: () -> Unit,
@@ -643,7 +543,18 @@ private fun ConfirmAccountDialog(
     AlertDialog(
         onDismissRequest = { if (!isProcessing) onDismiss() },
         title = { Text(title) },
-        text = { Text(text) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text(text)
+                if (error != null) {
+                    Text(
+                        text = error,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                }
+            }
+        },
         confirmButton = {
             TextButton(
                 onClick = onConfirm,

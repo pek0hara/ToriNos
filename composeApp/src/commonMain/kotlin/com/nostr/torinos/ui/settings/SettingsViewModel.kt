@@ -17,6 +17,10 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
+import kotlinx.serialization.encodeToString
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
 
 data class SettingsState(
     val accounts: List<StoredAccount> = emptyList(),
@@ -185,16 +189,10 @@ class SettingsViewModel : SafeViewModel() {
         }
     }
 
-    fun requestVanishAndClearAccount(relayUrls: Collection<String>, onCleared: (String?) -> Unit) {
+    fun deleteAccount(onCleared: (String?) -> Unit) {
         if (_state.value.isAccountActionProcessing) return
 
         launch {
-            val targets = relayUrls.map { it.trim() }.filter { it.isNotBlank() }.distinct()
-            if (targets.isEmpty()) {
-                _state.update { it.copy(accountActionError = "送信先リレーを選択してください") }
-                return@launch
-            }
-
             _state.update {
                 it.copy(
                     isAccountActionProcessing = true,
@@ -204,12 +202,18 @@ class SettingsViewModel : SafeViewModel() {
             try {
                 val signer = accountSessionManager.currentSession?.signer
                     ?: error("秘密鍵が保存されていません")
-                val vanishRequest = signer.sign(
-                    content = "",
-                    kind = 62,
-                    tags = targets.map { listOf("relay", it) },
+                val deletedProfile = signer.sign(
+                    content = Json.encodeToString(
+                        buildJsonObject {
+                            put("name", "nobody")
+                            put("about", "account deleted")
+                        },
+                    ),
+                    kind = 0,
                 )
-                NostrRepository.publishToRelays(vanishRequest, targets)
+                // Damus と同様、削除済みプロフィールを配信してからローカル鍵を破棄する。
+                // publish は少なくとも1つの有効リレーへの送信成功を保証する。
+                NostrRepository.publish(deletedProfile)
                 val nextState = accountSessionManager.deleteCurrentAccount().getOrThrow()
                 val accounts = accountSessionManager.listAccounts()
                 _state.update {
@@ -225,13 +229,13 @@ class SettingsViewModel : SafeViewModel() {
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Throwable) {
-                logException("SettingsViewModel", e, "Failed to request vanish and clear account key")
+                logException("SettingsViewModel", e, "Failed to publish deleted profile and clear account key")
                 _state.update {
                     it.copy(
                         isAccountActionProcessing = false,
                         accountActionError = e.message
-                            ?.let { "アカウント削除要求を送信できませんでした: $it" }
-                            ?: "アカウント削除要求を送信できませんでした",
+                            ?.let { "アカウントを削除できませんでした: $it" }
+                            ?: "アカウントを削除できませんでした",
                     )
                 }
             }
