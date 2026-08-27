@@ -582,10 +582,16 @@ private fun ReactionSummaryRow(
                         }
                     }
                 } else null,
+                onLongClick = {
+                    CustomEmojiStore.requestOpenSearch(
+                        shortcode = reaction.shortcode,
+                        imageUrl = reaction.imageUrl,
+                    )
+                },
                 emoji = {
                     Box(
-                    modifier = Modifier.size(width = 28.dp, height = 32.dp),
-                    contentAlignment = Alignment.Center,
+                        modifier = Modifier.size(width = 28.dp, height = 32.dp),
+                        contentAlignment = Alignment.Center,
                     ) {
                         NetworkImage(
                             url = reaction.imageUrl,
@@ -672,6 +678,7 @@ private fun ReactionChip(
     enabled: Boolean = true,
     contentDescription: String,
     onClick: (() -> Unit)?,
+    onLongClick: (() -> Unit)? = null,
     emoji: @Composable () -> Unit,
     count: Int,
 ) {
@@ -698,7 +705,13 @@ private fun ReactionChip(
                 shape = shape,
             )
             .height(32.dp)
-            .clickable(enabled = enabled && onClick != null) { onClick?.invoke() }
+            .combinedClickable(
+                enabled = (enabled && onClick != null) || onLongClick != null,
+                onClick = {
+                    if (enabled) onClick?.invoke()
+                },
+                onLongClick = onLongClick,
+            )
             .semantics { this.contentDescription = contentDescription }
             .padding(horizontal = 8.dp),
         horizontalArrangement = Arrangement.spacedBy(2.dp),
@@ -1421,6 +1434,7 @@ private fun CollapsibleNoteText(
         onProfileClick = onProfileClick,
         profiles = profiles,
         onHashtagClick = onHashtagClick,
+        enableCustomEmojiLinks = true,
         maxLines = if (expanded) Int.MAX_VALUE else CollapsedTextMaxVisibleLines,
         overflow = TextOverflow.Ellipsis,
         onTextLayout = { result ->

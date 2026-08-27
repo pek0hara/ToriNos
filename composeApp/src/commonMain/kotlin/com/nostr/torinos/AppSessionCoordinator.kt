@@ -119,7 +119,10 @@ import kotlinx.serialization.Serializable
 @Serializable data class FollowingRoute(val pubkey: String)
 @Serializable data class FollowersRoute(val pubkey: String)
 @Serializable data class SearchRoute(val query: String = "")
-@Serializable data class CustomEmojiRoute(val query: String = "")
+@Serializable data class CustomEmojiRoute(
+    val query: String = "",
+    val imageUrl: String = "",
+)
 @Serializable data class ThreadRoute(
     val eventId: String,
     val initialTab: String = "auto",
@@ -253,10 +256,15 @@ internal fun AppSessionCoordinator(
             }
         }
 
-        // 未登録カスタム絵文字タップ → 絵文字設定画面（検索クエリ付き）へ遷移
+        // カスタム絵文字タップ → 絵文字設定画面（対象絵文字付き）へ遷移
         LaunchedEffect(Unit) {
-            CustomEmojiStore.openSearchEvent.collect { shortcode ->
-                nav.navigate(CustomEmojiRoute(query = shortcode))
+            CustomEmojiStore.openSearchEvent.collect { request ->
+                nav.navigate(
+                    CustomEmojiRoute(
+                        query = request.shortcode,
+                        imageUrl = request.imageUrl,
+                    ),
+                )
             }
         }
 
@@ -1052,6 +1060,7 @@ internal fun AppSessionCoordinator(
                         CustomEmojiSettingsScreen(
                             onBack = { nav.popBackStack() },
                             initialQuery = route.query,
+                            initialImageUrl = route.imageUrl,
                         )
                     }
                     composable<SearchRoute> { backStack ->

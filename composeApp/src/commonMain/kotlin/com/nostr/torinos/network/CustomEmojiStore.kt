@@ -27,6 +27,7 @@ data class CustomEmojiList(
     val id: String,
     val name: String,
     val emojis: List<CustomEmoji>,
+    val authorPubkey: String = "",
 )
 
 @Serializable
@@ -39,6 +40,11 @@ data class RecentReaction(
         const val CustomKind = "custom"
     }
 }
+
+data class CustomEmojiOpenRequest(
+    val shortcode: String,
+    val imageUrl: String = "",
+)
 
 object CustomEmojiStore {
     private const val EMOJIS_KEY = "custom_emojis"
@@ -54,16 +60,21 @@ object CustomEmojiStore {
     private val _emojiLists = MutableStateFlow<List<CustomEmojiList>>(emptyList())
     private val _recentEmojiShortcodes = MutableStateFlow<List<String>>(emptyList())
     private val _recentReactions = MutableStateFlow<List<RecentReaction>>(emptyList())
-    private val _openSearchEvent = MutableSharedFlow<String>(extraBufferCapacity = 1)
+    private val _openSearchEvent = MutableSharedFlow<CustomEmojiOpenRequest>(extraBufferCapacity = 1)
 
     val emojis: StateFlow<List<CustomEmoji>> = _emojis.asStateFlow()
     val emojiLists: StateFlow<List<CustomEmojiList>> = _emojiLists.asStateFlow()
     val recentEmojiShortcodes: StateFlow<List<String>> = _recentEmojiShortcodes.asStateFlow()
     val recentReactions: StateFlow<List<RecentReaction>> = _recentReactions.asStateFlow()
-    val openSearchEvent: SharedFlow<String> = _openSearchEvent.asSharedFlow()
+    val openSearchEvent: SharedFlow<CustomEmojiOpenRequest> = _openSearchEvent.asSharedFlow()
 
-    fun requestOpenSearch(shortcode: String) {
-        _openSearchEvent.tryEmit(shortcode)
+    fun requestOpenSearch(shortcode: String, imageUrl: String = "") {
+        _openSearchEvent.tryEmit(
+            CustomEmojiOpenRequest(
+                shortcode = shortcode.trim().trim(':'),
+                imageUrl = imageUrl.trim(),
+            ),
+        )
     }
 
     init {
@@ -130,7 +141,13 @@ object CustomEmojiStore {
         )
     }
 
-    fun addList(id: String, name: String, emojis: List<CustomEmoji>, merge: Boolean = false) {
+    fun addList(
+        id: String,
+        name: String,
+        emojis: List<CustomEmoji>,
+        authorPubkey: String = "",
+        merge: Boolean = false,
+    ) {
         val normalizedEmojis = emojis.mapNotNull { emoji ->
             val normalizedShortcode = emoji.shortcode.trim().trim(':')
             val normalizedUrl = emoji.imageUrl.trim()
@@ -155,6 +172,7 @@ object CustomEmojiStore {
                 id = normalizedId,
                 name = normalizedName,
                 emojis = normalizedEmojis,
+                authorPubkey = authorPubkey.trim(),
             ),
             merge = merge,
         )

@@ -43,6 +43,7 @@ fun LinkedText(
     onProfileClick: ((pubkey: String) -> Unit)? = null,
     profiles: Map<String, NostrProfile> = emptyMap(),
     onHashtagClick: ((tag: String) -> Unit)? = null,
+    enableCustomEmojiLinks: Boolean = false,
     enableWebLinks: Boolean = true,
     maxLines: Int = Int.MAX_VALUE,
     overflow: TextOverflow = TextOverflow.Clip,
@@ -171,7 +172,13 @@ fun LinkedText(
         }
     }
 
-    val inlineContent = remember(emojiSegments, unregisteredEmojiSegments, linkColor, style) {
+    val inlineContent = remember(
+        emojiSegments,
+        unregisteredEmojiSegments,
+        linkColor,
+        style,
+        enableCustomEmojiLinks,
+    ) {
         buildMap {
             emojiSegments.distinctBy { it.shortcode }.forEach { emoji ->
                 put(
@@ -189,7 +196,19 @@ fun LinkedText(
                             contentScale = ContentScale.Fit,
                             modifier = Modifier
                                 .fillMaxSize()
-                                .clipToBounds(),
+                                .clipToBounds()
+                                .then(
+                                    if (enableCustomEmojiLinks) {
+                                        Modifier.clickable {
+                                            CustomEmojiStore.requestOpenSearch(
+                                                shortcode = emoji.shortcode,
+                                                imageUrl = emoji.imageUrl,
+                                            )
+                                        }
+                                    } else {
+                                        Modifier
+                                    },
+                                ),
                         )
                     },
                 )
