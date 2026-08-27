@@ -30,6 +30,12 @@ import com.nostr.torinos.model.toProfile
 import com.nostr.torinos.network.NostrRepository
 import com.nostr.torinos.network.ProfileFetchPolicy
 import com.nostr.torinos.network.ProfileRepository
+import com.nostr.torinos.network.RelayOutcome
+import com.nostr.torinos.network.RelayTarget
+import com.nostr.torinos.network.SubscriptionBehavior
+import com.nostr.torinos.network.SubscriptionSignal
+import com.nostr.torinos.network.SubscriptionSpec
+import com.nostr.torinos.ui.SafeCoroutineLauncher
 import com.nostr.torinos.util.appLog
 import com.nostr.torinos.ui.timeline.NoteEngagementCoordinator
 import com.nostr.torinos.ui.timeline.StateStore
@@ -40,9 +46,6 @@ import kotlin.time.Instant
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.async
-import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.StateFlow
@@ -203,12 +206,99 @@ private fun <K, K2, V2> Map<K, Map<K2, V2>>.putMapOrRemove(
     value: Map<K2, V2>,
 ): Map<K, Map<K2, V2>> = if (value.isEmpty()) this - key else this + (key to value)
 
+internal data class JournalEngagementSnapshot(
+    val reactionCounts: Map<String, Int> = emptyMap(),
+    val likeReactionCounts: Map<String, Int> = emptyMap(),
+    val customReactions: Map<String, List<CustomReaction>> = emptyMap(),
+    val unicodeReactions: Map<String, List<UnicodeReaction>> = emptyMap(),
+    val replyCounts: Map<String, Int> = emptyMap(),
+    val replies: Map<String, List<NostrEvent>> = emptyMap(),
+    val repostCounts: Map<String, Int> = emptyMap(),
+    val likedReactions: Map<String, String> = emptyMap(),
+    val ownEmojiReactionEventIds: Map<String, Map<String, String>> = emptyMap(),
+)
+
+internal fun JournalState.withProgressiveJournalEngagement(
+    snapshot: JournalEngagementSnapshot,
+): JournalState = copy(
+    reactionCounts = reactionCounts.withMaxCounts(snapshot.reactionCounts),
+    likeReactionCounts = likeReactionCounts.withMaxCounts(snapshot.likeReactionCounts),
+    customReactions = customReactions.withMaxCustomReactionCounts(snapshot.customReactions),
+    unicodeReactions = unicodeReactions.withMaxUnicodeReactionCounts(snapshot.unicodeReactions),
+    replyCounts = replyCounts.withMaxCounts(snapshot.replyCounts),
+    replies = replies.withMergedReplies(snapshot.replies),
+    repostCounts = repostCounts.withMaxCounts(snapshot.repostCounts),
+    likedReactions = likedReactions + snapshot.likedReactions,
+    ownEmojiReactionEventIds = ownEmojiReactionEventIds.withMergedReactionEventIds(
+        snapshot.ownEmojiReactionEventIds,
+    ),
+)
+
+internal fun JournalState.withCompletedJournalEngagement(
+    noteIds: Set<String>,
+    snapshot: JournalEngagementSnapshot,
+): JournalState = copy(
+    reactionCounts = (reactionCounts - noteIds) + snapshot.reactionCounts,
+    likeReactionCounts = (likeReactionCounts - noteIds) + snapshot.likeReactionCounts,
+    customReactions = (customReactions - noteIds) + snapshot.customReactions,
+    unicodeReactions = (unicodeReactions - noteIds) + snapshot.unicodeReactions,
+    replyCounts = (replyCounts - noteIds) + snapshot.replyCounts,
+    replies = (replies - noteIds) + snapshot.replies,
+    repostCounts = (repostCounts - noteIds) + snapshot.repostCounts,
+    likedReactions = (likedReactions - noteIds) + snapshot.likedReactions,
+    ownEmojiReactionEventIds =
+        (ownEmojiReactionEventIds - noteIds) + snapshot.ownEmojiReactionEventIds,
+)
+
+private fun Map<String, Int>.withMaxCounts(updates: Map<String, Int>): Map<String, Int> =
+    updates.entries.fold(this) { result, (eventId, count) ->
+        result + (eventId to maxOf(result[eventId] ?: 0, count))
+    }
+
+private fun Map<String, List<CustomReaction>>.withMaxCustomReactionCounts(
+    updates: Map<String, List<CustomReaction>>,
+): Map<String, List<CustomReaction>> = updates.entries.fold(this) { result, (eventId, reactions) ->
+    val merged = (result[eventId].orEmpty() + reactions)
+        .groupBy { it.shortcode to it.imageUrl }
+        .values
+        .map { sameReaction -> sameReaction.maxBy { it.count } }
+    result + (eventId to merged)
+}
+
+private fun Map<String, List<UnicodeReaction>>.withMaxUnicodeReactionCounts(
+    updates: Map<String, List<UnicodeReaction>>,
+): Map<String, List<UnicodeReaction>> = updates.entries.fold(this) { result, (eventId, reactions) ->
+    val merged = (result[eventId].orEmpty() + reactions)
+        .groupBy { it.content }
+        .values
+        .map { sameReaction -> sameReaction.maxBy { it.count } }
+    result + (eventId to merged)
+}
+
+private fun Map<String, List<NostrEvent>>.withMergedReplies(
+    updates: Map<String, List<NostrEvent>>,
+): Map<String, List<NostrEvent>> = updates.entries.fold(this) { result, (eventId, newReplies) ->
+    result + (
+        eventId to (result[eventId].orEmpty() + newReplies)
+            .distinctBy { it.id }
+            .sortedBy { it.createdAt }
+    )
+}
+
+private fun Map<String, Map<String, String>>.withMergedReactionEventIds(
+    updates: Map<String, Map<String, String>>,
+): Map<String, Map<String, String>> = updates.entries.fold(this) { result, (eventId, eventIds) ->
+    result + (eventId to (result[eventId].orEmpty() + eventIds))
+}
+
 internal class JournalController(
     private val targetPubkey: String? = null,
     private val accountSession: AccountSession? = null,
     private val scope: CoroutineScope,
 ) {
-    private fun launch(block: suspend CoroutineScope.() -> Unit): Job = scope.launch(block = block)
+    private val safeCoroutineLauncher = SafeCoroutineLauncher(scope, "JournalController")
+    private fun launch(block: suspend CoroutineScope.() -> Unit): Job =
+        safeCoroutineLauncher.launch(block = block)
     private val _state = StateStore(JournalState())
     val state: StateFlow<JournalState> = _state.state
     private var loadJob: Job? = null
@@ -317,7 +407,12 @@ internal class JournalController(
     }
 
     fun setRelayUrl(url: String?) {
-        if (hasConfiguredRelayUrl && relayUrl == url) return
+        if (hasConfiguredRelayUrl && relayUrl == url) {
+            if (_state.value.isLoading) {
+                loadMonth(_state.value.selectedMonth)
+            }
+            return
+        }
         hasConfiguredRelayUrl = true
         relayUrl = url
         loadMonth(_state.value.selectedMonth, resetCache = true)
@@ -847,9 +942,7 @@ internal class JournalController(
         engagementJob?.cancel()
         engagementJob = launch {
             val subId = nextSubscriptionId("memo-engage")
-            val quoteRepostSubId = nextSubscriptionId("memo-qrepost")
             val noteIdSet = noteIds.toHashSet()
-            val mutex = Mutex()
             val reactionCounts = mutableMapOf<String, Int>()
             val likeReactionCounts = mutableMapOf<String, Int>()
             val customReactions = mutableMapOf<String, List<CustomReaction>>()
@@ -859,110 +952,106 @@ internal class JournalController(
             val repostCounts = mutableMapOf<String, Int>()
             val likedReactions = mutableMapOf<String, String>()
             val ownEmojiReactionEventIds = mutableMapOf<String, Map<String, String>>()
-            var collector: Job? = null
-            var quoteRepostCollector: Job? = null
+            fun currentSnapshot() = JournalEngagementSnapshot(
+                reactionCounts = reactionCounts,
+                likeReactionCounts = likeReactionCounts,
+                customReactions = customReactions,
+                unicodeReactions = unicodeReactions,
+                replyCounts = replyCounts,
+                replies = replies,
+                repostCounts = repostCounts,
+                likedReactions = likedReactions,
+                ownEmojiReactionEventIds = ownEmojiReactionEventIds,
+            )
+            val session = NostrRepository.openSubscription(
+                SubscriptionSpec(
+                    id = subId,
+                    filters = listOf(
+                        NostrFilter(kinds = listOf(1, 6, 7), eTags = noteIds, limit = 500),
+                        NostrFilter(kinds = listOf(1), qTags = noteIds, limit = 500),
+                    ),
+                    target = relayUrl?.let(RelayTarget::Single) ?: RelayTarget.AllEnabled,
+                    behavior = SubscriptionBehavior.Fetch(ENGAGEMENT_FETCH_TIMEOUT_MS),
+                ),
+            )
             try {
-                collector = launch {
-                    NostrRepository.events(subId).collect { event ->
-                        val targetId = event.tags.firstOrNull { it.firstOrNull() == "e" }
-                            ?.getOrNull(1) ?: return@collect
-                        if (targetId !in noteIdSet) return@collect
-                        mutex.withLock {
-                            when (event.kind) {
-                                7 -> {
-                                    reactionCounts[targetId] = (reactionCounts[targetId] ?: 0) + 1
-                                    if (event.content.trim() == "+") {
-                                        likeReactionCounts[targetId] =
-                                            (likeReactionCounts[targetId] ?: 0) + 1
-                                    }
-                                    event.toCustomReaction()?.let { reaction ->
-                                        customReactions[targetId] = customReactions[targetId]
-                                            .orEmpty()
-                                            .incrementedWith(reaction)
-                                    }
-                                    event.toUnicodeReaction()?.let { reaction ->
-                                        unicodeReactions[targetId] = unicodeReactions[targetId]
-                                            .orEmpty()
-                                            .incrementedWithUnicodeReaction(reaction)
-                                    }
-                                    if (
-                                        event.pubkey == ownPubkey &&
-                                        event.content.trim() == "+" &&
-                                        !likedReactions.containsKey(targetId)
-                                    ) {
-                                        likedReactions[targetId] = event.id
-                                    }
-                                    if (event.pubkey == ownPubkey) {
-                                        event.toReactionOption()?.let { option ->
-                                            ownEmojiReactionEventIds[targetId] =
-                                                ownEmojiReactionEventIds[targetId].orEmpty() +
-                                                    (option.key to event.id)
+                var completed: SubscriptionSignal.FetchCompleted? = null
+                session.signals.collect { signal ->
+                    when (signal) {
+                        is SubscriptionSignal.Event -> {
+                            val event = signal.event
+                            val targetId = event.tags.firstOrNull { it.firstOrNull() == "e" }
+                                ?.getOrNull(1)
+                                ?.takeIf { it in noteIdSet }
+                            if (targetId != null) {
+                                when (event.kind) {
+                                    7 -> {
+                                        reactionCounts[targetId] = (reactionCounts[targetId] ?: 0) + 1
+                                        if (event.content.trim() == "+") {
+                                            likeReactionCounts[targetId] =
+                                                (likeReactionCounts[targetId] ?: 0) + 1
+                                        }
+                                        event.toCustomReaction()?.let { reaction ->
+                                            customReactions[targetId] = customReactions[targetId]
+                                                .orEmpty()
+                                                .incrementedWith(reaction)
+                                        }
+                                        event.toUnicodeReaction()?.let { reaction ->
+                                            unicodeReactions[targetId] = unicodeReactions[targetId]
+                                                .orEmpty()
+                                                .incrementedWithUnicodeReaction(reaction)
+                                        }
+                                        if (
+                                            event.pubkey == ownPubkey &&
+                                            event.content.trim() == "+" &&
+                                            !likedReactions.containsKey(targetId)
+                                        ) {
+                                            likedReactions[targetId] = event.id
+                                        }
+                                        if (event.pubkey == ownPubkey) {
+                                            event.toReactionOption()?.let { option ->
+                                                ownEmojiReactionEventIds[targetId] =
+                                                    ownEmojiReactionEventIds[targetId].orEmpty() +
+                                                        (option.key to event.id)
+                                            }
                                         }
                                     }
+                                    1 -> {
+                                        replyCounts[targetId] = (replyCounts[targetId] ?: 0) + 1
+                                        replies[targetId] = (replies[targetId].orEmpty() + event)
+                                            .distinctBy { it.id }
+                                            .sortedBy { it.createdAt }
+                                    }
+                                    6 -> repostCounts[targetId] = (repostCounts[targetId] ?: 0) + 1
                                 }
-                                1 -> {
-                                    replyCounts[targetId] = (replyCounts[targetId] ?: 0) + 1
-                                    replies[targetId] = (replies[targetId].orEmpty() + event)
-                                        .distinctBy { it.id }
-                                        .sortedBy { it.createdAt }
-                                }
-                                6 -> repostCounts[targetId] = (repostCounts[targetId] ?: 0) + 1
                             }
+                            if (event.kind == 1) {
+                                event.tags
+                                    .filter { it.firstOrNull() == "q" }
+                                    .mapNotNull { it.getOrNull(1) }
+                                    .distinct()
+                                    .filter { it in noteIdSet }
+                                    .forEach { quotedId ->
+                                        repostCounts[quotedId] = (repostCounts[quotedId] ?: 0) + 1
+                                    }
+                            }
+                            _state.value = _state.value.withProgressiveJournalEngagement(
+                                currentSnapshot(),
+                            )
                         }
+                        is SubscriptionSignal.FetchCompleted -> {
+                            completed = signal
+                            return@collect
+                        }
+                        else -> Unit
                     }
                 }
-                quoteRepostCollector = launch {
-                    NostrRepository.events(quoteRepostSubId).collect { event ->
-                        if (event.kind != 1) return@collect
-                        val targetIds = event.tags
-                            .filter { it.firstOrNull() == "q" }
-                            .mapNotNull { it.getOrNull(1) }
-                            .distinct()
-                            .filter { it in noteIdSet }
-                        mutex.withLock {
-                            targetIds.forEach { targetId ->
-                                repostCounts[targetId] = (repostCounts[targetId] ?: 0) + 1
-                            }
-                        }
-                    }
-                }
-                val completionWaiters = listOf(
-                    async { awaitSubscriptionEnd(subId, 8_000L) },
-                    async { awaitSubscriptionEnd(quoteRepostSubId, 8_000L) },
-                )
-                NostrRepository.subscribe(
-                    subId,
-                    NostrFilter(kinds = listOf(1, 6, 7), eTags = noteIds, limit = 500),
-                    relayUrl = relayUrl,
-                )
-                NostrRepository.subscribe(
-                    quoteRepostSubId,
-                    NostrFilter(kinds = listOf(1), qTags = noteIds, limit = 500),
-                    relayUrl = relayUrl,
-                )
-                completionWaiters.awaitAll()
-                mutex.withLock {
-                    val retainedReactionCounts = _state.value.reactionCounts - noteIdSet
-                    val retainedLikeReactionCounts = _state.value.likeReactionCounts - noteIdSet
-                    val retainedCustomReactions = _state.value.customReactions - noteIdSet
-                    val retainedUnicodeReactions = _state.value.unicodeReactions - noteIdSet
-                    val retainedReplyCounts = _state.value.replyCounts - noteIdSet
-                    val retainedReplies = _state.value.replies - noteIdSet
-                    val retainedRepostCounts = _state.value.repostCounts - noteIdSet
-                    val retainedLikedReactions = _state.value.likedReactions - noteIdSet
-                    val retainedOwnEmojiReactions =
-                        _state.value.ownEmojiReactionEventIds - noteIdSet
-                    _state.value = _state.value.copy(
-                        reactionCounts = retainedReactionCounts + reactionCounts,
-                        likeReactionCounts = retainedLikeReactionCounts + likeReactionCounts,
-                        customReactions = retainedCustomReactions + customReactions,
-                        unicodeReactions = retainedUnicodeReactions + unicodeReactions,
-                        replyCounts = retainedReplyCounts + replyCounts,
-                        replies = retainedReplies + replies,
-                        repostCounts = retainedRepostCounts + repostCounts,
-                        likedReactions = retainedLikedReactions + likedReactions,
-                        ownEmojiReactionEventIds =
-                            retainedOwnEmojiReactions + ownEmojiReactionEventIds,
+
+                val completion = completed
+                if (completion != null && shouldCommitJournalEngagement(completion)) {
+                    _state.value = _state.value.withCompletedJournalEngagement(
+                        noteIds = noteIdSet,
+                        snapshot = currentSnapshot(),
                     )
                 }
                 val replyEvents = replies.values.flatten()
@@ -972,10 +1061,7 @@ internal class JournalController(
             } catch (e: CancellationException) {
                 throw e
             } finally {
-                runCatching { NostrRepository.close(subId) }
-                runCatching { NostrRepository.close(quoteRepostSubId) }
-                collector?.cancelAndJoin()
-                quoteRepostCollector?.cancelAndJoin()
+                runCatching { session.close() }
             }
         }
     }
@@ -1297,6 +1383,12 @@ private fun JournalState.journalEntryDatesInMonth(
 private fun monthEnd(monthStart: LocalDate): LocalDate =
     monthStart.nextMonth().minusDays(1)
 
+internal fun shouldCommitJournalEngagement(
+    completion: SubscriptionSignal.FetchCompleted,
+): Boolean = !completion.timedOut &&
+    completion.outcomes.isNotEmpty() &&
+    completion.outcomes.values.all { it is RelayOutcome.Eose }
+
 internal fun currentDate(): LocalDate =
     Clock.System.now().toLocalDateTime(TimeZone.currentSystemDefault()).date
 
@@ -1334,3 +1426,4 @@ internal fun LocalDate.startOfDayEpochSeconds(): Long =
 
 private const val JOURNAL_MONTH_DAY_LIMIT = 10
 private const val JOURNAL_DATE_LIMIT = 500
+private const val ENGAGEMENT_FETCH_TIMEOUT_MS = 8_000L
