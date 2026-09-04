@@ -40,7 +40,6 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -48,12 +47,12 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.runtime.collectAsState
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.nostr.torinos.account.accountSessionViewModel
+import com.nostr.torinos.engagement.ReactionEventReducer
 import com.nostr.torinos.model.noteContextForChannel
 import com.nostr.torinos.model.quotedEventIds
 import com.nostr.torinos.model.stripNostrEventUris
 import com.nostr.torinos.model.toCustomReaction
-import com.nostr.torinos.network.CustomEmojiStore
-import com.nostr.torinos.ui.components.NetworkImage
+import com.nostr.torinos.ui.components.CustomReactionLink
 import com.nostr.torinos.ui.components.NoteCard
 import com.nostr.torinos.ui.components.ProfileNameText
 import com.nostr.torinos.ui.components.QuotedEvent
@@ -244,7 +243,9 @@ fun ThreadScreen(
                                 likeReactionCount = state.likeReactionCounts[root.id] ?: 0,
                                 customReactions = state.customReactions[root.id].orEmpty(),
                                 unicodeReactions = state.unicodeReactions[root.id].orEmpty(),
+                                reactionEvents = state.reactionEvents[root.id].orEmpty(),
                                 repostCount = state.repostCount,
+                                repostPubkeys = (state.repostPubkeys + state.quoteReposts.map { it.pubkey }).distinct(),
                                 isLiked = state.isLiked(root.id),
                                 ownEmojiReactionEventIds = state.displayOwnEmojiReactionEventIds(root.id),
                                 isReposted = state.isRootReposted(root.id),
@@ -279,6 +280,7 @@ fun ThreadScreen(
                                     didSelectTabManually = true
                                     selectedTab = ThreadTab.Reposts
                                 },
+                                onRefreshReactions = { viewModel.refreshReactions(root.id) },
                                 onRepost = if (ownPubkey != null) {
                                     {
                                         if (state.isRootReposted(root.id)) {
@@ -345,6 +347,7 @@ fun ThreadScreen(
                                             likeReactionCount = state.likeReactionCounts[reply.id] ?: 0,
                                             customReactions = state.customReactions[reply.id].orEmpty(),
                                             unicodeReactions = state.unicodeReactions[reply.id].orEmpty(),
+                                            reactionEvents = state.reactionEvents[reply.id].orEmpty(),
                                             isLiked = state.isLiked(reply.id),
                                             ownEmojiReactionEventIds = state.displayOwnEmojiReactionEventIds(reply.id),
                                             onUserClick = onUserClick,
@@ -369,6 +372,7 @@ fun ThreadScreen(
                                             onOpenReplies = { onOpenThread(reply.id) },
                                             onOpenLikes = { onOpenLikes(reply.id) },
                                             onOpenReposts = { onOpenReposts(reply.id) },
+                                            onRefreshReactions = { viewModel.refreshReactions(reply.id) },
                                             onNoteClick = onOpenThread,
                                         )
                                         HorizontalDivider()
@@ -379,11 +383,14 @@ fun ThreadScreen(
                                 if (state.reactionPubkeys.isEmpty()) {
                                     emptyTabItem("いいねはまだありません")
                                 } else {
+                                    val reactionsByPubkey = ReactionEventReducer.latestByPubkey(
+                                        state.reactionEvents[eventId].orEmpty(),
+                                    )
                                     items(state.reactionPubkeys, key = { it }) { pubkey ->
                                         ReactionUserRow(
                                             pubkey = pubkey,
                                             profile = state.profiles[pubkey],
-                                            reaction = state.rootReactionsByPubkey[pubkey],
+                                            reaction = reactionsByPubkey[pubkey],
                                             showReaction = true,
                                             onClick = { onUserClick(pubkey) },
                                         )
@@ -420,6 +427,7 @@ fun ThreadScreen(
                                             likeReactionCount = state.likeReactionCounts[quoteRepost.id] ?: 0,
                                             customReactions = state.customReactions[quoteRepost.id].orEmpty(),
                                             unicodeReactions = state.unicodeReactions[quoteRepost.id].orEmpty(),
+                                            reactionEvents = state.reactionEvents[quoteRepost.id].orEmpty(),
                                             repostCount = state.repostCount(quoteRepost.id, eventId),
                                             isLiked = state.isLiked(quoteRepost.id),
                                             ownEmojiReactionEventIds = state.displayOwnEmojiReactionEventIds(quoteRepost.id),
@@ -454,6 +462,7 @@ fun ThreadScreen(
                                             onOpenReplies = { onOpenThread(quoteRepost.id) },
                                             onOpenLikes = { onOpenLikes(quoteRepost.id) },
                                             onOpenReposts = { onOpenReposts(quoteRepost.id) },
+                                            onRefreshReactions = { viewModel.refreshReactions(quoteRepost.id) },
                                             onRepost = if (ownPubkey != null) {
                                                 {
                                                     if (state.isReposted(quoteRepost.id, eventId)) {
@@ -464,7 +473,7 @@ fun ThreadScreen(
                                                 }
                                             } else null,
                                             onNoteClick = onOpenThread,
-                                            onQuotedNoteClick = { onOpenThread(quoteRepost.id) },
+                                            onQuotedNoteClick = onOpenThread,
                                             ownPubkey = ownPubkey,
                                         )
                                         HorizontalDivider()
@@ -635,18 +644,9 @@ private fun ReactionValue(
 ) {
     val customReaction = remember(reaction.id) { reaction.toCustomReaction() }
     if (customReaction != null) {
-        NetworkImage(
-            url = customReaction.imageUrl,
-            contentDescription = ":${customReaction.shortcode}:",
-            contentScale = ContentScale.Fit,
-            modifier = Modifier
-                .size(28.dp)
-                .clickable {
-                    CustomEmojiStore.requestOpenSearch(
-                        shortcode = customReaction.shortcode,
-                        imageUrl = customReaction.imageUrl,
-                    )
-                },
+        CustomReactionLink(
+            reaction = customReaction,
+            containerSize = 28.dp,
         )
     } else {
         Text(

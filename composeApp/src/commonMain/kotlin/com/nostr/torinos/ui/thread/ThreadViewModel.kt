@@ -33,7 +33,7 @@ class ThreadViewModel(
         val customReactions: Map<String, List<CustomReaction>> = emptyMap(),
         val unicodeReactions: Map<String, List<UnicodeReaction>> = emptyMap(),
         val reactionPubkeys: List<String> = emptyList(),
-        val rootReactionsByPubkey: Map<String, NostrEvent> = emptyMap(),
+        val reactionEvents: Map<String, List<NostrEvent>> = emptyMap(),
         val repostPubkeys: List<String> = emptyList(),
         val quoteReposts: List<NostrEvent> = emptyList(),
         val repostCount: Int = 0,
@@ -78,6 +78,7 @@ class ThreadViewModel(
         controller.reactWithEmoji(eventId, eventPubkey, option)
     fun unreactWithEmoji(eventId: String, option: ReactionOption) =
         controller.unreactWithEmoji(eventId, option)
+    fun refreshReactions(eventId: String) = controller.refreshReactions(eventId)
     fun repost(event: NostrEvent) = controller.repost(event)
     fun unrepost(eventId: String) = controller.unrepost(eventId)
     fun startSubscriptions() = controller.startSubscriptions()

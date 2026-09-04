@@ -10,6 +10,8 @@ import com.nostr.torinos.engagement.EngagementRequest
 import com.nostr.torinos.engagement.EngagementSlot
 import com.nostr.torinos.engagement.NoteEngagementCommand
 import com.nostr.torinos.engagement.NoteEngagementState
+import com.nostr.torinos.engagement.ReactionEventReducer
+import com.nostr.torinos.engagement.ReactionRefreshFetcher
 import com.nostr.torinos.engagement.NoteTarget
 import com.nostr.torinos.engagement.PendingEngagementOperation
 import com.nostr.torinos.engagement.displayOwnEmojiReactionEventIds
@@ -34,6 +36,8 @@ import com.nostr.torinos.network.SubscriptionSignal
 import com.nostr.torinos.network.SubscriptionSpec
 import com.nostr.torinos.ui.SafeCoroutineLauncher
 import com.nostr.torinos.ui.timeline.NoteEngagementCoordinator
+import com.nostr.torinos.ui.timeline.NoteCardSync
+import com.nostr.torinos.ui.timeline.NoteCardSnapshot
 import com.nostr.torinos.ui.timeline.StateStore
 import com.nostr.torinos.ui.timeline.SignedEventPublisher
 import com.nostr.torinos.ui.timeline.SignedPublishResult
@@ -98,6 +102,7 @@ internal class FeedController(
     private val engagementCoordinator = NoteEngagementCoordinator(accountSession?.signer)
     private val signedEventPublisher = SignedEventPublisher(accountSession?.signer)
     private var nextEngagementOperationId = 0L
+    private var nextReactionRefreshId = 0L
 
     private var oldestCreatedAt: Long? = null
     private var nextHistoryUntil: Long? = null
@@ -133,6 +138,13 @@ internal class FeedController(
                 updateFeedState(immediate = false) { state ->
                     state.copy(profiles = state.profiles + updatedProfiles)
                 }
+            }
+        }
+        lifecycleJobs += launch {
+            NoteCardSync.updates.collect { snapshot ->
+                if (snapshot.sessionId != accountSession?.sessionId) return@collect
+                if (snapshot.eventId !in watchedEventIds) return@collect
+                updateFeedState { it.withCardSnapshot(snapshot) }
             }
         }
         if (autoStart) startSubscriptions()
@@ -266,8 +278,10 @@ internal class FeedController(
         launch {
             var committed = false
             var failure: Throwable? = null
+            var signedEvent: NostrEvent? = null
             try {
                 val published = engagementCoordinator.execute(command) { signed ->
+                    signedEvent = signed
                     when (command) {
                         is NoteEngagementCommand.AddLike,
                         is NoteEngagementCommand.AddEmoji,
@@ -280,10 +294,36 @@ internal class FeedController(
                 }.getOrThrow()
                 updateFeedState {
                     val current = it.noteEngagement(eventId)
-                    it.withEngagement(
+                    var next = it.withEngagement(
                         eventId,
                         engagementCoordinator.commit(current, operationId, published.id),
                     )
+                    next = when (command) {
+                        is NoteEngagementCommand.AddLike,
+                        is NoteEngagementCommand.AddEmoji,
+                        -> signedEvent?.let { reaction ->
+                            next.copy(
+                                reactionEvents = next.reactionEvents + (
+                                    eventId to ReactionEventReducer.add(
+                                        next.reactionEvents[eventId].orEmpty(),
+                                        reaction,
+                                    )
+                                ),
+                            )
+                        } ?: next
+                        is NoteEngagementCommand.RemoveReaction -> next.copy(
+                            reactionEvents = next.reactionEvents + (
+                                eventId to ReactionEventReducer.remove(
+                                    next.reactionEvents[eventId].orEmpty(),
+                                    command.reactionEventId,
+                                )
+                            ),
+                        )
+                        is NoteEngagementCommand.AddRepost,
+                        is NoteEngagementCommand.RemoveRepost,
+                        -> next
+                    }
+                    next
                 }
                 committed = true
             } catch (cancelled: CancellationException) {
@@ -333,6 +373,17 @@ internal class FeedController(
             manualRefreshRequested = true
             stopSubscriptions(clearRefreshing = false)
             startSubscriptions()
+        }
+    }
+
+    fun refreshReactions(eventId: String) {
+        if (eventId !in watchedEventIds) return
+        launch {
+            ReactionRefreshFetcher.fetch(
+                subscriptionId = "feed-reaction-refresh-$instanceKey-${++nextReactionRefreshId}",
+                eventId = eventId,
+                target = relayTarget,
+            ).forEach(::handleReactionEvent)
         }
     }
 
@@ -871,6 +922,16 @@ internal class FeedController(
                 add(event.pubkey)
                 extractNpubReferences(event.content).forEach { add(it.pubkey) }
             }
+            current.reactionEvents
+                .filterKeys { it in retainedEventIds }
+                .values
+                .flatten()
+                .forEach { add(it.pubkey) }
+            current.repostPubkeys
+                .filterKeys { it in retainedEventIds }
+                .values
+                .flatten()
+                .forEach(::add)
             current.repostedByPubkeys.forEach { (eventId, pubkey) ->
                 if (eventId in visibleEventIds) add(pubkey)
             }
@@ -886,9 +947,11 @@ internal class FeedController(
             likeReactionCounts = current.likeReactionCounts.filterKeys { it in retainedEventIds },
             customReactions = current.customReactions.filterKeys { it in retainedEventIds },
             unicodeReactions = current.unicodeReactions.filterKeys { it in retainedEventIds },
+            reactionEvents = current.reactionEvents.filterKeys { it in retainedEventIds },
             replyCounts = current.replyCounts.filterKeys { it in retainedEventIds },
             replies = replies,
             repostCounts = current.repostCounts.filterKeys { it in retainedEventIds },
+            repostPubkeys = current.repostPubkeys.filterKeys { it in retainedEventIds },
             quotedEvents = quotedEvents,
             repostedByPubkeys = current.repostedByPubkeys.filterKeys { it in visibleEventIds },
             likedReactions = current.likedReactions.filterKeys { it in retainedEventIds },
@@ -1017,6 +1080,7 @@ internal class FeedController(
             ?.takeIf { it in watchedEventIds }
             ?: return
         rememberReceivedEvent(receivedReactionEvents, event)
+        scheduleProfileFetch(event.pubkey)
         val cur = currentFeedState()
         val isOwn = ownPubkey != null && event.pubkey == ownPubkey
         setFeedState(
@@ -1044,6 +1108,7 @@ internal class FeedController(
             ?: return
         if (!rememberSeenId(seenRepostIds, event.id)) return
         rememberReceivedEvent(receivedRepostEvents, event)
+        scheduleProfileFetch(event.pubkey)
         val cur = currentFeedState()
         val isOwn = ownPubkey != null && event.pubkey == ownPubkey
         setFeedState(
@@ -1061,9 +1126,10 @@ internal class FeedController(
             .filter { rememberSeenId(seenQuoteRepostIds, "${event.id}:$it") }
         if (targetIds.isEmpty()) return
         setFeedState(
-            EngagementAccumulator.quoteReposts(currentFeedState(), targetIds),
+            EngagementAccumulator.quoteReposts(currentFeedState(), targetIds, event.pubkey),
             immediate = false,
         )
+        scheduleProfileFetch(event.pubkey)
     }
 
     private fun scheduleQuoteFetch(eventIds: List<String>) {
@@ -1148,6 +1214,15 @@ internal fun FeedViewModel.UiState.noteEngagement(eventId: String): NoteEngageme
     ownRepostEventId = repostedEvents[eventId],
     pendingOperations = pendingEngagementOperations[eventId].orEmpty(),
 )
+
+internal fun FeedViewModel.UiState.withCardSnapshot(
+    snapshot: NoteCardSnapshot,
+): FeedViewModel.UiState {
+    val withReplyCount = snapshot.replyCount?.let { count ->
+        copy(replyCounts = replyCounts + (snapshot.eventId to maxOf(replyCounts[snapshot.eventId] ?: 0, count)))
+    } ?: this
+    return snapshot.engagement?.let { withReplyCount.withEngagement(snapshot.eventId, it) } ?: withReplyCount
+}
 
 private fun FeedViewModel.UiState.withEngagement(
     eventId: String,

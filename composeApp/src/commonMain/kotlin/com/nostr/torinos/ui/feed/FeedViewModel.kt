@@ -34,9 +34,11 @@ class FeedViewModel(
         val likeReactionCounts: Map<String, Int> = emptyMap(),
         val customReactions: Map<String, List<CustomReaction>> = emptyMap(),
         val unicodeReactions: Map<String, List<UnicodeReaction>> = emptyMap(),
+        val reactionEvents: Map<String, List<NostrEvent>> = emptyMap(),
         val replyCounts: Map<String, Int> = emptyMap(),
         val replies: Map<String, List<NostrEvent>> = emptyMap(),
         val repostCounts: Map<String, Int> = emptyMap(),
+        val repostPubkeys: Map<String, List<String>> = emptyMap(),
         val quotedEvents: Map<String, NostrEvent> = emptyMap(),
         val repostedByPubkeys: Map<String, String> = emptyMap(),
         val likedReactions: Map<String, String> = emptyMap(),
@@ -77,6 +79,7 @@ class FeedViewModel(
         controller.reportEvent(event, reason, detail)
     fun loadMore() = controller.loadMore()
     fun refresh() = controller.refresh()
+    fun refreshReactions(eventId: String) = controller.refreshReactions(eventId)
     fun startSubscriptions() = controller.startSubscriptions()
     fun stopSubscriptions(clearRefreshing: Boolean = true) = controller.stopSubscriptions(clearRefreshing)
 

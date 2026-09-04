@@ -11,6 +11,8 @@ import com.nostr.torinos.engagement.NoteEngagementCommand
 import com.nostr.torinos.engagement.NoteEngagementState
 import com.nostr.torinos.engagement.NoteTarget
 import com.nostr.torinos.engagement.PendingEngagementOperation
+import com.nostr.torinos.engagement.ReactionEventReducer
+import com.nostr.torinos.engagement.ReactionRefreshFetcher
 import com.nostr.torinos.engagement.displayOwnEmojiReactionEventIds
 import com.nostr.torinos.engagement.hasOwnReaction
 import com.nostr.torinos.engagement.isRepostedByMe
@@ -29,9 +31,12 @@ import com.nostr.torinos.model.toUnicodeReaction
 import com.nostr.torinos.model.toReactionOption
 import com.nostr.torinos.network.NostrRepository
 import com.nostr.torinos.network.ProfileFetchPolicy
+import com.nostr.torinos.network.ProfileRepository
 import com.nostr.torinos.ui.SafeCoroutineLauncher
 import com.nostr.torinos.ui.timeline.ProfileHydrator
 import com.nostr.torinos.ui.timeline.NoteEngagementCoordinator
+import com.nostr.torinos.ui.timeline.NoteCardSnapshot
+import com.nostr.torinos.ui.timeline.NoteCardSync
 import com.nostr.torinos.ui.timeline.QuoteResolver
 import com.nostr.torinos.ui.thread.ThreadViewModel.UiState
 import kotlinx.coroutines.CoroutineScope
@@ -90,6 +95,7 @@ internal class ThreadController(
         ProfileFetchPolicy.CacheFirst(PROFILE_MAX_AGE_MS),
     )
     private var nextEngagementOperationId = 0L
+    private var nextReactionRefreshId = 0L
 
     init {
         if (isWriteSupported) {
@@ -214,12 +220,23 @@ internal class ThreadController(
         )
     }
 
+    fun refreshReactions(targetEventId: String) {
+        if (targetEventId !in watchedReactionEventIds) return
+        launch {
+            ReactionRefreshFetcher.fetch(
+                subscriptionId = "thread-reaction-refresh-$shortId-${++nextReactionRefreshId}",
+                eventId = targetEventId,
+            ).forEach(::handleReactionEvent)
+        }
+    }
+
     private fun runEngagementOperation(
         targetEventId: String,
         request: EngagementRequest,
         command: NoteEngagementCommand,
         failureMessage: String,
     ) {
+        ownPubkey?.let(::ensureProfileAvailable)
         val operationId = EngagementOperationId("thread-${++nextEngagementOperationId}")
         val before = _state.value.noteEngagement(targetEventId, eventId)
         val optimistic = engagementCoordinator.begin(before, operationId, request)
@@ -250,15 +267,27 @@ internal class ThreadController(
                     engagementCoordinator.commit(current, operationId, published.id),
                     ownPubkey,
                 )
-                if (targetEventId == eventId && command is NoteEngagementCommand.AddLike) {
+                if (command is NoteEngagementCommand.AddLike || command is NoteEngagementCommand.AddEmoji) {
                     signedEvent?.let { reaction ->
                         next = next.copy(
-                            rootReactionsByPubkey = next.rootReactionsByPubkey + (reaction.pubkey to reaction),
+                            reactionEvents = next.reactionEvents + (
+                                targetEventId to ReactionEventReducer.add(
+                                    next.reactionEvents[targetEventId].orEmpty(),
+                                    reaction,
+                                )
+                            ),
                         )
                     }
                 }
-                if (targetEventId == eventId && command is NoteEngagementCommand.RemoveReaction && request is EngagementRequest.RemoveLike) {
-                    ownPubkey?.let { next = next.copy(rootReactionsByPubkey = next.rootReactionsByPubkey - it) }
+                if (command is NoteEngagementCommand.RemoveReaction) {
+                    next = next.copy(
+                        reactionEvents = next.reactionEvents + (
+                            targetEventId to ReactionEventReducer.remove(
+                                next.reactionEvents[targetEventId].orEmpty(),
+                                command.reactionEventId,
+                            )
+                        ),
+                    )
                 }
                 _state.value = next
                 committed = true
@@ -364,86 +393,7 @@ internal class ThreadController(
 
         subscriptionJobs += launch {
             NostrRepository.events(reactionSubId).collect { event ->
-                if (event.kind != 7 || !seenReactionIds.add(event.id)) return@collect
-                rememberReceivedEvent(receivedReactionEvents, event)
-                val targetId = event.tags.lastOrNull { it.firstOrNull() == "e" }?.getOrNull(1)
-                    ?: return@collect
-                if (targetId !in watchedReactionEventIds) return@collect
-                val cur = _state.value
-                val isOwn = ownPubkey != null && event.pubkey == ownPubkey
-                val customReaction = event.toCustomReaction()
-                val unicodeReaction = event.toUnicodeReaction()
-                val reactionOption = event.toReactionOption()
-                val rootReactionPubkeys = if (
-                    targetId == eventId &&
-                    event.pubkey !in cur.reactionPubkeys
-                ) {
-                    cur.reactionPubkeys + event.pubkey
-                } else {
-                    cur.reactionPubkeys
-                }
-                val rootReactionsByPubkey = if (targetId == eventId) {
-                    val previous = cur.rootReactionsByPubkey[event.pubkey]
-                    if (
-                        previous == null ||
-                        event.createdAt > previous.createdAt ||
-                        (event.createdAt == previous.createdAt && event.id > previous.id)
-                    ) {
-                        cur.rootReactionsByPubkey + (event.pubkey to event)
-                    } else {
-                        cur.rootReactionsByPubkey
-                    }
-                } else {
-                    cur.rootReactionsByPubkey
-                }
-                _state.value = cur.copy(
-                    reactionCounts = cur.reactionCounts + (targetId to (cur.reactionCounts[targetId] ?: 0) + 1),
-                    likeReactionCounts = if (event.content.trim() == "+") {
-                        cur.likeReactionCounts + (
-                            targetId to (cur.likeReactionCounts[targetId] ?: 0) + 1
-                            )
-                    } else {
-                        cur.likeReactionCounts
-                    },
-                    customReactions = if (customReaction != null) {
-                        cur.customReactions + (
-                            targetId to cur.customReactions[targetId]
-                                .orEmpty()
-                                .incrementedWith(customReaction)
-                        )
-                    } else {
-                        cur.customReactions
-                    },
-                    unicodeReactions = if (unicodeReaction != null) {
-                        cur.unicodeReactions + (
-                            targetId to cur.unicodeReactions[targetId]
-                                .orEmpty()
-                                .incrementedWithUnicodeReaction(unicodeReaction)
-                        )
-                    } else {
-                        cur.unicodeReactions
-                    },
-                    reactionPubkeys = rootReactionPubkeys,
-                    rootReactionsByPubkey = rootReactionsByPubkey,
-                    likedReactions = if (
-                        isOwn &&
-                        event.content.trim() == "+" &&
-                        !cur.likedReactions.containsKey(targetId)
-                    ) {
-                        cur.likedReactions + (targetId to event.id)
-                    } else {
-                        cur.likedReactions
-                    },
-                    ownEmojiReactionEventIds = if (isOwn && reactionOption != null) {
-                        cur.ownEmojiReactionEventIds + (
-                            targetId to cur.ownEmojiReactionEventIds[targetId].orEmpty()
-                                .plus(reactionOption.key to event.id)
-                            )
-                    } else {
-                        cur.ownEmojiReactionEventIds
-                    },
-                )
-                scheduleProfileFetch(event.pubkey)
+                handleReactionEvent(event)
             }
         }
 
@@ -606,14 +556,102 @@ internal class ThreadController(
     }
 
     fun close() {
+        publishRootCardSnapshot()
         stopSubscriptions()
         lifecycleJobs.forEach { it.cancel() }
         lifecycleJobs.clear()
         profileHydrator.close()
     }
 
+    private fun handleReactionEvent(event: NostrEvent) {
+        if (event.kind != 7 || !seenReactionIds.add(event.id)) return
+        rememberReceivedEvent(receivedReactionEvents, event)
+        val targetId = event.tags.lastOrNull { it.firstOrNull() == "e" }?.getOrNull(1) ?: return
+        if (targetId !in watchedReactionEventIds) return
+        val cur = _state.value
+        val isOwn = ownPubkey != null && event.pubkey == ownPubkey
+        val customReaction = event.toCustomReaction()
+        val unicodeReaction = event.toUnicodeReaction()
+        val reactionOption = event.toReactionOption()
+        val rootReactionPubkeys = if (
+            targetId == eventId &&
+            event.pubkey !in cur.reactionPubkeys
+        ) {
+            cur.reactionPubkeys + event.pubkey
+        } else {
+            cur.reactionPubkeys
+        }
+        _state.value = cur.copy(
+            reactionCounts = cur.reactionCounts + (targetId to (cur.reactionCounts[targetId] ?: 0) + 1),
+            likeReactionCounts = if (event.content.trim() == "+") {
+                cur.likeReactionCounts + (targetId to (cur.likeReactionCounts[targetId] ?: 0) + 1)
+            } else {
+                cur.likeReactionCounts
+            },
+            customReactions = if (customReaction != null) {
+                cur.customReactions + (
+                    targetId to cur.customReactions[targetId].orEmpty().incrementedWith(customReaction)
+                )
+            } else {
+                cur.customReactions
+            },
+            unicodeReactions = if (unicodeReaction != null) {
+                cur.unicodeReactions + (
+                    targetId to cur.unicodeReactions[targetId].orEmpty()
+                        .incrementedWithUnicodeReaction(unicodeReaction)
+                )
+            } else {
+                cur.unicodeReactions
+            },
+            reactionPubkeys = rootReactionPubkeys,
+            reactionEvents = cur.reactionEvents + (
+                targetId to ReactionEventReducer.add(cur.reactionEvents[targetId].orEmpty(), event)
+            ),
+            likedReactions = if (
+                isOwn &&
+                event.content.trim() == "+" &&
+                !cur.likedReactions.containsKey(targetId)
+            ) {
+                cur.likedReactions + (targetId to event.id)
+            } else {
+                cur.likedReactions
+            },
+            ownEmojiReactionEventIds = if (isOwn && reactionOption != null) {
+                cur.ownEmojiReactionEventIds + (
+                    targetId to cur.ownEmojiReactionEventIds[targetId].orEmpty()
+                        .plus(reactionOption.key to event.id)
+                    )
+            } else {
+                cur.ownEmojiReactionEventIds
+            },
+        )
+        scheduleProfileFetch(event.pubkey)
+    }
+
+    private fun publishRootCardSnapshot() {
+        val current = _state.value
+        if (current.root == null) return
+        val engagement = current.noteEngagement(eventId, eventId)
+            .takeIf { it.pendingOperations.isEmpty() }
+        NoteCardSync.publish(
+            NoteCardSnapshot(
+                sessionId = accountSession?.sessionId,
+                eventId = eventId,
+                replyCount = maxOf(current.replyCounts[eventId] ?: 0, current.replies.size),
+                engagement = engagement,
+            ),
+        )
+    }
+
     private fun scheduleProfileFetch(pubkey: String) {
         profileHydrator.request(setOf(pubkey))
+    }
+
+    private fun ensureProfileAvailable(pubkey: String) {
+        ProfileRepository.getCached(pubkey)?.let { profile ->
+            _state.value = _state.value.copy(profiles = _state.value.profiles + (pubkey to profile))
+        }
+        scheduleProfileFetch(pubkey)
     }
 
     private fun scheduleMentionedProfileFetch(text: String) {

@@ -39,6 +39,7 @@ fun NoteTimeline(
     onOpenReplies: (eventId: String) -> Unit = {},
     onOpenLikes: (eventId: String) -> Unit = {},
     onOpenReposts: (eventId: String) -> Unit = {},
+    onRefreshReactions: ((eventId: String) -> Unit)? = null,
     onRepost: (NostrEvent) -> Unit,
     onUnrepost: (eventId: String) -> Unit,
     onReport: (event: NostrEvent, reason: String, detail: String) -> Unit,
@@ -98,6 +99,7 @@ fun NoteTimeline(
                 onOpenReplies = onOpenReplies,
                 onOpenLikes = onOpenLikes,
                 onOpenReposts = onOpenReposts,
+                onRefreshReactions = onRefreshReactions,
                 onRepost = { eventId, _ ->
                     state.events.find { it.id == eventId }?.let(onRepost)
                 },

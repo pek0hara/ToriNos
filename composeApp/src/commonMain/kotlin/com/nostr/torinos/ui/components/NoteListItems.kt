@@ -31,6 +31,7 @@ fun LazyListScope.noteListItems(
     onOpenReplies: ((eventId: String) -> Unit)? = null,
     onOpenLikes: ((eventId: String) -> Unit)? = null,
     onOpenReposts: ((eventId: String) -> Unit)? = null,
+    onRefreshReactions: ((eventId: String) -> Unit)? = null,
     onRepost: ((eventId: String, authorPubkey: String) -> Unit)? = null,
     onUnrepost: ((eventId: String) -> Unit)? = null,
     onReport: ((eventId: String, reason: String, detail: String) -> Unit)? = null,
@@ -75,10 +76,12 @@ fun LazyListScope.noteListItems(
                     replyCount = state.replyCounts[event.id] ?: 0,
                     replies = state.replies[event.id].orEmpty(),
                     repostCount = state.repostCounts[event.id] ?: 0,
+                    repostPubkeys = state.repostPubkeys[event.id].orEmpty(),
                     reactionCount = state.reactionCounts[event.id] ?: 0,
                     likeReactionCount = state.likeReactionCounts[event.id] ?: 0,
                     customReactions = state.customReactions[event.id].orEmpty(),
                     unicodeReactions = state.unicodeReactions[event.id].orEmpty(),
+                    reactionEvents = state.reactionEvents[event.id].orEmpty(),
                     isLiked = state.isLiked(event.id),
                     ownEmojiReactionEventIds = state.displayOwnEmojiReactionEventIds(event.id),
                     isReposted = state.isReposted(event.id),
@@ -108,6 +111,9 @@ fun LazyListScope.noteListItems(
                     } else null,
                     onOpenReposts = if (onOpenReposts != null) {
                         { onOpenReposts(event.id) }
+                    } else null,
+                    onRefreshReactions = if (onRefreshReactions != null) {
+                        { onRefreshReactions(event.id) }
                     } else null,
                     onRepost = if (ownPubkey != null && onRepost != null) {
                         {

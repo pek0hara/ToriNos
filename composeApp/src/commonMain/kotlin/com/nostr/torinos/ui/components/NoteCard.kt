@@ -4,6 +4,11 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.gestures.rememberTransformableState
 import androidx.compose.foundation.gestures.transformable
 import androidx.compose.foundation.horizontalScroll
@@ -21,8 +26,10 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
@@ -88,6 +95,8 @@ import com.nostr.torinos.model.NostrProfile
 import com.nostr.torinos.model.CustomReaction
 import com.nostr.torinos.model.ReactionOption
 import com.nostr.torinos.model.UnicodeReaction
+import com.nostr.torinos.model.toCustomReaction
+import com.nostr.torinos.model.toReactionOption
 import com.nostr.torinos.model.stripNostrEventUris
 import com.nostr.torinos.network.CustomEmojiStore
 import com.nostr.torinos.network.RecentReaction
@@ -116,7 +125,9 @@ fun NoteCard(
     likeReactionCount: Int? = null,
     customReactions: List<CustomReaction> = emptyList(),
     unicodeReactions: List<UnicodeReaction> = emptyList(),
+    reactionEvents: List<NostrEvent> = emptyList(),
     repostCount: Int = 0,
+    repostPubkeys: List<String> = emptyList(),
     isLiked: Boolean = false,
     isReposted: Boolean = false,
     ownEmojiReactionEventIds: Map<String, String> = emptyMap(),
@@ -128,6 +139,7 @@ fun NoteCard(
     onOpenReplies: (() -> Unit)? = null,
     onOpenLikes: (() -> Unit)? = null,
     onOpenReposts: (() -> Unit)? = null,
+    onRefreshReactions: (() -> Unit)? = null,
     onRepost: (() -> Unit)? = null,
     onHashtagClick: ((tag: String) -> Unit)? = null,
     quotedEvents: List<QuotedEvent> = emptyList(),
@@ -148,12 +160,12 @@ fun NoteCard(
     var showHeartReactionMenu by remember { mutableStateOf(false) }
     var showStandardEmojiPicker by remember { mutableStateOf(false) }
     var expandedImageState by remember { mutableStateOf<ExpandedImageState?>(null) }
-    var repliesExpanded by remember(event.id) { mutableStateOf(false) }
+    var expandedEngagement by remember(event.id) { mutableStateOf<ExpandedEngagement?>(null) }
+    var sensitiveContentRevealed by remember(event.id) { mutableStateOf(false) }
     val clipboard = LocalClipboard.current
     val coroutineScope = rememberCoroutineScope()
     val isOwnPost = ownPubkey != null && event.pubkey == ownPubkey
     val hasOwnReaction = isLiked || ownEmojiReactionEventIds.isNotEmpty()
-    val canExpandReplies = replyCount > 0 && replies.isNotEmpty()
     val ownEmojiReaction = remember(
         customReactions,
         unicodeReactions,
@@ -176,6 +188,9 @@ fun NoteCard(
     val hasMenu = true
     val parsedContent = remember(event.content) {
         parseNoteContent(event.content)
+    }
+    val contentWarningPresent = remember(event.tags) {
+        hasContentWarning(event.tags)
     }
 
     expandedImageState?.let { state ->
@@ -366,7 +381,13 @@ fun NoteCard(
                         overflow = TextOverflow.Ellipsis,
                         modifier = Modifier
                             .weight(1f)
-                            .clickable { onUserClick(replyParent.event.pubkey) },
+                            .then(
+                                if (onReplyParentClick != null) {
+                                    Modifier.clickable { onReplyParentClick(replyParent.event.id) }
+                                } else {
+                                    Modifier
+                                }
+                            ),
                     )
                 }
                 Spacer(modifier = Modifier.height(2.dp))
@@ -374,42 +395,46 @@ fun NoteCard(
                     event = replyParent.event,
                     profile = replyParent.profile,
                     profiles = profiles,
-                    onUserClick = onUserClick,
                     onImageClick = { urls, index -> expandedImageState = ExpandedImageState(urls, index) },
                     onNoteClick = onReplyParentClick,
                 )
                 Spacer(modifier = Modifier.height(4.dp))
             }
-            if (parsedContent.textContent.isNotBlank()) {
-                CollapsibleNoteText(
-                    text = parsedContent.textContent,
-                    style = MaterialTheme.typography.bodyMedium,
-                    customEmojis = event.tags.customEmojiMap(),
-                    onProfileClick = onUserClick,
-                    profiles = profiles,
-                    onHashtagClick = onHashtagClick,
+            if (contentWarningPresent && !sensitiveContentRevealed) {
+                SensitiveContentWarning(
+                    onReveal = { sensitiveContentRevealed = true },
                 )
-            }
-            if (parsedContent.imageUrls.isNotEmpty()) {
-                Spacer(modifier = Modifier.height(8.dp))
-                ImagePreviewGrid(
-                    imageUrls = parsedContent.imageUrls,
-                    onImageClick = { urls, index -> expandedImageState = ExpandedImageState(urls, index) },
-                )
-            }
-            parsedContent.linkPreviewUrl?.let { url ->
-                LinkPreviewCard(url = url)
-            }
-            quotedEvents.forEach { quote ->
-                Spacer(modifier = Modifier.height(8.dp))
-                QuotePreview(
-                    event = quote.event,
-                    profile = quote.profile,
-                    profiles = profiles,
-                    onUserClick = onUserClick,
-                    onImageClick = { urls, index -> expandedImageState = ExpandedImageState(urls, index) },
-                    onNoteClick = onQuotedNoteClick,
-                )
+            } else {
+                if (parsedContent.textContent.isNotBlank()) {
+                    CollapsibleNoteText(
+                        text = parsedContent.textContent,
+                        style = MaterialTheme.typography.bodyMedium,
+                        customEmojis = event.tags.customEmojiMap(),
+                        onProfileClick = onUserClick,
+                        profiles = profiles,
+                        onHashtagClick = onHashtagClick,
+                    )
+                }
+                if (parsedContent.imageUrls.isNotEmpty()) {
+                    Spacer(modifier = Modifier.height(8.dp))
+                    ImagePreviewGrid(
+                        imageUrls = parsedContent.imageUrls,
+                        onImageClick = { urls, index -> expandedImageState = ExpandedImageState(urls, index) },
+                    )
+                }
+                parsedContent.linkPreviewUrl?.let { url ->
+                    LinkPreviewCard(url = url)
+                }
+                quotedEvents.forEach { quote ->
+                    Spacer(modifier = Modifier.height(8.dp))
+                    QuotePreview(
+                        event = quote.event,
+                        profile = quote.profile,
+                        profiles = profiles,
+                        onImageClick = { urls, index -> expandedImageState = ExpandedImageState(urls, index) },
+                        onNoteClick = onQuotedNoteClick,
+                    )
+                }
             }
             if (reactionCount > 0) {
                 Spacer(modifier = Modifier.height(8.dp))
@@ -426,7 +451,9 @@ fun NoteCard(
                     onOpenStandardEmojiPicker = { showStandardEmojiPicker = true },
                 )
             }
+            Spacer(modifier = Modifier.height(3.dp))
             Row(
+                modifier = Modifier.offset(x = (-1).dp),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(4.dp),
             ) {
@@ -434,15 +461,21 @@ fun NoteCard(
                     icon = Icons.Default.MailOutline,
                     contentDescription = "返信",
                     count = replyCount,
-                    countText = if (canExpandReplies) {
-                        "$replyCount${if (repliesExpanded) "⌃" else "⌄"}"
+                    countText = if (replyCount > 0) {
+                        "$replyCount${if (expandedEngagement == ExpandedEngagement.Replies) "⌃" else "⌄"}"
                     } else {
                         replyCount.toString()
                     },
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    tint = if (expandedEngagement == ExpandedEngagement.Replies) {
+                        MaterialTheme.colorScheme.primary
+                    } else {
+                        MaterialTheme.colorScheme.onSurfaceVariant
+                    },
                     onClick = onReply,
-                    onCountClick = if (canExpandReplies) {
-                        { repliesExpanded = !repliesExpanded }
+                    onCountClick = if (replyCount > 0) {
+                        {
+                            expandedEngagement = expandedEngagement.toggled(ExpandedEngagement.Replies)
+                        }
                     } else {
                         onOpenReplies
                     },
@@ -451,23 +484,56 @@ fun NoteCard(
                     icon = Icons.Default.Repeat,
                     contentDescription = "リポスト",
                     count = repostCount,
-                    tint = if (isReposted) Color(0xFF2BAE66) else MaterialTheme.colorScheme.onSurfaceVariant,
+                    countText = if (repostCount > 0) {
+                        "$repostCount${if (expandedEngagement == ExpandedEngagement.Reposts) "⌃" else "⌄"}"
+                    } else {
+                        repostCount.toString()
+                    },
+                    tint = when {
+                        expandedEngagement == ExpandedEngagement.Reposts -> MaterialTheme.colorScheme.primary
+                        isReposted -> Color(0xFF2BAE66)
+                        else -> MaterialTheme.colorScheme.onSurfaceVariant
+                    },
                     onClick = onRepost,
-                    onCountClick = onOpenReposts,
+                    onCountClick = if (repostCount > 0) {
+                        {
+                            expandedEngagement = expandedEngagement.toggled(ExpandedEngagement.Reposts)
+                        }
+                    } else {
+                        onOpenReposts
+                    },
                 )
                 Box {
                     EngagementCount(
                         icon = Icons.Default.Favorite,
                         contentDescription = if (hasOwnReaction) "リアクションを解除" else "いいね",
                         count = reactionCount,
-                        tint = if (hasOwnReaction) Color(0xFFE17055) else MaterialTheme.colorScheme.onSurfaceVariant,
+                        countText = if (reactionCount > 0) {
+                            "$reactionCount${if (expandedEngagement == ExpandedEngagement.Reactions) "⌃" else "⌄"}"
+                        } else {
+                            reactionCount.toString()
+                        },
+                        tint = when {
+                            expandedEngagement == ExpandedEngagement.Reactions -> MaterialTheme.colorScheme.primary
+                            hasOwnReaction -> Color(0xFFE17055)
+                            else -> MaterialTheme.colorScheme.onSurfaceVariant
+                        },
                         onClick = onHeartClick,
                         onLongClick = if (onEmojiReact != null && !hasOwnReaction) {
                             { showHeartReactionMenu = true }
                         } else {
                             null
                         },
-                        onCountClick = onOpenLikes,
+                        onCountClick = if (reactionCount > 0) {
+                            {
+                                if (expandedEngagement != ExpandedEngagement.Reactions) {
+                                    onRefreshReactions?.invoke()
+                                }
+                                expandedEngagement = expandedEngagement.toggled(ExpandedEngagement.Reactions)
+                            }
+                        } else {
+                            onOpenLikes
+                        },
                     )
                     QuickReactionMenu(
                         expanded = showHeartReactionMenu,
@@ -488,26 +554,32 @@ fun NoteCard(
                     )
                 }
             }
-            if (repliesExpanded && replies.isNotEmpty()) {
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(top = 4.dp),
-                    verticalArrangement = Arrangement.spacedBy(6.dp),
-                ) {
-                    replies.forEach { reply ->
-                        QuotePreview(
-                            event = reply,
-                            profile = profiles[reply.pubkey],
-                            profiles = profiles,
-                            onUserClick = onUserClick,
-                            onImageClick = { urls, index ->
-                                expandedImageState = ExpandedImageState(urls, index)
-                            },
-                            onNoteClick = onNoteClick,
-                        )
-                    }
-                }
+            AnimatedVisibility(
+                visible = expandedEngagement != null,
+                enter = expandVertically() + fadeIn(),
+                exit = shrinkVertically() + fadeOut(),
+            ) {
+                EngagementDetailsPanel(
+                    expanded = expandedEngagement,
+                    replyCount = replyCount,
+                    replies = replies,
+                    reactionCount = reactionCount,
+                    likeReactionCount = likeReactionCount,
+                    customReactions = customReactions,
+                    unicodeReactions = unicodeReactions,
+                    reactionEvents = reactionEvents,
+                    repostCount = repostCount,
+                    repostPubkeys = repostPubkeys,
+                    profiles = profiles,
+                    onUserClick = onUserClick,
+                    onOpenReplies = onOpenReplies,
+                    onOpenLikes = onOpenLikes,
+                    onOpenReposts = onOpenReposts,
+                    onOpenNote = onNoteClick,
+                    onImageClick = { urls, index ->
+                        expandedImageState = ExpandedImageState(urls, index)
+                    },
+                )
             }
         }
     }
@@ -523,6 +595,293 @@ fun NoteCard(
         )
     }
 }
+
+private enum class ExpandedEngagement {
+    Replies,
+    Reposts,
+    Reactions,
+}
+
+private fun ExpandedEngagement?.toggled(target: ExpandedEngagement): ExpandedEngagement? =
+    if (this == target) null else target
+
+@Composable
+private fun EngagementDetailsPanel(
+    expanded: ExpandedEngagement?,
+    replyCount: Int,
+    replies: List<NostrEvent>,
+    reactionCount: Int,
+    likeReactionCount: Int?,
+    customReactions: List<CustomReaction>,
+    unicodeReactions: List<UnicodeReaction>,
+    reactionEvents: List<NostrEvent>,
+    repostCount: Int,
+    repostPubkeys: List<String>,
+    profiles: Map<String, NostrProfile>,
+    onUserClick: (String) -> Unit,
+    onOpenReplies: (() -> Unit)?,
+    onOpenLikes: (() -> Unit)?,
+    onOpenReposts: (() -> Unit)?,
+    onOpenNote: ((String) -> Unit)?,
+    onImageClick: (List<String>, Int) -> Unit,
+) {
+    val shape = RoundedCornerShape(12.dp)
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(top = 6.dp)
+            .clip(shape)
+            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.62f))
+            .padding(horizontal = 10.dp, vertical = 8.dp),
+        verticalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        when (expanded) {
+            ExpandedEngagement.Replies -> {
+                replies.take(3).forEach { reply ->
+                    QuotePreview(
+                        event = reply,
+                        profile = profiles[reply.pubkey],
+                        profiles = profiles,
+                        onImageClick = onImageClick,
+                        onNoteClick = onOpenNote,
+                    )
+                }
+                if (replies.isEmpty()) {
+                    EngagementPlaceholder("返信を読み込むには「すべて見る」をタップ")
+                }
+                EngagementFooter(
+                    visible = onOpenReplies != null && (replyCount > replies.take(3).size || replies.isEmpty()),
+                    label = "返信をすべて見る ($replyCount)",
+                    onClick = onOpenReplies,
+                )
+            }
+            ExpandedEngagement.Reposts -> {
+                EngagementUserGroup(
+                    emoji = { Text("🔁", fontSize = 18.sp) },
+                    count = repostCount,
+                    pubkeys = repostPubkeys,
+                    profiles = profiles,
+                    onUserClick = onUserClick,
+                )
+                EngagementFooter(
+                    visible = onOpenReposts != null &&
+                        !engagementUsersAreFullyShown(repostCount, repostPubkeys),
+                    label = "リポストをすべて見る ($repostCount)",
+                    onClick = onOpenReposts,
+                )
+            }
+            ExpandedEngagement.Reactions -> {
+                val eventsByKey = reactionEvents.groupBy { reactionGroupKey(it) }
+                val emojiCount = customReactions.sumOf { it.count } + unicodeReactions.sumOf { it.count }
+                val resolvedLikeCount = likeReactionCount
+                    ?: (reactionCount - emojiCount).coerceAtLeast(0)
+                val groups = buildList {
+                    if (resolvedLikeCount > 0) {
+                        add(
+                            ReactionPreviewGroup(
+                                emoji = "❤️",
+                                count = resolvedLikeCount,
+                                pubkeys = eventsByKey[LikeReactionGroupKey].orEmpty().map { it.pubkey },
+                            ),
+                        )
+                    }
+                    customReactions.forEach { reaction ->
+                        val key = ReactionOption.Custom(reaction.shortcode, reaction.imageUrl).key
+                        val sourceReaction = eventsByKey[key]
+                            .orEmpty()
+                            .asSequence()
+                            .mapNotNull { it.toCustomReaction() }
+                            .firstOrNull()
+                            ?: reaction
+                        add(
+                            ReactionPreviewGroup(
+                                imageUrl = sourceReaction.imageUrl,
+                                shortcode = sourceReaction.shortcode,
+                                count = reaction.count,
+                                pubkeys = eventsByKey[key].orEmpty().map { it.pubkey },
+                            ),
+                        )
+                    }
+                    unicodeReactions.forEach { reaction ->
+                        val key = ReactionOption.Unicode(reaction.content).key
+                        add(
+                            ReactionPreviewGroup(
+                                emoji = reaction.content,
+                                count = reaction.count,
+                                pubkeys = eventsByKey[key].orEmpty().map { it.pubkey },
+                            ),
+                        )
+                    }
+                }
+                val allReactionsShown = resolvedLikeCount + emojiCount == reactionCount &&
+                    groups.all { engagementUsersAreFullyShown(it.count, it.pubkeys) }
+                ReactionPreviewStrip(
+                    groups = groups,
+                    profiles = profiles,
+                    onUserClick = onUserClick,
+                )
+                EngagementFooter(
+                    visible = onOpenLikes != null && !allReactionsShown,
+                    label = "リアクションをすべて見る ($reactionCount)",
+                    onClick = onOpenLikes,
+                )
+            }
+            null -> Unit
+        }
+    }
+}
+
+private data class ReactionPreviewGroup(
+    val emoji: String? = null,
+    val imageUrl: String? = null,
+    val shortcode: String? = null,
+    val count: Int,
+    val pubkeys: List<String>,
+)
+
+@Composable
+private fun ReactionPreviewStrip(
+    groups: List<ReactionPreviewGroup>,
+    profiles: Map<String, NostrProfile>,
+    onUserClick: (String) -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .horizontalScroll(rememberScrollState())
+            .heightIn(min = 30.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        groups.forEachIndexed { index, group ->
+            if (index > 0) Spacer(modifier = Modifier.width(12.dp))
+            Box(modifier = Modifier.width(28.dp).heightIn(min = 30.dp), contentAlignment = Alignment.Center) {
+                if (group.imageUrl != null && group.shortcode != null) {
+                    CustomReactionLink(
+                        reaction = CustomReaction(
+                            shortcode = group.shortcode,
+                            imageUrl = group.imageUrl,
+                        ),
+                        containerSize = 28.dp,
+                        imageSize = 20.dp,
+                    )
+                } else {
+                    Text(group.emoji.orEmpty(), fontSize = 18.sp, maxLines = 1)
+                }
+            }
+            Row(
+                horizontalArrangement = Arrangement.spacedBy((-6).dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                group.pubkeys.distinct().take(MaxPreviewUsers).forEach { pubkey ->
+                    val userProfile = profiles[pubkey]
+                    AvatarCircle(
+                        pubkey = pubkey,
+                        name = userProfile?.bestName,
+                        pictureUrl = userProfile?.picture,
+                        size = 24,
+                        modifier = Modifier
+                            .border(1.dp, MaterialTheme.colorScheme.surfaceVariant, CircleShape)
+                            .clickable { onUserClick(pubkey) },
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun EngagementUserGroup(
+    emoji: @Composable () -> Unit,
+    count: Int,
+    pubkeys: List<String>,
+    profiles: Map<String, NostrProfile>,
+    onUserClick: (String) -> Unit,
+) {
+    val uniquePubkeys = pubkeys.distinct()
+    Row(
+        modifier = Modifier.fillMaxWidth().heightIn(min = 30.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(modifier = Modifier.width(30.dp), contentAlignment = Alignment.Center) { emoji() }
+        Text(
+            text = count.toString(),
+            style = MaterialTheme.typography.labelMedium,
+            fontWeight = FontWeight.Bold,
+            modifier = Modifier.widthIn(min = 30.dp).padding(start = 4.dp),
+        )
+        Row(
+            modifier = Modifier.weight(1f),
+            horizontalArrangement = Arrangement.spacedBy((-6).dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            uniquePubkeys.take(MaxPreviewUsers).forEach { pubkey ->
+                val userProfile = profiles[pubkey]
+                AvatarCircle(
+                    pubkey = pubkey,
+                    name = userProfile?.bestName,
+                    pictureUrl = userProfile?.picture,
+                    size = 24,
+                    modifier = Modifier
+                        .border(1.dp, MaterialTheme.colorScheme.surfaceVariant, CircleShape)
+                        .clickable { onUserClick(pubkey) },
+                )
+            }
+            val remaining = (count - uniquePubkeys.take(MaxPreviewUsers).size).coerceAtLeast(0)
+            if (remaining > 0) {
+                Box(
+                    modifier = Modifier
+                        .size(24.dp)
+                        .clip(CircleShape)
+                        .background(MaterialTheme.colorScheme.surface)
+                        .border(1.dp, MaterialTheme.colorScheme.outlineVariant, CircleShape),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(
+                        text = "+$remaining",
+                        style = MaterialTheme.typography.labelSmall,
+                        fontSize = 9.sp,
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun EngagementFooter(
+    visible: Boolean,
+    label: String,
+    onClick: (() -> Unit)?,
+) {
+    if (!visible || onClick == null) return
+    TextButton(
+        onClick = onClick,
+        modifier = Modifier.fillMaxWidth().heightIn(min = 32.dp),
+    ) {
+        Text(label, style = MaterialTheme.typography.labelMedium)
+    }
+}
+
+@Composable
+private fun EngagementPlaceholder(text: String) {
+    Text(
+        text = text,
+        modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp),
+        style = MaterialTheme.typography.labelMedium,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
+}
+
+private fun reactionGroupKey(event: NostrEvent): String = when {
+    event.content.trim() == "+" -> LikeReactionGroupKey
+    else -> event.toReactionOption()?.key.orEmpty()
+}
+
+private fun engagementUsersAreFullyShown(count: Int, pubkeys: List<String>): Boolean =
+    count <= MaxPreviewUsers && pubkeys.distinct().size >= count
+
+private const val LikeReactionGroupKey = "like"
+private const val MaxPreviewUsers = 5
 
 @Composable
 private fun ReactionSummaryRow(
@@ -1309,17 +1668,46 @@ private fun parseNoteContent(content: String): ParsedNoteContent {
     )
 }
 
+internal fun hasContentWarning(tags: List<List<String>>): Boolean =
+    tags.any { it.firstOrNull() == "content-warning" }
+
+@Composable
+private fun SensitiveContentWarning(
+    onReveal: () -> Unit,
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(MaterialTheme.shapes.small)
+            .background(MaterialTheme.colorScheme.surfaceVariant)
+            .padding(horizontal = 12.dp, vertical = 8.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        Text(
+            text = "⚠️ 閲覧注意",
+            style = MaterialTheme.typography.bodyMedium,
+            fontWeight = FontWeight.Bold,
+        )
+        TextButton(onClick = onReveal) {
+            Text("内容を表示")
+        }
+    }
+}
+
 @Composable
 private fun QuotePreview(
     event: NostrEvent,
     profile: NostrProfile?,
     profiles: Map<String, NostrProfile>,
-    onUserClick: (pubkey: String) -> Unit,
     onImageClick: (List<String>, Int) -> Unit,
     onNoteClick: ((eventId: String) -> Unit)? = null,
 ) {
+    var sensitiveContentRevealed by remember(event.id) { mutableStateOf(false) }
     val parsedContent = remember(event.content) {
         parseNoteContent(event.content)
+    }
+    val contentWarningPresent = remember(event.tags) {
+        hasContentWarning(event.tags)
     }
 
     Column(
@@ -1349,7 +1737,10 @@ private fun QuotePreview(
                 pictureUrl = profile?.picture,
                 size = 24,
                 modifier = Modifier
-                    .clickable { onUserClick(event.pubkey) },
+                    .then(
+                        if (onNoteClick != null) Modifier.clickable { onNoteClick(event.id) }
+                        else Modifier
+                    ),
             )
             Row(
                 modifier = Modifier.weight(1f),
@@ -1366,7 +1757,10 @@ private fun QuotePreview(
                     overflow = TextOverflow.Ellipsis,
                     modifier = Modifier
                         .weight(1f)
-                        .clickable { onUserClick(event.pubkey) },
+                        .then(
+                            if (onNoteClick != null) Modifier.clickable { onNoteClick(event.id) }
+                            else Modifier
+                        ),
                 )
                 Text(
                     text = formatTimestamp(event.createdAt, todayTimeOnly = true),
@@ -1376,22 +1770,28 @@ private fun QuotePreview(
                 )
             }
         }
-        if (parsedContent.textContent.isNotBlank()) {
-            CollapsibleNoteText(
-                text = parsedContent.textContent,
-                style = MaterialTheme.typography.bodySmall,
-                customEmojis = event.tags.customEmojiMap(),
-                onProfileClick = onUserClick,
-                profiles = profiles,
-                onHashtagClick = null,
+        if (contentWarningPresent && !sensitiveContentRevealed) {
+            SensitiveContentWarning(
+                onReveal = { sensitiveContentRevealed = true },
             )
-        }
-        if (parsedContent.imageUrls.isNotEmpty()) {
-            ImagePreviewGrid(
-                imageUrls = parsedContent.imageUrls,
-                singleImageMaxHeight = 180.dp,
-                onImageClick = onImageClick,
-            )
+        } else {
+            if (parsedContent.textContent.isNotBlank()) {
+                CollapsibleNoteText(
+                    text = parsedContent.textContent,
+                    style = MaterialTheme.typography.bodySmall,
+                    customEmojis = event.tags.customEmojiMap(),
+                    onProfileClick = { onNoteClick?.invoke(event.id) },
+                    profiles = profiles,
+                    onHashtagClick = null,
+                )
+            }
+            if (parsedContent.imageUrls.isNotEmpty()) {
+                ImagePreviewGrid(
+                    imageUrls = parsedContent.imageUrls,
+                    singleImageMaxHeight = 180.dp,
+                    onImageClick = onImageClick,
+                )
+            }
         }
     }
 }
@@ -1743,18 +2143,18 @@ fun EngagementCount(
 ) {
     Row(
         verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        horizontalArrangement = Arrangement.spacedBy(0.dp),
     ) {
         Box(
             modifier = if (onClick != null) {
                 Modifier
-                    .size(36.dp)
+                    .size(32.dp)
                     .combinedClickable(
                         onClick = onClick,
                         onLongClick = onLongClick,
                     )
             } else {
-                Modifier.size(36.dp)
+                Modifier.size(32.dp)
             },
             contentAlignment = Alignment.Center,
         ) {
@@ -1765,14 +2165,26 @@ fun EngagementCount(
                 tint = tint,
             )
         }
-        Text(
-            text = countText,
-            style = MaterialTheme.typography.labelMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier
-                .widthIn(min = 20.dp)
-                .clickable(enabled = onCountClick != null) { onCountClick?.invoke() },
-        )
+        Box(
+            modifier = if (onCountClick != null) {
+                Modifier
+                    .height(32.dp)
+                    .widthIn(min = 32.dp)
+                    .clickable(onClick = onCountClick)
+            } else {
+                Modifier.widthIn(min = 20.dp)
+            },
+            contentAlignment = Alignment.Center,
+        ) {
+            Text(
+                text = countText,
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.offset(y = (-1).dp),
+                maxLines = 1,
+                softWrap = false,
+            )
+        }
     }
 }
 

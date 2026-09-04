@@ -25,6 +25,7 @@ class EngagementAccumulatorTest {
         assertEquals(3, updated.reactionCounts[TARGET_ID])
         assertEquals(2, updated.likeReactionCounts[TARGET_ID])
         assertEquals("like-id", updated.likedReactions[TARGET_ID])
+        assertEquals(listOf("like-id"), updated.reactionEvents[TARGET_ID]?.map { it.id })
         assertEquals(2, initial.reactionCounts[TARGET_ID])
         assertFalse(TARGET_ID in initial.likedReactions)
     }
@@ -69,10 +70,31 @@ class EngagementAccumulatorTest {
     fun quoteRepostIncrementsEveryTarget() {
         val initial = FeedViewModel.UiState(repostCounts = mapOf("a" to 2))
 
-        val updated = EngagementAccumulator.quoteReposts(initial, listOf("a", "b"))
+        val updated = EngagementAccumulator.quoteReposts(initial, listOf("a", "b"), pubkey = "quoter")
 
         assertEquals(mapOf("a" to 3, "b" to 1), updated.repostCounts)
+        assertEquals(listOf("quoter"), updated.repostPubkeys["a"])
+        assertEquals(listOf("quoter"), updated.repostPubkeys["b"])
         assertEquals(mapOf("a" to 2), initial.repostCounts)
+    }
+
+    @Test
+    fun repostTracksUniqueUsersForCardPreview() {
+        val first = EngagementAccumulator.repost(
+            state = FeedViewModel.UiState(),
+            targetId = TARGET_ID,
+            event = event(id = "repost-1", pubkey = "alice", kind = 6),
+            isOwn = false,
+        )
+        val updated = EngagementAccumulator.repost(
+            state = first,
+            targetId = TARGET_ID,
+            event = event(id = "repost-2", pubkey = "alice", kind = 6),
+            isOwn = false,
+        )
+
+        assertEquals(2, updated.repostCounts[TARGET_ID])
+        assertEquals(listOf("alice"), updated.repostPubkeys[TARGET_ID])
     }
 
     @Test

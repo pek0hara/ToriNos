@@ -39,8 +39,10 @@ class SearchViewModel : SafeViewModel() {
             val likeReactionCounts: Map<String, Int> = emptyMap(),
             val customReactions: Map<String, List<CustomReaction>> = emptyMap(),
             val unicodeReactions: Map<String, List<UnicodeReaction>> = emptyMap(),
+            val reactionEvents: Map<String, List<NostrEvent>> = emptyMap(),
             val replyCounts: Map<String, Int> = emptyMap(),
             val repostCounts: Map<String, Int> = emptyMap(),
+            val repostPubkeys: Map<String, List<String>> = emptyMap(),
             val canLoadMore: Boolean = false,
             val users: List<Pair<String, NostrProfile>> = emptyList(),
         ) : UiState
@@ -66,8 +68,10 @@ class SearchViewModel : SafeViewModel() {
     private var currentLikeReactionCounts = emptyMap<String, Int>()
     private var currentCustomReactions = emptyMap<String, List<CustomReaction>>()
     private var currentUnicodeReactions = emptyMap<String, List<UnicodeReaction>>()
+    private var currentReactionEvents = emptyMap<String, List<NostrEvent>>()
     private var currentReplyCounts = emptyMap<String, Int>()
     private var currentRepostCounts = emptyMap<String, Int>()
+    private var currentRepostPubkeys = emptyMap<String, List<String>>()
     private val watchedEventIds = linkedSetOf<String>()
     private var engagementBatchJob: Job? = null
     private val seenReactionIds = linkedSetOf<String>()
@@ -113,8 +117,10 @@ class SearchViewModel : SafeViewModel() {
         currentLikeReactionCounts = emptyMap()
         currentCustomReactions = emptyMap()
         currentUnicodeReactions = emptyMap()
+        currentReactionEvents = emptyMap()
         currentReplyCounts = emptyMap()
         currentRepostCounts = emptyMap()
+        currentRepostPubkeys = emptyMap()
         watchedEventIds.clear()
         seenReactionIds.clear()
         seenReplyIds.clear()
@@ -219,6 +225,10 @@ class SearchViewModel : SafeViewModel() {
                             .incrementedWithUnicodeReaction(reaction)
                     )
                 }
+                currentReactionEvents = currentReactionEvents + (
+                    targetId to currentReactionEvents[targetId].orEmpty().plus(event)
+                )
+                scheduleProfileFetch(event.pubkey)
                 syncReadyState()
             }
         }
@@ -243,6 +253,10 @@ class SearchViewModel : SafeViewModel() {
                     ?: return@collect
                 currentRepostCounts = currentRepostCounts +
                     (targetId to (currentRepostCounts[targetId] ?: 0) + 1)
+                currentRepostPubkeys = currentRepostPubkeys + (
+                    targetId to currentRepostPubkeys[targetId].orEmpty().plus(event.pubkey).distinct()
+                )
+                scheduleProfileFetch(event.pubkey)
                 syncReadyState()
             }
         }
@@ -258,8 +272,14 @@ class SearchViewModel : SafeViewModel() {
                     .filter { rememberSeenId(seenQuoteRepostIds, "${event.id}:$it") }
                 if (targetIds.isEmpty()) return@collect
                 val counts = currentRepostCounts.toMutableMap()
-                targetIds.forEach { targetId -> counts[targetId] = (counts[targetId] ?: 0) + 1 }
+                targetIds.forEach { targetId ->
+                    counts[targetId] = (counts[targetId] ?: 0) + 1
+                    currentRepostPubkeys = currentRepostPubkeys + (
+                        targetId to currentRepostPubkeys[targetId].orEmpty().plus(event.pubkey).distinct()
+                    )
+                }
                 currentRepostCounts = counts
+                scheduleProfileFetch(event.pubkey)
                 syncReadyState()
             }
         }
@@ -368,8 +388,10 @@ class SearchViewModel : SafeViewModel() {
             likeReactionCounts = currentLikeReactionCounts,
             customReactions = currentCustomReactions,
             unicodeReactions = currentUnicodeReactions,
+            reactionEvents = currentReactionEvents,
             replyCounts = currentReplyCounts,
             repostCounts = currentRepostCounts,
+            repostPubkeys = currentRepostPubkeys,
             canLoadMore = canLoadMore,
             users = currentUsers,
         )
@@ -384,8 +406,10 @@ class SearchViewModel : SafeViewModel() {
             likeReactionCounts = currentLikeReactionCounts,
             customReactions = currentCustomReactions,
             unicodeReactions = currentUnicodeReactions,
+            reactionEvents = currentReactionEvents,
             replyCounts = currentReplyCounts,
             repostCounts = currentRepostCounts,
+            repostPubkeys = currentRepostPubkeys,
             users = currentUsers,
         )
     }

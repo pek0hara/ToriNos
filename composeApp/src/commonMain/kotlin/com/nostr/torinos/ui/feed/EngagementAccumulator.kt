@@ -6,6 +6,7 @@ import com.nostr.torinos.model.incrementedWithUnicodeReaction
 import com.nostr.torinos.model.toCustomReaction
 import com.nostr.torinos.model.toReactionOption
 import com.nostr.torinos.model.toUnicodeReaction
+import com.nostr.torinos.engagement.ReactionEventReducer
 
 /**
  * 購読から届いたイベントをフィードの集約済み表示状態へ反映する純粋関数群。
@@ -47,6 +48,9 @@ internal object EngagementAccumulator {
             } else {
                 state.unicodeReactions
             },
+            reactionEvents = state.reactionEvents + (
+                targetId to ReactionEventReducer.add(state.reactionEvents[targetId].orEmpty(), event)
+            ),
             likedReactions = if (
                 isOwn && event.content.trim() == "+" && !state.likedReactions.containsKey(targetId)
             ) {
@@ -89,6 +93,9 @@ internal object EngagementAccumulator {
         isOwn: Boolean,
     ): FeedViewModel.UiState = state.copy(
         repostCounts = state.repostCounts + (targetId to (state.repostCounts[targetId] ?: 0) + 1),
+        repostPubkeys = state.repostPubkeys + (
+            targetId to state.repostPubkeys[targetId].orEmpty().plus(event.pubkey).distinct()
+        ),
         repostedEvents = if (isOwn && !state.repostedEvents.containsKey(targetId)) {
             state.repostedEvents + (targetId to event.id)
         } else {
@@ -99,11 +106,21 @@ internal object EngagementAccumulator {
     fun quoteReposts(
         state: FeedViewModel.UiState,
         targetIds: Collection<String>,
+        pubkey: String? = null,
     ): FeedViewModel.UiState {
         if (targetIds.isEmpty()) return state
         val counts = state.repostCounts.toMutableMap()
         targetIds.forEach { targetId -> counts[targetId] = (counts[targetId] ?: 0) + 1 }
-        return state.copy(repostCounts = counts)
+        val pubkeys = if (pubkey == null) {
+            state.repostPubkeys
+        } else {
+            state.repostPubkeys.toMutableMap().apply {
+                targetIds.forEach { targetId ->
+                    this[targetId] = this[targetId].orEmpty().plus(pubkey).distinct()
+                }
+            }
+        }
+        return state.copy(repostCounts = counts, repostPubkeys = pubkeys)
     }
 
     fun reconcileOwnEngagement(

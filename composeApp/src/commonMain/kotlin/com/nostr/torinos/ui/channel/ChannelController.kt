@@ -105,7 +105,9 @@ internal class ChannelController(
     private var currentLikeReactionCounts = emptyMap<String, Int>()
     private var currentCustomReactions = emptyMap<String, List<CustomReaction>>()
     private var currentUnicodeReactions = emptyMap<String, List<UnicodeReaction>>()
+    private var currentReactionEvents = emptyMap<String, List<NostrEvent>>()
     private var currentRepostCounts = emptyMap<String, Int>()
+    private var currentRepostPubkeys = emptyMap<String, List<String>>()
     private var currentLikedReactions = emptyMap<String, String>()
     private var currentOwnEmojiReactionEventIds = emptyMap<String, Map<String, String>>()
     private var currentRepostedEvents = emptyMap<String, String>()
@@ -442,6 +444,9 @@ internal class ChannelController(
                             .incrementedWithUnicodeReaction(reaction)
                     )
                 }
+                currentReactionEvents = currentReactionEvents + (
+                    targetId to currentReactionEvents[targetId].orEmpty().plus(event)
+                )
                 if (
                     ownPubkey != null &&
                     event.pubkey == ownPubkey &&
@@ -470,6 +475,9 @@ internal class ChannelController(
                 val targetId = event.tags.lastOrNull { it.firstOrNull() == "e" }?.getOrNull(1) ?: return@collect
                 if (targetId !in watchedEventIds) return@collect
                 currentRepostCounts = currentRepostCounts + (targetId to (currentRepostCounts[targetId] ?: 0) + 1)
+                currentRepostPubkeys = currentRepostPubkeys + (
+                    targetId to currentRepostPubkeys[targetId].orEmpty().plus(event.pubkey).distinct()
+                )
                 if (ownPubkey != null && event.pubkey == ownPubkey && !currentRepostedEvents.containsKey(targetId)) {
                     currentRepostedEvents = currentRepostedEvents + (targetId to event.id)
                 }
@@ -489,9 +497,15 @@ internal class ChannelController(
                     .filter { seenQuoteRepostIds.add("${event.id}:$it") }
                 if (targetIds.isEmpty()) return@collect
                 val counts = currentRepostCounts.toMutableMap()
-                targetIds.forEach { targetId -> counts[targetId] = (counts[targetId] ?: 0) + 1 }
+                targetIds.forEach { targetId ->
+                    counts[targetId] = (counts[targetId] ?: 0) + 1
+                    currentRepostPubkeys = currentRepostPubkeys + (
+                        targetId to currentRepostPubkeys[targetId].orEmpty().plus(event.pubkey).distinct()
+                    )
+                }
                 currentRepostCounts = counts
                 syncReadyState()
+                scheduleProfileFetch(event.pubkey)
             }
         }
 
@@ -702,7 +716,9 @@ internal class ChannelController(
             likeReactionCounts = currentLikeReactionCounts,
             customReactions = currentCustomReactions,
             unicodeReactions = currentUnicodeReactions,
+            reactionEvents = currentReactionEvents,
             repostCounts = currentRepostCounts,
+            repostPubkeys = currentRepostPubkeys,
             likedReactions = currentLikedReactions,
             ownEmojiReactionEventIds = currentOwnEmojiReactionEventIds,
             repostedEvents = currentRepostedEvents,
@@ -722,7 +738,9 @@ internal class ChannelController(
             likeReactionCounts = currentLikeReactionCounts,
             customReactions = currentCustomReactions,
             unicodeReactions = currentUnicodeReactions,
+            reactionEvents = currentReactionEvents,
             repostCounts = currentRepostCounts,
+            repostPubkeys = currentRepostPubkeys,
             likedReactions = currentLikedReactions,
             ownEmojiReactionEventIds = currentOwnEmojiReactionEventIds,
             repostedEvents = currentRepostedEvents,

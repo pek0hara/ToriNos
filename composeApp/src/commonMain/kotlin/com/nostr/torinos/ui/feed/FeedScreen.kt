@@ -656,6 +656,7 @@ private fun FeedTimelinePane(
             onOpenReplies = onOpenReplies,
             onOpenLikes = onOpenLikes,
             onOpenReposts = onOpenReposts,
+            onRefreshReactions = viewModel::refreshReactions,
             onRepost = viewModel::repost,
             onUnrepost = viewModel::unrepost,
             onReport = viewModel::reportEvent,
