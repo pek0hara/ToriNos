@@ -24,3 +24,12 @@ expect fun rememberImagePickerLauncher(
 expect fun rememberOptimizedImagePickerLauncher(
     onResult: (PickedImageData?) -> Unit,
 ): () -> Unit
+
+/**
+ * クリップボードの先頭にある画像を、アップロード用とプレビュー用に変換して返す。
+ * 画像がない場合や読み取れない場合は null を返す。
+ */
+@Composable
+expect fun rememberClipboardImageReader(
+    onResult: (PickedImageData?) -> Unit,
+): () -> Unit

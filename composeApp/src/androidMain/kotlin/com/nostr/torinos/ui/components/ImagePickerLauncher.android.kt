@@ -3,6 +3,7 @@ package com.nostr.torinos.ui.components
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.net.Uri
+import android.content.ClipboardManager
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.runtime.Composable
@@ -70,6 +71,43 @@ actual fun rememberOptimizedImagePickerLauncher(
     }
 
     return { launcher.launch("image/*") }
+}
+
+@Composable
+actual fun rememberClipboardImageReader(
+    onResult: (PickedImageData?) -> Unit,
+): () -> Unit {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+
+    return {
+        val clipboard = context.getSystemService(ClipboardManager::class.java)
+        val clip = clipboard?.primaryClip
+        val uri = clip
+            ?.takeIf { it.itemCount > 0 }
+            ?.getItemAt(0)
+            ?.uri
+
+        if (uri == null) {
+            onResult(null)
+        } else {
+            scope.launch {
+                val result = withContext(Dispatchers.IO) {
+                    val (uploadBytes, mimeType) = loadImageBytesForUpload(context, uri)
+                    if (uploadBytes == null || mimeType == null) {
+                        null
+                    } else {
+                        PickedImageData(
+                            uploadBytes = uploadBytes,
+                            previewBytes = createPreviewBytes(uploadBytes) ?: uploadBytes,
+                            mimeType = mimeType,
+                        )
+                    }
+                }
+                onResult(result)
+            }
+        }
+    }
 }
 
 private fun loadImageBytesForUpload(

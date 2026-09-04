@@ -4,6 +4,7 @@ import com.nostr.torinos.ui.SafeViewModel
 import com.nostr.torinos.account.AccountSession
 import com.nostr.torinos.model.NoteContext
 import com.nostr.torinos.model.extractNostrEventReferences
+import com.nostr.torinos.network.CustomEmoji
 import com.nostr.torinos.network.CustomEmojiStore
 import com.nostr.torinos.network.ImageUploader
 import com.nostr.torinos.network.NostrRepository
@@ -29,6 +30,7 @@ data class ImageAttachment(
 
 data class PostState(
     val text: String = "",
+    val customEmojis: List<CustomEmoji> = emptyList(),
     val isPosting: Boolean = false,
     val isSavingMemo: Boolean = false,
     val isLoadingMemo: Boolean = false,
@@ -60,6 +62,7 @@ internal val memoJson = Json {
 @Serializable
 internal data class PostMemoPayload(
     val text: String = "",
+    val customEmojis: List<CustomEmoji> = emptyList(),
     val imageUrls: List<String> = emptyList(),
     val replyToId: String? = null,
     val replyToPubkey: String? = null,
@@ -77,11 +80,13 @@ data class PostMemoData(
     val channelId: String?,
     val updatedAt: Long,
     val identifier: String? = null,
+    val customEmojis: List<CustomEmoji> = emptyList(),
 )
 
 internal fun PostMemoPayload.toPostMemoData(identifier: String? = null): PostMemoData =
     PostMemoData(
         text = text,
+        customEmojis = customEmojis,
         imageUrls = imageUrls,
         replyToId = replyToId,
         replyToPubkey = replyToPubkey,
@@ -100,9 +105,18 @@ class PostViewModel(
     private var editingMemoIdentifier: String? = null
     private var editingMemoUpdatedAt: Long? = null
 
-    fun onTextChange(text: String) {
+    fun onTextChange(text: String) = updateText(text)
+
+    fun onCustomEmojiInserted(text: String, emoji: CustomEmoji) = updateText(text, emoji)
+
+    private fun updateText(text: String, selectedEmoji: CustomEmoji? = null) {
         _state.value = _state.value.copy(
             text = text,
+            customEmojis = resolveDraftEmojis(
+                text,
+                _state.value.customEmojis + listOfNotNull(selectedEmoji),
+                CustomEmojiStore.emojis.value,
+            ),
             error = null,
             memoMessage = null,
             posted = false,
@@ -153,6 +167,10 @@ class PostViewModel(
         _state.update { s -> s.copy(images = s.images.filter { it.id != id }, memoMessage = null) }
     }
 
+    fun showImagePasteError() {
+        _state.update { it.copy(error = "クリップボードに貼り付け可能な画像がありません") }
+    }
+
     fun restoreMemo(memo: PostMemoData, message: String? = null) {
         val restoredImages = memo.imageUrls
             .filter { it.isNotBlank() }
@@ -169,6 +187,7 @@ class PostViewModel(
         editingMemoUpdatedAt = memo.updatedAt
         _state.value = PostState(
             text = memo.text,
+            customEmojis = resolveDraftEmojis(memo.text, memo.customEmojis, CustomEmojiStore.emojis.value),
             images = restoredImages,
             memoMessage = message,
         )
@@ -184,6 +203,7 @@ class PostViewModel(
         if (current.text.isBlank() && uploadedUrls.isEmpty()) return null
         return PostMemoData(
             text = current.text,
+            customEmojis = current.customEmojis,
             imageUrls = uploadedUrls,
             replyToId = replyToId,
             replyToPubkey = replyToPubkey,
@@ -217,6 +237,7 @@ class PostViewModel(
             val identifier = editingMemoIdentifier ?: memoEventIdentifier(replyToId, updatedAt)
             val memo = PostMemoPayload(
                 text = current.text,
+                customEmojis = current.customEmojis,
                 imageUrls = uploadedUrls,
                 replyToId = replyToId,
                 replyToPubkey = replyToPubkey,
@@ -284,7 +305,7 @@ class PostViewModel(
 
             val tags = buildList {
                 addAll(noteContext.replyTags(replyToId, replyToPubkey))
-                addAll(customEmojiTagsForContent(text, CustomEmojiStore.emojis.value))
+                addAll(customEmojiTagsForContent(text, current.customEmojis))
                 extractNostrEventReferences(text).forEach { reference ->
                     add(
                         buildList {

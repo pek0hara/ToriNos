@@ -5,6 +5,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import cnames.structs.__CFDictionary
+import cnames.structs.__CFData
 import cnames.structs.__CFURL
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.CPointed
@@ -22,6 +23,7 @@ import platform.Foundation.NSData
 import platform.Foundation.NSItemProvider
 import platform.Foundation.NSURL
 import platform.ImageIO.CGImageSourceCreateThumbnailAtIndex
+import platform.ImageIO.CGImageSourceCreateWithData
 import platform.ImageIO.CGImageSourceCreateWithURL
 import platform.ImageIO.kCGImageSourceCreateThumbnailFromImageAlways
 import platform.ImageIO.kCGImageSourceCreateThumbnailWithTransform
@@ -36,6 +38,7 @@ import platform.UniformTypeIdentifiers.UTTypeImage
 import platform.UIKit.UIApplication
 import platform.UIKit.UIImage
 import platform.UIKit.UIImageJPEGRepresentation
+import platform.UIKit.UIPasteboard
 import platform.UIKit.UISceneActivationStateForegroundActive
 import platform.UIKit.UIViewController
 import platform.UIKit.UIWindow
@@ -73,6 +76,19 @@ actual fun rememberOptimizedImagePickerLauncher(
             scope.launch {
                 currentOnResult.value(pickOptimizedImage())
             }
+        }
+    }
+}
+
+@Composable
+actual fun rememberClipboardImageReader(
+    onResult: (PickedImageData?) -> Unit,
+): () -> Unit {
+    val currentOnResult = rememberUpdatedState(onResult)
+    return remember {
+        {
+            val image = UIPasteboard.generalPasteboard.image
+            currentOnResult.value(image?.let(::createOptimizedImageData))
         }
     }
 }
@@ -160,6 +176,35 @@ private fun createOptimizedImageData(url: NSURL): PickedImageData? {
         CGImageSourceCreateWithURL(urlRef, null)
     } finally {
         CFRelease(urlRef)
+    } ?: return null
+
+    return try {
+        val uploadBytes = source.jpegThumbnailBytes(
+            maxDimension = MAX_UPLOAD_DIMENSION,
+            quality = UPLOAD_JPEG_QUALITY,
+        ) ?: return null
+        val previewBytes = source.jpegThumbnailBytes(
+            maxDimension = PREVIEW_DIMENSION,
+            quality = PREVIEW_JPEG_QUALITY,
+        ) ?: uploadBytes
+        PickedImageData(
+            uploadBytes = uploadBytes,
+            previewBytes = previewBytes,
+            mimeType = "image/jpeg",
+        )
+    } finally {
+        CFRelease(source)
+    }
+}
+
+@OptIn(ExperimentalForeignApi::class)
+private fun createOptimizedImageData(image: UIImage): PickedImageData? {
+    val data = UIImageJPEGRepresentation(image, 1.0) ?: return null
+    val dataRef = CFBridgingRetain(data)?.reinterpret<__CFData>() ?: return null
+    val source = try {
+        CGImageSourceCreateWithData(dataRef, null)
+    } finally {
+        CFRelease(dataRef)
     } ?: return null
 
     return try {

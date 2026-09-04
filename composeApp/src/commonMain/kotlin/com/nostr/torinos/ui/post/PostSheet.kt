@@ -3,6 +3,8 @@ package com.nostr.torinos.ui.post
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.rememberTransformableState
+import androidx.compose.foundation.gestures.transformable
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -19,6 +21,7 @@ import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
@@ -26,6 +29,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.ContentPaste
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Image
@@ -35,6 +39,8 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -57,6 +63,9 @@ import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.style.TextAlign
@@ -66,10 +75,12 @@ import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import androidx.compose.ui.window.PopupProperties
 import com.nostr.torinos.model.NoteContext
 import com.nostr.torinos.account.accountSessionViewModel
 import com.nostr.torinos.model.encodeNevent
 import com.nostr.torinos.model.ReactionOption
+import com.nostr.torinos.network.CustomEmoji
 import com.nostr.torinos.network.CustomEmojiStore
 import com.nostr.torinos.network.RelayEntry
 import com.nostr.torinos.network.RelayPublishResult
@@ -77,7 +88,9 @@ import com.nostr.torinos.network.RelayStore
 import com.nostr.torinos.ui.components.PreviewImage
 import com.nostr.torinos.ui.components.StandardEmojiPickerSheet
 import com.nostr.torinos.ui.components.rememberDismissKeyboard
+import com.nostr.torinos.ui.components.rememberClipboardImageReader
 import com.nostr.torinos.ui.components.rememberOptimizedImagePickerLauncher
+import kotlin.math.max
 
 private const val MAX_CHARS = 800
 
@@ -131,6 +144,17 @@ fun PostSheet(
                 mimeType = image.mimeType,
                 previewBytes = image.previewBytes,
             )
+        }
+    }
+    val pasteImage = rememberClipboardImageReader { image ->
+        if (image != null) {
+            postViewModel.uploadAndAppendImage(
+                bytes = image.uploadBytes,
+                mimeType = image.mimeType,
+                previewBytes = image.previewBytes,
+            )
+        } else {
+            postViewModel.showImagePasteError()
         }
     }
 
@@ -224,9 +248,11 @@ fun PostSheet(
                         { closeOverlay(deleteMemo) }
                     },
                     onPickImage = pickImage,
+                    onPasteImage = pasteImage,
                     onOpenRelaySettings = { showRelaySettingsDialog = true },
                     onOpenCustomEmojiSettings = ::openCustomEmojiSettings,
                     onTextChange = postViewModel::onTextChange,
+                    onCustomEmojiInserted = postViewModel::onCustomEmojiInserted,
                     textFocusRequester = textFocusRequester,
                     onTextFocusChanged = { isTextFocused = it },
                     onRemoveImage = postViewModel::removeImage,
@@ -271,9 +297,11 @@ private fun PostSheetContent(
     onDismiss: () -> Unit,
     onDeleteMemo: (() -> Unit)?,
     onPickImage: () -> Unit,
+    onPasteImage: () -> Unit,
     onOpenRelaySettings: () -> Unit,
     onOpenCustomEmojiSettings: () -> Unit,
     onTextChange: (String) -> Unit,
+    onCustomEmojiInserted: (String, CustomEmoji) -> Unit,
     textFocusRequester: FocusRequester,
     onTextFocusChanged: (Boolean) -> Unit,
     onRemoveImage: (Int) -> Unit,
@@ -282,6 +310,8 @@ private fun PostSheetContent(
 ) {
     var textValue by remember { mutableStateOf(TextFieldValue(state.text)) }
     var showCustomEmojiPicker by remember { mutableStateOf(false) }
+    var showImageSourceMenu by remember { mutableStateOf(false) }
+    var expandedImageData by remember { mutableStateOf<Any?>(null) }
     val dismissKeyboard = rememberDismissKeyboard()
 
     LaunchedEffect(state.text) {
@@ -294,7 +324,10 @@ private fun PostSheetContent(
     }
 
     fun insertEmoji(option: ReactionOption) {
-        val insertion = option.eventContent
+        val customEmoji = (option as? ReactionOption.Custom)?.let {
+            uniqueDraftEmoji(CustomEmoji(it.shortcode, it.imageUrl), state.customEmojis, textValue.text)
+        }
+        val insertion = customEmoji?.let { ":${it.shortcode}:" } ?: option.eventContent
         val start = minOf(textValue.selection.start, textValue.selection.end)
         val end = maxOf(textValue.selection.start, textValue.selection.end)
         val newText = textValue.text.replaceRange(start, end, insertion)
@@ -308,7 +341,11 @@ private fun PostSheetContent(
             is ReactionOption.Unicode -> CustomEmojiStore.markUnicodeUsed(option.value)
             is ReactionOption.Custom -> CustomEmojiStore.markCustomReactionUsed(option.shortcode)
         }
-        onTextChange(newText)
+        if (customEmoji != null) {
+            onCustomEmojiInserted(newText, customEmoji)
+        } else {
+            onTextChange(newText)
+        }
         showCustomEmojiPicker = false
     }
 
@@ -432,10 +469,14 @@ private fun PostSheetContent(
                 .fillMaxWidth()
                 .weight(1f)
                 .focusRequester(textFocusRequester)
-                .onFocusChanged { onTextFocusChanged(it.isFocused) },
+                .onFocusChanged {
+                    if (it.isFocused) showImageSourceMenu = false
+                    onTextFocusChanged(it.isFocused)
+                },
             textStyle = MaterialTheme.typography.bodyLarge.copy(
                 color = MaterialTheme.colorScheme.onSurface,
             ),
+            cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
             maxLines = Int.MAX_VALUE,
             decorationBox = { innerTextField ->
                 Box(
@@ -455,12 +496,62 @@ private fun PostSheetContent(
             },
         )
 
+        if (state.customEmojis.isNotEmpty()) {
+            Text(
+                text = "使用中の絵文字タグ",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            LazyRow(
+                modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                items(state.customEmojis, key = { it.shortcode }) { emoji ->
+                    Surface(
+                        shape = MaterialTheme.shapes.small,
+                        color = MaterialTheme.colorScheme.surfaceVariant,
+                        onClick = { expandedImageData = emoji.imageUrl },
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        ) {
+                            PreviewImage(
+                                data = emoji.imageUrl,
+                                contentDescription = emoji.shortcode,
+                                modifier = Modifier.size(28.dp),
+                            )
+                            Column(modifier = Modifier.widthIn(max = 220.dp)) {
+                                Text(
+                                    ":${emoji.shortcode}:",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                                Text(
+                                    emoji.imageUrl,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         if (state.images.isNotEmpty()) {
             Spacer(modifier = Modifier.height(10.dp))
             LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 items(state.images, key = { it.id }) { attachment ->
                     ImageThumbnail(
                         attachment = attachment,
+                        onPreview = {
+                            expandedImageData = attachment.previewBytes ?: attachment.uploadedUrl
+                        },
                         onRemove = { onRemoveImage(attachment.id) },
                     )
                 }
@@ -494,21 +585,50 @@ private fun PostSheetContent(
                 horizontalArrangement = Arrangement.Start,
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                TextButton(
-                    onClick = {
-                        dismissKeyboard()
-                        onPickImage()
-                    },
-                    enabled = state.images.size < 4,
-                    contentPadding = PaddingValues(horizontal = 4.dp),
-                ) {
-                    Icon(
-                        Icons.Default.Image,
-                        contentDescription = null,
-                        modifier = Modifier.size(16.dp),
-                    )
-                    Spacer(modifier = Modifier.size(3.dp))
-                    Text("画像", maxLines = 1, style = MaterialTheme.typography.labelSmall)
+                Box {
+                    TextButton(
+                        onClick = {
+                            dismissKeyboard()
+                            showImageSourceMenu = !showImageSourceMenu
+                        },
+                        enabled = state.images.size < 4,
+                        contentPadding = PaddingValues(horizontal = 4.dp),
+                    ) {
+                        Icon(
+                            Icons.Default.Image,
+                            contentDescription = null,
+                            modifier = Modifier.size(16.dp),
+                        )
+                        Spacer(modifier = Modifier.size(3.dp))
+                        Text("画像", maxLines = 1, style = MaterialTheme.typography.labelSmall)
+                    }
+                    DropdownMenu(
+                        expanded = showImageSourceMenu,
+                        onDismissRequest = { showImageSourceMenu = false },
+                        properties = PopupProperties(
+                            focusable = false,
+                            // Let the image button toggle the menu and text focus close it.
+                            // Outside dismissal runs before the button click and would reopen it.
+                            dismissOnClickOutside = false,
+                        ),
+                    ) {
+                        DropdownMenuItem(
+                            text = { Text("写真から選択") },
+                            leadingIcon = { Icon(Icons.Default.Image, contentDescription = null) },
+                            onClick = {
+                                showImageSourceMenu = false
+                                onPickImage()
+                            },
+                        )
+                        DropdownMenuItem(
+                            text = { Text("クリップボードから貼り付け") },
+                            leadingIcon = { Icon(Icons.Default.ContentPaste, contentDescription = null) },
+                            onClick = {
+                                showImageSourceMenu = false
+                                onPasteImage()
+                            },
+                        )
+                    }
                 }
                 TextButton(
                     onClick = {
@@ -577,11 +697,19 @@ private fun PostSheetContent(
             onOpenCustomEmojiSettings = onOpenCustomEmojiSettings,
         )
     }
+
+    expandedImageData?.let { data ->
+        PostImagePreviewDialog(
+            data = data,
+            onDismiss = { expandedImageData = null },
+        )
+    }
 }
 
 @Composable
 private fun ImageThumbnail(
     attachment: ImageAttachment,
+    onPreview: () -> Unit,
     onRemove: () -> Unit,
 ) {
     Box(
@@ -594,10 +722,12 @@ private fun ImageThumbnail(
         if (previewData != null) {
             PreviewImage(
                 data = previewData,
-                contentDescription = null,
+                contentDescription = "画像を拡大表示",
                 contentScale = ContentScale.Fit,
                 maxDecodeSizePx = 256,
-                modifier = Modifier.fillMaxSize(),
+                modifier = Modifier
+                    .fillMaxSize()
+                    .clickable(onClick = onPreview),
             )
         }
         if (attachment.isUploading) {
@@ -627,6 +757,72 @@ private fun ImageThumbnail(
                     contentDescription = "削除",
                     modifier = Modifier.size(14.dp),
                     tint = MaterialTheme.colorScheme.onSurface,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun PostImagePreviewDialog(
+    data: Any,
+    onDismiss: () -> Unit,
+) {
+    var scale by remember(data) { mutableStateOf(1f) }
+    var offset by remember(data) { mutableStateOf(Offset.Zero) }
+    val transformableState = rememberTransformableState { zoomChange, panChange, _ ->
+        val nextScale = (scale * zoomChange).coerceIn(1f, 5f)
+        scale = nextScale
+        offset = if (nextScale == 1f) {
+            Offset.Zero
+        } else {
+            val maxOffset = 2400f * max(1f, nextScale - 1f)
+            Offset(
+                x = (offset.x + panChange.x).coerceIn(-maxOffset, maxOffset),
+                y = (offset.y + panChange.y).coerceIn(-maxOffset, maxOffset),
+            )
+        }
+    }
+
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false),
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(Color.Black)
+                .clickable(onClick = onDismiss),
+            contentAlignment = Alignment.Center,
+        ) {
+            PreviewImage(
+                data = data,
+                contentDescription = "拡大画像",
+                contentScale = ContentScale.Fit,
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(16.dp)
+                    .transformable(
+                        state = transformableState,
+                        canPan = { scale > 1f },
+                    )
+                    .graphicsLayer {
+                        scaleX = scale
+                        scaleY = scale
+                        translationX = offset.x
+                        translationY = offset.y
+                    },
+            )
+            IconButton(
+                onClick = onDismiss,
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .padding(12.dp),
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Close,
+                    contentDescription = "閉じる",
+                    tint = Color.White,
                 )
             }
         }
