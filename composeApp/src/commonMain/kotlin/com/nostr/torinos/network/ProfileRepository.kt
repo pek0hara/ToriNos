@@ -284,16 +284,26 @@ private object ProfileFetchCoordinator {
         completedSuccessfully: Boolean,
     ) {
         val now = Clock.System.now().toEpochMilliseconds()
+        val fallbackPubkeys = profileFallbackPubkeys(
+            requestedPubkeys = batch.pubkeys,
+            receivedPubkeys = receivedPubkeys,
+            relayHint = batch.relayHint,
+        )
         if (completedSuccessfully) {
             ProfileCache.markFetched(batch.pubkeys, fetchedAt = now)
         }
         mutex.withLock {
             inFlight.removeAll(batch.pubkeys)
             batch.pubkeys.forEach { pubkey ->
-                blockedUntil[pubkey] = now + when {
-                    completedSuccessfully && pubkey !in receivedPubkeys -> MISSING_CACHE_MS
-                    completedSuccessfully -> SUCCESS_COOLDOWN_MS
-                    else -> FAILURE_COOLDOWN_MS
+                if (pubkey in fallbackPubkeys) {
+                    blockedUntil.remove(pubkey)
+                    pending[pubkey] = null
+                } else {
+                    blockedUntil[pubkey] = now + when {
+                        completedSuccessfully && pubkey !in receivedPubkeys -> MISSING_CACHE_MS
+                        completedSuccessfully -> SUCCESS_COOLDOWN_MS
+                        else -> FAILURE_COOLDOWN_MS
+                    }
                 }
             }
             scheduleFlushLocked()
@@ -307,4 +317,14 @@ private object ProfileFetchCoordinator {
     private const val MISSING_CACHE_MS = 60_000L
     private const val SUCCESS_COOLDOWN_MS = 5_000L
     private const val FAILURE_COOLDOWN_MS = 5_000L
+}
+
+internal fun profileFallbackPubkeys(
+    requestedPubkeys: Set<String>,
+    receivedPubkeys: Set<String>,
+    relayHint: String?,
+): Set<String> = if (relayHint == null) {
+    emptySet()
+} else {
+    requestedPubkeys - receivedPubkeys
 }

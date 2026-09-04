@@ -54,4 +54,26 @@ class ProfileRepositoryTest {
 
         assertEquals(requested, result)
     }
+
+    @Test
+    fun missingProfilesOnHintedRelayFallBackToAllRelays() {
+        val result = profileFallbackPubkeys(
+            requestedPubkeys = setOf("found", "missing"),
+            receivedPubkeys = setOf("found"),
+            relayHint = "wss://example.com",
+        )
+
+        assertEquals(setOf("missing"), result)
+    }
+
+    @Test
+    fun allRelayFetchDoesNotScheduleAnotherFallback() {
+        val result = profileFallbackPubkeys(
+            requestedPubkeys = setOf("missing"),
+            receivedPubkeys = emptySet(),
+            relayHint = null,
+        )
+
+        assertEquals(emptySet(), result)
+    }
 }
