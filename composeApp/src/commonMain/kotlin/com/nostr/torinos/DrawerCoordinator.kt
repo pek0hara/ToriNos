@@ -13,13 +13,37 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 
+internal sealed interface ProfileDrawerDestination {
+    val stateKey: String
+
+    data class Profile(val pubkey: String) : ProfileDrawerDestination {
+        override val stateKey: String = "profile-$pubkey"
+    }
+
+    data class Following(val pubkey: String) : ProfileDrawerDestination {
+        override val stateKey: String = "following-$pubkey"
+    }
+
+    data class Followers(val pubkey: String) : ProfileDrawerDestination {
+        override val stateKey: String = "followers-$pubkey"
+    }
+
+    data class Thread(
+        val eventId: String,
+        val initialTab: String = "auto",
+        val channelId: String? = null,
+    ) : ProfileDrawerDestination {
+        override val stateKey: String = "thread-$eventId-${channelId.orEmpty()}-$initialTab"
+    }
+}
+
 /** プロフィール／通知ドロワー間の排他的な遷移を管理する。 */
 internal class DrawerCoordinator(
     val notificationsState: DrawerState,
     val profileState: DrawerState,
     private val scope: CoroutineScope,
 ) {
-    var profilePubkey by mutableStateOf<String?>(null)
+    var profileDestination by mutableStateOf<ProfileDrawerDestination?>(null)
         private set
     var isProfileContentReady by mutableStateOf(false)
         private set
@@ -29,25 +53,29 @@ internal class DrawerCoordinator(
         private set
 
     private var hasProfileOpened = false
-    private val profileHistory = mutableListOf<String>()
+    private val profileHistory = mutableListOf<ProfileDrawerDestination>()
     private val transitionMutex = Mutex()
 
     fun openProfile(pubkey: String) {
         scope.launch {
             transitionMutex.withLock {
-                val isProfileActive = profilePubkey != null &&
+                val currentDestination = profileDestination
+                val isProfileActive = currentDestination != null &&
                     (profileState.currentValue == DrawerValue.Open ||
                         profileState.targetValue == DrawerValue.Open)
                 if (
-                    profilePubkey == pubkey &&
+                    currentDestination == ProfileDrawerDestination.Profile(pubkey) &&
                     isProfileActive
                 ) {
+                    // 開くアニメーションが中断されていても、同じプロフィールの再要求で
+                    // ローディング表示に留まらないよう内容を表示可能に戻す。
+                    isProfileContentReady = true
                     return@withLock
                 }
 
                 if (isProfileActive) {
-                    profilePubkey?.let(profileHistory::add)
-                    profilePubkey = pubkey
+                    profileHistory.add(checkNotNull(currentDestination))
+                    profileDestination = ProfileDrawerDestination.Profile(pubkey)
                     isProfileContentReady = true
                     return@withLock
                 }
@@ -56,9 +84,59 @@ internal class DrawerCoordinator(
                 isProfileContentReady = false
                 notificationsState.close()
                 profileState.close()
-                profilePubkey = pubkey
+                profileDestination = ProfileDrawerDestination.Profile(pubkey)
                 profileNavigationSessionId++
+                // DrawerState.open() はアニメーション完了まで suspend し、ジェスチャー等で
+                // 中断され得るため、内容の表示開始をその完了に依存させない。
+                isProfileContentReady = true
                 profileState.open()
+            }
+        }
+    }
+
+    fun openFollowing(pubkey: String) {
+        openFollowList(
+            source = ProfileDrawerDestination.Profile(pubkey),
+            destination = ProfileDrawerDestination.Following(pubkey),
+        )
+    }
+
+    fun openFollowers(pubkey: String) {
+        openFollowList(
+            source = ProfileDrawerDestination.Profile(pubkey),
+            destination = ProfileDrawerDestination.Followers(pubkey),
+        )
+    }
+
+    private fun openFollowList(
+        source: ProfileDrawerDestination.Profile,
+        destination: ProfileDrawerDestination,
+    ) {
+        scope.launch {
+            transitionMutex.withLock {
+                if (profileDestination != source) return@withLock
+                profileHistory.add(source)
+                profileDestination = destination
+                isProfileContentReady = true
+            }
+        }
+    }
+
+    fun openThread(
+        source: ProfileDrawerDestination,
+        eventId: String,
+        initialTab: String = "auto",
+        channelId: String? = null,
+    ) {
+        scope.launch {
+            transitionMutex.withLock {
+                if (profileDestination != source) return@withLock
+                profileHistory.add(source)
+                profileDestination = ProfileDrawerDestination.Thread(
+                    eventId = eventId,
+                    initialTab = initialTab,
+                    channelId = channelId,
+                )
                 isProfileContentReady = true
             }
         }
@@ -68,7 +146,7 @@ internal class DrawerCoordinator(
         scope.launch {
             transitionMutex.withLock {
                 if (profileHistory.isNotEmpty()) {
-                    profilePubkey = profileHistory.removeAt(profileHistory.lastIndex)
+                    profileDestination = profileHistory.removeAt(profileHistory.lastIndex)
                     isProfileContentReady = true
                 } else {
                     profileState.close()
@@ -88,21 +166,27 @@ internal class DrawerCoordinator(
 
     fun closeProfileAndThen(action: () -> Unit) {
         scope.launch {
-            profileState.close()
-            action()
+            transitionMutex.withLock {
+                profileState.close()
+                action()
+            }
         }
     }
 
     fun onProfileStateChanged() {
-        when {
-            profileState.currentValue == DrawerValue.Open -> hasProfileOpened = true
-            profileState.currentValue == DrawerValue.Closed &&
-                profileState.targetValue == DrawerValue.Closed &&
-                hasProfileOpened -> {
-                hasProfileOpened = false
-                isProfileContentReady = false
-                profilePubkey = null
-                profileHistory.clear()
+        scope.launch {
+            transitionMutex.withLock {
+                when {
+                    profileState.currentValue == DrawerValue.Open -> hasProfileOpened = true
+                    profileState.currentValue == DrawerValue.Closed &&
+                        profileState.targetValue == DrawerValue.Closed &&
+                        hasProfileOpened -> {
+                        hasProfileOpened = false
+                        isProfileContentReady = false
+                        profileDestination = null
+                        profileHistory.clear()
+                    }
+                }
             }
         }
     }

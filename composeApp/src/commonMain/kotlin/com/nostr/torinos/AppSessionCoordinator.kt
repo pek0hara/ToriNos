@@ -66,6 +66,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
 import com.nostr.torinos.account.AccountSession
+import com.nostr.torinos.account.accountSessionViewModel
 import com.nostr.torinos.crypto.isWriteSupported
 import com.nostr.torinos.model.NoteContext
 import com.nostr.torinos.model.NostrEvent
@@ -105,6 +106,7 @@ import com.nostr.torinos.ui.settings.SettingsScreen
 import com.nostr.torinos.ui.service.ServiceTab
 import com.nostr.torinos.ui.status.StatusScreen
 import com.nostr.torinos.ui.thread.ThreadScreen
+import com.nostr.torinos.ui.thread.ThreadViewModel
 import com.nostr.torinos.util.loggingExceptionHandler
 import com.nostr.torinos.util.logException
 import kotlinx.serialization.Serializable
@@ -184,7 +186,7 @@ internal fun AppSessionCoordinator(
         val drawerCoordinator = rememberDrawerCoordinator(scope)
         val profileDrawerStateHolder = rememberSaveableStateHolder()
         var lastProfileDrawerPubkey by rememberSaveable { mutableStateOf<String?>(null) }
-        val profileDrawerVisitedPubkeys = remember { mutableSetOf<String>() }
+        val profileDrawerStateOwners = remember { mutableMapOf<String, String?>() }
         var handledProfileNavigationSessionId by remember { mutableStateOf(0) }
         val notificationsDrawerState = drawerCoordinator.notificationsState
         val profileDrawerState = drawerCoordinator.profileState
@@ -313,22 +315,33 @@ internal fun AppSessionCoordinator(
         }
 
         LaunchedEffect(
-            drawerCoordinator.profilePubkey,
+            drawerCoordinator.profileDestination?.stateKey,
             drawerCoordinator.profileNavigationSessionId,
         ) {
-            val nextPubkey = drawerCoordinator.profilePubkey ?: return@LaunchedEffect
+            val destination = drawerCoordinator.profileDestination ?: return@LaunchedEffect
             val sessionId = drawerCoordinator.profileNavigationSessionId
+            val destinationPubkey = when (destination) {
+                is ProfileDrawerDestination.Profile -> destination.pubkey
+                is ProfileDrawerDestination.Following -> destination.pubkey
+                is ProfileDrawerDestination.Followers -> destination.pubkey
+                is ProfileDrawerDestination.Thread -> lastProfileDrawerPubkey
+            }
             if (handledProfileNavigationSessionId != sessionId) {
-                val retainedPubkey = lastProfileDrawerPubkey.takeIf { it == nextPubkey }
-                profileDrawerVisitedPubkeys
-                    .filter { it != retainedPubkey }
-                    .forEach { profileDrawerStateHolder.removeState("profile-drawer-$it") }
-                profileDrawerVisitedPubkeys.clear()
-                retainedPubkey?.let(profileDrawerVisitedPubkeys::add)
+                val nextPubkey = (destination as? ProfileDrawerDestination.Profile)?.pubkey
+                profileDrawerStateOwners
+                    .filterValues { ownerPubkey -> ownerPubkey != nextPubkey }
+                    .keys
+                    .toList()
+                    .forEach { stateKey ->
+                        profileDrawerStateHolder.removeState("profile-drawer-$stateKey")
+                        profileDrawerStateOwners.remove(stateKey)
+                    }
                 handledProfileNavigationSessionId = sessionId
             }
-            profileDrawerVisitedPubkeys.add(nextPubkey)
-            lastProfileDrawerPubkey = nextPubkey
+            profileDrawerStateOwners[destination.stateKey] = destinationPubkey
+            if (destinationPubkey != null) {
+                lastProfileDrawerPubkey = destinationPubkey
+            }
         }
 
         LaunchedEffect(notificationsDrawerState.currentValue) {
@@ -406,9 +419,9 @@ internal fun AppSessionCoordinator(
                     drawerContainerColor = MaterialTheme.colorScheme.background,
                     windowInsets = WindowInsets(0),
                 ) {
-                        val drawerPubkey = drawerCoordinator.profilePubkey
+                        val drawerDestination = drawerCoordinator.profileDestination
                         when {
-                            drawerPubkey == null -> Unit
+                            drawerDestination == null -> Unit
                             !drawerCoordinator.isProfileContentReady -> Box(
                                 modifier = Modifier.fillMaxSize(),
                                 contentAlignment = Alignment.Center,
@@ -416,90 +429,153 @@ internal fun AppSessionCoordinator(
                                 CircularProgressIndicator()
                             }
                             else -> profileDrawerStateHolder.SaveableStateProvider(
-                                key = "profile-drawer-$drawerPubkey",
+                                key = "profile-drawer-${drawerDestination.stateKey}",
                             ) {
-                                if (drawerPubkey == ownPubkey) {
-                                    MyProfileScreen(
-                                        ownPubkey = drawerPubkey,
+                                when (drawerDestination) {
+                                    is ProfileDrawerDestination.Following -> FollowListScreen(
+                                        mode = FollowListMode.FOLLOWING,
+                                        ownPubkey = drawerDestination.pubkey,
                                         onBack = drawerCoordinator::navigateBackOrCloseProfile,
-                                        onOpenFollowing = {
-                                            closeProfileDrawerAndThen { nav.navigate(FollowingRoute(drawerPubkey)) }
-                                        },
-                                        onOpenFollowers = {
-                                            closeProfileDrawerAndThen { nav.navigate(FollowersRoute(drawerPubkey)) }
-                                        },
-                                        onOpenSettings = {
-                                            closeProfileDrawerAndThen { showQuickSettings = true }
-                                        },
                                         onUserClick = ::openProfileDrawer,
-                                        onReply = { eventId, authorPk, preview ->
-                                            closeProfileDrawerAndThen {
-                                                composer.replyToId = eventId
-                                                composer.replyToPubkey = authorPk
-                                                composer.replyToPreview = preview
-                                                composer.replyNoteContext = NoteContext.Timeline
-                                                runWithPrivateKey(PendingKeyAction.Reply) {
-                                                    composer.showPostSheet = true
-                                                }
-                                            }
-                                        },
-                                        onOpenReplies = { eventId ->
-                                            closeProfileDrawerAndThen { nav.navigate(ThreadRoute(eventId)) }
-                                        },
-                                        onOpenLikes = { eventId ->
-                                            closeProfileDrawerAndThen {
-                                                nav.navigate(ThreadRoute(eventId, "likes"))
-                                            }
-                                        },
-                                        onOpenReposts = { eventId ->
-                                            closeProfileDrawerAndThen {
-                                                nav.navigate(ThreadRoute(eventId, "reposts"))
-                                            }
-                                        },
                                     )
-                                } else {
-                                    UserProfileScreen(
-                                        pubkey = drawerPubkey,
+                                    is ProfileDrawerDestination.Followers -> FollowListScreen(
+                                        mode = FollowListMode.FOLLOWERS,
+                                        ownPubkey = drawerDestination.pubkey,
                                         onBack = drawerCoordinator::navigateBackOrCloseProfile,
-                                        isOwnProfile = false,
-                                        ownPubkey = ownPubkey,
-                                        onOpenFollowing = {
-                                            closeProfileDrawerAndThen { nav.navigate(FollowingRoute(drawerPubkey)) }
-                                        },
-                                        onOpenFollowers = {
-                                            closeProfileDrawerAndThen { nav.navigate(FollowersRoute(drawerPubkey)) }
-                                        },
                                         onUserClick = ::openProfileDrawer,
-                                        onReply = { eventId, authorPk, preview ->
-                                            closeProfileDrawerAndThen {
-                                                composer.replyToId = eventId
-                                                composer.replyToPubkey = authorPk
-                                                composer.replyToPreview = preview
-                                                composer.replyNoteContext = NoteContext.Timeline
-                                                runWithPrivateKey(PendingKeyAction.Reply) {
-                                                    composer.showPostSheet = true
-                                                }
-                                            }
-                                        },
-                                        onOpenReplies = { eventId ->
-                                            closeProfileDrawerAndThen { nav.navigate(ThreadRoute(eventId)) }
-                                        },
-                                        onOpenLikes = { eventId ->
-                                            closeProfileDrawerAndThen {
-                                                nav.navigate(ThreadRoute(eventId, "likes"))
-                                            }
-                                        },
-                                        onOpenReposts = { eventId ->
-                                            closeProfileDrawerAndThen {
-                                                nav.navigate(ThreadRoute(eventId, "reposts"))
-                                            }
-                                        },
-                                        onOpenJournal = {
-                                            closeProfileDrawerAndThen {
-                                                nav.navigate(UserJournalRoute(drawerPubkey))
-                                            }
-                                        },
                                     )
+                                    is ProfileDrawerDestination.Profile -> if (
+                                        drawerDestination.pubkey == ownPubkey
+                                    ) {
+                                        MyProfileScreen(
+                                            ownPubkey = drawerDestination.pubkey,
+                                            onBack = drawerCoordinator::navigateBackOrCloseProfile,
+                                            onOpenFollowing = {
+                                                drawerCoordinator.openFollowing(drawerDestination.pubkey)
+                                            },
+                                            onOpenFollowers = {
+                                                drawerCoordinator.openFollowers(drawerDestination.pubkey)
+                                            },
+                                            onOpenSettings = {
+                                                closeProfileDrawerAndThen { showQuickSettings = true }
+                                            },
+                                            onUserClick = ::openProfileDrawer,
+                                            onReply = { eventId, authorPk, preview ->
+                                                closeProfileDrawerAndThen {
+                                                    composer.replyToId = eventId
+                                                    composer.replyToPubkey = authorPk
+                                                    composer.replyToPreview = preview
+                                                    composer.replyNoteContext = NoteContext.Timeline
+                                                    runWithPrivateKey(PendingKeyAction.Reply) {
+                                                        composer.showPostSheet = true
+                                                    }
+                                                }
+                                            },
+                                            onOpenReplies = { eventId ->
+                                                drawerCoordinator.openThread(drawerDestination, eventId)
+                                            },
+                                            onOpenLikes = { eventId ->
+                                                drawerCoordinator.openThread(drawerDestination, eventId, "likes")
+                                            },
+                                            onOpenReposts = { eventId ->
+                                                drawerCoordinator.openThread(drawerDestination, eventId, "reposts")
+                                            },
+                                        )
+                                    } else {
+                                        UserProfileScreen(
+                                            pubkey = drawerDestination.pubkey,
+                                            onBack = drawerCoordinator::navigateBackOrCloseProfile,
+                                            isOwnProfile = false,
+                                            ownPubkey = ownPubkey,
+                                            onOpenFollowing = {
+                                                drawerCoordinator.openFollowing(drawerDestination.pubkey)
+                                            },
+                                            onOpenFollowers = {
+                                                drawerCoordinator.openFollowers(drawerDestination.pubkey)
+                                            },
+                                            onUserClick = ::openProfileDrawer,
+                                            onReply = { eventId, authorPk, preview ->
+                                                closeProfileDrawerAndThen {
+                                                    composer.replyToId = eventId
+                                                    composer.replyToPubkey = authorPk
+                                                    composer.replyToPreview = preview
+                                                    composer.replyNoteContext = NoteContext.Timeline
+                                                    runWithPrivateKey(PendingKeyAction.Reply) {
+                                                        composer.showPostSheet = true
+                                                    }
+                                                }
+                                            },
+                                            onOpenReplies = { eventId ->
+                                                drawerCoordinator.openThread(drawerDestination, eventId)
+                                            },
+                                            onOpenLikes = { eventId ->
+                                                drawerCoordinator.openThread(drawerDestination, eventId, "likes")
+                                            },
+                                            onOpenReposts = { eventId ->
+                                                drawerCoordinator.openThread(drawerDestination, eventId, "reposts")
+                                            },
+                                            onOpenJournal = {
+                                                closeProfileDrawerAndThen {
+                                                    nav.navigate(UserJournalRoute(drawerDestination.pubkey))
+                                                }
+                                            },
+                                        )
+                                    }
+                                    is ProfileDrawerDestination.Thread -> {
+                                        val channelId = drawerDestination.channelId
+                                        val threadViewModel = accountSessionViewModel<ThreadViewModel>(
+                                            key = "profile-drawer-thread-${drawerDestination.eventId}-${channelId ?: "note"}",
+                                        ) { session ->
+                                            ThreadViewModel(
+                                                eventId = drawerDestination.eventId,
+                                                noteContext = noteContextForChannel(channelId),
+                                                accountSession = session,
+                                            )
+                                        }
+                                        ThreadScreen(
+                                            eventId = drawerDestination.eventId,
+                                            initialTab = drawerDestination.initialTab,
+                                            channelId = channelId,
+                                            onBack = drawerCoordinator::navigateBackOrCloseProfile,
+                                            onUserClick = ::openProfileDrawer,
+                                            onReply = { eventId, authorPk, preview, chId ->
+                                                closeProfileDrawerAndThen {
+                                                    composer.replyToId = eventId
+                                                    composer.replyToPubkey = authorPk
+                                                    composer.replyToPreview = preview
+                                                    composer.replyNoteContext = noteContextForChannel(chId)
+                                                    runWithPrivateKey(PendingKeyAction.Reply) {
+                                                        composer.showPostSheet = true
+                                                    }
+                                                }
+                                            },
+                                            onOpenThread = { eventId ->
+                                                drawerCoordinator.openThread(
+                                                    source = drawerDestination,
+                                                    eventId = eventId,
+                                                    channelId = channelId,
+                                                )
+                                            },
+                                            onOpenLikes = { eventId ->
+                                                drawerCoordinator.openThread(
+                                                    source = drawerDestination,
+                                                    eventId = eventId,
+                                                    initialTab = "likes",
+                                                    channelId = channelId,
+                                                )
+                                            },
+                                            onOpenReposts = { eventId ->
+                                                drawerCoordinator.openThread(
+                                                    source = drawerDestination,
+                                                    eventId = eventId,
+                                                    initialTab = "reposts",
+                                                    channelId = channelId,
+                                                )
+                                            },
+                                            ownPubkey = ownPubkey,
+                                            viewModel = threadViewModel,
+                                        )
+                                    }
                                 }
                             }
                         }
