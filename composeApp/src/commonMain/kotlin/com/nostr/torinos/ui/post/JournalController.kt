@@ -74,12 +74,45 @@ data class JournalItem(
 
 sealed class JournalEntry {
     data class Memo(val item: JournalItem) : JournalEntry()
-    data class Note(val event: NostrEvent, val profile: NostrProfile?) : JournalEntry()
+    data class Note(val event: NostrEvent) : JournalEntry()
 
     val displayTime: Long get() = when (this) {
         is Memo -> item.displayTime
         is Note -> event.createdAt
     }
+}
+
+/**
+ * 投稿本体から作る不変の月索引。
+ * リアクションや画面表示状態の更新では作り直さない。
+ */
+data class JournalContent(
+    val memos: List<JournalItem> = emptyList(),
+    val notes: List<NostrEvent> = emptyList(),
+) {
+    private val entriesByDate: Map<LocalDate, List<JournalEntry>>
+    private val entriesByMonth: Map<LocalDate, List<JournalEntry>>
+
+    val entryCountsByDate: Map<LocalDate, Int>
+
+    init {
+        val entries = buildList {
+            memos.forEach { add(JournalEntry.Memo(it)) }
+            notes.forEach { add(JournalEntry.Note(it)) }
+        }
+        entriesByDate = entries
+            .groupBy { dateOfEpochSeconds(it.displayTime) }
+            .mapValues { (_, values) -> values.sortedBy { it.displayTime } }
+        entriesByMonth = entries
+            .groupBy { dateOfEpochSeconds(it.displayTime).monthStart() }
+            .mapValues { (_, values) -> values.sortedBy { it.displayTime } }
+        entryCountsByDate = entriesByDate.mapValues { (_, values) -> values.size }
+    }
+
+    fun entriesForDate(date: LocalDate): List<JournalEntry> = entriesByDate[date].orEmpty()
+
+    fun entriesForMonth(month: LocalDate): List<JournalEntry> =
+        entriesByMonth[month.monthStart()].orEmpty()
 }
 
 enum class JournalLoadKind {
@@ -107,17 +140,18 @@ data class JournalState(
     val selectedMonth: LocalDate = currentMonth(),
     val selectedDate: LocalDate = currentDate(),
     val showCalendar: Boolean = true,
-    val memos: List<JournalItem> = emptyList(),
-    val notes: List<NostrEvent> = emptyList(),
+    val content: JournalContent = JournalContent(),
     val profiles: Map<String, NostrProfile> = emptyMap(),
     val quotedEvents: Map<String, NostrEvent> = emptyMap(),
     val reactionCounts: Map<String, Int> = emptyMap(),
     val likeReactionCounts: Map<String, Int> = emptyMap(),
     val customReactions: Map<String, List<CustomReaction>> = emptyMap(),
     val unicodeReactions: Map<String, List<UnicodeReaction>> = emptyMap(),
+    val reactionEvents: Map<String, List<NostrEvent>> = emptyMap(),
     val replyCounts: Map<String, Int> = emptyMap(),
     val replies: Map<String, List<NostrEvent>> = emptyMap(),
     val repostCounts: Map<String, Int> = emptyMap(),
+    val repostPubkeys: Map<String, List<String>> = emptyMap(),
     val likedReactions: Map<String, String> = emptyMap(),
     val ownEmojiReactionEventIds: Map<String, Map<String, String>> = emptyMap(),
     val pendingEngagementOperations: Map<String, Map<EngagementSlot, PendingEngagementOperation>> = emptyMap(),
@@ -129,41 +163,27 @@ data class JournalState(
     val noteDeleteDialog: JournalNoteDeleteDialogState? = null,
     val error: String? = null,
 ) {
+    val memos: List<JournalItem> get() = content.memos
+    val notes: List<NostrEvent> get() = content.notes
+
     fun isLiked(eventId: String): Boolean = likedReactions.containsKey(eventId) ||
         pendingEngagementOperations[eventId]?.get(EngagementSlot.Reaction)?.request is EngagementRequest.AddLike
 
     fun displayOwnEmojiReactionEventIds(eventId: String): Map<String, String> =
         noteEngagement(eventId).displayOwnEmojiReactionEventIds
 
-    private val memosByDate: Map<LocalDate, List<JournalItem>> =
-        memos.groupBy { dateOfEpochSeconds(it.displayTime) }
-
-    private val notesByDate: Map<LocalDate, List<NostrEvent>> =
-        notes.groupBy { dateOfEpochSeconds(it.createdAt) }
-
-    val entryCountsByDate: Map<LocalDate, Int> = buildMap {
-        (memosByDate.keys + notesByDate.keys).distinct().forEach { date ->
-            put(date, (memosByDate[date]?.size ?: 0) + (notesByDate[date]?.size ?: 0))
-        }
-    }
-
-    val selectedEntries: List<JournalEntry> = buildList {
-        memosByDate[selectedDate].orEmpty().forEach { add(JournalEntry.Memo(it)) }
-        notesByDate[selectedDate].orEmpty().forEach { add(JournalEntry.Note(it, profiles[it.pubkey])) }
-    }.sortedBy { it.displayTime }
-
-    val monthEntries: List<JournalEntry> = buildList {
-        memos
-            .filter { isSameMonth(dateOfEpochSeconds(it.displayTime), selectedMonth) }
-            .forEach { add(JournalEntry.Memo(it)) }
-        notes
-            .filter { isSameMonth(dateOfEpochSeconds(it.createdAt), selectedMonth) }
-            .forEach { add(JournalEntry.Note(it, profiles[it.pubkey])) }
-    }.sortedBy { it.displayTime }
+    val entryCountsByDate: Map<LocalDate, Int> get() = content.entryCountsByDate
+    val selectedEntries: List<JournalEntry> get() = content.entriesForDate(selectedDate)
+    val monthEntries: List<JournalEntry> get() = content.entriesForMonth(selectedMonth)
 
     val canGoNextMonth: Boolean get() = selectedMonth < currentMonth()
     val canGoNextDate: Boolean get() = selectedDate < currentDate()
 }
+
+private fun JournalState.withContent(
+    memos: List<JournalItem> = this.memos,
+    notes: List<NostrEvent> = this.notes,
+): JournalState = copy(content = JournalContent(memos = memos, notes = notes))
 
 private fun JournalState.noteEngagement(eventId: String): NoteEngagementState = NoteEngagementState(
     reactionCount = reactionCounts[eventId] ?: 0,
@@ -211,9 +231,11 @@ internal data class JournalEngagementSnapshot(
     val likeReactionCounts: Map<String, Int> = emptyMap(),
     val customReactions: Map<String, List<CustomReaction>> = emptyMap(),
     val unicodeReactions: Map<String, List<UnicodeReaction>> = emptyMap(),
+    val reactionEvents: Map<String, List<NostrEvent>> = emptyMap(),
     val replyCounts: Map<String, Int> = emptyMap(),
     val replies: Map<String, List<NostrEvent>> = emptyMap(),
     val repostCounts: Map<String, Int> = emptyMap(),
+    val repostPubkeys: Map<String, List<String>> = emptyMap(),
     val likedReactions: Map<String, String> = emptyMap(),
     val ownEmojiReactionEventIds: Map<String, Map<String, String>> = emptyMap(),
 )
@@ -225,9 +247,11 @@ internal fun JournalState.withProgressiveJournalEngagement(
     likeReactionCounts = likeReactionCounts.withMaxCounts(snapshot.likeReactionCounts),
     customReactions = customReactions.withMaxCustomReactionCounts(snapshot.customReactions),
     unicodeReactions = unicodeReactions.withMaxUnicodeReactionCounts(snapshot.unicodeReactions),
+    reactionEvents = reactionEvents.withMergedEventLists(snapshot.reactionEvents),
     replyCounts = replyCounts.withMaxCounts(snapshot.replyCounts),
     replies = replies.withMergedReplies(snapshot.replies),
     repostCounts = repostCounts.withMaxCounts(snapshot.repostCounts),
+    repostPubkeys = repostPubkeys.withMergedStringLists(snapshot.repostPubkeys),
     likedReactions = likedReactions + snapshot.likedReactions,
     ownEmojiReactionEventIds = ownEmojiReactionEventIds.withMergedReactionEventIds(
         snapshot.ownEmojiReactionEventIds,
@@ -242,9 +266,11 @@ internal fun JournalState.withCompletedJournalEngagement(
     likeReactionCounts = (likeReactionCounts - noteIds) + snapshot.likeReactionCounts,
     customReactions = (customReactions - noteIds) + snapshot.customReactions,
     unicodeReactions = (unicodeReactions - noteIds) + snapshot.unicodeReactions,
+    reactionEvents = (reactionEvents - noteIds) + snapshot.reactionEvents,
     replyCounts = (replyCounts - noteIds) + snapshot.replyCounts,
     replies = (replies - noteIds) + snapshot.replies,
     repostCounts = (repostCounts - noteIds) + snapshot.repostCounts,
+    repostPubkeys = (repostPubkeys - noteIds) + snapshot.repostPubkeys,
     likedReactions = (likedReactions - noteIds) + snapshot.likedReactions,
     ownEmojiReactionEventIds =
         (ownEmojiReactionEventIds - noteIds) + snapshot.ownEmojiReactionEventIds,
@@ -285,6 +311,18 @@ private fun Map<String, List<NostrEvent>>.withMergedReplies(
     )
 }
 
+private fun Map<String, List<NostrEvent>>.withMergedEventLists(
+    updates: Map<String, List<NostrEvent>>,
+): Map<String, List<NostrEvent>> = updates.entries.fold(this) { result, (eventId, events) ->
+    result + (eventId to (result[eventId].orEmpty() + events).distinctBy { it.id })
+}
+
+private fun Map<String, List<String>>.withMergedStringLists(
+    updates: Map<String, List<String>>,
+): Map<String, List<String>> = updates.entries.fold(this) { result, (eventId, values) ->
+    result + (eventId to (result[eventId].orEmpty() + values).distinct())
+}
+
 private fun Map<String, Map<String, String>>.withMergedReactionEventIds(
     updates: Map<String, Map<String, String>>,
 ): Map<String, Map<String, String>> = updates.entries.fold(this) { result, (eventId, eventIds) ->
@@ -310,6 +348,8 @@ internal class JournalController(
     private var ownPublicKeyHex: String? = null
     private var subscriptionSequence = 0L
     private var activeLoadKinds: Set<JournalLoadKind> = defaultJournalLoadKinds()
+    private var visibleNoteIds: Set<String> = emptySet()
+    private val loadedEngagementNoteIds = mutableSetOf<String>()
     private val engagementCoordinator = NoteEngagementCoordinator(accountSession?.signer)
     private val signedEventPublisher = SignedEventPublisher(accountSession?.signer)
     private var nextEngagementOperationId = 0L
@@ -346,8 +386,19 @@ internal class JournalController(
             _state.value,
             JournalCalendarAction.SetCalendarVisibility(showCalendar),
         )
-        if (!showCalendar) {
-            fetchMonthEngagement()
+    }
+
+    fun setVisibleNoteIds(noteIds: Set<String>) {
+        val availableIds = _state.value.notes.asSequence()
+            .filter { it.kind == 1 }
+            .map { it.id }
+            .toHashSet()
+        val normalized = noteIds.intersect(availableIds)
+        if (normalized == visibleNoteIds) return
+        visibleNoteIds = normalized
+        val missingIds = normalized - loadedEngagementNoteIds
+        if (missingIds.isNotEmpty()) {
+            fetchEngagement(missingIds.toList(), ownPublicKeyHex)
         }
     }
 
@@ -536,10 +587,11 @@ internal class JournalController(
                 },
             )
             _state.value = when (result) {
-                is SignedPublishResult.Published -> _state.value.copy(
-                    memos = _state.value.memos.filterNot { it.eventId == dialog.item.eventId },
-                    deleteDialog = null,
-                )
+                is SignedPublishResult.Published -> _state.value
+                    .withContent(
+                        memos = _state.value.memos.filterNot { it.eventId == dialog.item.eventId },
+                    )
+                    .copy(deleteDialog = null)
                 SignedPublishResult.MissingSigner -> _state.value.copy(
                     deleteDialog = _state.value.deleteDialog?.copy(
                         isDeleting = false,
@@ -602,10 +654,11 @@ internal class JournalController(
                 ),
             )
             _state.value = when (result) {
-                is SignedPublishResult.Published -> _state.value.copy(
-                    notes = _state.value.notes.filterNot { it.id == dialog.event.id },
-                    noteDeleteDialog = null,
-                )
+                is SignedPublishResult.Published -> _state.value
+                    .withContent(
+                        notes = _state.value.notes.filterNot { it.id == dialog.event.id },
+                    )
+                    .copy(noteDeleteDialog = null)
                 SignedPublishResult.MissingSigner -> _state.value.copy(
                     noteDeleteDialog = _state.value.noteDeleteDialog?.copy(
                         isDeleting = false,
@@ -632,6 +685,7 @@ internal class JournalController(
         engagementJob?.cancel()
         monthBackfillJob?.cancel()
         loadJob?.cancel()
+        visibleNoteIds = emptySet()
 
         val monthStart = month.monthStart()
         val nextSelectedDate = selectedDate
@@ -640,6 +694,29 @@ internal class JournalController(
             .takeIf { it.year == monthStart.year && it.month == monthStart.month }
             ?: monthStart
         val currentState = _state.value
+        if (
+            !resetCache &&
+            !refreshMonth &&
+            currentState.hasLoadedMonth(monthStart, activeLoadKinds)
+        ) {
+            _state.value = currentState.copy(
+                selectedMonth = monthStart,
+                selectedDate = nextSelectedDate,
+                isLoading = false,
+                error = null,
+            )
+            return
+        }
+        if (resetCache) {
+            loadedEngagementNoteIds.clear()
+        } else if (refreshMonth) {
+            loadedEngagementNoteIds.removeAll(
+                currentState.notes
+                    .filter { isSameMonth(dateOfEpochSeconds(it.createdAt), monthStart) }
+                    .map { it.id }
+                    .toSet(),
+            )
+        }
         val retainedMemos = when {
             resetCache -> emptyList()
             refreshMonth -> currentState.memos.filterNot { isSameMonth(dateOfEpochSeconds(it.displayTime), monthStart) }
@@ -664,8 +741,7 @@ internal class JournalController(
             selectedMonth = monthStart,
             selectedDate = nextSelectedDate,
             isLoading = true,
-            memos = retainedMemos,
-            notes = retainedNotes,
+            content = JournalContent(memos = retainedMemos, notes = retainedNotes),
             quotedEvents = if (resetCache) emptyMap() else currentState.quotedEvents,
             reactionCounts = if (resetCache) emptyMap() else currentState.reactionCounts,
             likeReactionCounts = if (resetCache) emptyMap() else currentState.likeReactionCounts,
@@ -694,6 +770,10 @@ internal class JournalController(
                 } else {
                     fetchProfile(context.publicKeyHex, relayUrl)
                 }
+                backfillMonthEntries(
+                    context = context,
+                    monthStart = monthStart,
+                )
                 val loadKinds = activeLoadKinds
                 val missingKinds = missingLoadKinds(nextSelectedDate, loadKinds)
                 val (memoEvents, noteEvents) = if (missingKinds.isEmpty()) {
@@ -717,26 +797,24 @@ internal class JournalController(
                     _state.value.profiles
                 }
 
-                _state.value = _state.value.copy(
+                val latestState = _state.value
+                val contentState = if (memos.isEmpty() && notes.isEmpty()) {
+                    latestState
+                } else {
+                    latestState.withContent(
+                        memos = mergeJournalMemos(latestState.memos, memos),
+                        notes = mergeNotes(latestState.notes, notes),
+                    )
+                }
+                _state.value = contentState.copy(
                     isLoading = false,
-                    memos = mergeJournalMemos(_state.value.memos, memos),
-                    notes = mergeNotes(_state.value.notes, notes),
                     profiles = profiles,
-                    loadedDates = _state.value.loadedDates + nextSelectedDate,
+                    loadedDates = latestState.loadedDates + nextSelectedDate,
                     loadedKindsByDate = markLoadedKinds(nextSelectedDate, missingKinds),
                     error = null,
                 )
 
-                val noteIds = notes.map { it.id }
-                if (noteIds.isNotEmpty()) {
-                    fetchEngagement(noteIds, ownPublicKeyHex)
-                }
                 fetchReferencedContentNow(notes, memos, relayUrl)
-                backfillMonthEntries(
-                    context = context,
-                    monthStart = monthStart,
-                    loadedDate = nextSelectedDate,
-                )
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Throwable) {
@@ -751,7 +829,6 @@ internal class JournalController(
     private fun backfillMonthEntries(
         context: JournalLoadContext,
         monthStart: LocalDate,
-        loadedDate: LocalDate,
     ) {
         monthBackfillJob?.cancel()
         monthBackfillJob = launch {
@@ -759,64 +836,78 @@ internal class JournalController(
                 val lastDay = minOf(monthStart.nextMonth().minusDays(1), currentDate())
                 val dates = generateSequence(monthStart) { it.plusDays(1) }
                     .takeWhile { it <= lastDay }
-                    .filterNot { it == loadedDate }
+                    .toList()
+                val loadKinds = activeLoadKinds
+                val (memoEvents, noteEvents) = fetchMonthEvents(
+                    pubkey = context.publicKeyHex,
+                    since = monthStart.startOfDayEpochSeconds(),
+                    until = lastDay.plusDays(1).startOfDayEpochSeconds() - 1,
+                    relayUrl = relayUrl,
+                    loadKinds = loadKinds,
+                )
+                if (_state.value.selectedMonth != monthStart) return@launch
 
-                for (date in dates) {
-                    if (_state.value.selectedMonth != monthStart) return@launch
-                    val missingKinds = missingLoadKinds(date, activeLoadKinds)
-                    if (missingKinds.isEmpty()) continue
-                    val (memoEvents, noteEvents) = fetchEvents(
-                        pubkey = context.publicKeyHex,
-                        since = date.startOfDayEpochSeconds(),
-                        until = date.plusDays(1).startOfDayEpochSeconds() - 1,
-                        relayUrl = relayUrl,
-                        loadKinds = missingKinds,
-                        limit = JOURNAL_MONTH_DAY_LIMIT,
-                    )
-                    if (_state.value.selectedMonth != monthStart) return@launch
-
-                    val memos = decodeMemoEvents(memoEvents, context)
-                    _state.value = _state.value.copy(
-                        memos = mergeJournalMemos(_state.value.memos, memos),
-                        notes = (_state.value.notes + noteEvents)
-                            .distinctBy { it.id }
-                            .sortedByDescending { it.createdAt },
-                        loadedDates = _state.value.loadedDates + date,
-                        loadedKindsByDate = markLoadedKinds(date, missingKinds),
-                    )
-                    fetchReferencedContentNow(noteEvents, memos, relayUrl)
+                val memos = decodeMemoEvents(memoEvents, context)
+                val loadedKindsByDate = dates.fold(_state.value.loadedKindsByDate) { loaded, date ->
+                    loaded + (date to (loaded[date].orEmpty() + loadKinds))
                 }
-                if (
-                    _state.value.selectedMonth == monthStart &&
-                    !_state.value.showCalendar
-                ) {
-                    fetchMonthEngagement()
-                }
+                _state.value = _state.value.withContent(
+                    memos = mergeJournalMemos(_state.value.memos, memos),
+                    notes = mergeNotes(_state.value.notes, noteEvents),
+                ).copy(
+                    loadedDates = _state.value.loadedDates + dates,
+                    loadedKindsByDate = loadedKindsByDate,
+                )
+                fetchReferencedContentNow(noteEvents, memos, relayUrl)
             } catch (e: CancellationException) {
                 throw e
             }
         }
     }
 
-    private fun fetchMonthEngagement() {
-        val currentState = _state.value
-        val noteIds = currentState.notes
-            .asSequence()
-            .filter { event ->
-                event.kind == 1 &&
-                    isSameMonth(dateOfEpochSeconds(event.createdAt), currentState.selectedMonth)
-            }
-            .map { it.id }
-            .toList()
-        if (noteIds.isNotEmpty()) {
-            fetchEngagement(noteIds, ownPublicKeyHex)
+    private suspend fun fetchMonthEvents(
+        pubkey: String,
+        since: Long,
+        until: Long,
+        relayUrl: String?,
+        loadKinds: Set<JournalLoadKind>,
+    ): Pair<List<NostrEvent>, List<NostrEvent>> {
+        val memoEvents = linkedMapOf<String, NostrEvent>()
+        val noteEvents = linkedMapOf<String, NostrEvent>()
+        var pageUntil = until
+        var pageCount = 0
+
+        while (pageCount < JOURNAL_MONTH_MAX_PAGES) {
+            pageCount += 1
+            val (memoPage, notePage) = fetchEvents(
+                pubkey = pubkey,
+                since = since,
+                until = pageUntil,
+                relayUrl = relayUrl,
+                loadKinds = loadKinds,
+                limit = JOURNAL_MONTH_PAGE_LIMIT,
+            )
+            memoPage.forEach { memoEvents[it.id] = it }
+            notePage.forEach { noteEvents[it.id] = it }
+
+            val pageEvents = memoPage + notePage
+            if (pageEvents.size < JOURNAL_MONTH_PAGE_LIMIT) break
+            val oldestTimestamp = pageEvents.minOfOrNull { it.createdAt } ?: break
+            if (oldestTimestamp <= since || oldestTimestamp > pageUntil) break
+            pageUntil = oldestTimestamp - 1
         }
+
+        return memoEvents.values.toList() to noteEvents.values.toList()
     }
 
     private fun loadDate(date: LocalDate, forceRefresh: Boolean = false) {
         referencedContentJob?.cancel()
         engagementJob?.cancel()
         loadJob?.cancel()
+        visibleNoteIds = emptySet()
+        if (forceRefresh) {
+            loadedEngagementNoteIds.removeAll(notesForDate(date).map { it.id }.toSet())
+        }
         val loadKinds = activeLoadKinds
         val missingKinds = if (forceRefresh) loadKinds else missingLoadKinds(date, loadKinds)
         if (missingKinds.isEmpty()) {
@@ -828,10 +919,6 @@ internal class JournalController(
                 isLoading = false,
                 error = null,
             )
-            val noteIds = notes.map { it.id }
-            if (noteIds.isNotEmpty()) {
-                fetchEngagement(noteIds, ownPublicKeyHex)
-            }
             fetchReferencedContent(notes, memos, relayUrl)
             return
         }
@@ -854,19 +941,16 @@ internal class JournalController(
                 )
                 val memos = decodeMemoEvents(memoEvents, context)
                 val notes = noteEvents.sortedByDescending { it.createdAt }
-                _state.value = _state.value.copy(
-                    isLoading = false,
+                _state.value = _state.value.withContent(
                     memos = mergeJournalMemos(_state.value.memos, memos),
                     notes = mergeNotes(_state.value.notes, notes),
+                ).copy(
+                    isLoading = false,
                     loadedDates = _state.value.loadedDates + date,
                     loadedKindsByDate = markLoadedKinds(date, missingKinds),
                     error = null,
                 )
 
-                val noteIds = notes.map { it.id }
-                if (noteIds.isNotEmpty()) {
-                    fetchEngagement(noteIds, ownPublicKeyHex)
-                }
                 fetchReferencedContent(notes, memos, relayUrl)
             } catch (e: CancellationException) {
                 throw e
@@ -947,22 +1031,40 @@ internal class JournalController(
             val likeReactionCounts = mutableMapOf<String, Int>()
             val customReactions = mutableMapOf<String, List<CustomReaction>>()
             val unicodeReactions = mutableMapOf<String, List<UnicodeReaction>>()
+            val reactionEvents = mutableMapOf<String, List<NostrEvent>>()
             val replyCounts = mutableMapOf<String, Int>()
             val replies = mutableMapOf<String, List<NostrEvent>>()
             val repostCounts = mutableMapOf<String, Int>()
+            val repostPubkeys = mutableMapOf<String, List<String>>()
             val likedReactions = mutableMapOf<String, String>()
             val ownEmojiReactionEventIds = mutableMapOf<String, Map<String, String>>()
-            fun currentSnapshot() = JournalEngagementSnapshot(
-                reactionCounts = reactionCounts,
-                likeReactionCounts = likeReactionCounts,
-                customReactions = customReactions,
-                unicodeReactions = unicodeReactions,
-                replyCounts = replyCounts,
-                replies = replies,
-                repostCounts = repostCounts,
-                likedReactions = likedReactions,
-                ownEmojiReactionEventIds = ownEmojiReactionEventIds,
+            val dirtyNoteIds = mutableSetOf<String>()
+            var lastProgressEmission = 0L
+
+            fun currentSnapshot(ids: Set<String> = noteIdSet) = JournalEngagementSnapshot(
+                reactionCounts = reactionCounts.filterKeys { it in ids },
+                likeReactionCounts = likeReactionCounts.filterKeys { it in ids },
+                customReactions = customReactions.filterKeys { it in ids },
+                unicodeReactions = unicodeReactions.filterKeys { it in ids },
+                reactionEvents = reactionEvents.filterKeys { it in ids },
+                replyCounts = replyCounts.filterKeys { it in ids },
+                replies = replies.filterKeys { it in ids },
+                repostCounts = repostCounts.filterKeys { it in ids },
+                repostPubkeys = repostPubkeys.filterKeys { it in ids },
+                likedReactions = likedReactions.filterKeys { it in ids },
+                ownEmojiReactionEventIds = ownEmojiReactionEventIds.filterKeys { it in ids },
             )
+
+            fun emitProgressIfDue(force: Boolean = false) {
+                if (dirtyNoteIds.isEmpty()) return
+                val now = Clock.System.now().toEpochMilliseconds()
+                if (!force && now - lastProgressEmission < ENGAGEMENT_STATE_BATCH_MS) return
+                _state.value = _state.value.withProgressiveJournalEngagement(
+                    currentSnapshot(dirtyNoteIds),
+                )
+                dirtyNoteIds.clear()
+                lastProgressEmission = now
+            }
             val session = NostrRepository.openSubscription(
                 SubscriptionSpec(
                     id = subId,
@@ -984,9 +1086,14 @@ internal class JournalController(
                                 ?.getOrNull(1)
                                 ?.takeIf { it in noteIdSet }
                             if (targetId != null) {
+                                dirtyNoteIds += targetId
                                 when (event.kind) {
                                     7 -> {
                                         reactionCounts[targetId] = (reactionCounts[targetId] ?: 0) + 1
+                                        reactionEvents[targetId] = reactionEvents[targetId]
+                                            .orEmpty()
+                                            .plus(event)
+                                            .distinctBy { it.id }
                                         if (event.content.trim() == "+") {
                                             likeReactionCounts[targetId] =
                                                 (likeReactionCounts[targetId] ?: 0) + 1
@@ -1022,7 +1129,13 @@ internal class JournalController(
                                             .distinctBy { it.id }
                                             .sortedBy { it.createdAt }
                                     }
-                                    6 -> repostCounts[targetId] = (repostCounts[targetId] ?: 0) + 1
+                                    6 -> {
+                                        repostCounts[targetId] = (repostCounts[targetId] ?: 0) + 1
+                                        repostPubkeys[targetId] = repostPubkeys[targetId]
+                                            .orEmpty()
+                                            .plus(event.pubkey)
+                                            .distinct()
+                                    }
                                 }
                             }
                             if (event.kind == 1) {
@@ -1033,11 +1146,14 @@ internal class JournalController(
                                     .filter { it in noteIdSet }
                                     .forEach { quotedId ->
                                         repostCounts[quotedId] = (repostCounts[quotedId] ?: 0) + 1
+                                        repostPubkeys[quotedId] = repostPubkeys[quotedId]
+                                            .orEmpty()
+                                            .plus(event.pubkey)
+                                            .distinct()
+                                        dirtyNoteIds += quotedId
                                     }
                             }
-                            _state.value = _state.value.withProgressiveJournalEngagement(
-                                currentSnapshot(),
-                            )
+                            emitProgressIfDue()
                         }
                         is SubscriptionSignal.FetchCompleted -> {
                             completed = signal
@@ -1053,10 +1169,29 @@ internal class JournalController(
                         noteIds = noteIdSet,
                         snapshot = currentSnapshot(),
                     )
+                    loadedEngagementNoteIds += noteIdSet
+                    dirtyNoteIds.clear()
+                } else {
+                    emitProgressIfDue(force = true)
                 }
                 val replyEvents = replies.values.flatten()
                 if (replyEvents.isNotEmpty()) {
                     fetchReferencedContentNow(replyEvents, emptyList(), relayUrl)
+                }
+                val engagementPubkeys = buildSet {
+                    reactionEvents.values.flatten().forEach { add(it.pubkey) }
+                    repostPubkeys.values.flatten().forEach(::add)
+                }.filterNot { _state.value.profiles.containsKey(it) }
+                if (engagementPubkeys.isNotEmpty()) {
+                    val profiles = ProfileRepository.awaitProfiles(
+                        pubkeys = engagementPubkeys.toSet(),
+                        policy = ProfileFetchPolicy.CacheFirst(15 * 60 * 1_000L),
+                        relayHint = relayUrl,
+                        timeoutMillis = 5_000L,
+                    )
+                    if (profiles.isNotEmpty()) {
+                        _state.value = _state.value.copy(profiles = _state.value.profiles + profiles)
+                    }
                 }
             } catch (e: CancellationException) {
                 throw e
@@ -1074,10 +1209,11 @@ internal class JournalController(
     private suspend fun resolveLoadContext(): JournalLoadContext? {
         val signer = if (targetPubkey == null) {
             accountSession?.signer ?: run {
-                _state.value = _state.value.copy(
-                    isLoading = false,
+                _state.value = _state.value.withContent(
                     memos = emptyList(),
                     notes = emptyList(),
+                ).copy(
+                    isLoading = false,
                     error = "秘密鍵が設定されていません",
                 )
                 return null
@@ -1297,6 +1433,19 @@ private fun JournalItem.addressTagValue(): String? {
 private fun isSameMonth(date: LocalDate, monthStart: LocalDate): Boolean =
     date.year == monthStart.year && date.month == monthStart.month
 
+internal fun JournalState.hasLoadedMonth(
+    month: LocalDate,
+    requestedKinds: Set<JournalLoadKind>,
+    today: LocalDate = currentDate(),
+): Boolean {
+    val monthStart = month.monthStart()
+    if (monthStart > today.monthStart()) return false
+    val lastDay = minOf(monthEnd(monthStart), today)
+    return generateSequence(monthStart) { it.plusDays(1) }
+        .takeWhile { it <= lastDay }
+        .all { date -> loadedKindsByDate[date].orEmpty().containsAll(requestedKinds) }
+}
+
 private fun JournalState.previousJournalDate(
     loadKinds: Set<JournalLoadKind>,
     includeLikes: Boolean,
@@ -1424,6 +1573,8 @@ internal fun LocalDate.minusDays(days: Int): LocalDate =
 internal fun LocalDate.startOfDayEpochSeconds(): Long =
     atStartOfDayIn(TimeZone.currentSystemDefault()).epochSeconds
 
-private const val JOURNAL_MONTH_DAY_LIMIT = 10
+private const val JOURNAL_MONTH_PAGE_LIMIT = 500
+private const val JOURNAL_MONTH_MAX_PAGES = 12
 private const val JOURNAL_DATE_LIMIT = 500
 private const val ENGAGEMENT_FETCH_TIMEOUT_MS = 8_000L
+private const val ENGAGEMENT_STATE_BATCH_MS = 100L

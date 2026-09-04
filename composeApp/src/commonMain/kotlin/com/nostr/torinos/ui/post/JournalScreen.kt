@@ -20,6 +20,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -59,6 +60,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -68,10 +70,12 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.nostr.torinos.account.accountSessionViewModel
 import com.nostr.torinos.model.NostrEvent
@@ -82,8 +86,11 @@ import com.nostr.torinos.model.quotedEventIds
 import com.nostr.torinos.model.replyTargetId
 import com.nostr.torinos.model.stripNostrEventUris
 import com.nostr.torinos.model.toArticleMeta
+import com.nostr.torinos.model.toCustomReaction
+import com.nostr.torinos.model.toUnicodeReaction
 import com.nostr.torinos.network.RelayStore
 import com.nostr.torinos.ui.components.LinkedText
+import com.nostr.torinos.ui.components.NetworkImage
 import com.nostr.torinos.ui.components.NoteCard
 import com.nostr.torinos.ui.components.ProfileNameText
 import com.nostr.torinos.ui.components.QuotedEvent
@@ -93,6 +100,7 @@ import com.nostr.torinos.ui.profile.AvatarCircle
 import com.nostr.torinos.ui.profile.customEmojiMap
 import kotlinx.datetime.LocalDate
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.serialization.json.Json
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
@@ -149,7 +157,32 @@ fun JournalScreen(
     val filteredEntryCountsByDate = remember(state.monthEntries, selectedFilters) {
         filteredEntryCountsByDate(state, selectedFilters)
     }
+    val journalListState = rememberLazyListState()
     val isPullRefreshing = state.isLoading && (state.memos.isNotEmpty() || state.notes.isNotEmpty())
+
+    LaunchedEffect(visibleEntries, journalListState) {
+        if (visibleEntries.isEmpty()) {
+            viewModel.setVisibleNoteIds(emptySet())
+            return@LaunchedEffect
+        }
+        snapshotFlow {
+            val visibleItems = journalListState.layoutInfo.visibleItemsInfo
+            visibleItems.firstOrNull()?.index to visibleItems.lastOrNull()?.index
+        }.collectLatest { (firstVisible, lastVisible) ->
+            delay(JournalVisibleEngagementDelayMs)
+            if (firstVisible == null || lastVisible == null) return@collectLatest
+            val fromIndex = (firstVisible - JournalEngagementPrefetchItems).coerceAtLeast(0)
+            val toIndex = (lastVisible + JournalEngagementPrefetchItems)
+                .coerceAtMost(visibleEntries.lastIndex)
+            val noteIds = (fromIndex..toIndex).mapNotNullTo(mutableSetOf()) { index ->
+                (visibleEntries[index] as? JournalEntry.Note)
+                    ?.event
+                    ?.takeIf { it.kind == 1 }
+                    ?.id
+            }
+            viewModel.setVisibleNoteIds(noteIds)
+        }
+    }
 
     LaunchedEffect(state.engagementError) {
         val error = state.engagementError ?: return@LaunchedEffect
@@ -372,7 +405,10 @@ fun JournalScreen(
                         }
                     }
                     else -> {
-                        LazyColumn(modifier = Modifier.fillMaxSize()) {
+                        LazyColumn(
+                            state = journalListState,
+                            modifier = Modifier.fillMaxSize(),
+                        ) {
                             items(
                                 items = visibleEntries,
                                 key = { entry ->
@@ -398,7 +434,7 @@ fun JournalScreen(
                                     is JournalEntry.Note -> when (entry.event.kind) {
                                         1 -> NoteCard(
                                             event = entry.event,
-                                            profile = entry.profile,
+                                            profile = state.profiles[entry.event.pubkey],
                                             profiles = state.profiles,
                                             replyParent = run {
                                                 val parentId = entry.event.replyTargetId() ?: return@run null
@@ -422,7 +458,9 @@ fun JournalScreen(
                                                 state.likeReactionCounts[entry.event.id] ?: 0,
                                             customReactions = state.customReactions[entry.event.id].orEmpty(),
                                             unicodeReactions = state.unicodeReactions[entry.event.id].orEmpty(),
+                                            reactionEvents = state.reactionEvents[entry.event.id].orEmpty(),
                                             repostCount = state.repostCounts[entry.event.id] ?: 0,
+                                            repostPubkeys = state.repostPubkeys[entry.event.id].orEmpty(),
                                             isLiked = state.isLiked(entry.event.id),
                                             ownEmojiReactionEventIds =
                                                 state.displayOwnEmojiReactionEventIds(entry.event.id),
@@ -468,7 +506,7 @@ fun JournalScreen(
                                         )
                                         6, 7 -> JournalActivityRow(
                                             event = entry.event,
-                                            profile = entry.profile,
+                                            profile = state.profiles[entry.event.pubkey],
                                             targetEvent = entry.event.activityTargetId()?.let { state.quotedEvents[it] }
                                                 ?: entry.event.embeddedRepostTarget(),
                                             targetProfile = entry.event.activityTargetId()
@@ -481,7 +519,7 @@ fun JournalScreen(
                                         )
                                         NIP23_ARTICLE_KIND -> JournalArticleRow(
                                             event = entry.event,
-                                            profile = entry.profile,
+                                            profile = state.profiles[entry.event.pubkey],
                                             onUserClick = onUserClick,
                                             onOpenArticle = onOpenArticle,
                                         )
@@ -886,7 +924,6 @@ private fun JournalActivityRow(
 ) {
     val type = if (event.kind == 6) JournalEntryFilter.Repost else JournalEntryFilter.Like
     val targetId = event.activityTargetId()
-    val icon = if (type == JournalEntryFilter.Repost) Icons.Default.Repeat else Icons.Default.Favorite
     val accent = if (type == JournalEntryFilter.Repost) Color(0xFF2BAE66) else Color(0xFFE17055)
 
     Row(
@@ -914,7 +951,7 @@ private fun JournalActivityRow(
                     horizontalArrangement = Arrangement.spacedBy(6.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    JournalActivityIcon(icon = icon, tint = accent)
+                    JournalReactionIcon(event = event, type = type, tint = accent)
                     ProfileNameText(
                         profile = profile,
                         fallback = event.shortPubkey,
@@ -1027,6 +1064,51 @@ private fun JournalArticleRow(
 }
 
 @Composable
+private fun JournalReactionIcon(
+    event: NostrEvent,
+    type: JournalEntryFilter,
+    tint: Color,
+) {
+    if (type == JournalEntryFilter.Repost) {
+        Icon(
+            imageVector = Icons.Default.Repeat,
+            contentDescription = null,
+            modifier = Modifier.size(18.dp),
+            tint = tint,
+        )
+        return
+    }
+
+    val customReaction = event.toCustomReaction()
+    val unicodeReaction = event.toUnicodeReaction()
+    when {
+        customReaction != null -> NetworkImage(
+            url = customReaction.imageUrl,
+            contentDescription = null,
+            contentScale = ContentScale.Fit,
+            modifier = Modifier.size(18.dp),
+        )
+        unicodeReaction != null -> Box(
+            modifier = Modifier.size(18.dp),
+            contentAlignment = Alignment.Center,
+        ) {
+            Text(
+                text = unicodeReaction.content,
+                fontSize = 16.sp,
+                lineHeight = 18.sp,
+                maxLines = 1,
+            )
+        }
+        else -> Icon(
+            imageVector = Icons.Default.Favorite,
+            contentDescription = null,
+            modifier = Modifier.size(18.dp),
+            tint = tint,
+        )
+    }
+}
+
+@Composable
 private fun JournalActivityIcon(icon: ImageVector, tint: Color) {
     Icon(
         imageVector = icon,
@@ -1108,6 +1190,8 @@ private fun isLeapYear(year: Int): Boolean =
 
 private const val SwipeThresholdPx = 80f
 private const val JournalInitialLoadDelayMs = 200L
+private const val JournalVisibleEngagementDelayMs = 150L
+private const val JournalEngagementPrefetchItems = 6
 private const val CalendarEntryMaxGradientCount = 10
 private const val CalendarEntryMinIntensity = 0.16f
 private const val CalendarEntryMaxIntensity = 0.82f

@@ -18,6 +18,7 @@ class JournalViewModel(
 
     fun consumeEngagementError() = controller.consumeEngagementError()
     fun setLoadKinds(kinds: Set<JournalLoadKind>) = controller.setLoadKinds(kinds)
+    fun setVisibleNoteIds(noteIds: Set<String>) = controller.setVisibleNoteIds(noteIds)
     fun selectDate(date: LocalDate) = controller.selectDate(date)
     fun previousDate() = controller.previousDate()
     fun nextDate() = controller.nextDate()

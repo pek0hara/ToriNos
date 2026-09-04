@@ -6,12 +6,15 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertNull
+import kotlin.test.assertSame
 import kotlin.test.assertTrue
 
 class JournalEngagementFetchTest {
     @Test
     fun partialSnapshotShowsNewValuesWithoutReducingCache() {
+        val content = JournalContent()
         val cached = JournalState(
+            content = content,
             reactionCounts = mapOf("note" to 5),
             replyCounts = mapOf("note" to 3),
         )
@@ -26,6 +29,7 @@ class JournalEngagementFetchTest {
         assertEquals(5, displayed.reactionCounts["note"])
         assertEquals(4, displayed.replyCounts["note"])
         assertEquals(1, displayed.repostCounts["note"])
+        assertSame(content, displayed.content)
     }
 
     @Test
