@@ -1,5 +1,7 @@
 # プッシュ通知バックエンド 実装プラン（Cloudflare Workers）
 
+> **旧設計:** pubkeyごとにDurable Objectを作る本書の構成は、外向きWebSocketがハイバネーション対象にならないため採用しない。Yabumeへの接続を全ユーザーで共有する現行設計は [`push-notification-durable-object-design.md`](./push-notification-durable-object-design.md) を参照する。
+
 ## アーキテクチャ
 
 ```

@@ -12,10 +12,12 @@
 - [`account-session-viewmodel-architecture.md`](./account-session-viewmodel-architecture.md) — アカウント切り替え時の状態所有権とライフサイクル
 - [`subscription-architecture-design.md`](./subscription-architecture-design.md) — Nostr購読セッションとリレー別状態管理
 - [`profile-cache-design.md`](./profile-cache-design.md) — kind 0プロフィールの取得、キャッシュ、更新方針
+- [`notification-target-resolution-design.md`](./notification-target-resolution-design.md) — 通知対象のKind非依存取得、取得状態とKind別表示・遷移の境界
 
 ## 将来計画
 
-- [`push-notification-backend-plan.md`](./push-notification-backend-plan.md) — Cloudflare Workersを使ったプッシュ通知バックエンド計画
+- [`push-notification-durable-object-design.md`](./push-notification-durable-object-design.md) — Yabume共有購読とDurable Objectを使うプッシュ通知基盤の現行設計
+- [`push-notification-backend-plan.md`](./push-notification-backend-plan.md) — 旧プッシュ通知バックエンド計画（現行設計への参照を含む）
 
 ## 公開サイト
 
