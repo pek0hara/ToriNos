@@ -101,7 +101,13 @@ fun CustomEmojiSettingsScreen(
         emojiLists.filterCustomEmojiListsByQuery(registeredQuery)
     }
 
-    LaunchedEffect(initialQuery, initialImageUrl, emojiLists, state.publishedSets) {
+    LaunchedEffect(
+        initialQuery,
+        initialImageUrl,
+        emojiLists,
+        state.publishedSets,
+        state.isLoadingPublishedSets,
+    ) {
         if (didOpenRequestedSet || initialQuery.isBlank() || initialImageUrl.isBlank()) {
             return@LaunchedEffect
         }
@@ -117,12 +123,29 @@ fun CustomEmojiSettingsScreen(
             didOpenRequestedSet = true
             return@LaunchedEffect
         }
-        state.publishedSets.firstOrNull { set ->
+        val publishedSet = state.publishedSets.firstOrNull { set ->
             set.emojis.any { emoji ->
                 emoji.shortcode == requestedShortcode && emoji.imageUrl == requestedImageUrl
             }
-        }?.let { set ->
-            selectedSet = set
+        }
+        if (publishedSet != null) {
+            selectedSet = publishedSet
+            didOpenRequestedSet = true
+            return@LaunchedEffect
+        }
+
+        val registeredShortcodeMatches = emojiLists.filter { set ->
+            set.emojis.any { emoji -> emoji.shortcode == requestedShortcode }
+        }
+        val publishedShortcodeMatches = state.publishedSets.filter { set ->
+            set.emojis.any { emoji -> emoji.shortcode == requestedShortcode }
+        }
+        if (
+            !state.isLoadingPublishedSets &&
+            registeredShortcodeMatches.size + publishedShortcodeMatches.size == 1
+        ) {
+            selectedRegisteredSet = registeredShortcodeMatches.singleOrNull()
+            selectedSet = publishedShortcodeMatches.singleOrNull()
             didOpenRequestedSet = true
         }
     }
@@ -606,12 +629,7 @@ private fun EmojiSetDetailScreen(
         initial = ProfileRepository.getCached(authorPubkey),
     )
     var selectedEmoji by remember(emojis, initialShortcode, initialImageUrl) {
-        mutableStateOf(
-            emojis.firstOrNull { emoji ->
-                emoji.shortcode == initialShortcode.trim().trim(':') &&
-                    emoji.imageUrl == initialImageUrl.trim()
-            } ?: emojis.firstOrNull(),
-        )
+        mutableStateOf(selectInitialEmoji(emojis, initialShortcode, initialImageUrl))
     }
     LaunchedEffect(authorPubkey) {
         if (authorPubkey.isNotBlank()) {
@@ -755,6 +773,20 @@ private fun EmojiSetDetailScreen(
             }
         }
     }
+}
+
+internal fun selectInitialEmoji(
+    emojis: List<CustomEmoji>,
+    initialShortcode: String,
+    initialImageUrl: String,
+): CustomEmoji? {
+    val shortcode = initialShortcode.trim().trim(':')
+    val imageUrl = initialImageUrl.trim()
+    return emojis.firstOrNull { emoji ->
+        emoji.shortcode == shortcode && emoji.imageUrl == imageUrl
+    } ?: emojis.firstOrNull { emoji ->
+        emoji.shortcode == shortcode
+    } ?: emojis.firstOrNull()
 }
 
 private fun String.emojiSetAuthorPubkey(): String? =
