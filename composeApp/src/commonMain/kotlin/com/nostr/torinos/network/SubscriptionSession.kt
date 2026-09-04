@@ -9,6 +9,8 @@ data class SubscriptionSpec(
     val filters: List<NostrFilter>,
     val target: RelayTarget = RelayTarget.AllEnabled,
     val behavior: SubscriptionBehavior = SubscriptionBehavior.Live,
+    /** Disable when the consumer must validate before deduplicating by event ID. */
+    val deduplicateEvents: Boolean = true,
 )
 
 sealed interface SubscriptionBehavior {

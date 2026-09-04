@@ -40,13 +40,15 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
+import androidx.lifecycle.viewmodel.compose.viewModel
+import com.nostr.torinos.account.LocalAccountSession
 import com.nostr.torinos.model.NostrEvent
 import com.nostr.torinos.model.NostrProfile
 import com.nostr.torinos.model.stripNostrEventUris
 import com.nostr.torinos.model.toCustomReaction
+import com.nostr.torinos.network.TargetLoadState
 import com.nostr.torinos.ui.components.NetworkImage
 import com.nostr.torinos.ui.components.ProfileNameText
 import com.nostr.torinos.ui.components.formatTimestamp
@@ -59,7 +61,7 @@ fun NotificationsDrawer(
     isOpen: Boolean,
     scrollToTopRequest: Int = 0,
     onUserClick: (String) -> Unit,
-    onOpenThread: (String) -> Unit,
+    onOpenTarget: (NotificationTargetDestination) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     ModalDrawerSheet(
@@ -72,9 +74,14 @@ fun NotificationsDrawer(
             return@ModalDrawerSheet
         }
 
+        val muteStore = LocalAccountSession.current?.muteStore
         val viewModel: NotificationsViewModel = viewModel(
             key = "notifications-$ownPubkey",
-            factory = viewModelFactory { initializer { NotificationsViewModel(ownPubkey) } },
+            factory = viewModelFactory {
+                initializer {
+                    NotificationsViewModel(ownPubkey, muteStore)
+                }
+            },
         )
         val state by viewModel.state.collectAsState()
         val listState = rememberLazyListState()
@@ -108,7 +115,8 @@ fun NotificationsDrawer(
                 state = state,
                 listState = listState,
                 onUserClick = onUserClick,
-                onOpenThread = onOpenThread,
+                onOpenTarget = onOpenTarget,
+                onRetryTarget = viewModel::retryTarget,
                 modifier = Modifier.fillMaxHeight(),
             )
         }
@@ -120,7 +128,8 @@ private fun NotificationsList(
     state: NotificationsState,
     listState: LazyListState,
     onUserClick: (String) -> Unit,
-    onOpenThread: (String) -> Unit,
+    onOpenTarget: (NotificationTargetDestination) -> Unit,
+    onRetryTarget: (String) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     LazyColumn(
@@ -142,12 +151,13 @@ private fun NotificationsList(
                     NotificationRow(
                         item = item,
                         actorProfile = state.profiles[item.actorPubkey],
-                        targetEvent = item.targetEventId?.let { state.targetEvents[it] },
+                        targetState = item.targetEventId?.let { state.targetStates[it] },
                         targetProfile = item.targetEventId
                             ?.let { state.targetEvents[it] }
                             ?.let { state.profiles[it.pubkey] },
                         onUserClick = onUserClick,
-                        onOpenThread = onOpenThread,
+                        onOpenTarget = onOpenTarget,
+                        onRetryTarget = onRetryTarget,
                     )
                     HorizontalDivider()
                 }
@@ -160,15 +170,16 @@ private fun NotificationsList(
 private fun NotificationRow(
     item: NotificationItem,
     actorProfile: NostrProfile?,
-    targetEvent: NostrEvent?,
+    targetState: TargetLoadState?,
     targetProfile: NostrProfile?,
     onUserClick: (String) -> Unit,
-    onOpenThread: (String) -> Unit,
+    onOpenTarget: (NotificationTargetDestination) -> Unit,
+    onRetryTarget: (String) -> Unit,
 ) {
-    val threadTargetId = when (item.type) {
-        NotificationType.Reply -> item.event?.id
+    val destination = when (item.type) {
+        NotificationType.Reply -> item.event?.let(::notificationTargetDestination)
         NotificationType.Repost,
-        NotificationType.Like -> item.targetEventId
+        NotificationType.Like -> (targetState as? TargetLoadState.Resolved)?.event?.let(::notificationTargetDestination)
         NotificationType.Follow -> null
     }
     val accent = when (item.type) {
@@ -187,7 +198,7 @@ private fun NotificationRow(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable(enabled = threadTargetId != null) { threadTargetId?.let(onOpenThread) }
+            .clickable(enabled = destination != null) { destination?.let(onOpenTarget) }
             .padding(horizontal = 16.dp, vertical = 12.dp),
         horizontalArrangement = Arrangement.spacedBy(12.dp),
     ) {
@@ -255,10 +266,12 @@ private fun NotificationRow(
 
             if (item.type != NotificationType.Follow) {
                 Spacer(modifier = Modifier.height(6.dp))
-                Text(
-                    text = targetPreviewText(targetEvent, targetProfile),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                NotificationTargetPreview(
+                    reference = item.targetReference,
+                    state = targetState,
+                    profile = targetProfile,
+                    onRetry = onRetryTarget,
+                    onOpenTarget = onOpenTarget,
                 )
             }
         }
@@ -327,13 +340,6 @@ private fun notificationTitleSuffix(type: NotificationType): String =
         NotificationType.Like -> "がいいね"
         NotificationType.Follow -> "がフォロー"
     }
-
-private fun targetPreviewText(event: NostrEvent?, profile: NostrProfile?): String {
-    if (event == null) return "対象ポストを読み込み中"
-    val author = profile?.bestName ?: shortPubkey(event.pubkey)
-    val body = event.content.previewText()
-    return if (body.isBlank()) "$author のポスト" else "$author: $body"
-}
 
 private fun String.previewText(): String =
     stripImageUrls(stripNostrEventUris(this))

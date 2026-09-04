@@ -4,11 +4,17 @@ import com.nostr.torinos.model.NostrEvent
 import com.nostr.torinos.model.NostrFilter
 import com.nostr.torinos.model.NostrProfile
 import com.nostr.torinos.network.NostrRepository
+import com.nostr.torinos.network.MuteStore
 import com.nostr.torinos.network.ProfileFetchPolicy
 import com.nostr.torinos.network.ProfileRepository
+import com.nostr.torinos.network.TargetEventLoader
+import com.nostr.torinos.network.TargetLoadState
+import androidx.lifecycle.viewModelScope
 import com.nostr.torinos.ui.SafeViewModel
 import kotlin.time.Clock
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -18,7 +24,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.Serializable
-import kotlinx.serialization.json.Json
+import kotlinx.serialization.Transient
 
 @Serializable
 data class NotificationItem(
@@ -29,6 +35,7 @@ data class NotificationItem(
     val receivedAt: Long,
     val targetEventId: String?,
     val event: NostrEvent?,
+    @Transient val targetReference: TargetReference = TargetReference.None,
 )
 
 @Serializable
@@ -43,27 +50,32 @@ data class NotificationsState(
     val items: List<NotificationItem> = emptyList(),
     val readItemIds: Set<String> = emptySet(),
     val profiles: Map<String, NostrProfile> = emptyMap(),
-    val targetEvents: Map<String, NostrEvent> = emptyMap(),
+    val targetStates: Map<String, TargetLoadState> = emptyMap(),
     val isInitialLoad: Boolean = true,
 ) {
+    val targetEvents: Map<String, NostrEvent>
+        get() = targetStates.mapNotNull { (id, state) ->
+            (state as? TargetLoadState.Resolved)?.let { id to it.event }
+        }.toMap()
     val hasUnread: Boolean
         get() = items.any { it.id !in readItemIds }
 }
 
-class NotificationsViewModel(private val ownPubkey: String) : SafeViewModel() {
+class NotificationsViewModel(
+    private val ownPubkey: String,
+    private val muteStore: MuteStore? = null,
+) : SafeViewModel() {
     private val _state = MutableStateFlow(NotificationsState())
     val state: StateFlow<NotificationsState> = _state.asStateFlow()
 
     private val activitySubId = "notif-act-$shortKey"
     private val followsSubId = "notif-follow-$shortKey"
-    private val targetSubId = "notif-target-$shortKey"
+    private val targetLoader = TargetEventLoader(viewModelScope)
 
     private val seenItemIds = linkedSetOf<String>()
     private val pendingPubkeys = linkedSetOf<String>()
-    private val pendingTargetIds = linkedSetOf<String>()
     private val collectorJobs = mutableListOf<Job>()
     private var profileBatchJob: Job? = null
-    private var targetBatchJob: Job? = null
     private var startupSyncJob: Job? = null
     private var liveSubscriptionJob: Job? = null
     private var hasStoredFollowerList = false
@@ -81,8 +93,11 @@ class NotificationsViewModel(private val ownPubkey: String) : SafeViewModel() {
                 loadStoredNotifications()
                 loadKnownFollowers()
                 syncOnce()
+                // Target fetches own their full finite deadline, not the activity EOSE + 1s.
+                if (!liveSubscriptionsStarted) targetLoader.awaitIdle()
             } finally {
                 startupSyncActive = false
+                if (!liveSubscriptionsStarted) targetLoader.stop()
             }
         }
     }
@@ -105,11 +120,21 @@ class NotificationsViewModel(private val ownPubkey: String) : SafeViewModel() {
             }
         }
         collectorJobs += launch {
-            NostrRepository.events(targetSubId).collect { event ->
-                if (event.kind != 1) return@collect
-                pendingTargetIds.remove(event.id)
-                _state.update { it.copy(targetEvents = it.targetEvents + (event.id to event)) }
-                scheduleProfileFetch(event.pubkey)
+            targetLoader.states.collect { targets ->
+                val previous = _state.value.targetStates
+                _state.update { it.copy(targetStates = targets) }
+                targets.forEach { (id, state) ->
+                    if (state is TargetLoadState.Resolved && previous[id] != state) {
+                        scheduleProfileFetch(state.event.pubkey)
+                    }
+                }
+            }
+        }
+        muteStore?.let { store ->
+            collectorJobs += launch {
+                store.mutedPubkeys.collect { mutedPubkeys ->
+                    removeMutedNotifications(mutedPubkeys)
+                }
             }
         }
     }
@@ -152,7 +177,7 @@ class NotificationsViewModel(private val ownPubkey: String) : SafeViewModel() {
         liveSubscriptionsStarted = false
         liveSubscriptionJob?.cancel()
         liveSubscriptionJob = null
-        cancelAuxiliaryFetches()
+        if (!startupSyncActive) cancelAuxiliaryFetches()
         closeSubscriptions()
     }
 
@@ -175,15 +200,20 @@ class NotificationsViewModel(private val ownPubkey: String) : SafeViewModel() {
         )
     }
 
-    private fun handleActivityEvent(event: NostrEvent) {
+    private suspend fun handleActivityEvent(event: NostrEvent) {
         if (event.pubkey == ownPubkey) return
+        if (muteStore?.isMuted(event.pubkey) == true) {
+            rememberSeenId(event.id)
+            return
+        }
         val type = when (event.kind) {
             1 -> NotificationType.Reply
             6 -> NotificationType.Repost
             7 -> NotificationType.Like
             else -> return
         }
-        val targetEventId = event.targetEventId() ?: event.embeddedRepostTarget()?.id
+        val resolved = withContext(Dispatchers.Default) { resolveNotificationTarget(event) }
+        val targetEventId = (resolved.reference as? TargetReference.EventId)?.id
         addItem(
             NotificationItem(
                 id = event.id,
@@ -193,18 +223,15 @@ class NotificationsViewModel(private val ownPubkey: String) : SafeViewModel() {
                 receivedAt = event.createdAt,
                 targetEventId = targetEventId,
                 event = event,
+                targetReference = resolved.reference,
             ),
         )
         scheduleProfileFetch(event.pubkey)
-        if (targetEventId != null) {
+        resolved.embedded?.let { targetLoader.seedValidated(it) }
+        if (targetEventId != null && _state.value.items.any { it.id == event.id }) {
             scheduleTargetFetch(targetEventId)
         }
-        event.embeddedRepostTarget()?.let { target ->
-            _state.update { state ->
-                state.copy(targetEvents = state.targetEvents + (target.id to target))
-            }
-            scheduleProfileFetch(target.pubkey)
-        }
+        retainTargets()
     }
 
     private suspend fun handleFollowEvent(event: NostrEvent) {
@@ -213,6 +240,10 @@ class NotificationsViewModel(private val ownPubkey: String) : SafeViewModel() {
         if (!knownFollowerPubkeys.add(event.pubkey)) return
         saveKnownFollowers()
         if (!hasStoredFollowerList) return
+        if (muteStore?.isMuted(event.pubkey) == true) {
+            rememberSeenId(event.id)
+            return
+        }
 
         addItem(
             NotificationItem(
@@ -266,18 +297,17 @@ class NotificationsViewModel(private val ownPubkey: String) : SafeViewModel() {
 
     private fun scheduleTargetFetch(eventId: String) {
         if (!canFetchAuxiliaryDetails()) return
-        if (eventId in _state.value.targetEvents || !pendingTargetIds.add(eventId)) return
-        targetBatchJob?.cancel()
-        targetBatchJob = launch {
-            delay(400)
-            if (!canFetchAuxiliaryDetails()) {
-                pendingTargetIds.clear()
-                return@launch
-            }
-            val eventIds = pendingTargetIds.toList()
-            pendingTargetIds.clear()
-            NostrRepository.subscribe(targetSubId, NostrFilter(ids = eventIds, kinds = listOf(1)))
+        targetLoader.request(eventId)
+    }
+
+    fun retryTarget(eventId: String) {
+        if (liveSubscriptionsStarted && _state.value.items.any { it.targetEventId == eventId }) {
+            targetLoader.request(eventId, retry = true)
         }
+    }
+
+    private fun retainTargets() {
+        targetLoader.retain(_state.value.items.mapNotNull { it.targetEventId }.toSet())
     }
 
     private fun rememberSeenId(eventId: String): Boolean {
@@ -303,16 +333,45 @@ class NotificationsViewModel(private val ownPubkey: String) : SafeViewModel() {
 
     private suspend fun loadStoredNotifications() {
         val stored = LocalNotificationStore.load(ownPubkey)
+        val normalized = withContext(Dispatchers.Default) {
+            stored.items.map { item ->
+                val resolved = resolveNotificationTarget(item.event, item.targetEventId)
+                item.copy(
+                    targetEventId = (resolved.reference as? TargetReference.EventId)?.id,
+                    targetReference = resolved.reference,
+                ) to resolved.embedded
+            }
+        }
+        val items = normalized.map { it.first }.filterNotMutedActors(muteStore?.mutedPubkeys?.value.orEmpty())
         seenItemIds += stored.items.map { it.id }
         _state.update {
             it.copy(
-                items = stored.items.sortedByDescending { item -> item.receivedAt }.take(MAX_ITEMS),
-                readItemIds = stored.readItemIds,
+                items = (it.items + items).distinctBy { item -> item.id }
+                    .sortedByDescending { item -> item.receivedAt }.take(MAX_ITEMS),
+                readItemIds = it.readItemIds + stored.readItemIds,
             )
         }
-        stored.items.forEach { item ->
+        normalized.filter { pair -> items.any { it.id == pair.first.id } }
+            .mapNotNull { it.second }.forEach(targetLoader::seedValidated)
+        _state.value.items.forEach { item ->
             scheduleDetailsForItem(item)
         }
+        retainTargets()
+        if (items.size != stored.items.size) {
+            LocalNotificationStore.save(
+                ownPubkey,
+                stored.copy(items = items),
+            )
+        }
+    }
+
+    private fun removeMutedNotifications(mutedPubkeys: Set<String>) {
+        val current = _state.value
+        val items = current.items.filterNotMutedActors(mutedPubkeys)
+        if (items.size == current.items.size) return
+        _state.update { it.copy(items = items) }
+        retainTargets()
+        saveStoredNotifications()
     }
 
     private fun scheduleMissingDetails() {
@@ -324,12 +383,7 @@ class NotificationsViewModel(private val ownPubkey: String) : SafeViewModel() {
     private fun scheduleDetailsForItem(item: NotificationItem) {
         scheduleProfileFetch(item.actorPubkey)
         item.targetEventId?.let { scheduleTargetFetch(it) }
-        item.event?.embeddedRepostTarget()?.let { target ->
-            _state.update { state ->
-                state.copy(targetEvents = state.targetEvents + (target.id to target))
-            }
-            scheduleProfileFetch(target.pubkey)
-        }
+        item.targetEventId?.let { _state.value.targetEvents[it] }?.let { scheduleProfileFetch(it.pubkey) }
     }
 
     private fun saveStoredNotifications() {
@@ -354,16 +408,13 @@ class NotificationsViewModel(private val ownPubkey: String) : SafeViewModel() {
     private fun cancelAuxiliaryFetches() {
         profileBatchJob?.cancel()
         profileBatchJob = null
-        targetBatchJob?.cancel()
-        targetBatchJob = null
+        targetLoader.stop()
         pendingPubkeys.clear()
-        pendingTargetIds.clear()
     }
 
     private fun closeSubscriptions() {
         NostrRepository.close(activitySubId)
         NostrRepository.close(followsSubId)
-        NostrRepository.close(targetSubId)
     }
 
     companion object {
@@ -377,12 +428,10 @@ class NotificationsViewModel(private val ownPubkey: String) : SafeViewModel() {
     }
 }
 
-private fun NostrEvent.targetEventId(): String? =
-    tags.lastOrNull { it.firstOrNull() == "e" }?.getOrNull(1)
-
-private fun NostrEvent.embeddedRepostTarget(): NostrEvent? {
-    if (kind != 6 || content.isBlank()) return null
-    return runCatching {
-        Json.decodeFromString(NostrEvent.serializer(), content)
-    }.getOrNull()
+internal fun List<NotificationItem>.filterNotMutedActors(
+    mutedPubkeys: Set<String>,
+): List<NotificationItem> {
+    if (mutedPubkeys.isEmpty()) return this
+    val normalizedMutedPubkeys = mutedPubkeys.mapTo(hashSetOf()) { it.trim().lowercase() }
+    return filterNot { it.actorPubkey.trim().lowercase() in normalizedMutedPubkeys }
 }

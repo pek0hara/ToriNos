@@ -89,6 +89,7 @@ import com.nostr.torinos.ui.live.LiveDetailScreen
 import com.nostr.torinos.ui.live.LiveHubScreen
 import com.nostr.torinos.ui.notification.NotificationsDrawer
 import com.nostr.torinos.ui.notification.NotificationsViewModel
+import com.nostr.torinos.ui.notification.NotificationTargetDestination
 import com.nostr.torinos.ui.settings.MuteListScreen
 import com.nostr.torinos.ui.settings.NgWordScreen
 import com.nostr.torinos.ui.post.JournalScreen
@@ -167,7 +168,9 @@ internal fun AppSessionCoordinator(
         val notificationsViewModel = ownPubkey?.let { pubkey ->
             viewModel<NotificationsViewModel>(
                 key = "notifications-$pubkey",
-                factory = viewModelFactory { initializer { NotificationsViewModel(pubkey) } },
+                factory = viewModelFactory {
+                    initializer { NotificationsViewModel(pubkey, accountSession.muteStore) }
+                },
             )
         }
         val notificationsState = notificationsViewModel?.state?.collectAsState()?.value
@@ -513,9 +516,16 @@ internal fun AppSessionCoordinator(
                         isOpen = notificationsDrawerState.currentValue == DrawerValue.Open,
                         scrollToTopRequest = drawerCoordinator.notificationsScrollToTopRequest,
                         onUserClick = ::openProfileDrawer,
-                        onOpenThread = { eventId ->
+                        onOpenTarget = { destination ->
                             scope.launch { notificationsDrawerState.close() }
-                            nav.navigate(ThreadRoute(eventId))
+                            when (destination) {
+                                is NotificationTargetDestination.Thread -> nav.navigate(ThreadRoute(destination.eventId))
+                                is NotificationTargetDestination.ChannelThread -> nav.navigate(
+                                    ThreadRoute(destination.eventId, source = ThreadSourceChannel, channelId = destination.channelId),
+                                )
+                                is NotificationTargetDestination.Article -> nav.navigate(ArticleRoute(destination.pubkey, destination.identifier))
+                                is NotificationTargetDestination.Live -> nav.navigate(LiveRoute(destination.pubkey, destination.identifier))
+                            }
                         },
                     )
                 },

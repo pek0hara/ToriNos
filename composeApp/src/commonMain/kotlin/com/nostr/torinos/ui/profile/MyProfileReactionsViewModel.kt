@@ -6,16 +6,21 @@ import com.nostr.torinos.model.NostrProfile
 import com.nostr.torinos.network.NostrRepository
 import com.nostr.torinos.network.ProfileFetchPolicy
 import com.nostr.torinos.network.ProfileRepository
+import com.nostr.torinos.network.TargetEventLoader
+import com.nostr.torinos.network.TargetLoadState
+import com.nostr.torinos.ui.notification.TargetReference
+import com.nostr.torinos.ui.notification.resolveNotificationTarget
+import androidx.lifecycle.viewModelScope
 import com.nostr.torinos.ui.SafeViewModel
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.delay
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.withTimeoutOrNull
-import kotlinx.serialization.json.Json
 
 data class MyProfileReactionItem(
     val id: String,
@@ -24,6 +29,7 @@ data class MyProfileReactionItem(
     val createdAt: Long,
     val targetEventId: String?,
     val event: NostrEvent,
+    val targetReference: TargetReference = TargetReference.None,
 )
 
 enum class MyProfileReactionType {
@@ -35,22 +41,25 @@ enum class MyProfileReactionType {
 data class MyProfileReactionsState(
     val items: List<MyProfileReactionItem> = emptyList(),
     val profiles: Map<String, NostrProfile> = emptyMap(),
-    val targetEvents: Map<String, NostrEvent> = emptyMap(),
+    val targetStates: Map<String, TargetLoadState> = emptyMap(),
     val isInitialLoad: Boolean = true,
-)
+) {
+    val targetEvents: Map<String, NostrEvent>
+        get() = targetStates.mapNotNull { (id, state) ->
+            (state as? TargetLoadState.Resolved)?.let { id to it.event }
+        }.toMap()
+}
 
 class MyProfileReactionsViewModel(private val ownPubkey: String) : SafeViewModel() {
     private val _state = MutableStateFlow(MyProfileReactionsState())
     val state: StateFlow<MyProfileReactionsState> = _state.asStateFlow()
 
     private val reactionsSubId = "mp-react-$shortKey"
-    private val targetSubId = "mp-react-target-$shortKey"
+    private val targetLoader = TargetEventLoader(viewModelScope)
 
     private val seenItemIds = linkedSetOf<String>()
     private val requestedProfilePubkeys = linkedSetOf<String>()
-    private val pendingTargetIds = linkedSetOf<String>()
     private val collectorJobs = mutableListOf<Job>()
-    private var targetBatchJob: Job? = null
     private var eoseJob: Job? = null
 
     private val shortKey: String
@@ -75,11 +84,12 @@ class MyProfileReactionsViewModel(private val ownPubkey: String) : SafeViewModel
             }
         }
         collectorJobs += launch {
-            NostrRepository.events(targetSubId).collect { event ->
-                if (event.kind != 1) return@collect
-                pendingTargetIds.remove(event.id)
-                _state.update { it.copy(targetEvents = it.targetEvents + (event.id to event)) }
-                scheduleProfileFetch(event.pubkey)
+            targetLoader.states.collect { targets ->
+                val previous = _state.value.targetStates
+                _state.update { it.copy(targetStates = targets) }
+                targets.forEach { (id, state) ->
+                    if (state is TargetLoadState.Resolved && previous[id] != state) scheduleProfileFetch(state.event.pubkey)
+                }
             }
         }
         eoseJob = launch {
@@ -96,7 +106,7 @@ class MyProfileReactionsViewModel(private val ownPubkey: String) : SafeViewModel
         }
     }
 
-    private fun handleReactionEvent(event: NostrEvent) {
+    private suspend fun handleReactionEvent(event: NostrEvent) {
         if (event.pubkey == ownPubkey) return
         val type = when (event.kind) {
             1 -> MyProfileReactionType.Reply
@@ -106,7 +116,8 @@ class MyProfileReactionsViewModel(private val ownPubkey: String) : SafeViewModel
         }
         if (!rememberSeenId(event.id)) return
 
-        val targetEventId = event.targetEventId() ?: event.embeddedRepostTarget()?.id
+        val resolved = withContext(Dispatchers.Default) { resolveNotificationTarget(event) }
+        val targetEventId = (resolved.reference as? TargetReference.EventId)?.id
         val item = MyProfileReactionItem(
             id = event.id,
             type = type,
@@ -114,20 +125,15 @@ class MyProfileReactionsViewModel(private val ownPubkey: String) : SafeViewModel
             createdAt = event.createdAt,
             targetEventId = targetEventId,
             event = event,
+            targetReference = resolved.reference,
         )
         _state.update { state ->
-            state.copy(items = (state.items + item).sortedByDescending { it.createdAt })
+            state.copy(items = (state.items + item).sortedByDescending { it.createdAt }.take(100))
         }
         scheduleProfileFetch(event.pubkey)
-        if (targetEventId != null) {
-            scheduleTargetFetch(targetEventId)
-        }
-        event.embeddedRepostTarget()?.let { target ->
-            _state.update { state ->
-                state.copy(targetEvents = state.targetEvents + (target.id to target))
-            }
-            scheduleProfileFetch(target.pubkey)
-        }
+        resolved.embedded?.let(targetLoader::seedValidated)
+        if (targetEventId != null) targetLoader.request(targetEventId)
+        targetLoader.retain(_state.value.items.mapNotNull { it.targetEventId }.toSet())
     }
 
     private fun scheduleProfileFetch(pubkey: String) {
@@ -143,16 +149,8 @@ class MyProfileReactionsViewModel(private val ownPubkey: String) : SafeViewModel
         }
     }
 
-    private fun scheduleTargetFetch(eventId: String) {
-        if (eventId in _state.value.targetEvents || !pendingTargetIds.add(eventId)) return
-        targetBatchJob?.cancel()
-        targetBatchJob = launch {
-            delay(400)
-            NostrRepository.subscribe(
-                targetSubId,
-                NostrFilter(ids = pendingTargetIds.toList(), kinds = listOf(1)),
-            )
-        }
+    fun retryTarget(eventId: String) {
+        if (_state.value.items.any { it.targetEventId == eventId }) targetLoader.request(eventId, retry = true)
     }
 
     private fun rememberSeenId(eventId: String): Boolean {
@@ -167,24 +165,13 @@ class MyProfileReactionsViewModel(private val ownPubkey: String) : SafeViewModel
         super.onCleared()
         collectorJobs.forEach { it.cancel() }
         requestedProfilePubkeys.clear()
-        targetBatchJob?.cancel()
+        targetLoader.stop()
         eoseJob?.cancel()
         NostrRepository.close(reactionsSubId)
-        NostrRepository.close(targetSubId)
     }
 
     companion object {
         private const val MAX_SEEN_IDS = 1000
         private const val PROFILE_MAX_AGE_MS = 15 * 60 * 1_000L
     }
-}
-
-private fun NostrEvent.targetEventId(): String? =
-    tags.lastOrNull { it.firstOrNull() == "e" }?.getOrNull(1)
-
-private fun NostrEvent.embeddedRepostTarget(): NostrEvent? {
-    if (kind != 6 || content.isBlank()) return null
-    return runCatching {
-        Json.decodeFromString(NostrEvent.serializer(), content)
-    }.getOrNull()
 }

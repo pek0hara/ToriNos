@@ -254,7 +254,7 @@ object NostrRepository {
                     is RelayMessage.Event -> {
                         val wasLive = state.phase == RelaySubscriptionPhase.Live
                         record.relayStates[relayUrl] = SubscriptionStateMachine.onEvent(state)
-                        val isFirstDelivery = record.seenEventIds.add(message.event.id)
+                        val isFirstDelivery = !record.deduplicateEvents || record.seenEventIds.add(message.event.id)
                         emitToLegacyBus = isFirstDelivery
                         if (record.session != null && isFirstDelivery) {
                             signals += record.session to SubscriptionSignal.Event(
@@ -455,6 +455,7 @@ object NostrRepository {
                 filters = spec.filters,
                 target = spec.target,
                 behavior = spec.behavior,
+                deduplicateEvents = spec.deduplicateEvents,
                 session = session,
                 fetchExpectedRelays = if (spec.behavior is SubscriptionBehavior.Fetch) targetUrls else null,
             )
@@ -835,6 +836,7 @@ private data class ActiveSubscriptionRecord(
     val session: SubscriptionSessionImpl? = null,
     val relayStates: MutableMap<String, RelaySubscriptionState> = mutableMapOf(),
     val seenEventIds: BoundedIdSet = BoundedIdSet(4_096),
+    val deduplicateEvents: Boolean = true,
     val fetchExpectedRelays: Set<String>? = null,
     val fetchOutcomes: MutableMap<String, RelayOutcome> = mutableMapOf(),
     var fetchCompletionScheduled: Boolean = false,

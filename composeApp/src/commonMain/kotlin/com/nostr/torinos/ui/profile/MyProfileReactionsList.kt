@@ -33,6 +33,10 @@ import androidx.compose.ui.unit.dp
 import com.nostr.torinos.model.NostrEvent
 import com.nostr.torinos.model.NostrProfile
 import com.nostr.torinos.model.stripNostrEventUris
+import com.nostr.torinos.network.TargetLoadState
+import com.nostr.torinos.ui.notification.NotificationTargetDestination
+import com.nostr.torinos.ui.notification.NotificationTargetPreview
+import com.nostr.torinos.ui.notification.notificationTargetDestination
 import com.nostr.torinos.ui.components.ProfileNameText
 import com.nostr.torinos.ui.components.formatTimestamp
 import com.nostr.torinos.ui.components.stripImageUrls
@@ -41,7 +45,8 @@ import com.nostr.torinos.ui.components.stripImageUrls
 fun MyProfileReactionsList(
     state: MyProfileReactionsState,
     onUserClick: (String) -> Unit,
-    onOpenThread: (String) -> Unit,
+    onOpenTarget: (NotificationTargetDestination) -> Unit,
+    onRetryTarget: (String) -> Unit,
     modifier: Modifier = Modifier,
     header: LazyListScope.() -> Unit = {},
 ) {
@@ -72,12 +77,13 @@ fun MyProfileReactionsList(
                     ReactionRow(
                         item = item,
                         actorProfile = state.profiles[item.actorPubkey],
-                        targetEvent = item.targetEventId?.let { state.targetEvents[it] },
+                        targetState = item.targetEventId?.let { state.targetStates[it] },
                         targetProfile = item.targetEventId
                             ?.let { state.targetEvents[it] }
                             ?.let { state.profiles[it.pubkey] },
                         onUserClick = onUserClick,
-                        onOpenThread = onOpenThread,
+                        onOpenTarget = onOpenTarget,
+                        onRetryTarget = onRetryTarget,
                     )
                     HorizontalDivider()
                 }
@@ -90,15 +96,16 @@ fun MyProfileReactionsList(
 private fun ReactionRow(
     item: MyProfileReactionItem,
     actorProfile: NostrProfile?,
-    targetEvent: NostrEvent?,
+    targetState: TargetLoadState?,
     targetProfile: NostrProfile?,
     onUserClick: (String) -> Unit,
-    onOpenThread: (String) -> Unit,
+    onOpenTarget: (NotificationTargetDestination) -> Unit,
+    onRetryTarget: (String) -> Unit,
 ) {
-    val targetId = when (item.type) {
-        MyProfileReactionType.Reply -> item.event.id
+    val destination = when (item.type) {
+        MyProfileReactionType.Reply -> notificationTargetDestination(item.event)
         MyProfileReactionType.Repost,
-        MyProfileReactionType.Like -> item.targetEventId
+        MyProfileReactionType.Like -> (targetState as? TargetLoadState.Resolved)?.event?.let(::notificationTargetDestination)
     }
     val accent = when (item.type) {
         MyProfileReactionType.Reply -> MaterialTheme.colorScheme.primary
@@ -114,7 +121,7 @@ private fun ReactionRow(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable(enabled = targetId != null) { targetId?.let(onOpenThread) }
+            .clickable(enabled = destination != null) { destination?.let(onOpenTarget) }
             .padding(horizontal = 16.dp, vertical = 12.dp),
         horizontalArrangement = Arrangement.spacedBy(12.dp),
     ) {
@@ -171,10 +178,12 @@ private fun ReactionRow(
             }
 
             Spacer(modifier = Modifier.height(6.dp))
-            Text(
-                text = targetPreviewText(targetEvent, targetProfile),
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            NotificationTargetPreview(
+                reference = item.targetReference,
+                state = targetState,
+                profile = targetProfile,
+                onRetry = onRetryTarget,
+                onOpenTarget = onOpenTarget,
             )
         }
     }
@@ -196,17 +205,6 @@ private fun reactionTitleSuffix(type: MyProfileReactionType): String =
         MyProfileReactionType.Repost -> "がリポスト"
         MyProfileReactionType.Like -> "がいいね"
     }
-
-private fun targetPreviewText(event: NostrEvent?, profile: NostrProfile?): String {
-    if (event == null) return "対象ポストを読み込み中"
-    val author = profile?.bestName ?: shortPubkey(event.pubkey)
-    val body = event.content.previewText()
-    return if (body.isBlank()) {
-        "$author のポスト"
-    } else {
-        "$author: $body"
-    }
-}
 
 private fun String.previewText(): String =
     stripImageUrls(stripNostrEventUris(this))
