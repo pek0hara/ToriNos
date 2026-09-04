@@ -48,6 +48,7 @@ import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
@@ -65,6 +66,8 @@ import androidx.lifecycle.compose.LifecycleStartEffect
 import com.nostr.torinos.account.accountSessionViewModel
 import com.nostr.torinos.model.NostrProfile
 import com.nostr.torinos.account.LocalAccountSession
+import com.nostr.torinos.network.NostrRepository
+import com.nostr.torinos.network.RelayConnectionState
 import com.nostr.torinos.network.RelayStore
 import com.nostr.torinos.ui.components.NoteTimeline
 import com.nostr.torinos.ui.profile.AvatarCircle
@@ -106,6 +109,7 @@ fun FeedScreen(
     )
     val selectedFollowingRelayUrl by RelayStore.selectedFollowingRelayUrl.collectAsState()
     val selectedGlobalRelayUrl by RelayStore.selectedGlobalRelayUrl.collectAsState()
+    val relayConnectionStates by NostrRepository.relayConnectionStates.collectAsState()
     val effectiveGlobalRelayUrl = selectedGlobalRelayUrl ?: relays.firstOrNull()
     val accountSession = LocalAccountSession.current
     val followedPubkeys = accountSession?.followRepository?.followedPubkeys?.collectAsState()?.value.orEmpty()
@@ -394,7 +398,17 @@ fun FeedScreen(
                                     )
                                     relays.forEach { url ->
                                         DropdownMenuItem(
-                                            text = { Text(url.relayDisplayName()) },
+                                            text = {
+                                                Row(
+                                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                                    verticalAlignment = Alignment.CenterVertically,
+                                                ) {
+                                                    RelayConnectionDot(
+                                                        isOnline = relayConnectionStates[url] == RelayConnectionState.Connected,
+                                                    )
+                                                    Text(url.relayDisplayName())
+                                                }
+                                            },
                                             onClick = {
                                                 RelayStore.setSelectedGlobalRelayUrl(url)
                                                 showRelayMenu = false
@@ -566,6 +580,22 @@ fun FeedScreen(
             }
         }
     }
+}
+
+@Composable
+private fun RelayConnectionDot(isOnline: Boolean) {
+    Box(
+        modifier = Modifier
+            .size(8.dp)
+            .clip(CircleShape)
+            .background(
+                if (isOnline) {
+                    Color(0xFF0B8F55)
+                } else {
+                    MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.55f)
+                },
+            ),
+    )
 }
 
 @Composable
