@@ -73,7 +73,6 @@ import com.nostr.torinos.ui.service.ServiceTabRow
 import com.nostr.torinos.ui.service.serviceTabSwipe
 import kotlin.time.Clock
 import kotlinx.coroutines.flow.distinctUntilChanged
-import kotlinx.coroutines.flow.filter
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -140,18 +139,12 @@ fun ChannelListScreen(
         previousTopKey = curr
     }
 
-    LaunchedEffect(listState) {
+    LaunchedEffect(listState, viewModel) {
         snapshotFlow {
-            val layoutInfo = listState.layoutInfo
-            val lastVisible = layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: -1
-            val ready = state as? ChannelListViewModel.UiState.Ready
-            lastVisible >= layoutInfo.totalItemsCount - 3
-                && ready?.canLoadMore == true
-                && ready.isLoadingMore == false
+            listState.layoutInfo.visibleItemsInfo.mapNotNull { it.key as? String }.toSet()
         }
             .distinctUntilChanged()
-            .filter { it }
-            .collect { viewModel.loadMore() }
+            .collect { viewModel.setVisibleChannels(it) }
     }
 
     val headerBackgroundColor = MaterialTheme.colorScheme.background
@@ -299,12 +292,12 @@ fun ChannelListScreen(
                             )
                         }
                     } else if (s.channels.isEmpty()) {
-                        Text(
-                            text = "チャンネルがありません",
-                            modifier = Modifier.align(Alignment.Center),
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
+                        Column(modifier = Modifier.align(Alignment.Center)) {
+                            Text("チャンネルがありません")
+                            if (s.canLoadMore) {
+                                TextButton(onClick = viewModel::loadMore) { Text("再読み込み") }
+                            }
+                        }
                     } else {
                         LazyColumn(
                             state = listState,
@@ -324,6 +317,14 @@ fun ChannelListScreen(
                                     onFavoriteClick = { viewModel.toggleFavorite(item.event.id) },
                                 )
                                 HorizontalDivider()
+                            }
+                            if (s.canLoadMore && !s.isLoadingMore) {
+                                item(key = "load-more") {
+                                    TextButton(
+                                        onClick = viewModel::loadMore,
+                                        modifier = Modifier.fillMaxWidth(),
+                                    ) { Text("さらに読み込む") }
+                                }
                             }
                             if (s.isLoadingMore) {
                                 item {
