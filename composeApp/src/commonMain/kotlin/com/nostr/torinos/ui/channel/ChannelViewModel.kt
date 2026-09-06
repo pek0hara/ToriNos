@@ -43,6 +43,7 @@ class ChannelViewModel(
             val pendingEngagementOperations: Map<String, Map<EngagementSlot, PendingEngagementOperation>> = emptyMap(),
             val engagementError: String? = null,
             val canLoadMore: Boolean = false,
+            val history: ChannelHistoryState = ChannelHistoryState(),
             val draftText: String = "",
             val isPosting: Boolean = false,
             val postError: String? = null,
@@ -83,6 +84,17 @@ class ChannelViewModel(
     fun onEditDescriptionChange(description: String) = controller.onEditDescriptionChange(description)
     fun saveThreadMeta() = controller.saveThreadMeta()
     fun loadMore() = controller.loadMore()
+
+    fun loadHistoryGap() = controller.loadHistoryGap()
+    fun jumpToPrevious() = controller.jumpToPrevious()
+    fun jumpToLatest() = controller.jumpToLatest()
+    fun retryMessages() = controller.retryMessages()
+    fun consumeNavigation(sequence: Long) = controller.consumeNavigation(sequence)
+    fun consumeHistoryNotice() = controller.consumeHistoryNotice()
+    fun setAtLatest(value: Boolean) = controller.setAtLatest(value)
+    fun flushReadingPosition() = controller.flushReadingPosition()
+    fun onViewport(ids: Set<String>, anchorId: String?, offset: Int, savePosition: Boolean) =
+        controller.onViewport(ids, anchorId, offset, savePosition)
 
     override fun onCleared() {
         controller.close()

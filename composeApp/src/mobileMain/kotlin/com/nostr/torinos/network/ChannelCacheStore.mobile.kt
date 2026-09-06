@@ -4,7 +4,6 @@ import com.nostr.torinos.model.ChannelMeta
 import com.nostr.torinos.model.NostrEvent
 import com.nostr.torinos.network.cache.CachedChannelMessageEntity
 import com.nostr.torinos.network.cache.CachedChannelMessageRelayEntity
-import com.nostr.torinos.network.cache.ChannelReadStateEntity
 import com.nostr.torinos.network.cache.createChannelCacheDatabase
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
@@ -82,20 +81,24 @@ actual object ChannelCacheStore {
     }
 
     actual suspend fun markRead(relayUrl: String, channelId: String, readAt: Long) {
-        dao.upsertReadState(
-            ChannelReadStateEntity(
-                channelId = channelId,
-                lastReadAt = readAt,
-            )
-        )
+        dao.markRead(channelId, readAt)
     }
 
-    actual suspend fun saveScrollPosition(relayUrl: String, channelId: String, messageId: String) {
-        dao.upsertScrollPosition(channelId, messageId)
+    actual suspend fun saveReadingPosition(relayUrl: String, channelId: String, position: ChannelReadingPosition) {
+        dao.upsertScrollPosition(channelId, position.messageId, position.createdAt, position.scrollOffset)
     }
 
-    actual suspend fun getScrollPosition(relayUrl: String, channelId: String): String? =
-        dao.getScrollPosition(channelId)
+    actual suspend fun getReadingPosition(relayUrl: String, channelId: String): ChannelReadingPosition? {
+        val state = dao.getReadingState(channelId) ?: return null
+        return state.lastScrolledMessageId?.let {
+            ChannelReadingPosition(it, state.lastScrolledCreatedAt, state.lastScrolledOffset)
+        }
+    }
+
+    actual suspend fun getMessage(channelId: String, messageId: String): NostrEvent? =
+        dao.getMessage(channelId, messageId)?.let { raw ->
+            runCatching { json.decodeFromString(NostrEvent.serializer(), raw) }.getOrNull()
+        }
 
     actual suspend fun setFavorite(relayUrl: String, channelId: String, isFavorite: Boolean) {
         dao.setFavorite(channelId, isFavorite)

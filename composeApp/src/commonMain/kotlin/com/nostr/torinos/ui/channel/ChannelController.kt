@@ -29,6 +29,10 @@ import com.nostr.torinos.model.toChannelMeta
 import com.nostr.torinos.model.toCustomReaction
 import com.nostr.torinos.model.toUnicodeReaction
 import com.nostr.torinos.model.toReactionOption
+import com.nostr.torinos.network.ChannelReadingPosition
+import com.nostr.torinos.network.RelayTarget
+import com.nostr.torinos.network.SubscriptionBehavior
+import com.nostr.torinos.network.SubscriptionSpec
 import com.nostr.torinos.network.ChannelCacheStore
 import com.nostr.torinos.network.NostrRepository
 import com.nostr.torinos.network.ProfileFetchPolicy
@@ -39,11 +43,16 @@ import com.nostr.torinos.ui.timeline.StateStore
 import com.nostr.torinos.ui.timeline.SignedEventPublisher
 import com.nostr.torinos.ui.timeline.SignedPublishResult
 import kotlin.time.Clock
+import com.nostr.torinos.util.logException
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 
@@ -55,8 +64,10 @@ internal class ChannelController(
     private val autoStart: Boolean = true,
 ) {
     private val safeCoroutineLauncher = SafeCoroutineLauncher(scope, "ChannelController")
-    private fun launch(block: suspend CoroutineScope.() -> Unit): Job =
-        safeCoroutineLauncher.launch(block = block)
+    private fun launch(
+        start: CoroutineStart = CoroutineStart.DEFAULT,
+        block: suspend CoroutineScope.() -> Unit,
+    ): Job = safeCoroutineLauncher.launch(start = start, block = block)
 
     private val _state = StateStore<UiState>(UiState.Loading)
     val state: StateFlow<UiState> = _state.state
@@ -73,7 +84,6 @@ internal class ChannelController(
     private val repostSubId = "ch-repost-$shortId-$relayKey"
     private val quoteRepostSubId = "ch-qrepost-$shortId-$relayKey"
 
-    private val seenIds = linkedSetOf<String>()
     private val seenReplyIds = linkedSetOf<String>()
     private val seenReactionIds = linkedSetOf<String>()
     private val seenRepostIds = linkedSetOf<String>()
@@ -84,17 +94,14 @@ internal class ChannelController(
     private val pendingPubkeys = mutableSetOf<String>()
     private var profileBatchJob: Job? = null
     private var engagementBatchJob: Job? = null
-    private var pageTimeoutJob: Job? = null
     private val jobs = mutableListOf<Job>()
     private val lifecycleJobs = mutableListOf<Job>()
 
-    private var oldestCreatedAt: Long? = null
-    private var loadingMore = false
-    private var isInitialDiffFetch = false
-    private var isInitialPageRequest = false
-    private var lastBatchCount = 0
-    private var receivedEoseCount = 0
-    private var expectedEoseCount = 1
+    private var requestSequence = 0L
+    private var lastMarkedReadAt = -1L
+    private var positionSaveJob: Job? = null
+    private var pendingReadingPosition: ChannelReadingPosition? = null
+    private var savedReadingPosition: ChannelReadingPosition? = null
     private var currentChannelMeta = ChannelMeta()
     private var currentChannelOwnerPubkey: String? = null
     private var latestMetaUpdateCreatedAt = -1L
@@ -117,6 +124,38 @@ internal class ChannelController(
     private val signedEventPublisher = SignedEventPublisher(accountSession?.signer)
     private var nextEngagementOperationId = 0L
     private val noteContext = NoteContext.Channel(channelId)
+    private val openedAt = Clock.System.now().epochSeconds
+
+    private val history = ChannelHistory(
+        scope = scope,
+        channelId = channelId,
+        fetch = ::fetchHistoryPage,
+        lookup = { id ->
+            ChannelCacheStore.getMessage(channelId, id)
+                ?: fetchHistoryPage(NostrFilter(ids = listOf(id), kinds = listOf(42), limit = 1))
+                    .events.firstOrNull()
+        },
+    )
+
+    private suspend fun fetchHistoryPage(filter: NostrFilter): ChannelHistoryPage {
+        val events = mutableListOf<NostrEvent>()
+        val complete = fetchChannelEvents(
+            SubscriptionSpec(
+                id = "$histSubId-${requestSequence++}",
+                filters = listOf(filter),
+                target = relayUrl?.let(RelayTarget::Single) ?: RelayTarget.AllEnabled,
+                behavior = SubscriptionBehavior.Fetch(10_000),
+            ),
+        ) { event -> if (noteContext.matches(event)) events.add(event) }
+        try {
+            relayUrl?.let { url -> events.forEach { ChannelCacheStore.upsertMessage(url, it, channelId) } }
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (error: Exception) {
+            logException("ChannelController", error, "Could not cache messages")
+        }
+        return ChannelHistoryPage(events.distinctBy { it.id }, complete)
+    }
 
     init {
         lifecycleJobs += launch {
@@ -342,14 +381,64 @@ internal class ChannelController(
         }
     }
 
-    fun loadMore() {
-        if (loadingMore || (_state.value as? UiState.Ready)?.canLoadMore != true) return
-        launch {
-            requestPage(until = oldestCreatedAt?.minus(1))
+    fun loadMore() = history.older()
+    fun loadHistoryGap() = history.fillGap()
+    fun jumpToPrevious() = history.previous()
+    fun jumpToLatest() = history.latest()
+    fun retryMessages() = history.retry()
+    fun consumeNavigation(sequence: Long) = history.consumeNavigation(sequence)
+    fun consumeHistoryNotice() = history.consumeNotice()
+    fun setAtLatest(value: Boolean) = history.setAtLatest(value)
+
+    fun onViewport(visibleIds: Set<String>, anchorId: String?, offset: Int, savePosition: Boolean) {
+        history.setViewport(anchorId)
+        val visible = currentMessages.filter { it.id in visibleIds }
+        visible.forEach { event ->
+            scheduleProfileFetch(event.pubkey)
+            scheduleMentionedProfileFetch(event.content)
+            scheduleEngagementFetch(event.id)
+        }
+        val url = relayUrl ?: return
+        val latestVisible = visible.maxOfOrNull { it.createdAt }
+        if (latestVisible != null && latestVisible > lastMarkedReadAt) {
+            lastMarkedReadAt = latestVisible
+            launch { ChannelCacheStore.markRead(url, channelId, latestVisible) }
+        }
+        if (!savePosition || history.state.value.isLoading || history.state.value.navigation != null) return
+        val anchor = visible.firstOrNull { it.id == anchorId } ?: return
+        val position = ChannelReadingPosition(anchor.id, anchor.createdAt, offset.coerceAtLeast(0))
+        pendingReadingPosition = position
+        positionSaveJob?.cancel()
+        positionSaveJob = launch {
+            delay(POSITION_SAVE_DEBOUNCE_MS)
+            saveReadingPosition(url, position)
         }
     }
 
+    fun flushReadingPosition() {
+        val url = relayUrl ?: return
+        val position = pendingReadingPosition ?: return
+        if (position == savedReadingPosition) return
+        positionSaveJob?.cancel()
+        // 画面破棄直後に ViewModel のスコープがキャンセルされても、最後の位置だけは保存を完了する。
+        positionSaveJob = launch(start = CoroutineStart.UNDISPATCHED) {
+            withContext(NonCancellable) { saveReadingPosition(url, position) }
+        }
+    }
+
+    private suspend fun saveReadingPosition(url: String, position: ChannelReadingPosition) {
+        ChannelCacheStore.saveReadingPosition(url, channelId, position)
+        savedReadingPosition = position
+    }
+
     private fun start() {
+        jobs += launch {
+            history.state.collect { snapshot ->
+                currentMessages = snapshot.messages
+                syncReadyState()
+            }
+        }
+
         // kind:40 でチャンネルメタ取得
         jobs += launch {
             NostrRepository.events(metaSubId).collect { event ->
@@ -382,29 +471,12 @@ internal class ChannelController(
             }
         }
 
-        // kind:42 メッセージ受信（ライブ）
+        // ライブと有限履歴は別管理。履歴の確定前は新着もバッファに保持する。
         jobs += launch {
             NostrRepository.events(msgSubId).collect { event ->
                 if (!noteContext.matches(event)) return@collect
-                appendMessage(event)
+                history.receive(event)
                 relayUrl?.let { ChannelCacheStore.upsertMessage(it, event, channelId) }
-                markLatestRead()
-                scheduleProfileFetch(event.pubkey)
-                scheduleMentionedProfileFetch(event.content)
-                scheduleEngagementFetch(event.id)
-            }
-        }
-
-        // kind:42 メッセージ受信（過去ページ）- EOSE 後に onPageCompleted でまとめて反映
-        jobs += launch {
-            NostrRepository.events(histSubId).collect { event ->
-                if (!noteContext.matches(event)) return@collect
-                val added = appendMessage(event, notify = false)
-                lastBatchCount += added
-                relayUrl?.let { ChannelCacheStore.upsertMessage(it, event, channelId) }
-                scheduleProfileFetch(event.pubkey)
-                scheduleMentionedProfileFetch(event.content)
-                scheduleEngagementFetch(event.id)
             }
         }
 
@@ -509,38 +581,6 @@ internal class ChannelController(
             }
         }
 
-        // リレーが msgSubId を CLOSED したら再購読
-        jobs += launch {
-            NostrRepository.closed(msgSubId).collect {
-                // 降順リストなので firstOrNull() が最新 createdAt
-                val sinceTs = currentMessages.firstOrNull()?.createdAt
-                    ?: Clock.System.now().epochSeconds
-                NostrRepository.subscribe(
-                    msgSubId,
-                    NostrFilter(kinds = listOf(noteContext.eventKind), eTags = listOf(channelId), since = sinceTs),
-                    relayUrl = relayUrl,
-                )
-            }
-        }
-
-        // EOSE でローディング解除
-        jobs += launch {
-            NostrRepository.eose(histSubId).collect {
-                receivedEoseCount++
-                if (receivedEoseCount >= expectedEoseCount) {
-                    onPageCompleted()
-                }
-            }
-        }
-
-        // タイムアウトフォールバック
-        jobs += launch {
-            delay(10_000)
-            if (_state.value is UiState.Loading) {
-                _state.value = readyState(canLoadMore = false)
-            }
-        }
-
         // 共通プロフィールキャッシュを監視
         jobs += launch {
             ProfileRepository.observeAll().collect { cachedProfiles ->
@@ -560,119 +600,27 @@ internal class ChannelController(
             accountSession?.ngWordStore?.ngWords?.collect { syncReadyState() }
         }
 
-        launch {
-            val cacheRelayUrl = relayUrl
-            if (cacheRelayUrl != null) {
-                // DB からキャッシュ済みメッセージを先に読み込んで即時表示
-                val cached = ChannelCacheStore.getMessages(cacheRelayUrl, channelId)
-                if (cached.isNotEmpty()) {
-                    cached.forEach {
-                        appendMessage(it)
-                        scheduleProfileFetch(it.pubkey)
-                        scheduleMentionedProfileFetch(it.content)
-                        scheduleEngagementFetch(it.id)
-                    }
-                    _state.value = readyState(canLoadMore = false)
+        jobs += launch {
+            val url = relayUrl
+            val cachedState = try {
+                withTimeoutOrNull(10_000) {
+                    val cached = if (url != null) ChannelCacheStore.getMessages(url, channelId, ChannelHistory.PAGE_SIZE) else emptyList()
+                    cached to url?.let { ChannelCacheStore.getReadingPosition(it, channelId) }
                 }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
+                logException("ChannelController", error, "Could not read channel cache")
+                null
             }
-            // チャンネルメタ取得
+            history.initialize(cachedState?.first.orEmpty(), cachedState?.second)
             NostrRepository.subscribe(metaSubId, NostrFilter(ids = listOf(channelId)), relayUrl = relayUrl)
-            // 初回取得: DB に何かあれば最新以降の差分のみ、無ければ最新 PAGE_SIZE
-            // 降順リストなので firstOrNull() が最新 createdAt
-            startInitialFetch(cacheLatest = currentMessages.firstOrNull()?.createdAt)
+            NostrRepository.subscribe(
+                msgSubId,
+                NostrFilter(kinds = listOf(42), eTags = listOf(channelId), since = openedAt),
+                relayUrl = relayUrl,
+            )
         }
-    }
-
-    private suspend fun startInitialFetch(cacheLatest: Long?) {
-        isInitialPageRequest = true
-        isInitialDiffFetch = cacheLatest != null
-        loadingMore = true
-        lastBatchCount = 0
-        receivedEoseCount = 0
-        expectedEoseCount = if (relayUrl != null) 1 else NostrRepository.relayCount.coerceAtLeast(1)
-        val current = _state.value as? UiState.Ready
-        if (current != null) {
-            _state.value = current.copy(canLoadMore = false)
-        }
-        schedulePageTimeout()
-
-        // ライブ購読: 起動時刻以降の新着のみ受信（リレー default cap 分の過去履歴を流させない）
-        NostrRepository.subscribe(
-            msgSubId,
-            NostrFilter(
-                kinds = listOf(noteContext.eventKind),
-                eTags = listOf(channelId),
-                since = Clock.System.now().epochSeconds,
-            ),
-            relayUrl = relayUrl,
-        )
-
-        // 履歴ページ: キャッシュがあれば最新 createdAt 以降の差分のみ、無ければ最新 PAGE_SIZE 件
-        val histFilter = if (cacheLatest != null) {
-            NostrFilter(kinds = listOf(noteContext.eventKind), eTags = listOf(channelId), since = cacheLatest + 1)
-        } else {
-            NostrFilter(kinds = listOf(noteContext.eventKind), eTags = listOf(channelId), until = null, limit = PAGE_SIZE)
-        }
-        NostrRepository.subscribe(histSubId, histFilter, relayUrl = relayUrl)
-    }
-
-    private suspend fun requestPage(until: Long?) {
-        isInitialPageRequest = false
-        loadingMore = true
-        lastBatchCount = 0
-        receivedEoseCount = 0
-        expectedEoseCount = if (relayUrl != null) 1 else NostrRepository.relayCount.coerceAtLeast(1)
-        val current = _state.value as? UiState.Ready
-        if (current != null) {
-            _state.value = current.copy(canLoadMore = false)
-        }
-        schedulePageTimeout()
-        NostrRepository.subscribe(
-            histSubId,
-            NostrFilter(kinds = listOf(noteContext.eventKind), eTags = listOf(channelId), until = until, limit = PAGE_SIZE),
-            relayUrl = relayUrl,
-        )
-    }
-
-    private fun onPageCompleted() {
-        if (!loadingMore) return
-        loadingMore = false
-        pageTimeoutJob?.cancel()
-        pageTimeoutJob = null
-        // リレー間の重複除外で PAGE_SIZE 未満になることがあるため、
-        // 1件でも増えたページでは次の古いページ取得を許可する。
-        val hasMore = if (isInitialDiffFetch) true else lastBatchCount > 0
-        isInitialPageRequest = false
-        isInitialDiffFetch = false
-        _state.value = readyState(canLoadMore = hasMore)
-        markLatestRead()
-        NostrRepository.close(histSubId)
-    }
-
-    private fun schedulePageTimeout() {
-        pageTimeoutJob?.cancel()
-        pageTimeoutJob = launch {
-            delay(10_000)
-            if (!loadingMore) return@launch
-
-            loadingMore = false
-            val hasMore = if (isInitialDiffFetch) true else lastBatchCount > 0
-            isInitialPageRequest = false
-            isInitialDiffFetch = false
-            _state.value = readyState(canLoadMore = hasMore)
-            markLatestRead()
-            if (!hasMore) NostrRepository.close(histSubId)
-        }
-    }
-
-    private fun appendMessage(event: NostrEvent, notify: Boolean = true): Int {
-        if (!seenIds.add(event.id)) return 0
-        while (seenIds.size > MAX_SEEN_IDS) seenIds.remove(seenIds.first())
-        if (currentMessages.any { it.id == event.id }) return 0
-        currentMessages = ChannelMessageReducer.received(currentMessages, event)
-        oldestCreatedAt = currentMessages.lastOrNull()?.createdAt
-        if (notify) syncReadyState()
-        return 1
     }
 
     private fun currentNoteEngagement(eventId: String): NoteEngagementState = NoteEngagementState(
@@ -724,11 +672,14 @@ internal class ChannelController(
             repostedEvents = currentRepostedEvents,
             pendingEngagementOperations = currentPendingEngagementOperations,
             canLoadMore = canLoadMore,
+            history = history.state.value,
         )
 
     private fun syncReadyState() {
-        val current = _state.value as? UiState.Ready ?: return
+        val current = _state.value as? UiState.Ready ?: readyState(canLoadMore = false)
         _state.value = current.copy(
+            history = history.state.value,
+            canLoadMore = history.state.value.canLoadOlder,
             channelMeta = currentChannelMeta,
             channelOwnerPubkey = currentChannelOwnerPubkey,
             messages = filteredMessages(),
@@ -746,15 +697,6 @@ internal class ChannelController(
             repostedEvents = currentRepostedEvents,
             pendingEngagementOperations = currentPendingEngagementOperations,
         )
-    }
-
-    private fun markLatestRead() {
-        val cacheRelayUrl = relayUrl ?: return
-        // 降順リストなので firstOrNull() が最新 createdAt
-        val latestReadAt = currentMessages.firstOrNull()?.createdAt ?: return
-        launch {
-            ChannelCacheStore.markRead(cacheRelayUrl, channelId, latestReadAt)
-        }
     }
 
     private fun filteredMessages(): List<NostrEvent> {
@@ -822,13 +764,14 @@ internal class ChannelController(
     }
 
     fun close() {
+        flushReadingPosition()
         jobs.forEach { it.cancel() }
         jobs.clear()
         lifecycleJobs.forEach { it.cancel() }
         lifecycleJobs.clear()
         profileBatchJob?.cancel()
         engagementBatchJob?.cancel()
-        pageTimeoutJob?.cancel()
+        history.close()
         NostrRepository.close(metaSubId)
         NostrRepository.close(metaUpdateSubId)
         NostrRepository.close(msgSubId)
@@ -867,10 +810,10 @@ internal class ChannelController(
     }
 
     companion object {
-        private const val PAGE_SIZE = 30
         private const val MAX_SEEN_IDS = 1000
         private const val MAX_WATCHED_EVENTS = 100
         private const val PROFILE_MAX_AGE_MS = 15 * 60 * 1_000L
+        private const val POSITION_SAVE_DEBOUNCE_MS = 400L
     }
 }
 

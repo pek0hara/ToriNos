@@ -23,6 +23,12 @@ data class CachedChannelSummary(
     val hasUnread: Boolean get() = unreadCount > 0
 }
 
+data class ChannelReadingPosition(
+    val messageId: String,
+    val createdAt: Long?,
+    val scrollOffset: Int = 0,
+)
+
 expect object ChannelCacheStore {
     fun observeChannels(relayUrl: String): Flow<List<CachedChannelSummary>>
     suspend fun getLastReadAt(relayUrl: String, channelId: String): Long?
@@ -30,8 +36,9 @@ expect object ChannelCacheStore {
     suspend fun upsertChannel(relayUrl: String, event: NostrEvent, meta: ChannelMeta)
     suspend fun upsertMessage(relayUrl: String, event: NostrEvent, channelId: String)
     suspend fun markRead(relayUrl: String, channelId: String, readAt: Long)
-    suspend fun saveScrollPosition(relayUrl: String, channelId: String, messageId: String)
-    suspend fun getScrollPosition(relayUrl: String, channelId: String): String?
+    suspend fun saveReadingPosition(relayUrl: String, channelId: String, position: ChannelReadingPosition)
+    suspend fun getReadingPosition(relayUrl: String, channelId: String): ChannelReadingPosition?
+    suspend fun getMessage(channelId: String, messageId: String): NostrEvent?
     suspend fun deleteChannel(relayUrl: String, channelId: String)
     suspend fun setFavorite(relayUrl: String, channelId: String, isFavorite: Boolean)
     suspend fun deleteNonFavorites(relayUrl: String)

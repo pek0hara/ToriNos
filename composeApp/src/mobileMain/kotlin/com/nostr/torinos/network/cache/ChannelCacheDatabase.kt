@@ -1,5 +1,6 @@
 package com.nostr.torinos.network.cache
 
+import androidx.room.ColumnInfo
 import androidx.room.Dao
 import androidx.room.ConstructedBy
 import androidx.room.Database
@@ -14,6 +15,13 @@ import androidx.room.migration.Migration
 import androidx.sqlite.SQLiteConnection
 import androidx.sqlite.execSQL
 import kotlinx.coroutines.flow.Flow
+
+val MIGRATION_4_5 = object : Migration(4, 5) {
+    override fun migrate(connection: SQLiteConnection) {
+        connection.execSQL("ALTER TABLE channel_read_states ADD COLUMN lastScrolledCreatedAt INTEGER")
+        connection.execSQL("ALTER TABLE channel_read_states ADD COLUMN lastScrolledOffset INTEGER NOT NULL DEFAULT 0")
+    }
+}
 
 val MIGRATION_1_2 = object : Migration(1, 2) {
     override fun migrate(connection: SQLiteConnection) {
@@ -207,6 +215,8 @@ data class ChannelReadStateEntity(
     val channelId: String,
     val lastReadAt: Long,
     val lastScrolledMessageId: String? = null,
+    val lastScrolledCreatedAt: Long? = null,
+    @ColumnInfo(defaultValue = "0") val lastScrolledOffset: Int = 0,
 )
 
 data class CachedChannelSummaryRow(
@@ -281,24 +291,30 @@ interface ChannelCacheDao {
     )
     suspend fun getLastReadAt(channelId: String): Long?
 
-    @Query(
-        """
-        SELECT lastScrolledMessageId
-        FROM channel_read_states
-        WHERE channelId = :channelId
-        LIMIT 1
-        """
-    )
-    suspend fun getScrollPosition(channelId: String): String?
+    @Query("SELECT * FROM channel_read_states WHERE channelId = :channelId LIMIT 1")
+    suspend fun getReadingState(channelId: String): ChannelReadStateEntity?
+
+    @Query("SELECT rawJson FROM channel_messages WHERE channelId = :channelId AND eventId = :messageId LIMIT 1")
+    suspend fun getMessage(channelId: String, messageId: String): String?
 
     @Query(
         """
-        INSERT INTO channel_read_states (channelId, lastReadAt, lastScrolledMessageId)
-        VALUES (:channelId, 0, :messageId)
-        ON CONFLICT(channelId) DO UPDATE SET lastScrolledMessageId = :messageId
+        INSERT INTO channel_read_states (channelId, lastReadAt, lastScrolledMessageId, lastScrolledCreatedAt, lastScrolledOffset)
+        VALUES (:channelId, 0, :messageId, :createdAt, :scrollOffset)
+        ON CONFLICT(channelId) DO UPDATE SET lastScrolledMessageId = :messageId,
+            lastScrolledCreatedAt = :createdAt, lastScrolledOffset = :scrollOffset
         """
     )
-    suspend fun upsertScrollPosition(channelId: String, messageId: String)
+    suspend fun upsertScrollPosition(channelId: String, messageId: String, createdAt: Long?, scrollOffset: Int)
+
+    @Query(
+        """
+        INSERT INTO channel_read_states (channelId, lastReadAt, lastScrolledOffset)
+        VALUES (:channelId, :readAt, 0)
+        ON CONFLICT(channelId) DO UPDATE SET lastReadAt = MAX(lastReadAt, :readAt)
+        """
+    )
+    suspend fun markRead(channelId: String, readAt: Long)
 
     @Query(
         """
@@ -338,14 +354,11 @@ interface ChannelCacheDao {
     @Insert(onConflict = OnConflictStrategy.IGNORE)
     suspend fun insertMessageRelay(relay: CachedChannelMessageRelayEntity)
 
-    @Insert(onConflict = OnConflictStrategy.REPLACE)
-    suspend fun upsertReadState(state: ChannelReadStateEntity)
-
     @Query(
         """
         SELECT rawJson FROM channel_messages
         WHERE channelId = :channelId
-        ORDER BY createdAt ASC
+        ORDER BY createdAt DESC, eventId DESC
         LIMIT :limit
         """
     )
@@ -455,7 +468,7 @@ interface ChannelCacheDao {
         CachedChannelMessageRelayEntity::class,
         ChannelReadStateEntity::class,
     ],
-    version = 4,
+    version = 5,
 )
 @ConstructedBy(ChannelCacheDatabaseConstructor::class)
 abstract class ChannelCacheDatabase : RoomDatabase() {
