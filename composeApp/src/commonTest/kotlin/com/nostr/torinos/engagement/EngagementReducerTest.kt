@@ -56,6 +56,27 @@ class EngagementReducerTest {
     }
 
     @Test
+    fun echoedReactionDuringRollbackIsNotCountedTwice() {
+        val operationId = EngagementOperationId("reaction-with-relay-echo")
+        val reaction = ReactionOption.Unicode("👍")
+        val optimistic = EngagementReducer.reduce(
+            NoteEngagementState(reactionCount = 2),
+            EngagementAction.Begin(operationId, EngagementRequest.AddEmoji(reaction)),
+        )
+
+        // 同じevent IDのrelay echoは受信側のdedupeで棄却されるため、ここではstateを増やさない。
+        val afterRelayEcho = optimistic
+        val rolledBack = EngagementReducer.reduce(
+            afterRelayEcho,
+            EngagementAction.Rollback(operationId),
+        )
+
+        assertEquals(2, rolledBack.reactionCount)
+        assertEquals(emptyList(), rolledBack.unicodeReactions)
+        assertFalse(rolledBack.isReactionPending)
+    }
+
+    @Test
     fun removeLikeRollbackRestoresIdAndCounts() {
         val operationId = EngagementOperationId("unlike")
         val initial = NoteEngagementState(

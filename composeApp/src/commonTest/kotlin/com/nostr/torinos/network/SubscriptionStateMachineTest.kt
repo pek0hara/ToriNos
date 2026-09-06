@@ -88,4 +88,18 @@ class SubscriptionStateMachineTest {
             classifyClosedReason("invalid: malformed").disposition,
         )
     }
+
+    @Test
+    fun relaysCanReachEoseInAnyOrderWithoutChangingEachOthersState() {
+        val relayA = SubscriptionStateMachine.reconcile(null, oldFilters, 1L).state!!
+        val relayB = SubscriptionStateMachine.reconcile(null, oldFilters, 1L).state!!
+
+        val bCompletedFirst = SubscriptionStateMachine.onEose(relayB)
+        assertEquals(RelaySubscriptionPhase.Sent, relayA.phase)
+        assertEquals(RelaySubscriptionPhase.Live, bCompletedFirst.phase)
+
+        val aCompletedLater = SubscriptionStateMachine.onEose(relayA)
+        assertEquals(RelaySubscriptionPhase.Live, aCompletedLater.phase)
+        assertEquals(RelaySubscriptionPhase.Live, bCompletedFirst.phase)
+    }
 }
