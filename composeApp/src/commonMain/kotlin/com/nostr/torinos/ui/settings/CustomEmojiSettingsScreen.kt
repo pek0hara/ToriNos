@@ -29,6 +29,8 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Star
+import androidx.compose.material.icons.filled.StarBorder
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
@@ -79,6 +81,7 @@ fun CustomEmojiSettingsScreen(
 ) {
     val emojis by CustomEmojiStore.emojis.collectAsState()
     val emojiLists by CustomEmojiStore.emojiLists.collectAsState()
+    val favoriteEmojis by CustomEmojiStore.favoriteEmojis.collectAsState()
     val state by viewModel.state.collectAsState()
     var discoverQuery by remember { mutableStateOf(initialQuery) }
     var registeredQuery by remember { mutableStateOf("") }
@@ -89,7 +92,9 @@ fun CustomEmojiSettingsScreen(
     val pagerState = rememberPagerState(pageCount = { EmojiSettingsTab.entries.size })
     val coroutineScope = rememberCoroutineScope()
     val selectedTab = EmojiSettingsTab.entries[pagerState.currentPage]
-    val savedEmojiUrls = remember(emojis) { emojis.associate { it.shortcode to it.imageUrl } }
+    val savedEmojiUrls = remember(emojiLists) {
+        emojiLists.flatMap { it.emojis }.associate { it.shortcode to it.imageUrl }
+    }
     val filteredPublishedSets = remember(state.publishedSets, savedEmojiUrls, discoverQuery, showRegisteredOnly) {
         state.publishedSets
             .filterByQuery(discoverQuery)
@@ -165,6 +170,7 @@ fun CustomEmojiSettingsScreen(
             initialShortcode = initialQuery,
             initialImageUrl = initialImageUrl,
             isRegistered = set.emojis.all { savedEmojiUrls[it.shortcode] == it.imageUrl },
+            favoriteEmojis = favoriteEmojis,
             onRegister = {
                 CustomEmojiStore.addList(
                     id = set.id,
@@ -187,6 +193,7 @@ fun CustomEmojiSettingsScreen(
             initialShortcode = initialQuery,
             initialImageUrl = initialImageUrl,
             isRegistered = true,
+            favoriteEmojis = favoriteEmojis,
             onUnregister = {
                 CustomEmojiStore.removeList(set.id, set.emojis)
                 selectedRegisteredSet = null
@@ -621,6 +628,7 @@ private fun EmojiSetDetailScreen(
     initialShortcode: String = "",
     initialImageUrl: String = "",
     isRegistered: Boolean,
+    favoriteEmojis: List<CustomEmoji>,
     onRegister: () -> Unit,
     onUnregister: () -> Unit,
     onBack: () -> Unit,
@@ -702,6 +710,21 @@ private fun EmojiSetDetailScreen(
                         text = ":${emoji.shortcode}:",
                         style = MaterialTheme.typography.titleMedium,
                         fontWeight = FontWeight.Bold,
+                    )
+                    val isFavorite = favoriteEmojis.any { it == emoji }
+                    FilterChip(
+                        selected = isFavorite,
+                        onClick = { CustomEmojiStore.toggleFavorite(emoji) },
+                        label = {
+                            Text(if (isFavorite) "お気に入り済み" else "お気に入りに追加")
+                        },
+                        leadingIcon = {
+                            Icon(
+                                imageVector = if (isFavorite) Icons.Default.Star else Icons.Default.StarBorder,
+                                contentDescription = null,
+                                modifier = Modifier.size(18.dp),
+                            )
+                        },
                     )
                 }
                 if (authorPubkey.isNotBlank()) {

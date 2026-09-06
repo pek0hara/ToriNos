@@ -51,6 +51,7 @@ object CustomEmojiStore {
     private const val EMOJI_LISTS_KEY = "custom_emoji_lists"
     private const val RECENT_EMOJIS_KEY = "recent_custom_emojis"
     private const val RECENT_REACTIONS_KEY = "recent_reactions"
+    private const val FAVORITE_EMOJIS_KEY = "favorite_custom_emojis"
     private const val MAX_RECENT_EMOJIS = 24
     private const val MANUAL_LIST_ID = "manual"
 
@@ -60,13 +61,17 @@ object CustomEmojiStore {
     private val _emojiLists = MutableStateFlow<List<CustomEmojiList>>(emptyList())
     private val _recentEmojiShortcodes = MutableStateFlow<List<String>>(emptyList())
     private val _recentReactions = MutableStateFlow<List<RecentReaction>>(emptyList())
+    private val _favoriteEmojis = MutableStateFlow<List<CustomEmoji>>(emptyList())
     private val _openSearchEvent = MutableSharedFlow<CustomEmojiOpenRequest>(extraBufferCapacity = 1)
 
     val emojis: StateFlow<List<CustomEmoji>> = _emojis.asStateFlow()
     val emojiLists: StateFlow<List<CustomEmojiList>> = _emojiLists.asStateFlow()
     val recentEmojiShortcodes: StateFlow<List<String>> = _recentEmojiShortcodes.asStateFlow()
     val recentReactions: StateFlow<List<RecentReaction>> = _recentReactions.asStateFlow()
+    val favoriteEmojis: StateFlow<List<CustomEmoji>> = _favoriteEmojis.asStateFlow()
     val openSearchEvent: SharedFlow<CustomEmojiOpenRequest> = _openSearchEvent.asSharedFlow()
+    private var activePubkey: String? = null
+    private var onPreferencesChanged: (() -> Unit)? = null
 
     fun requestOpenSearch(shortcode: String, imageUrl: String = "") {
         _openSearchEvent.tryEmit(
@@ -77,10 +82,47 @@ object CustomEmojiStore {
         )
     }
 
-    init {
-        scope.launch {
-            loadSavedState()
+    /** アカウントごとのキャッシュへ切り替え、以後の変更をリレー同期へ通知する。 */
+    internal suspend fun activateAccount(pubkey: String, onChanged: () -> Unit) {
+        val normalized = pubkey.trim().lowercase()
+        if (normalized.isBlank()) return
+        activePubkey = normalized
+        onPreferencesChanged = onChanged
+        _emojis.value = emptyList()
+        _emojiLists.value = emptyList()
+        _favoriteEmojis.value = emptyList()
+        _recentEmojiShortcodes.value = emptyList()
+        _recentReactions.value = emptyList()
+        loadSavedState(normalized)
+    }
+
+    fun deactivateAccount(pubkey: String) {
+        if (activePubkey != pubkey.trim().lowercase()) return
+        onPreferencesChanged = null
+    }
+
+    fun isFavorite(emoji: CustomEmoji): Boolean = _favoriteEmojis.value.any {
+        it.shortcode == emoji.shortcode.trim().trim(':') && it.imageUrl == emoji.imageUrl.trim()
+    }
+
+    fun toggleFavorite(emoji: CustomEmoji) {
+        val normalized = emoji.normalized() ?: return
+        _favoriteEmojis.update { current ->
+            if (current.any { it == normalized }) current - normalized else current + normalized
         }
+        rebuildEmojis()
+        save(notifySync = true)
+    }
+
+    /** リレーで取得した kind:10030 をローカル状態へ反映する。 */
+    internal fun applySyncedPreferences(
+        favorites: List<CustomEmoji>,
+        lists: List<CustomEmojiList>,
+    ) {
+        _favoriteEmojis.value = favorites.mapNotNull { it.normalized() }.distinct()
+        _emojiLists.value = lists.filter { it.emojis.isNotEmpty() }.distinctBy { it.id }
+        rebuildEmojis()
+        save(notifySync = false)
     }
 
     fun add(shortcode: String, imageUrl: String) {
@@ -101,7 +143,7 @@ object CustomEmojiStore {
             ),
             merge = true,
         )
-        save()
+        save(notifySync = true)
     }
 
     fun markUsed(shortcode: String) {
@@ -176,18 +218,20 @@ object CustomEmojiStore {
             ),
             merge = merge,
         )
-        save()
+        save(notifySync = true)
     }
 
     fun remove(shortcode: String) {
-        _emojis.update { current -> current.filterNot { it.shortcode == shortcode } }
+        val normalized = shortcode.trim().trim(':')
         _emojiLists.update { lists ->
             lists.mapNotNull { list ->
-                val updatedEmojis = list.emojis.filterNot { it.shortcode == shortcode }
+                val updatedEmojis = list.emojis.filterNot { it.shortcode == normalized }
                 if (updatedEmojis.isEmpty()) null else list.copy(emojis = updatedEmojis)
             }
         }
-        save()
+        _favoriteEmojis.update { favorites -> favorites.filterNot { it.shortcode == normalized } }
+        rebuildEmojis()
+        save(notifySync = true)
     }
 
     fun removeList(id: String, fallbackEmojis: List<CustomEmoji> = emptyList()) {
@@ -232,11 +276,33 @@ object CustomEmojiStore {
             remainingEmojis
         }.distinctBy { it.shortcode }
             .sortedBy { it.shortcode.lowercase() }
-        save()
+        rebuildEmojis()
+        save(notifySync = true)
     }
 
-    private suspend fun loadSavedState() {
-        LocalSettingsStorage.getString(EMOJIS_KEY)
+    private suspend fun loadSavedState(pubkey: String? = activePubkey) {
+        if (pubkey != null && !hasScopedState(pubkey)) {
+            val hasLegacyState = listOf(
+                EMOJIS_KEY,
+                EMOJI_LISTS_KEY,
+                FAVORITE_EMOJIS_KEY,
+                RECENT_EMOJIS_KEY,
+                RECENT_REACTIONS_KEY,
+            ).any { LocalSettingsStorage.getString(it) != null }
+            if (hasLegacyState) {
+                loadSavedState(pubkey = null)
+                persistCurrentState(pubkey)
+                listOf(
+                    EMOJIS_KEY,
+                    EMOJI_LISTS_KEY,
+                    FAVORITE_EMOJIS_KEY,
+                    RECENT_EMOJIS_KEY,
+                    RECENT_REACTIONS_KEY,
+                ).forEach { LocalSettingsStorage.putString(it, null) }
+                return
+            }
+        }
+        LocalSettingsStorage.getString(storageKey(EMOJIS_KEY, pubkey))
             ?.let { saved ->
                 runCatching {
                     json.decodeFromString(ListSerializer(CustomEmoji.serializer()), saved)
@@ -248,7 +314,7 @@ object CustomEmojiStore {
                     .distinctBy { it.shortcode }
                     .sortedBy { it.shortcode.lowercase() }
             }
-        val savedLists = LocalSettingsStorage.getString(EMOJI_LISTS_KEY)
+        val savedLists = LocalSettingsStorage.getString(storageKey(EMOJI_LISTS_KEY, pubkey))
             ?.let { saved ->
                 runCatching {
                     json.decodeFromString(ListSerializer(CustomEmojiList.serializer()), saved)
@@ -281,7 +347,15 @@ object CustomEmojiStore {
                 )
             }
             ?: emptyList()
-        LocalSettingsStorage.getString(RECENT_EMOJIS_KEY)
+        _favoriteEmojis.value = LocalSettingsStorage.getString(storageKey(FAVORITE_EMOJIS_KEY, pubkey))
+            ?.let { saved ->
+                runCatching { json.decodeFromString(ListSerializer(CustomEmoji.serializer()), saved) }.getOrNull()
+            }
+            .orEmpty()
+            .mapNotNull { it.normalized() }
+            .distinct()
+        rebuildEmojis()
+        LocalSettingsStorage.getString(storageKey(RECENT_EMOJIS_KEY, pubkey))
             ?.let { saved ->
                 runCatching {
                     json.decodeFromString(ListSerializer(String.serializer()), saved)
@@ -294,7 +368,7 @@ object CustomEmojiStore {
                     .distinct()
                     .take(MAX_RECENT_EMOJIS)
             }
-        val savedRecentReactions = LocalSettingsStorage.getString(RECENT_REACTIONS_KEY)
+        val savedRecentReactions = LocalSettingsStorage.getString(storageKey(RECENT_REACTIONS_KEY, pubkey))
             ?.let { saved ->
                 runCatching {
                     json.decodeFromString(ListSerializer(RecentReaction.serializer()), saved)
@@ -314,14 +388,49 @@ object CustomEmojiStore {
         }
     }
 
-    private fun save() {
+    private fun save(notifySync: Boolean = false) {
         val value = json.encodeToString(ListSerializer(CustomEmoji.serializer()), _emojis.value)
         val listsValue = json.encodeToString(ListSerializer(CustomEmojiList.serializer()), _emojiLists.value)
+        val favoritesValue = json.encodeToString(ListSerializer(CustomEmoji.serializer()), _favoriteEmojis.value)
+        val pubkey = activePubkey
         scope.launch {
-            LocalSettingsStorage.putString(EMOJIS_KEY, value)
-            LocalSettingsStorage.putString(EMOJI_LISTS_KEY, listsValue)
+            LocalSettingsStorage.putString(storageKey(EMOJIS_KEY, pubkey), value)
+            LocalSettingsStorage.putString(storageKey(EMOJI_LISTS_KEY, pubkey), listsValue)
+            LocalSettingsStorage.putString(storageKey(FAVORITE_EMOJIS_KEY, pubkey), favoritesValue)
         }
+        if (notifySync) onPreferencesChanged?.invoke()
     }
+
+    private suspend fun persistCurrentState(pubkey: String) {
+        LocalSettingsStorage.putString(
+            storageKey(EMOJIS_KEY, pubkey),
+            json.encodeToString(ListSerializer(CustomEmoji.serializer()), _emojis.value),
+        )
+        LocalSettingsStorage.putString(
+            storageKey(EMOJI_LISTS_KEY, pubkey),
+            json.encodeToString(ListSerializer(CustomEmojiList.serializer()), _emojiLists.value),
+        )
+        LocalSettingsStorage.putString(
+            storageKey(FAVORITE_EMOJIS_KEY, pubkey),
+            json.encodeToString(ListSerializer(CustomEmoji.serializer()), _favoriteEmojis.value),
+        )
+        LocalSettingsStorage.putString(
+            storageKey(RECENT_EMOJIS_KEY, pubkey),
+            json.encodeToString(ListSerializer(String.serializer()), _recentEmojiShortcodes.value),
+        )
+        LocalSettingsStorage.putString(
+            storageKey(RECENT_REACTIONS_KEY, pubkey),
+            json.encodeToString(ListSerializer(RecentReaction.serializer()), _recentReactions.value),
+        )
+    }
+
+    private suspend fun hasScopedState(pubkey: String): Boolean = listOf(
+        EMOJIS_KEY,
+        EMOJI_LISTS_KEY,
+        FAVORITE_EMOJIS_KEY,
+        RECENT_EMOJIS_KEY,
+        RECENT_REACTIONS_KEY,
+    ).any { LocalSettingsStorage.getString(storageKey(it, pubkey)) != null }
 
     private fun saveRecent() {
         val value = json.encodeToString(ListSerializer(String.serializer()), _recentEmojiShortcodes.value)
@@ -329,9 +438,10 @@ object CustomEmojiStore {
             ListSerializer(RecentReaction.serializer()),
             _recentReactions.value,
         )
+        val pubkey = activePubkey
         scope.launch {
-            LocalSettingsStorage.putString(RECENT_EMOJIS_KEY, value)
-            LocalSettingsStorage.putString(RECENT_REACTIONS_KEY, reactionsValue)
+            LocalSettingsStorage.putString(storageKey(RECENT_EMOJIS_KEY, pubkey), value)
+            LocalSettingsStorage.putString(storageKey(RECENT_REACTIONS_KEY, pubkey), reactionsValue)
         }
     }
 
@@ -360,5 +470,20 @@ object CustomEmojiStore {
             (current.filterNot { it.id == list.id } + updated)
                 .sortedBy { it.name.lowercase() }
         }
+    }
+
+    private fun rebuildEmojis() {
+        _emojis.value = (_emojiLists.value.flatMap { it.emojis } + _favoriteEmojis.value)
+            .distinctBy { it.shortcode }
+            .sortedBy { it.shortcode.lowercase() }
+    }
+
+    private fun storageKey(base: String, pubkey: String?): String =
+        pubkey?.let { "${base}_$it" } ?: base
+
+    private fun CustomEmoji.normalized(): CustomEmoji? {
+        val shortcode = shortcode.trim().trim(':')
+        val url = imageUrl.trim()
+        return if (shortcode.isBlank() || url.isBlank()) null else CustomEmoji(shortcode, url)
     }
 }

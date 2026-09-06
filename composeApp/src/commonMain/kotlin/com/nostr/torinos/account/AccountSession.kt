@@ -11,6 +11,7 @@ import com.nostr.torinos.crypto.signEvent
 import com.nostr.torinos.crypto.toHex
 import com.nostr.torinos.model.NostrEvent
 import com.nostr.torinos.network.FollowRepository
+import com.nostr.torinos.network.EmojiPreferenceSynchronizer
 import com.nostr.torinos.network.MuteStore
 import com.nostr.torinos.network.NgWordStore
 import com.nostr.torinos.network.PrivateMuteListStore
@@ -57,12 +58,14 @@ class AccountSession internal constructor(
     val muteStore = MuteStore(privateMuteListStore)
     val ngWordStore = NgWordStore(privateMuteListStore)
     val relayListSynchronizer = RelayListSynchronizer(this, followRepository, relayStore, resources.scope)
+    val emojiPreferenceSynchronizer = EmojiPreferenceSynchronizer(this, relayStore, resources.scope)
     private var repositoriesStarted = false
 
     init {
         resources.onClose(followRepository::close)
         resources.onClose(privateMuteListStore::close)
         resources.onClose(relayListSynchronizer::close)
+        resources.onClose(emojiPreferenceSynchronizer::close)
     }
 
     internal fun ensureActive() {
@@ -75,6 +78,7 @@ class AccountSession internal constructor(
         repositoriesStarted = true
         followRepository.start()
         privateMuteListStore.start()
+        emojiPreferenceSynchronizer.start()
     }
 
     internal fun onClose(action: () -> Unit) {

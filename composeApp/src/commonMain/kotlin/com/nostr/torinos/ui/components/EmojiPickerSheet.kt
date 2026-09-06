@@ -26,6 +26,7 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Star
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -69,9 +70,11 @@ internal fun StandardEmojiPickerSheet(
 ) {
     val savedCustomEmojis by CustomEmojiStore.emojis.collectAsState()
     val recentReactions by CustomEmojiStore.recentReactions.collectAsState()
+    val favoriteEmojis by CustomEmojiStore.favoriteEmojis.collectAsState()
     var query by remember { mutableStateOf("") }
     var selectedCategory by remember { mutableStateOf<StandardEmojiCategory?>(null) }
     var customOnly by remember { mutableStateOf(false) }
+    var favoriteOnly by remember { mutableStateOf(false) }
     val normalizedQuery = query.trim().trim(':').lowercase()
     val customOptions = remember(savedCustomEmojis) {
         savedCustomEmojis.map { ReactionOption.Custom(it.shortcode, it.imageUrl) }
@@ -93,7 +96,18 @@ internal fun StandardEmojiPickerSheet(
             .take(16)
             .toList()
     }
-    val visibleSections = remember(normalizedQuery, selectedCategory, customOnly, customOptions) {
+    val favoriteOptions = remember(favoriteEmojis) {
+        favoriteEmojis.map { ReactionOption.Custom(it.shortcode, it.imageUrl) }
+    }
+    val visibleSections = remember(
+        normalizedQuery,
+        selectedCategory,
+        customOnly,
+        favoriteOnly,
+        customOptions,
+        favoriteOptions,
+        recentOptions,
+    ) {
         when {
             normalizedQuery.isNotBlank() -> {
                 val unicodeMatches = STANDARD_EMOJI_CATEGORIES.flatMap { category ->
@@ -109,17 +123,20 @@ internal fun StandardEmojiPickerSheet(
                 listOf(EmojiPickerSection("検索結果", customMatches + unicodeMatches))
             }
             customOnly -> listOf(EmojiPickerSection("カスタム絵文字", customOptions))
+            favoriteOnly -> listOf(EmojiPickerSection("お気に入り", favoriteOptions))
             selectedCategory != null -> listOf(
                 EmojiPickerSection(
                     selectedCategory!!.label,
                     selectedCategory!!.emojis.map { ReactionOption.Unicode(it) },
                 ),
             )
-            else -> if (customOptions.isNotEmpty()) {
+            else -> (if (favoriteOptions.isNotEmpty()) {
+                listOf(EmojiPickerSection("お気に入り", favoriteOptions))
+            } else emptyList()) + (if (recentOptions.isNotEmpty()) {
+                listOf(EmojiPickerSection("最近使った項目", recentOptions))
+            } else emptyList()) + (if (customOptions.isNotEmpty()) {
                 listOf(EmojiPickerSection("カスタム絵文字", customOptions))
-            } else {
-                emptyList()
-            } + STANDARD_EMOJI_CATEGORIES.map { category ->
+            } else emptyList()) + STANDARD_EMOJI_CATEGORIES.map { category ->
                 EmojiPickerSection(
                     category.label,
                     category.emojis.map { ReactionOption.Unicode(it) },
@@ -172,20 +189,6 @@ internal fun StandardEmojiPickerSheet(
                 horizontalArrangement = Arrangement.SpaceEvenly,
                 verticalArrangement = Arrangement.spacedBy(4.dp),
             ) {
-                if (
-                    normalizedQuery.isBlank() &&
-                    selectedCategory == null &&
-                    !customOnly &&
-                    recentOptions.isNotEmpty()
-                ) {
-                    item(span = { GridItemSpan(maxLineSpan) }) {
-                        EmojiPickerSectionTitle("よく使う項目")
-                    }
-                    items(recentOptions, key = { "recent-${it.key}" }) { option ->
-                        EmojiPickerGridTile(option = option, onSelect = onSelect)
-                    }
-                }
-
                 visibleSections.forEach { section ->
                     item(
                         key = "title-${section.title}",
@@ -225,11 +228,24 @@ internal fun StandardEmojiPickerSheet(
                     icon = "",
                     iconVector = Icons.Default.History,
                     label = "すべてとよく使う項目",
-                    selected = selectedCategory == null && !customOnly,
+                    selected = selectedCategory == null && !customOnly && !favoriteOnly,
                     onClick = {
                         query = ""
                         selectedCategory = null
                         customOnly = false
+                        favoriteOnly = false
+                    },
+                )
+                EmojiCategoryButton(
+                    icon = "",
+                    iconVector = Icons.Default.Star,
+                    label = "お気に入り",
+                    selected = favoriteOnly,
+                    onClick = {
+                        query = ""
+                        selectedCategory = null
+                        customOnly = false
+                        favoriteOnly = true
                     },
                 )
                 EmojiCategoryButton(
@@ -241,6 +257,7 @@ internal fun StandardEmojiPickerSheet(
                         query = ""
                         selectedCategory = null
                         customOnly = true
+                        favoriteOnly = false
                     },
                 )
                 STANDARD_EMOJI_CATEGORIES.forEach { category ->
@@ -252,6 +269,7 @@ internal fun StandardEmojiPickerSheet(
                             query = ""
                             selectedCategory = category
                             customOnly = false
+                            favoriteOnly = false
                         },
                     )
                 }

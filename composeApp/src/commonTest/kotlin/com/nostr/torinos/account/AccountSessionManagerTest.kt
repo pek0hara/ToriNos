@@ -112,6 +112,25 @@ class AccountSessionManagerTest {
     }
 
     @Test
+    fun delayedResultFromPreviousAccountCannotRunAfterSwitch() = runBlocking {
+        val manager = newManager(FakeAccountStorage(activePubkey = PUBKEY_A))
+        val first = manager.initialize().getOrThrow() as AccountSessionState.Active
+        val oldResult = CompletableDeferred<Unit>()
+        val appliedPubkeys = mutableListOf<String>()
+        val collector = first.session.resources.scope.launch {
+            oldResult.await()
+            appliedPubkeys += first.session.pubkey
+        }
+
+        val second = manager.switchAccount(PUBKEY_B).getOrThrow()
+        oldResult.complete(Unit)
+        collector.join()
+        second.resources.scope.launch { appliedPubkeys += second.pubkey }.join()
+
+        assertEquals(listOf(PUBKEY_B), appliedPubkeys)
+    }
+
+    @Test
     fun failedSwitchCreatesFreshPreviousAccountSession() = runBlocking {
         val storage = FakeAccountStorage(activePubkey = PUBKEY_A, failSwitch = true)
         val manager = newManager(storage)
