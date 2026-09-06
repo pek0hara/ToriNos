@@ -114,10 +114,12 @@ internal class ChannelHistory(
         request({ older() }) {
             val limit = pageLimit(until)
             val page = fetch(filter(until = until, limit = limit))
+            val existingIds = state.value.messages.mapTo(mutableSetOf()) { it.id }
+            val addedCount = page.events.count { it.id !in existingIds }
             merge(page.events)
             if (page.complete) olderCursor = page.events.minOfOrNull { it.createdAt } ?: until
             mutableState.value = state.value.copy(
-                canLoadOlder = !page.complete || page.events.size >= limit,
+                canLoadOlder = !page.complete || (addedCount > 0 && page.events.size >= limit),
                 error = if (page.complete) null else INCOMPLETE,
             )
         }

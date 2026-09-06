@@ -6,9 +6,11 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.padding
@@ -20,21 +22,23 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.ExtendedFloatingActionButton
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import com.nostr.torinos.ui.components.AppTopBar
@@ -59,6 +63,7 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.nostr.torinos.account.accountSessionViewModel
 import com.nostr.torinos.model.ChannelMeta
+import com.nostr.torinos.model.NostrEvent
 import com.nostr.torinos.account.LocalAccountSession
 import com.nostr.torinos.network.RelayStore
 import com.nostr.torinos.ui.components.LazyListScrollbar
@@ -137,6 +142,40 @@ fun ChannelScreen(
             if (scrolling && !navigating && (state as? ChannelViewModel.UiState.Ready)?.history?.navigation == null) {
                 userHasScrolled = true
             }
+        }
+    }
+    LaunchedEffect(viewModel, listState) {
+        var previousIndex = listState.firstVisibleItemIndex
+        var previousOffset = listState.firstVisibleItemScrollOffset
+        var previousScrolling = false
+        var lastRequestedEdgeId: String? = null
+        snapshotFlow {
+            ChannelHistoryScrollSnapshot(
+                scrolling = listState.isScrollInProgress,
+                firstVisibleIndex = listState.firstVisibleItemIndex,
+                firstVisibleOffset = listState.firstVisibleItemScrollOffset,
+                visibleKeys = listState.layoutInfo.visibleItemsInfo.mapNotNull { it.key as? String }.toSet(),
+            )
+        }.distinctUntilChanged().collect { scroll ->
+            val movingTowardOlder = scroll.firstVisibleIndex > previousIndex ||
+                (scroll.firstVisibleIndex == previousIndex && scroll.firstVisibleOffset > previousOffset)
+            val userStartedAtEdge = scroll.scrolling && !previousScrolling
+            val ready = state as? ChannelViewModel.UiState.Ready
+            if (ready != null && shouldAutoLoadOlder(
+                    history = ready.history,
+                    visibleMessages = ready.messages,
+                    visibleKeys = scroll.visibleKeys,
+                    userMovingTowardOlder = movingTowardOlder || userStartedAtEdge,
+                    navigating = navigating,
+                    lastRequestedEdgeId = lastRequestedEdgeId,
+                )
+            ) {
+                lastRequestedEdgeId = ready.history.messages.lastOrNull()?.id
+                viewModel.loadMore()
+            }
+            previousIndex = scroll.firstVisibleIndex
+            previousOffset = scroll.firstVisibleOffset
+            previousScrolling = scroll.scrolling
         }
     }
     val newestVisibleMessageId = (state as? ChannelViewModel.UiState.Ready)?.messages?.firstOrNull()?.id
@@ -253,32 +292,6 @@ fun ChannelScreen(
                 },
             )
         },
-        floatingActionButton = {
-            if (history != null) {
-                val movingToLatest = history.navigationTarget == ChannelNavigationTarget.Latest
-                if (movingToLatest || !atLatest || history.newMessageCount > 0) {
-                    ExtendedFloatingActionButton(onClick = {
-                        if (!movingToLatest) {
-                            userHasScrolled = true
-                            viewModel.jumpToLatest()
-                        }
-                    }) {
-                        if (movingToLatest) {
-                            CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
-                            Spacer(Modifier.width(8.dp))
-                            Text("最新へ移動中")
-                        } else {
-                            Text(if (history.newMessageCount > 0) "新着あり・最新へ" else "最新へ")
-                        }
-                    }
-                } else if (!history.isLoading && history.navigationTarget == null && history.hasPreviousPosition) {
-                    ExtendedFloatingActionButton(onClick = {
-                        userHasScrolled = true
-                        viewModel.jumpToPrevious()
-                    }) { Text("前回の続きへ") }
-                }
-            }
-        },
         bottomBar = {
             val ready = state as? ChannelViewModel.UiState.Ready
             ChannelMessageInputBar(
@@ -294,7 +307,9 @@ fun ChannelScreen(
                 .padding(padding),
         ) {
             Column(Modifier.fillMaxSize()) {
-                if (history?.isLoading == true) {
+                if (history?.isLoading == true &&
+                    (history.navigationTarget != null || !history.canLoadOlder)
+                ) {
                     Row(Modifier.fillMaxWidth().padding(12.dp), verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
@@ -416,21 +431,6 @@ fun ChannelScreen(
                                                 ChannelHistoryGapButton(s.history.isLoading, viewModel::loadHistoryGap)
                                             }
                                         }
-                                        // reverseLayout により、末尾アイテムは画面上部に表示される
-                                        if (s.canLoadMore) {
-                                            item(key = "load-more-older") {
-                                                Box(
-                                                    modifier = Modifier
-                                                        .fillMaxWidth()
-                                                        .padding(16.dp),
-                                                    contentAlignment = Alignment.Center,
-                                                ) {
-                                                    FilledTonalButton(onClick = viewModel::loadMore, enabled = !s.history.isLoading) {
-                                                        Text("さらに読み込む")
-                                                    }
-                                                }
-                                            }
-                                        }
                                     }
                                     LazyListScrollbar(
                                         state = listState,
@@ -444,6 +444,28 @@ fun ChannelScreen(
                                 }
                             }
                         }
+                    }
+                    if (history != null) {
+                        ChannelHistoryNavigationButton(
+                            history = history,
+                            atLatest = atLatest,
+                            onLatest = {
+                                userHasScrolled = true
+                                viewModel.jumpToLatest()
+                            },
+                            onPrevious = {
+                                userHasScrolled = true
+                                viewModel.jumpToPrevious()
+                            },
+                            modifier = Modifier.align(Alignment.TopCenter),
+                        )
+                    }
+                    if (history?.isLoading == true && history.canLoadOlder &&
+                        history.navigationTarget == null
+                    ) {
+                        LinearProgressIndicator(
+                            modifier = Modifier.align(Alignment.TopCenter).fillMaxWidth().height(2.dp),
+                        )
                     }
                 }
             }
@@ -710,6 +732,100 @@ private fun ChannelHistoryGapButton(loading: Boolean, onClick: () -> Unit) {
         TextButton(onClick = onClick, enabled = !loading) { Text("この間を読み込む") }
     }
 }
+
+@Composable
+private fun ChannelHistoryNavigationButton(
+    history: ChannelHistoryState,
+    atLatest: Boolean,
+    onLatest: () -> Unit,
+    onPrevious: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val movingToLatest = history.navigationTarget == ChannelNavigationTarget.Latest
+    val showLatest = movingToLatest || !atLatest || history.newMessageCount > 0
+    val showPrevious = !showLatest && !history.isLoading &&
+        history.navigationTarget == null && history.hasPreviousPosition
+    if (!showLatest && !showPrevious) return
+
+    Row(
+        modifier = modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 5.dp),
+        horizontalArrangement = Arrangement.Center,
+    ) {
+        Box(
+            modifier = Modifier
+                .height(44.dp)
+                .clickable(enabled = !movingToLatest) {
+                    when {
+                        showLatest -> onLatest()
+                        else -> onPrevious()
+                    }
+                },
+            contentAlignment = Alignment.Center,
+        ) {
+            Surface(
+                modifier = Modifier.height(30.dp),
+                shape = CircleShape,
+                color = MaterialTheme.colorScheme.surfaceVariant,
+                contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                tonalElevation = 3.dp,
+                shadowElevation = 3.dp,
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxHeight().padding(horizontal = 11.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    if (movingToLatest) {
+                        CircularProgressIndicator(Modifier.size(14.dp), strokeWidth = 2.dp)
+                        Spacer(Modifier.width(6.dp))
+                        Text("最新へ移動中", style = MaterialTheme.typography.labelMedium)
+                    } else {
+                        Icon(
+                            imageVector = if (showLatest) Icons.Default.KeyboardArrowDown else Icons.Default.History,
+                            contentDescription = null,
+                            modifier = Modifier.size(15.dp),
+                        )
+                        Spacer(Modifier.width(5.dp))
+                        Text(
+                            text = when {
+                                showLatest && history.newMessageCount > 0 ->
+                                    "新着 ${history.newMessageCount.coerceAtMost(99)}${if (history.newMessageCount > 99) "+" else ""}件・最新へ"
+                                showLatest -> "最新へ"
+                                else -> "前回の続きへ"
+                            },
+                            style = MaterialTheme.typography.labelMedium,
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+private data class ChannelHistoryScrollSnapshot(
+    val scrolling: Boolean,
+    val firstVisibleIndex: Int,
+    val firstVisibleOffset: Int,
+    val visibleKeys: Set<String>,
+)
+
+internal fun shouldAutoLoadOlder(
+    history: ChannelHistoryState,
+    visibleMessages: List<NostrEvent>,
+    visibleKeys: Set<String>,
+    userMovingTowardOlder: Boolean,
+    navigating: Boolean,
+    lastRequestedEdgeId: String?,
+): Boolean {
+    if (!userMovingTowardOlder || navigating || history.isLoading || history.error != null ||
+        !history.canLoadOlder || history.navigationTarget != null
+    ) return false
+    val edgeId = history.messages.lastOrNull()?.id ?: return false
+    if (edgeId == lastRequestedEdgeId) return false
+    val triggerIds = visibleMessages.takeLast(AUTO_LOAD_OLDER_THRESHOLD).mapTo(mutableSetOf()) { it.id }
+    return visibleKeys.any { it in triggerIds }
+}
+
+private const val AUTO_LOAD_OLDER_THRESHOLD = 5
 
 internal fun isChannelLatestVisible(
     newestMessageId: String?,

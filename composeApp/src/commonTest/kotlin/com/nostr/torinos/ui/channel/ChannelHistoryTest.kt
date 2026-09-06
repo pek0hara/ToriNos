@@ -320,6 +320,38 @@ class ChannelHistoryTest {
         assertTrue(isChannelLatestVisible("latest", emptyList(), 0))
     }
 
+    @Test
+    fun olderPostsAutoLoadOnlyForUserScrollNearUnrequestedEdge() {
+        val messages = events(100, 71)
+        val ready = ChannelHistoryState(messages = messages, isLoading = false, canLoadOlder = true)
+        val nearOldest = setOf("73", "72", "71")
+
+        assertTrue(shouldAutoLoadOlder(ready, messages, nearOldest, true, false, null))
+        assertFalse(shouldAutoLoadOlder(ready, messages, nearOldest, false, false, null))
+        assertFalse(shouldAutoLoadOlder(ready, messages, nearOldest, true, true, null))
+        assertFalse(shouldAutoLoadOlder(ready, messages, nearOldest, true, false, "71"))
+        assertFalse(shouldAutoLoadOlder(ready.copy(isLoading = true), messages, nearOldest, true, false, null))
+        assertFalse(shouldAutoLoadOlder(ready.copy(error = "timeout"), messages, nearOldest, true, false, null))
+        assertFalse(shouldAutoLoadOlder(ready, messages, setOf("90"), true, false, null))
+    }
+
+    @Test
+    fun completePageWithoutNewOlderPostsStopsPagination() = runTest {
+        var calls = 0
+        val history = ChannelHistory(backgroundScope, "channel", {
+            calls++
+            ChannelHistoryPage(if (calls == 1) events(100, 71) else listOf(event(71)), true)
+        }, { null })
+        history.initialize(emptyList(), null)
+        runCurrent()
+        history.older()
+        runCurrent()
+
+        assertFalse(history.state.value.canLoadOlder)
+        assertEquals(30, history.state.value.messages.size)
+        history.close()
+    }
+
     private fun event(time: Long) = NostrEvent(time.toString(), "author", time, 42,
         listOf(listOf("e", "channel", "", "root")), "message", "sig")
     private fun events(from: Int, to: Int) = (from downTo to).map { event(it.toLong()) }
