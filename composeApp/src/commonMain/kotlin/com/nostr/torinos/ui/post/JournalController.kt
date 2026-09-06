@@ -347,6 +347,7 @@ internal class JournalController(
     private var hasConfiguredRelayUrl = false
     private var ownPublicKeyHex: String? = null
     private var subscriptionSequence = 0L
+    private var monthLoadGeneration = 0L
     private var activeLoadKinds: Set<JournalLoadKind> = defaultJournalLoadKinds()
     private var visibleNoteIds: Set<String> = emptySet()
     private val loadedEngagementNoteIds = mutableSetOf<String>()
@@ -686,6 +687,8 @@ internal class JournalController(
         monthBackfillJob?.cancel()
         loadJob?.cancel()
         visibleNoteIds = emptySet()
+        monthLoadGeneration += 1
+        val loadGeneration = monthLoadGeneration
 
         val monthStart = month.monthStart()
         val nextSelectedDate = selectedDate
@@ -770,10 +773,6 @@ internal class JournalController(
                 } else {
                     fetchProfile(context.publicKeyHex, relayUrl)
                 }
-                backfillMonthEntries(
-                    context = context,
-                    monthStart = monthStart,
-                )
                 val loadKinds = activeLoadKinds
                 val missingKinds = missingLoadKinds(nextSelectedDate, loadKinds)
                 val (memoEvents, noteEvents) = if (missingKinds.isEmpty()) {
@@ -790,31 +789,49 @@ internal class JournalController(
                 }
                 val memos = decodeMemoEvents(memoEvents, context)
                 val notes = noteEvents.sortedByDescending { it.createdAt }
+                if (!isCurrentMonthLoad(monthStart, loadGeneration)) return@launch
 
-                val profiles = if (profile != null) {
-                    _state.value.profiles + (context.publicKeyHex to profile)
-                } else {
-                    _state.value.profiles
+                _state.dispatch { latestState ->
+                    if (
+                        monthLoadGeneration != loadGeneration ||
+                        latestState.selectedMonth != monthStart
+                    ) {
+                        latestState
+                    } else {
+                        val contentState = if (memos.isEmpty() && notes.isEmpty()) {
+                            latestState
+                        } else {
+                            latestState.withContent(
+                                memos = mergeJournalMemos(latestState.memos, memos),
+                                notes = mergeNotes(latestState.notes, notes),
+                            )
+                        }
+                        contentState.copy(
+                            isLoading = false,
+                            profiles = if (profile != null) {
+                                latestState.profiles + (context.publicKeyHex to profile)
+                            } else {
+                                latestState.profiles
+                            },
+                            loadedDates = latestState.loadedDates + nextSelectedDate,
+                            loadedKindsByDate = latestState.loadedKindsByDate + (
+                                nextSelectedDate to (
+                                    latestState.loadedKindsByDate[nextSelectedDate].orEmpty() + missingKinds
+                                )
+                            ),
+                            error = null,
+                        )
+                    }
                 }
-
-                val latestState = _state.value
-                val contentState = if (memos.isEmpty() && notes.isEmpty()) {
-                    latestState
-                } else {
-                    latestState.withContent(
-                        memos = mergeJournalMemos(latestState.memos, memos),
-                        notes = mergeNotes(latestState.notes, notes),
-                    )
-                }
-                _state.value = contentState.copy(
-                    isLoading = false,
-                    profiles = profiles,
-                    loadedDates = latestState.loadedDates + nextSelectedDate,
-                    loadedKindsByDate = markLoadedKinds(nextSelectedDate, missingKinds),
-                    error = null,
-                )
+                if (!isCurrentMonthLoad(monthStart, loadGeneration)) return@launch
 
                 fetchReferencedContentNow(notes, memos, relayUrl)
+                backfillMonthEntries(
+                    context = context,
+                    monthStart = monthStart,
+                    loadKinds = loadKinds,
+                    loadGeneration = loadGeneration,
+                )
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Throwable) {
@@ -829,6 +846,8 @@ internal class JournalController(
     private fun backfillMonthEntries(
         context: JournalLoadContext,
         monthStart: LocalDate,
+        loadKinds: Set<JournalLoadKind>,
+        loadGeneration: Long,
     ) {
         monthBackfillJob?.cancel()
         monthBackfillJob = launch {
@@ -836,69 +855,51 @@ internal class JournalController(
                 val lastDay = minOf(monthStart.nextMonth().minusDays(1), currentDate())
                 val dates = generateSequence(monthStart) { it.plusDays(1) }
                     .takeWhile { it <= lastDay }
-                    .toList()
-                val loadKinds = activeLoadKinds
-                val (memoEvents, noteEvents) = fetchMonthEvents(
-                    pubkey = context.publicKeyHex,
-                    since = monthStart.startOfDayEpochSeconds(),
-                    until = lastDay.plusDays(1).startOfDayEpochSeconds() - 1,
-                    relayUrl = relayUrl,
-                    loadKinds = loadKinds,
-                )
-                if (_state.value.selectedMonth != monthStart) return@launch
 
-                val memos = decodeMemoEvents(memoEvents, context)
-                val loadedKindsByDate = dates.fold(_state.value.loadedKindsByDate) { loaded, date ->
-                    loaded + (date to (loaded[date].orEmpty() + loadKinds))
+                for (date in dates) {
+                    if (!isCurrentMonthLoad(monthStart, loadGeneration)) return@launch
+                    val missingKinds = missingLoadKinds(date, loadKinds)
+                    if (missingKinds.isEmpty()) continue
+
+                    val (memoEvents, noteEvents) = fetchEvents(
+                        pubkey = context.publicKeyHex,
+                        since = date.startOfDayEpochSeconds(),
+                        until = date.plusDays(1).startOfDayEpochSeconds() - 1,
+                        relayUrl = relayUrl,
+                        loadKinds = missingKinds,
+                        limit = JOURNAL_DATE_LIMIT,
+                    )
+                    if (!isCurrentMonthLoad(monthStart, loadGeneration)) return@launch
+
+                    val memos = decodeMemoEvents(memoEvents, context)
+                    _state.dispatch { latestState ->
+                        if (
+                            monthLoadGeneration != loadGeneration ||
+                            latestState.selectedMonth != monthStart
+                        ) {
+                            latestState
+                        } else {
+                            latestState.withContent(
+                                memos = mergeJournalMemos(latestState.memos, memos),
+                                notes = mergeNotes(latestState.notes, noteEvents),
+                            ).copy(
+                                loadedDates = latestState.loadedDates + date,
+                                loadedKindsByDate = latestState.loadedKindsByDate + (
+                                    date to (latestState.loadedKindsByDate[date].orEmpty() + missingKinds)
+                                ),
+                            )
+                        }
+                    }
+                    fetchReferencedContentNow(noteEvents, memos, relayUrl)
                 }
-                _state.value = _state.value.withContent(
-                    memos = mergeJournalMemos(_state.value.memos, memos),
-                    notes = mergeNotes(_state.value.notes, noteEvents),
-                ).copy(
-                    loadedDates = _state.value.loadedDates + dates,
-                    loadedKindsByDate = loadedKindsByDate,
-                )
-                fetchReferencedContentNow(noteEvents, memos, relayUrl)
             } catch (e: CancellationException) {
                 throw e
             }
         }
     }
 
-    private suspend fun fetchMonthEvents(
-        pubkey: String,
-        since: Long,
-        until: Long,
-        relayUrl: String?,
-        loadKinds: Set<JournalLoadKind>,
-    ): Pair<List<NostrEvent>, List<NostrEvent>> {
-        val memoEvents = linkedMapOf<String, NostrEvent>()
-        val noteEvents = linkedMapOf<String, NostrEvent>()
-        var pageUntil = until
-        var pageCount = 0
-
-        while (pageCount < JOURNAL_MONTH_MAX_PAGES) {
-            pageCount += 1
-            val (memoPage, notePage) = fetchEvents(
-                pubkey = pubkey,
-                since = since,
-                until = pageUntil,
-                relayUrl = relayUrl,
-                loadKinds = loadKinds,
-                limit = JOURNAL_MONTH_PAGE_LIMIT,
-            )
-            memoPage.forEach { memoEvents[it.id] = it }
-            notePage.forEach { noteEvents[it.id] = it }
-
-            val pageEvents = memoPage + notePage
-            if (pageEvents.size < JOURNAL_MONTH_PAGE_LIMIT) break
-            val oldestTimestamp = pageEvents.minOfOrNull { it.createdAt } ?: break
-            if (oldestTimestamp <= since || oldestTimestamp > pageUntil) break
-            pageUntil = oldestTimestamp - 1
-        }
-
-        return memoEvents.values.toList() to noteEvents.values.toList()
-    }
+    private fun isCurrentMonthLoad(monthStart: LocalDate, loadGeneration: Long): Boolean =
+        monthLoadGeneration == loadGeneration && _state.value.selectedMonth == monthStart
 
     private fun loadDate(date: LocalDate, forceRefresh: Boolean = false) {
         referencedContentJob?.cancel()
@@ -1573,8 +1574,6 @@ internal fun LocalDate.minusDays(days: Int): LocalDate =
 internal fun LocalDate.startOfDayEpochSeconds(): Long =
     atStartOfDayIn(TimeZone.currentSystemDefault()).epochSeconds
 
-private const val JOURNAL_MONTH_PAGE_LIMIT = 500
-private const val JOURNAL_MONTH_MAX_PAGES = 12
 private const val JOURNAL_DATE_LIMIT = 500
 private const val ENGAGEMENT_FETCH_TIMEOUT_MS = 8_000L
 private const val ENGAGEMENT_STATE_BATCH_MS = 100L

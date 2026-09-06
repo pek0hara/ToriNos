@@ -47,7 +47,40 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlin.time.Clock
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.StateFlow
+
+internal interface FeedSubscriptionGateway {
+    fun events(subscriptionId: String): Flow<NostrEvent>
+
+    suspend fun open(spec: SubscriptionSpec): SubscriptionSession
+
+    suspend fun subscribe(
+        subscriptionId: String,
+        filter: NostrFilter,
+        target: RelayTarget,
+    ): Set<String>
+
+    fun close(subscriptionId: String)
+}
+
+private object RepositoryFeedSubscriptionGateway : FeedSubscriptionGateway {
+    override fun events(subscriptionId: String): Flow<NostrEvent> =
+        NostrRepository.events(subscriptionId)
+
+    override suspend fun open(spec: SubscriptionSpec): SubscriptionSession =
+        NostrRepository.openSubscription(spec)
+
+    override suspend fun subscribe(
+        subscriptionId: String,
+        filter: NostrFilter,
+        target: RelayTarget,
+    ): Set<String> = NostrRepository.subscribe(subscriptionId, filter, target)
+
+    override fun close(subscriptionId: String) {
+        NostrRepository.close(subscriptionId)
+    }
+}
 
 internal class FeedController(
     private val accountSession: AccountSession? = null,
@@ -60,6 +93,7 @@ internal class FeedController(
     private val hashtag: String? = null,
     private val filterMutedUsers: Boolean = true,
     private val scope: CoroutineScope,
+    private val subscriptions: FeedSubscriptionGateway = RepositoryFeedSubscriptionGateway,
 ) {
     private val safeCoroutineLauncher = SafeCoroutineLauncher(scope, "FeedController")
     private fun launch(block: suspend CoroutineScope.() -> Unit): Job =
@@ -395,7 +429,7 @@ internal class FeedController(
 
         // 引用先イベント受信（nostr:note/nevent または q タグ）
         subscriptionJobs += launch {
-            NostrRepository.events(ids.quote).collect { event ->
+            subscriptions.events(ids.quote).collect { event ->
                 if (event.kind != 1) return@collect
                 val cur = currentFeedState()
                 if (cur.quotedEvents.containsKey(event.id)) return@collect
@@ -417,7 +451,7 @@ internal class FeedController(
 
         // content が空のリポストから元ポストを追加取得
         subscriptionJobs += launch {
-            NostrRepository.events(ids.repostTarget).collect { event ->
+            subscriptions.events(ids.repostTarget).collect { event ->
                 if (event.kind != 1) return@collect
                 val pending = pendingRepostTargets.remove(event.id) ?: return@collect
                 appendEvent(event, timelineCreatedAt = pending.repostedAt)
@@ -494,8 +528,8 @@ internal class FeedController(
             launch { sessionsToClose.forEach { it.close() } }
         }
         ids?.let {
-            NostrRepository.close(it.repostTarget)
-            NostrRepository.close(it.quote)
+            subscriptions.close(it.repostTarget)
+            subscriptions.close(it.quote)
         }
     }
 
@@ -535,7 +569,7 @@ internal class FeedController(
             subscribeLiveFeed(since = Clock.System.now().epochSeconds)
         }
         updateFeedState { it.copy(canLoadMore = false, isLoadingMore = true) }
-        val session = NostrRepository.openSubscription(
+        val session = subscriptions.open(
             SubscriptionSpec(
                 id = historySubId,
                 filters = listOf(
@@ -565,7 +599,7 @@ internal class FeedController(
         loadingMore = true
         lastHistoryBatchUniqueCount = 0
         lastHistoryBatchCreatedAts.clear()
-        val session = NostrRepository.openSubscription(
+        val session = subscriptions.open(
             SubscriptionSpec(
                 id = historySubId,
                 filters = listOf(
@@ -734,7 +768,7 @@ internal class FeedController(
             return
         }
 
-        val session = NostrRepository.openSubscription(
+        val session = subscriptions.open(
             SubscriptionSpec(
                 id = ids.feed,
                 filters = filters,
@@ -850,7 +884,7 @@ internal class FeedController(
             }
             launch {
                 val ids = subscriptionIds ?: return@launch
-                NostrRepository.subscribe(
+                subscriptions.subscribe(
                     ids.repostTarget,
                     NostrFilter(ids = pendingRepostTargets.keys.toList(), kinds = listOf(1)),
                     target = relayTarget,
@@ -1025,7 +1059,7 @@ internal class FeedController(
             return
         }
 
-        val session = NostrRepository.openSubscription(
+        val session = subscriptions.open(
             SubscriptionSpec(
                 id = subIds.reaction,
                 filters = filters,
@@ -1139,7 +1173,7 @@ internal class FeedController(
         if (missingIds.isEmpty()) return
         launch {
             val ids = subscriptionIds ?: return@launch
-            NostrRepository.subscribe(
+            subscriptions.subscribe(
                 ids.quote,
                 NostrFilter(ids = pendingQuoteIds.toList(), kinds = listOf(1)),
                 target = relayTarget,
