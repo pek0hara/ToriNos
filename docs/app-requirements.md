@@ -268,7 +268,7 @@ NIP 対応は、公式 NIPs リポジトリの kind/NIP 対応表を基準に整
 
 ## プッシュ通知
 
-プッシュ通知バックエンドは別計画として [push-notification-backend-plan.md](./push-notification-backend-plan.md) にまとめる。アプリ全体要件としては、将来的に端末トークン登録、解除、メンション/DM/リアクション/リポスト通知を扱う余地を残す。
+プッシュ通知バックエンドは [push-notification-durable-object-design.md](./push-notification-durable-object-design.md) にまとめる。アプリ全体要件としては、将来的に端末トークン登録、解除、メンション、返信、リアクション、リポスト通知を扱う余地を残す。DM通知は初期構成の対象外とし、NIP-17 / NIP-59に対応する際に別途プライバシー設計を行う。
 
 ## 未確定事項
 
