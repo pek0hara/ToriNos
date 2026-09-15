@@ -128,7 +128,9 @@ class RelaySettingsViewModel(
                 val result = if (isWriteSupported) {
                     checkNotNull(accountSession) { "アカウントセッションがありません" }
                         .relayListSynchronizer.updatePublishedRelayList(
-                        additions = state.pendingAdditions,
+                        additions = state.pendingAdditions.mapNotNull { url ->
+                            draftEntries.firstOrNull { it.url == url }
+                        },
                         removals = state.pendingRemovals,
                     )
                 } else {

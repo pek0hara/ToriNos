@@ -1,6 +1,7 @@
 package com.nostr.torinos.network
 
 import com.nostr.torinos.model.NostrEvent
+import kotlinx.serialization.json.Json
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -38,10 +39,10 @@ class RelayStoreTest {
 
         val result = mergeRelayEntriesFromPublishedList(
             currentEntries = current,
-            publishedUrls = listOf(
-                " wss://shared.example ",
-                "wss://new.example",
-                "wss://new.example",
+            publishedEntries = listOf(
+                RelayEntry(" wss://shared.example ", enabled = true),
+                RelayEntry("wss://new.example", enabled = true),
+                RelayEntry("wss://new.example", enabled = true),
             ),
         )
 
@@ -62,8 +63,103 @@ class RelayStoreTest {
         assertEquals(current, mergeRelayEntriesFromPublishedList(current, emptyList()))
         assertEquals(
             current,
-            mergeRelayEntriesFromPublishedList(current, listOf("", "https://not-a-relay.example")),
+            mergeRelayEntriesFromPublishedList(
+                current,
+                listOf(
+                    RelayEntry("", enabled = true),
+                    RelayEntry("https://not-a-relay.example", enabled = true),
+                ),
+            ),
         )
+    }
+
+    @Test
+    fun nip65ReadWriteMarkersAreKeptAndUsedForRouting() {
+        val published = relayEntriesFromTags(
+            listOf(
+                listOf("r", "wss://read.example", "read"),
+                listOf("r", "wss://write.example", "write"),
+                listOf("r", "wss://both.example"),
+            ),
+        )
+
+        assertEquals(
+            listOf(
+                RelayEntry("wss://read.example", enabled = true, read = true, write = false),
+                RelayEntry("wss://write.example", enabled = true, read = false, write = true),
+                RelayEntry("wss://both.example", enabled = true, read = true, write = true),
+            ),
+            published,
+        )
+        assertEquals(
+            listOf("wss://read.example", "wss://both.example"),
+            readableRelayUrls(published),
+        )
+        assertEquals(
+            listOf("wss://write.example", "wss://both.example"),
+            writableRelayUrls(published),
+        )
+    }
+
+    @Test
+    fun publishedDirectionsReplacePreviousLocalDirections() {
+        val current = listOf(
+            RelayEntry("wss://read.example", enabled = true),
+            RelayEntry("wss://write.example", enabled = false),
+        )
+
+        val result = mergeRelayEntriesFromPublishedList(
+            currentEntries = current,
+            publishedEntries = relayEntriesFromTags(
+                listOf(
+                    listOf("r", "wss://read.example", "read"),
+                    listOf("r", "wss://write.example", "write"),
+                ),
+            ),
+        )
+
+        assertEquals(
+            listOf(
+                RelayEntry("wss://read.example", enabled = true, read = true, write = false),
+                RelayEntry("wss://write.example", enabled = true, read = false, write = true),
+            ),
+            result,
+        )
+    }
+
+    @Test
+    fun duplicateReadAndWriteTagsAreMergedForSameRelay() {
+        assertEquals(
+            listOf(RelayEntry("wss://relay.example", enabled = true)),
+            relayEntriesFromTags(
+                listOf(
+                    listOf("r", "wss://relay.example", "read"),
+                    listOf("r", "wss://relay.example", "write"),
+                ),
+            ),
+        )
+    }
+
+    @Test
+    fun savedEntriesWithoutDirectionsRemainReadWriteCapable() {
+        assertEquals(
+            RelayEntry("wss://legacy.example", enabled = true, read = true, write = true),
+            Json.decodeFromString<RelayEntry>(
+                """{"url":"wss://legacy.example","enabled":true}""",
+            ),
+        )
+    }
+
+    @Test
+    fun explicitPublishingRejectsKnownReadOnlyRelayButAllowsUnknownRelay() {
+        val entries = listOf(
+            RelayEntry("wss://read.example", enabled = true, read = true, write = false),
+            RelayEntry("wss://write.example", enabled = true, read = false, write = true),
+        )
+
+        assertEquals(false, relayAllowsWriting(entries, "wss://read.example"))
+        assertEquals(true, relayAllowsWriting(entries, "wss://write.example"))
+        assertEquals(true, relayAllowsWriting(entries, "wss://hint.example"))
     }
 
     @Test
@@ -112,7 +208,7 @@ class RelayStoreTest {
 
         val result = applyRelayListChanges(
             currentTags = currentTags,
-            additions = setOf("wss://new.example"),
+            additions = setOf(RelayEntry("wss://new.example", enabled = true)),
             removals = setOf("wss://remove.example"),
         )
 
@@ -132,11 +228,35 @@ class RelayStoreTest {
 
         val result = applyRelayListChanges(
             currentTags = currentTags,
-            additions = setOf("wss://existing.example", "wss://same.example"),
+            additions = setOf(
+                RelayEntry("wss://existing.example", enabled = true),
+                RelayEntry("wss://same.example", enabled = true),
+            ),
             removals = setOf("wss://same.example"),
         )
 
         assertEquals(currentTags, result)
+    }
+
+    @Test
+    fun reEnablingRelayPublishesItsStoredDirection() {
+        val result = applyRelayListChanges(
+            currentTags = listOf(listOf("alt", "relay list metadata")),
+            additions = listOf(
+                RelayEntry("wss://read.example", enabled = true, read = true, write = false),
+                RelayEntry("wss://write.example", enabled = true, read = false, write = true),
+            ),
+            removals = emptySet(),
+        )
+
+        assertEquals(
+            listOf(
+                listOf("alt", "relay list metadata"),
+                listOf("r", "wss://read.example", "read"),
+                listOf("r", "wss://write.example", "write"),
+            ),
+            result,
+        )
     }
 
     @Test

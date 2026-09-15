@@ -48,18 +48,18 @@ class RelayListSynchronizer internal constructor(
         scope.launch { retryPendingPublish(pubkey) }
 
         val latestEvent = fetchLatestEvent(pubkey) ?: return@withLock false
-        val publishedUrls = relayUrlsFromTags(latestEvent.tags)
-        if (publishedUrls.isEmpty()) return@withLock false
+        val publishedEntries = relayEntriesFromTags(latestEvent.tags)
+        if (publishedEntries.isEmpty()) return@withLock false
 
         session.ensureActive()
-        relayStore.applyPublishedRelayUrls(publishedUrls)
-        appLog("[RelayListSynchronizer] applied ${publishedUrls.size} relays for ${pubkey.take(8)}")
+        relayStore.applyPublishedRelayEntries(publishedEntries)
+        appLog("[RelayListSynchronizer] applied ${publishedEntries.size} relays for ${pubkey.take(8)}")
         true
     }
 
     /** 読み込み済みの kind:10002 に、明示された追加・削除だけを反映する。 */
     suspend fun updatePublishedRelayList(
-        additions: Set<String>,
+        additions: Collection<RelayEntry>,
         removals: Set<String>,
     ): RelayListUpdateResult = operationMutex.withLock {
         val pubkey = session.pubkey
@@ -142,26 +142,27 @@ class RelayListSynchronizer internal constructor(
         pubkey: String,
         onFirstResponse: () -> Unit = {},
         bypassCache: Boolean = false,
+        relayUrlsOverride: List<String>? = null,
     ): NostrEvent? {
         relayStore.isLoaded.first { it }
-        val cachedEvent = RelayListEventCache.getOrLoad(pubkey)
-        if (cachedEvent != null && !bypassCache) {
-            onFirstResponse()
-            scope.launch {
-                runCatching { fetchLatestEvent(pubkey, bypassCache = true) }
-                    .onFailure { e ->
-                        appLog("[RelayListSynchronizer] background refresh failed: ${e.message}")
-                    }
-            }
-            return cachedEvent
-        }
-        val relayUrls = (
+        val relayUrls = relayUrlsOverride ?: (
             relayStore.enabledRelayUrlsSnapshot() +
                 relayStore.defaults.map { it.url }
             )
             .mapNotNull(::normalizeRelayUrl)
             .distinct()
         check(relayUrls.isNotEmpty()) { "取得先リレーがありません" }
+        val cachedEvent = RelayListEventCache.getOrLoad(pubkey)
+        if (cachedEvent != null && !bypassCache) {
+            onFirstResponse()
+            scope.launch {
+                runCatching { refreshAndApplyLatestEvent(pubkey, relayUrls) }
+                    .onFailure { e ->
+                        appLog("[RelayListSynchronizer] background refresh failed: ${e.message}")
+                    }
+            }
+            return cachedEvent
+        }
 
         val generation = ++syncGeneration
         val subscriptionIds = relayUrls.indices.map { index ->
@@ -169,11 +170,12 @@ class RelayListSynchronizer internal constructor(
         }
         val latestEventMutex = Mutex()
         var latestEvent: NostrEvent? = cachedEvent
+        var continueInBackground = false
 
         try {
             coroutineScope {
                 val completedSubscriptions = mutableSetOf<String>()
-                val allComplete = CompletableDeferred<Unit>()
+                val enoughResponses = CompletableDeferred<Unit>()
                 val completionMutex = Mutex()
                 val firstResponseMutex = Mutex()
                 var firstResponseNotified = cachedEvent != null
@@ -204,6 +206,14 @@ class RelayListSynchronizer internal constructor(
                                     latestEvent = event
                                 }
                             }
+                            if (!bypassCache && shouldCompleteRelayListFetch(
+                                    hasReceivedEvent = true,
+                                    completedRelayCount = 0,
+                                    targetRelayCount = subscriptionIds.size,
+                                )
+                            ) {
+                                enoughResponses.complete(Unit)
+                            }
                         }
                     }
                 }
@@ -213,8 +223,13 @@ class RelayListSynchronizer internal constructor(
                         notifyFirstResponse()
                         completionMutex.withLock {
                             completedSubscriptions += subscriptionId
-                            if (completedSubscriptions.size == subscriptionIds.size) {
-                                allComplete.complete(Unit)
+                            if (shouldCompleteRelayListFetch(
+                                    hasReceivedEvent = false,
+                                    completedRelayCount = completedSubscriptions.size,
+                                    targetRelayCount = subscriptionIds.size,
+                                )
+                            ) {
+                                enoughResponses.complete(Unit)
                             }
                         }
                     }
@@ -233,17 +248,18 @@ class RelayListSynchronizer internal constructor(
                         )
                     }
                     val completed = withTimeoutOrNull(SYNC_TIMEOUT_MS) {
-                        allComplete.await()
+                        enoughResponses.await()
                         true
                     }
+                    val completedRelayCount = completionMutex.withLock { completedSubscriptions.size }
+                    val receivedEvent = latestEventMutex.withLock { latestEvent != null }
                     val hasRelayResponse = completionMutex.withLock {
                         completedSubscriptions.isNotEmpty()
-                    } || latestEventMutex.withLock {
-                        latestEvent != null
-                    }
+                    } || receivedEvent
                     if (completed != true && !hasRelayResponse) {
                         error("リレーリストの取得がタイムアウトしました")
                     }
+                    continueInBackground = !bypassCache && receivedEvent && completedRelayCount < subscriptionIds.size
                 } finally {
                     eventJobs.forEach { it.cancel() }
                     eoseJobs.forEach { it.cancel() }
@@ -256,9 +272,38 @@ class RelayListSynchronizer internal constructor(
             appLog("[RelayListSynchronizer] sync failed: ${e::class.simpleName}: ${e.message}")
             throw e
         }
+        if (continueInBackground) {
+            scope.launch {
+                runCatching { refreshAndApplyLatestEvent(pubkey, relayUrls) }
+                    .onFailure { e ->
+                        appLog("[RelayListSynchronizer] background refresh failed: ${e.message}")
+                    }
+            }
+        }
         session.ensureActive()
         return latestEvent?.let { RelayListEventCache.putEventAndPersist(it) }
             ?: RelayListEventCache.getOrLoad(pubkey)
+    }
+
+    /** 暫定結果の適用後も、取得開始時の全リレーから確定した最新版を端末設定へ反映する。 */
+    private suspend fun refreshAndApplyLatestEvent(
+        pubkey: String,
+        relayUrls: List<String>,
+    ) {
+        val fetched = fetchLatestEvent(
+            pubkey = pubkey,
+            bypassCache = true,
+            relayUrlsOverride = relayUrls,
+        ) ?: return
+        operationMutex.withLock {
+            // 取得完了後にユーザーが新しいリレーリストを公開している可能性があるため、
+            // 適用処理を直列化し、ロック取得時点の最新版を使う。
+            val latest = RelayListEventCache.getOrLoad(pubkey) ?: fetched
+            val entries = relayEntriesFromTags(latest.tags)
+            if (entries.isEmpty()) return@withLock
+            session.ensureActive()
+            relayStore.applyPublishedRelayEntries(entries)
+        }
     }
 
     private suspend fun publishRelayListEvent(
@@ -267,6 +312,7 @@ class RelayListSynchronizer internal constructor(
     ): RelayPublishResult = NostrRepository.publishToRelaysUntilFirstSuccess(
         event = event,
         relayUrls = relayUrls,
+        respectRelayWritePolicy = false,
         onRelayResult = { result ->
             if (result.succeededRelays.isNotEmpty()) {
                 RelayListPublishOutbox.markSucceeded(event, result.succeededRelays)
@@ -282,9 +328,9 @@ class RelayListSynchronizer internal constructor(
             if (result.succeededRelays.isNotEmpty()) {
                 session.ensureActive()
                 RelayListEventCache.putEventAndPersist(pending.event)
-                relayUrlsFromTags(pending.event.tags)
+                relayEntriesFromTags(pending.event.tags)
                     .takeIf { it.isNotEmpty() }
-                    ?.let { relayStore.applyPublishedRelayUrls(it) }
+                    ?.let { relayStore.applyPublishedRelayEntries(it) }
             }
         }
     }
@@ -304,15 +350,15 @@ class RelayListSynchronizer internal constructor(
                     val pending = RelayListPublishOutbox.get(pubkey)?.event
                     val latestKnown = listOfNotNull(cached, pending).maxWithOrNull(RELAY_EVENT_COMPARATOR)
                     if (latestKnown != null && !event.isNewerThan(latestKnown)) return@collect
-                    val urls = relayUrlsFromTags(event.tags)
-                    if (urls.isEmpty()) {
+                    val entries = relayEntriesFromTags(event.tags)
+                    if (entries.isEmpty()) {
                         appLog("[RelayListSynchronizer] ignored empty relay list from network")
                         return@collect
                     }
                     session.ensureActive()
                     RelayListEventCache.putEventAndPersist(event)
                     RelayListPublishOutbox.discardIfOlderThan(event)
-                    relayStore.applyPublishedRelayUrls(urls)
+                    relayStore.applyPublishedRelayEntries(entries)
                 }
             }
             try {
@@ -368,31 +414,63 @@ data class PublishedRelayListSnapshot(
     val hasPublishedEvent: Boolean,
 )
 
+internal fun shouldCompleteRelayListFetch(
+    hasReceivedEvent: Boolean,
+    completedRelayCount: Int,
+    targetRelayCount: Int,
+): Boolean = hasReceivedEvent || (targetRelayCount > 0 && completedRelayCount >= targetRelayCount)
+
+internal fun relayEntriesFromTags(tags: List<List<String>>): List<RelayEntry> {
+    val entriesByUrl = linkedMapOf<String, RelayEntry>()
+    tags.forEach { tag ->
+        if (tag.size < 2 || tag[0] != "r") return@forEach
+        val url = normalizeRelayUrl(tag[1]) ?: return@forEach
+        val (read, write) = when (tag.getOrNull(2)) {
+            "read" -> true to false
+            "write" -> false to true
+            else -> true to true
+        }
+        val existing = entriesByUrl[url]
+        entriesByUrl[url] = RelayEntry(
+            url = url,
+            enabled = true,
+            read = read || existing?.read == true,
+            write = write || existing?.write == true,
+        )
+    }
+    return entriesByUrl.values.toList()
+}
+
 internal fun relayUrlsFromTags(tags: List<List<String>>): List<String> =
-    tags.mapNotNull { tag ->
-        tag.takeIf { it.size >= 2 && it[0] == "r" }
-            ?.get(1)
-            ?.let(::normalizeRelayUrl)
-    }.distinct()
+    relayEntriesFromTags(tags).map { it.url }
 
 /** 既存タグを保ったまま、ユーザーが明示した URL の追加・削除だけを適用する。 */
 internal fun applyRelayListChanges(
     currentTags: List<List<String>>,
-    additions: Set<String>,
+    additions: Collection<RelayEntry>,
     removals: Set<String>,
 ): List<List<String>> {
     val normalizedRemovals = removals.mapNotNull(::normalizeRelayUrl).toSet()
     val normalizedAdditions = additions
-        .mapNotNull(::normalizeRelayUrl)
-        .filterNot { it in normalizedRemovals }
-        .distinct()
+        .mapNotNull { entry ->
+            val url = normalizeRelayUrl(entry.url) ?: return@mapNotNull null
+            entry.copy(url = url, enabled = true).takeIf { it.read || it.write }
+        }
+        .filterNot { it.url in normalizedRemovals }
+        .distinctBy { it.url }
     val retainedTags = currentTags.filterNot { tag ->
         tag.size >= 2 && tag[0] == "r" && normalizeRelayUrl(tag[1]) in normalizedRemovals
     }
     val retainedRelayUrls = relayUrlsFromTags(retainedTags).toSet()
     return retainedTags + normalizedAdditions
-        .filterNot { it in retainedRelayUrls }
-        .map { listOf("r", it) }
+        .filterNot { it.url in retainedRelayUrls }
+        .map(::relayTagFromEntry)
+}
+
+internal fun relayTagFromEntry(entry: RelayEntry): List<String> = when {
+    entry.read && !entry.write -> listOf("r", entry.url, "read")
+    !entry.read && entry.write -> listOf("r", entry.url, "write")
+    else -> listOf("r", entry.url)
 }
 
 internal fun checkRelayListCanBePublished(tags: List<List<String>>) {

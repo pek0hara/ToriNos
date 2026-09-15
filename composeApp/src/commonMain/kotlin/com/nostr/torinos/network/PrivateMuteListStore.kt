@@ -293,9 +293,9 @@ class PrivateMuteListStore internal constructor(
             expectedPubkey != accountSession.pubkey ||
             publicKey != expectedPubkey
         ) return
-        val targets = relayStore.enabledRelayUrlsSnapshot()
+        val targets = relayStore.writableRelayUrlsSnapshot()
         if (targets.isEmpty()) {
-            _syncState.value = _syncState.value.copy(error = "有効なリレーがありません")
+            _syncState.value = _syncState.value.copy(error = "書き込み可能なリレーがありません")
             return
         }
         _syncState.value = _syncState.value.copy(isPublishing = true, error = null)

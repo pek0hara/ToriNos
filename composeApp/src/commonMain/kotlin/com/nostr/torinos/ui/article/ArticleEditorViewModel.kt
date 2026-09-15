@@ -218,7 +218,7 @@ class ArticleEditorViewModel(
             _state.update { it.copy(error = "カバー画像にはHTTPS URLを指定してください") }
             return
         }
-        val relayUrls = RelayStore.enabledRelayUrlsSnapshot()
+        val relayUrls = RelayStore.writableRelayUrlsSnapshot()
         if (relayUrls.isEmpty()) {
             _state.update { it.copy(error = "投稿先リレーが設定されていません") }
             return

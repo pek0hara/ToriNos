@@ -16,7 +16,12 @@ import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.json.Json
 
 @Serializable
-data class RelayEntry(val url: String, val enabled: Boolean)
+data class RelayEntry(
+    val url: String,
+    val enabled: Boolean,
+    val read: Boolean = true,
+    val write: Boolean = true,
+)
 
 /**
  * セッションに固定されたリレー設定アクセサ。
@@ -34,9 +39,14 @@ class AccountRelayStore internal constructor(
         return RelayStore.enabledRelayUrlsSnapshot()
     }
 
-    suspend fun applyPublishedRelayUrls(urls: List<String>) {
+    fun writableRelayUrlsSnapshot(): List<String> {
         session.ensureActive()
-        RelayStore.applyPublishedRelayUrls(urls)
+        return RelayStore.writableRelayUrlsSnapshot()
+    }
+
+    suspend fun applyPublishedRelayEntries(entries: List<RelayEntry>) {
+        session.ensureActive()
+        RelayStore.applyPublishedRelayEntries(entries)
         session.ensureActive()
     }
 
@@ -90,8 +100,8 @@ object RelayStore {
     /** 全リレー一覧（UI 用） */
     val entries: StateFlow<List<RelayEntry>> = _entries.asStateFlow()
 
-    /** 有効なリレーの URL 一覧（NostrRepository 用） */
-    val relays = _entries.map { list -> list.filter { it.enabled }.map { it.url } }
+    /** 有効かつ読み込み可能なリレーの URL 一覧（NostrRepository 用） */
+    val relays = _entries.map(::readableRelayUrls)
 
     /** フォローフィードで選択中のリレー URL。null は「すべてのリレー」。 */
     val selectedFollowingRelayUrl: StateFlow<String?> = _selectedFollowingRelayUrl.asStateFlow()
@@ -173,8 +183,8 @@ object RelayStore {
      * 公開リストに含まれるリレーを有効化し、それ以外の保存済みリレーは
      * 再追加しやすいよう無効状態で残す。
      */
-    suspend fun applyPublishedRelayUrls(urls: List<String>) {
-        val nextEntries = mergeRelayEntriesFromPublishedList(_entries.value, urls)
+    suspend fun applyPublishedRelayEntries(entries: List<RelayEntry>) {
+        val nextEntries = mergeRelayEntriesFromPublishedList(_entries.value, entries)
         if (nextEntries.isEmpty() || nextEntries == _entries.value) return
         _entries.value = nextEntries
         ensureSelectedRelay()
@@ -225,6 +235,12 @@ object RelayStore {
 
     fun enabledRelayUrlsSnapshot(): List<String> =
         enabledRelayUrls()
+
+    fun writableRelayUrlsSnapshot(): List<String> =
+        writableRelayUrls(_entries.value)
+
+    internal fun allowsWritingTo(url: String): Boolean =
+        relayAllowsWriting(_entries.value, url)
 
     fun setSelectedFollowingRelayUrl(url: String?) {
         setSelectedRelayUrl(
@@ -382,7 +398,7 @@ object RelayStore {
     }
 
     private fun enabledRelayUrls(): List<String> =
-        _entries.value.filter { it.enabled }.map { it.url }
+        readableRelayUrls(_entries.value)
 
     private fun saveEntries() {
         val value = json.encodeToString(ListSerializer(RelayEntry.serializer()), _entries.value)
@@ -487,25 +503,40 @@ object RelayStore {
 
 internal fun mergeRelayEntriesFromPublishedList(
     currentEntries: List<RelayEntry>,
-    publishedUrls: List<String>,
+    publishedEntries: List<RelayEntry>,
 ): List<RelayEntry> {
-    val normalizedPublishedUrls = publishedUrls
-        .mapNotNull(::normalizeRelayUrl)
-        .distinct()
-    if (normalizedPublishedUrls.isEmpty()) return currentEntries
+    val normalizedPublishedEntries = linkedMapOf<String, RelayEntry>()
+    publishedEntries.forEach { entry ->
+        val url = normalizeRelayUrl(entry.url) ?: return@forEach
+        if (!entry.read && !entry.write) return@forEach
+        val existing = normalizedPublishedEntries[url]
+        normalizedPublishedEntries[url] = entry.copy(
+            url = url,
+            enabled = true,
+            read = entry.read || existing?.read == true,
+            write = entry.write || existing?.write == true,
+        )
+    }
+    if (normalizedPublishedEntries.isEmpty()) return currentEntries
 
-    val publishedSet = normalizedPublishedUrls.toSet()
     val existingByUrl = currentEntries
         .mapNotNull { entry -> normalizeRelayUrl(entry.url)?.let { it to entry } }
         .toMap()
 
     return buildList {
-        normalizedPublishedUrls.forEach { url ->
-            add(existingByUrl[url]?.copy(url = url, enabled = true) ?: RelayEntry(url, enabled = true))
+        normalizedPublishedEntries.forEach { (url, published) ->
+            add(
+                existingByUrl[url]?.copy(
+                    url = url,
+                    enabled = true,
+                    read = published.read,
+                    write = published.write,
+                ) ?: published,
+            )
         }
         currentEntries.forEach { entry ->
             val normalizedUrl = normalizeRelayUrl(entry.url) ?: return@forEach
-            if (normalizedUrl !in publishedSet) {
+            if (normalizedUrl !in normalizedPublishedEntries) {
                 add(entry.copy(url = normalizedUrl, enabled = false))
             }
         }
@@ -522,6 +553,16 @@ internal fun normalizeRelayUrl(url: String): String? {
     }
     return trimmed
 }
+
+internal fun readableRelayUrls(entries: List<RelayEntry>): List<String> =
+    entries.filter { it.enabled && it.read }.map { it.url }
+
+internal fun writableRelayUrls(entries: List<RelayEntry>): List<String> =
+    entries.filter { it.enabled && it.write }.map { it.url }
+
+/** 未登録の明示的なリレーは許可し、NIP-65でread専用と判明しているリレーだけを拒否する。 */
+internal fun relayAllowsWriting(entries: List<RelayEntry>, url: String): Boolean =
+    entries.firstOrNull { it.url == url }?.write != false
 
 internal fun mergeDiscoveredRelayEntries(
     currentEntries: List<RelayEntry>,

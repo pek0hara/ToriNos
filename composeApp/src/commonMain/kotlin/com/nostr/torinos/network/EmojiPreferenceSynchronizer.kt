@@ -128,8 +128,8 @@ class EmojiPreferenceSynchronizer internal constructor(
                 (latestEvent?.createdAt ?: -1L) + 1L,
             ),
         )
-        val targets = relayStore.enabledRelayUrlsSnapshot()
-        check(targets.isNotEmpty()) { "有効なリレーがありません" }
+        val targets = relayStore.writableRelayUrlsSnapshot()
+        check(targets.isNotEmpty()) { "書き込み可能なリレーがありません" }
         EmojiPreferenceOutbox.put(event, targets)
         CustomEmojiStore.applySyncedPreferences(snapshot.favorites, snapshot.lists)
         val result = NostrRepository.publishToRelaysWithResult(event, targets)

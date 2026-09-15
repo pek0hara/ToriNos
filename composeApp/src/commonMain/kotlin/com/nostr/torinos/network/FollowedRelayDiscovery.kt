@@ -63,7 +63,9 @@ object FollowedRelayDiscovery {
             }
 
             val relayUrls = NostrRepository.targetRelayUrls(RelayTarget.AllEnabled)
-            check(relayUrls.isNotEmpty()) { "有効なリレーがありません" }
+            check(relayUrls.isNotEmpty()) {
+                "有効なリレーがありません"
+            }
 
             val fetchResult = fetchRelayLists(
                 pubkeys = targets.sorted(),
@@ -90,26 +92,33 @@ object FollowedRelayDiscovery {
     ): FetchResult = coroutineScope {
         val requestGeneration = ++generation
         val batches = pubkeys.chunked(AUTHOR_BATCH_SIZE)
+        val expectedPubkeys = pubkeys.toSet()
         val subscriptionIds = batches.indices.map { index ->
             "followed-relays-$requestGeneration-$index"
         }
         val latestEvents = mutableMapOf<String, NostrEvent>()
-        val latestEventsMutex = Mutex()
         val completedRelays = subscriptionIds.associateWith { mutableSetOf<String>() }.toMutableMap()
-        val completionMutex = Mutex()
-        val allComplete = CompletableDeferred<Unit>()
+        val stateMutex = Mutex()
+        val enoughResponses = CompletableDeferred<Unit>()
 
         val eventJobs = subscriptionIds.map { subscriptionId ->
             launch(start = CoroutineStart.UNDISPATCHED) {
                 NostrRepository.events(subscriptionId).collect { event ->
-                    if (event.kind != RELAY_LIST_KIND) return@collect
-                    latestEventsMutex.withLock {
+                    if (event.kind != RELAY_LIST_KIND || event.pubkey !in expectedPubkeys) return@collect
+                    stateMutex.withLock {
                         val current = latestEvents[event.pubkey]
                         if (current == null ||
                             event.createdAt > current.createdAt ||
                             (event.createdAt == current.createdAt && event.id > current.id)
                         ) {
                             latestEvents[event.pubkey] = event
+                        }
+                        if (shouldCompleteFollowedRelayFetch(
+                                completedRelaysByBatch = completedRelays.values,
+                                expectedRelayUrls = expectedRelayUrls,
+                            )
+                        ) {
+                            enoughResponses.complete(Unit)
                         }
                     }
                 }
@@ -118,10 +127,14 @@ object FollowedRelayDiscovery {
         val eoseJobs = subscriptionIds.map { subscriptionId ->
             launch(start = CoroutineStart.UNDISPATCHED) {
                 NostrRepository.eoseRelays(subscriptionId).collect { relayUrl ->
-                    completionMutex.withLock {
+                    stateMutex.withLock {
                         completedRelays.getValue(subscriptionId) += relayUrl
-                        if (completedRelays.values.all { it.containsAll(expectedRelayUrls) }) {
-                            allComplete.complete(Unit)
+                        if (shouldCompleteFollowedRelayFetch(
+                                completedRelaysByBatch = completedRelays.values,
+                                expectedRelayUrls = expectedRelayUrls,
+                            )
+                        ) {
+                            enoughResponses.complete(Unit)
                         }
                     }
                 }
@@ -139,22 +152,25 @@ object FollowedRelayDiscovery {
                     ),
                 )
             }
-            withTimeoutOrNull(FETCH_TIMEOUT_MS) { allComplete.await() }
+            withTimeoutOrNull(FETCH_TIMEOUT_MS) { enoughResponses.await() }
         } finally {
             eventJobs.forEach { it.cancel() }
             eoseJobs.forEach { it.cancel() }
             subscriptionIds.forEach { NostrRepository.closeSuspending(it) }
         }
 
-        val respondedSubscriptionIds = completionMutex.withLock {
-            completedRelays.filterValues { it.isNotEmpty() }.keys
-        }
-        val completedPubkeys = batches
-            .filterIndexed { index, _ -> subscriptionIds[index] in respondedSubscriptionIds }
-            .flatten()
-            .toSet()
-        val discoveredRelayUrls = latestEventsMutex.withLock {
-            latestEvents.values
+        val (completedPubkeys, discoveredRelayUrls) = stateMutex.withLock {
+            val completedSubscriptionIds = completedRelays
+                .filterValues { it.containsAll(expectedRelayUrls) }
+                .keys
+            val completed = buildSet {
+                addAll(latestEvents.keys)
+                addAll(
+                    batches.filterIndexed { index, _ -> subscriptionIds[index] in completedSubscriptionIds }
+                        .flatten(),
+                )
+            }
+            val discovered = latestEvents.values
                 .flatMap { event ->
                     event.tags.mapNotNull { tag ->
                         tag.takeIf { it.size >= 2 && it[0] == "r" }
@@ -163,6 +179,7 @@ object FollowedRelayDiscovery {
                     }
                 }
                 .distinct()
+            completed to discovered
         }
         FetchResult(
             completedPubkeys = completedPubkeys,
@@ -199,3 +216,10 @@ object FollowedRelayDiscovery {
     private const val CACHE_TTL_SECONDS = 24 * 60 * 60L
     private const val CACHE_KEY_PREFIX = "followed_relay_discovery_"
 }
+
+internal fun shouldCompleteFollowedRelayFetch(
+    completedRelaysByBatch: Collection<Set<String>>,
+    expectedRelayUrls: Set<String>,
+): Boolean = expectedRelayUrls.isNotEmpty() &&
+    completedRelaysByBatch.isNotEmpty() &&
+    completedRelaysByBatch.all { it.containsAll(expectedRelayUrls) }

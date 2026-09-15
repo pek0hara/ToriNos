@@ -89,7 +89,7 @@ fun ArticleEditorScreen(
     }
     val state by editorViewModel.state.collectAsState()
     val relayEntries by RelayStore.entries.collectAsState()
-    val enabledRelayCount = relayEntries.count { it.enabled }
+    val enabledRelayCount = relayEntries.count { it.enabled && it.write }
     var selectedTab by rememberSaveable { mutableStateOf(ArticleEditorTab.Edit) }
     var showDiscardConfirmation by rememberSaveable { mutableStateOf(false) }
     var showRelaySettingsDialog by rememberSaveable { mutableStateOf(false) }

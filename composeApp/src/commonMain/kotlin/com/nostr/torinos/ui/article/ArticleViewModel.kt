@@ -462,7 +462,7 @@ class ArticleDetailViewModel(
         }
         if (_state.value.isDeleting) return
 
-        val relayUrls = RelayStore.enabledRelayUrlsSnapshot()
+        val relayUrls = RelayStore.writableRelayUrlsSnapshot()
         if (relayUrls.isEmpty()) {
             _state.value = _state.value.copy(deleteError = "削除要求の送信先リレーが設定されていません")
             return
