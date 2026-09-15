@@ -69,7 +69,6 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
-import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.input.TextFieldValue
@@ -277,12 +276,6 @@ fun PostSheet(
             ) {
                 PostSheetContent(
                     state = state,
-                    title = when {
-                        selectedDraft != null -> "下書きを編集"
-                        replyToId != null -> "返信"
-                        quoteReference != null -> "投稿を引用"
-                        else -> null
-                    },
                     replyToPreview = replyToPreview.takeIf { selectedDraft == null },
                     quoteToPreview = quoteToPreview.takeIf { selectedDraft == null },
                     hasQuote = quoteReference != null,
@@ -437,7 +430,6 @@ fun PostSheet(
 @Composable
 private fun PostSheetContent(
     state: PostState,
-    title: String?,
     replyToPreview: String?,
     quoteToPreview: String?,
     hasQuote: Boolean,
@@ -522,17 +514,7 @@ private fun PostSheetContent(
             ) {
                 Text("キャンセル", maxLines = 1)
             }
-            if (title != null) {
-                Text(
-                    text = title,
-                    modifier = Modifier.weight(1f),
-                    style = MaterialTheme.typography.titleMedium,
-                    textAlign = TextAlign.Center,
-                    maxLines = 1,
-                )
-            } else {
-                Spacer(modifier = Modifier.weight(1f))
-            }
+            Spacer(modifier = Modifier.weight(1f))
             TextButton(
                 onClick = {
                     dismissKeyboard()
