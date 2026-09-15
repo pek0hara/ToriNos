@@ -11,6 +11,7 @@ import com.nostr.torinos.network.ProfileFetchPolicy
 import com.nostr.torinos.network.ProfileRepository
 import com.nostr.torinos.network.RelayListEventCache
 import com.nostr.torinos.network.RelayStore
+import com.nostr.torinos.ui.components.extractWebUrls
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -175,29 +176,53 @@ class MyProfileViewModel(
         }
     }
 
-    fun publishGeneralStatus(content: String) {
+    fun publishStatus(
+        statusTag: String,
+        content: String,
+        expiration: Long?,
+        referenceUrl: String?,
+    ) {
+        val tag = statusTag.trim().ifBlank { PROFILE_GENERAL_STATUS_TAG }
         val body = content.trim()
+        val explicitReferenceUrl = referenceUrl
+            ?.trim()
+            ?.takeIf { it.isNotBlank() }
         launch {
             _state.update { it.copy(isGeneralStatusPublishing = true, generalStatusError = null) }
             try {
                 val signer = accountSession?.signer ?: error("秘密鍵が見つかりません")
+                val tags = buildList {
+                    add(listOf("d", tag))
+                    if (expiration != null) add(listOf("expiration", expiration.toString()))
+                    addAll(customEmojiTagsForContent(body, CustomEmojiStore.emojis.value))
+                    (listOfNotNull(explicitReferenceUrl) + extractWebUrls(body)).distinct().forEach { url ->
+                        add(listOf("r", url))
+                    }
+                }
                 val event = signer.sign(
                     content = body,
                     kind = PROFILE_STATUS_KIND,
-                    tags = listOf(listOf("d", PROFILE_GENERAL_STATUS_TAG)) +
-                        customEmojiTagsForContent(body, CustomEmojiStore.emojis.value),
+                    tags = tags,
                 )
-                latestGeneralStatusCreatedAt = event.createdAt
-                _state.update {
-                    it.copy(
-                        generalStatus = body.takeIf { it.isNotBlank() }?.let {
-                            ProfileGeneralStatus(
-                                content = it,
-                                customEmojis = event.tags.customEmojiMap(),
-                            )
+                if (tag == PROFILE_GENERAL_STATUS_TAG) {
+                    latestGeneralStatusCreatedAt = event.createdAt
+                }
+                _state.update { currentState ->
+                    currentState.copy(
+                        generalStatus = if (tag == PROFILE_GENERAL_STATUS_TAG) {
+                            body.takeIf { it.isNotBlank() }?.let {
+                                ProfileGeneralStatus(
+                                    content = it,
+                                    expiration = expiration,
+                                    referenceUrl = explicitReferenceUrl,
+                                    customEmojis = event.tags.customEmojiMap(),
+                                )
+                            }
+                        } else {
+                            currentState.generalStatus
                         },
                         isGeneralStatusPublishing = false,
-                        generalStatusPublishCompletedCount = it.generalStatusPublishCompletedCount + 1,
+                        generalStatusPublishCompletedCount = currentState.generalStatusPublishCompletedCount + 1,
                     )
                 }
                 NostrRepository.publish(event)

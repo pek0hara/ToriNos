@@ -2,8 +2,6 @@ package com.nostr.torinos.ui.status
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -12,10 +10,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.heightIn
-import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
@@ -24,7 +19,6 @@ import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.AssistChip
-import androidx.compose.material3.Card
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -34,10 +28,8 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import com.nostr.torinos.ui.components.AppTopBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -51,8 +43,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.window.Dialog
-import androidx.compose.ui.window.DialogProperties
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.nostr.torinos.account.accountSessionViewModel
@@ -62,12 +52,10 @@ import com.nostr.torinos.network.RelayStore
 import com.nostr.torinos.ui.components.LinkedText
 import com.nostr.torinos.ui.components.ProfileNameText
 import com.nostr.torinos.ui.components.formatTimestamp
-import com.nostr.torinos.ui.components.rememberDismissKeyboard
 import com.nostr.torinos.ui.profile.AvatarCircle
 import com.nostr.torinos.ui.service.ServiceTab
 import com.nostr.torinos.ui.service.ServiceTabRow
 import com.nostr.torinos.ui.service.serviceTabSwipe
-import kotlin.time.Clock
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -225,7 +213,10 @@ fun StatusScreen(
                 selectedCategories = state.selectedCategories,
                 onToggle = viewModel::toggleCategory,
             )
-            HorizontalDivider()
+            HorizontalDivider(
+                thickness = 0.5.dp,
+                color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f),
+            )
             Box(modifier = Modifier.fillMaxSize()) {
                 when {
                     state.isInitialLoad && state.statuses.isEmpty() -> {
@@ -250,7 +241,10 @@ fun StatusScreen(
                                     profile = state.profiles[status.event.pubkey],
                                     onUserClick = { onUserClick(status.event.pubkey) },
                                 )
-                                HorizontalDivider()
+                                HorizontalDivider(
+                                    thickness = 0.5.dp,
+                                    color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f),
+                                )
                             }
                         }
                     }
@@ -260,7 +254,14 @@ fun StatusScreen(
     }
 
     if (showDialog) {
-        StatusComposerDialog(
+        val currentStatus = state.ownGeneralStatus
+        StatusComposerSheet(
+            title = "ステータス",
+            actionLabel = if (currentStatus == null) "追加" else "保存",
+            initialStatusTag = currentStatus?.statusTag ?: "general",
+            initialContent = currentStatus?.event?.content.orEmpty(),
+            initialExpiration = currentStatus?.expiration,
+            initialReferenceUrl = currentStatus?.referenceUrls?.firstOrNull().orEmpty(),
             isPublishing = state.isPublishing,
             errorMessage = state.errorMessage,
             onDismiss = {
@@ -417,189 +418,6 @@ private fun StatusTagText(statusTag: String) {
     )
 }
 
-@Composable
-private fun StatusComposerDialog(
-    isPublishing: Boolean,
-    errorMessage: String?,
-    onDismiss: () -> Unit,
-    onSubmit: (statusTag: String, content: String, expiration: Long?, referenceUrl: String?) -> Unit,
-) {
-    var selectedStatusTagOption by remember { mutableStateOf(StatusTagOption.General) }
-    var customStatusTag by remember { mutableStateOf("") }
-    var statusTagExpanded by remember { mutableStateOf(false) }
-    var content by remember { mutableStateOf("") }
-    var referenceUrl by remember { mutableStateOf("") }
-    var selectedExpiration by remember { mutableStateOf(ExpirationOption.NoExpiration) }
-    var expirationExpanded by remember { mutableStateOf(false) }
-    val dismissKeyboard = rememberDismissKeyboard()
-    val showStatusTagMenu = {
-        dismissKeyboard()
-        expirationExpanded = false
-        statusTagExpanded = !statusTagExpanded
-    }
-    val showExpirationMenu = {
-        dismissKeyboard()
-        statusTagExpanded = false
-        expirationExpanded = !expirationExpanded
-    }
-
-    Dialog(
-        onDismissRequest = onDismiss,
-        properties = DialogProperties(usePlatformDefaultWidth = false),
-    ) {
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(16.dp)
-                .imePadding(),
-            contentAlignment = Alignment.Center,
-        ) {
-            Card(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .heightIn(max = 560.dp),
-            ) {
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(24.dp),
-                    verticalArrangement = Arrangement.spacedBy(16.dp),
-                ) {
-                    Text("ステータスを追加", style = MaterialTheme.typography.headlineSmall)
-
-                    Column(
-                        modifier = Modifier
-                            .weight(1f, fill = false)
-                            .verticalScroll(rememberScrollState()),
-                        verticalArrangement = Arrangement.spacedBy(12.dp),
-                    ) {
-                        Box {
-                            OutlinedTextField(
-                                value = selectedStatusTagOption.label,
-                                onValueChange = {},
-                                label = { Text("ステータスタグ") },
-                                readOnly = true,
-                                trailingIcon = { Icon(Icons.Default.ArrowDropDown, contentDescription = null) },
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .clickable(onClick = showStatusTagMenu),
-                            )
-                            Box(
-                                modifier = Modifier
-                                    .matchParentSize()
-                                    .clickable(onClick = showStatusTagMenu),
-                            )
-                            DropdownMenu(
-                                expanded = statusTagExpanded,
-                                onDismissRequest = { statusTagExpanded = false },
-                            ) {
-                                StatusTagOption.entries.forEach { option ->
-                                    DropdownMenuItem(
-                                        text = { Text(option.label) },
-                                        onClick = {
-                                            selectedStatusTagOption = option
-                                            statusTagExpanded = false
-                                        },
-                                    )
-                                }
-                            }
-                        }
-                        if (selectedStatusTagOption == StatusTagOption.Custom) {
-                            OutlinedTextField(
-                                value = customStatusTag,
-                                onValueChange = { customStatusTag = it },
-                                label = { Text("新しいステータスタグ") },
-                                singleLine = true,
-                                modifier = Modifier.fillMaxWidth(),
-                            )
-                        }
-                        OutlinedTextField(
-                            value = content,
-                            onValueChange = { content = it },
-                            label = { Text("ステータス") },
-                            minLines = 3,
-                            modifier = Modifier.fillMaxWidth(),
-                        )
-                        OutlinedTextField(
-                            value = referenceUrl,
-                            onValueChange = { referenceUrl = it },
-                            label = { Text("URL") },
-                            singleLine = true,
-                            modifier = Modifier.fillMaxWidth(),
-                        )
-                        Box {
-                            OutlinedTextField(
-                                value = selectedExpiration.label,
-                                onValueChange = {},
-                                label = { Text("終了時刻") },
-                                readOnly = true,
-                                trailingIcon = { Icon(Icons.Default.ArrowDropDown, contentDescription = null) },
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .clickable(onClick = showExpirationMenu),
-                            )
-                            Box(
-                                modifier = Modifier
-                                    .matchParentSize()
-                                    .clickable(onClick = showExpirationMenu),
-                            )
-                            DropdownMenu(
-                                expanded = expirationExpanded,
-                                onDismissRequest = { expirationExpanded = false },
-                            ) {
-                                ExpirationOption.entries.forEach { option ->
-                                    DropdownMenuItem(
-                                        text = { Text(option.label) },
-                                        onClick = {
-                                            selectedExpiration = option
-                                            expirationExpanded = false
-                                        },
-                                    )
-                                }
-                            }
-                        }
-                        if (errorMessage != null) {
-                            Text(
-                                text = errorMessage,
-                                color = MaterialTheme.colorScheme.error,
-                                style = MaterialTheme.typography.bodySmall,
-                            )
-                        }
-                    }
-
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.End,
-                    ) {
-                        TextButton(onClick = onDismiss) { Text("キャンセル") }
-                        TextButton(
-                            enabled = !isPublishing &&
-                                content.isNotBlank() &&
-                                (selectedStatusTagOption != StatusTagOption.Custom || customStatusTag.isNotBlank()),
-                            onClick = {
-                                val expiration = selectedExpiration.secondsFromNow?.let {
-                                    Clock.System.now().epochSeconds + it
-                                }
-                                onSubmit(selectedStatusTagOption.tag(customStatusTag), content, expiration, referenceUrl)
-                            },
-                        ) {
-                            Text(if (isPublishing) "投稿中" else "追加")
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
-
-private enum class StatusTagOption(val label: String, private val fixedTag: String?) {
-    General("💬", "general"),
-    Music("♫", "music"),
-    Custom("その他", null);
-
-    fun tag(customStatusTag: String): String =
-        fixedTag ?: customStatusTag.trim()
-}
 
 private fun String.statusTagDisplayLabel(): String =
     when {
@@ -611,12 +429,6 @@ private fun String.statusTagDisplayLabel(): String =
 private fun String.isDefaultStatusTag(): Boolean =
     equals("general", ignoreCase = true) || equals("music", ignoreCase = true)
 
-private enum class ExpirationOption(val label: String, val secondsFromNow: Long?) {
-    FifteenMinutes("15分後", 15 * 60),
-    OneHour("1時間後", 60 * 60),
-    TwentyFourHours("24時間後", 24 * 60 * 60),
-    NoExpiration("終了なし", null),
-}
 
 private fun String.relayDisplayName(): String =
     removePrefix("wss://")

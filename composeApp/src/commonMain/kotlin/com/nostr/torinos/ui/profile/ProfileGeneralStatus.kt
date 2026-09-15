@@ -11,6 +11,8 @@ private val customEmojiCodeRegex = Regex(""":([a-zA-Z0-9_-]+):""")
 
 data class ProfileGeneralStatus(
     val content: String,
+    val expiration: Long? = null,
+    val referenceUrl: String? = null,
     val customEmojis: Map<String, String> = emptyMap(),
 )
 
@@ -30,6 +32,11 @@ internal fun NostrEvent.toActiveGeneralStatus(): ProfileGeneralStatus? {
     val body = content.trim().takeIf { it.isNotBlank() } ?: return null
     return ProfileGeneralStatus(
         content = body,
+        expiration = expiration,
+        referenceUrl = tags.firstOrNull { it.firstOrNull() == "r" }
+            ?.getOrNull(1)
+            ?.trim()
+            ?.takeIf { it.isNotBlank() },
         customEmojis = tags.customEmojiMap(),
     )
 }

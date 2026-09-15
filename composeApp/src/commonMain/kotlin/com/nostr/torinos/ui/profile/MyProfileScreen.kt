@@ -2,18 +2,17 @@ package com.nostr.torinos.ui.profile
 
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.foundation.lazy.LazyListState
-import androidx.compose.material3.AlertDialog
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Sms
 import androidx.compose.material3.HorizontalDivider
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.PrimaryTabRow
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Tab
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -25,12 +24,13 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.runtime.collectAsState
 import androidx.compose.ui.unit.dp
-import androidx.lifecycle.viewmodel.compose.viewModel
 import com.nostr.torinos.account.accountSessionViewModel
-import androidx.lifecycle.viewmodel.initializer
-import androidx.lifecycle.viewmodel.viewModelFactory
+import com.nostr.torinos.ui.components.AppFloatingActionButton
 import com.nostr.torinos.ui.components.NoteTimeline
 import com.nostr.torinos.ui.feed.FeedViewModel
+import com.nostr.torinos.ui.status.StatusComposerSheet
+import com.nostr.torinos.model.COMMENT_EVENT_KIND
+import com.nostr.torinos.model.NostrEvent
 
 @Composable
 fun MyProfileScreen(
@@ -40,7 +40,7 @@ fun MyProfileScreen(
     onOpenFollowers: () -> Unit = {},
     onOpenSettings: () -> Unit = {},
     onUserClick: (String) -> Unit = {},
-    onReply: ((eventId: String, authorPubkey: String, preview: String) -> Unit)? = null,
+    onReply: ((event: NostrEvent, preview: String) -> Unit)? = null,
     onOpenReplies: (eventId: String) -> Unit = {},
     onOpenLikes: (eventId: String) -> Unit = {},
     onOpenReposts: (eventId: String) -> Unit = {},
@@ -68,6 +68,7 @@ fun MyProfileScreen(
             autoStart = false,
             includeRepostsInFeed = true,
             includeRepliesInFeed = true,
+            feedEventKinds = setOf(1, COMMENT_EVENT_KIND),
         )
     }
 
@@ -119,6 +120,16 @@ fun MyProfileScreen(
     Scaffold(
         modifier = Modifier.fillMaxSize(),
         contentWindowInsets = WindowInsets(0),
+        floatingActionButton = {
+            AppFloatingActionButton(
+                onClick = { showStatusEdit = true },
+                icon = Icons.Default.Sms,
+                contentDescription = "ステータスを編集",
+                modifier = Modifier
+                    .navigationBarsPadding()
+                    .padding(bottom = 8.dp),
+            )
+        },
     ) { padding ->
         if (showAvatarEdit) {
             AvatarEditDialog(
@@ -160,15 +171,23 @@ fun MyProfileScreen(
             )
         }
         if (showStatusEdit) {
-            GeneralStatusEditDialog(
-                currentStatus = state.generalStatus?.content.orEmpty(),
+            StatusComposerSheet(
+                title = "ステータス",
+                actionLabel = if (state.generalStatus == null) "追加" else "保存",
+                initialStatusTag = PROFILE_GENERAL_STATUS_TAG,
+                initialContent = state.generalStatus?.content.orEmpty(),
+                initialExpiration = state.generalStatus?.expiration,
+                initialReferenceUrl = state.generalStatus?.referenceUrl.orEmpty(),
                 isPublishing = state.isGeneralStatusPublishing,
                 errorMessage = state.generalStatusError,
                 onDismiss = {
                     showStatusEdit = false
                     viewModel.clearGeneralStatusError()
                 },
-                onSave = viewModel::publishGeneralStatus,
+                onSubmit = viewModel::publishStatus,
+                onDelete = state.generalStatus?.let {
+                    { viewModel.publishStatus(PROFILE_GENERAL_STATUS_TAG, "", null, null) }
+                },
             )
         }
 
@@ -281,52 +300,4 @@ fun MyProfileScreen(
             }
         }
     }
-}
-
-@Composable
-private fun GeneralStatusEditDialog(
-    currentStatus: String,
-    isPublishing: Boolean,
-    errorMessage: String?,
-    onDismiss: () -> Unit,
-    onSave: (String) -> Unit,
-) {
-    var status by remember(currentStatus) { mutableStateOf(currentStatus) }
-
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("ステータスを編集") },
-        text = {
-            androidx.compose.foundation.layout.Column {
-                OutlinedTextField(
-                    value = status,
-                    onValueChange = { status = it },
-                    label = { Text("general") },
-                    minLines = 2,
-                    modifier = Modifier.fillMaxWidth(),
-                )
-                errorMessage?.let {
-                    Text(
-                        text = it,
-                        color = androidx.compose.material3.MaterialTheme.colorScheme.error,
-                        style = androidx.compose.material3.MaterialTheme.typography.bodySmall,
-                        modifier = Modifier.padding(top = 8.dp),
-                    )
-                }
-            }
-        },
-        dismissButton = {
-            TextButton(onClick = onDismiss) {
-                Text("キャンセル")
-            }
-        },
-        confirmButton = {
-            TextButton(
-                enabled = !isPublishing,
-                onClick = { onSave(status) },
-            ) {
-                Text(if (isPublishing) "保存中" else "保存")
-            }
-        },
-    )
 }

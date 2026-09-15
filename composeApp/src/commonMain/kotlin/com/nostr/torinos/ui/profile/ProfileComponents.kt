@@ -25,6 +25,7 @@ import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.Sms
 import androidx.compose.material.icons.filled.FileDownload
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.AlertDialog
@@ -514,7 +515,7 @@ private fun ProfileGeneralStatusText(
         if (isOwnProfile && onEditGeneralStatus != null) {
             IconButton(onClick = onEditGeneralStatus, modifier = Modifier.size(28.dp)) {
                 Icon(
-                    Icons.Default.Edit,
+                    Icons.Default.Sms,
                     contentDescription = "ステータスを編集",
                     modifier = Modifier.size(14.dp),
                     tint = MaterialTheme.colorScheme.onSurfaceVariant,

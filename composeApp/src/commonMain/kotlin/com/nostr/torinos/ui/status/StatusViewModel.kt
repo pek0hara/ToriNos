@@ -32,6 +32,7 @@ private val DEFAULT_CATEGORIES = listOf("general", "music")
 
 data class StatusState(
     val statuses: List<UserStatus> = emptyList(),
+    val ownGeneralStatus: UserStatus? = null,
     val availableCategories: List<String> = DEFAULT_CATEGORIES,
     val selectedCategories: Set<String> = DEFAULT_CATEGORIES.toSet(),
     val profiles: Map<String, NostrProfile> = emptyMap(),
@@ -51,6 +52,7 @@ class StatusViewModel(
     private val instanceKey = nextInstanceKey()
     private val relayKey = relayUrl?.hashCode()?.toString() ?: "all"
     private val statusSubId = "status-$relayKey-$instanceKey"
+    private val ownGeneralStatusSubId = "status-own-general-$relayKey-$instanceKey"
     private val rawStatuses = linkedMapOf<String, UserStatus>()
     private val pendingPubkeys = linkedSetOf<String>()
     private val jobs = mutableListOf<Job>()
@@ -129,6 +131,12 @@ class StatusViewModel(
             }
         }
         jobs += launch {
+            NostrRepository.events(ownGeneralStatusSubId).collect { event ->
+                if (event.kind != STATUS_KIND || event.pubkey != accountSession?.pubkey) return@collect
+                rememberStatus(event)
+            }
+        }
+        jobs += launch {
             ProfileRepository.observeAll().collect { cachedProfiles ->
                 val profiles = cachedProfiles.filterKeys { it in pendingPubkeys || it in _state.value.profiles }
                 if (profiles != _state.value.profiles) _state.value = _state.value.copy(profiles = profiles)
@@ -160,6 +168,18 @@ class StatusViewModel(
                 NostrFilter(kinds = listOf(STATUS_KIND), limit = STATUS_LIMIT),
                 relayUrl = relayUrl,
             )
+            accountSession?.pubkey?.let { ownPubkey ->
+                NostrRepository.subscribe(
+                    ownGeneralStatusSubId,
+                    NostrFilter(
+                        kinds = listOf(STATUS_KIND),
+                        authors = listOf(ownPubkey),
+                        dTags = listOf(GENERAL_STATUS_TAG),
+                        limit = 1,
+                    ),
+                    relayUrl = relayUrl,
+                )
+            }
         }
     }
 
@@ -206,7 +226,15 @@ class StatusViewModel(
         val active = visibleCandidates
             .filter { selected.isEmpty() || it.statusTag in selected }
             .sortedByDescending { it.event.createdAt }
-        _state.value = _state.value.copy(statuses = active, availableCategories = allCategories)
+        val ownGeneralStatus = visibleCandidates.firstOrNull {
+            it.event.pubkey == accountSession?.pubkey &&
+                it.statusTag.equals(GENERAL_STATUS_TAG, ignoreCase = true)
+        }
+        _state.value = _state.value.copy(
+            statuses = active,
+            ownGeneralStatus = ownGeneralStatus,
+            availableCategories = allCategories,
+        )
     }
 
     private fun scheduleProfileFetch(pubkey: String) {
@@ -230,6 +258,7 @@ class StatusViewModel(
         jobs.forEach { it.cancel() }
         profileBatchJob?.cancel()
         NostrRepository.close(statusSubId)
+        NostrRepository.close(ownGeneralStatusSubId)
     }
 
     private companion object {
@@ -239,6 +268,7 @@ class StatusViewModel(
         const val EXPIRATION_REFRESH_INTERVAL_MS = 60_000L
         const val PROFILE_BATCH_DELAY_MS = 300L
         const val PROFILE_MAX_AGE_MS = 15 * 60 * 1_000L
+        const val GENERAL_STATUS_TAG = "general"
         var nextKey = 0
         fun nextInstanceKey(): Int = nextKey++
     }
