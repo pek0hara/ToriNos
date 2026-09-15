@@ -1,9 +1,14 @@
 package com.nostr.torinos.ui.components
 
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -31,6 +36,7 @@ fun NetworkImage(
     maxDecodeSizePx: Int? = null,
     filterQuality: FilterQuality = FilterQuality.Medium,
     animate: Boolean = true,
+    blurHash: String? = null,
 ) {
     val context = LocalPlatformContext.current
     val model = remember(context, url, contentScale, maxDecodeSizePx, animate) {
@@ -49,14 +55,35 @@ fun NetworkImage(
             }
             .build()
     }
-    AsyncImage(
-        model = model,
-        contentDescription = contentDescription,
-        contentScale = contentScale,
-        alignment = alignment,
-        filterQuality = filterQuality,
-        modifier = modifier,
-    )
+    if (blurHash == null) {
+        AsyncImage(
+            model = model,
+            contentDescription = contentDescription,
+            contentScale = contentScale,
+            alignment = alignment,
+            filterQuality = filterQuality,
+            modifier = modifier,
+        )
+    } else {
+        var showBlurHash by remember(url, blurHash) { mutableStateOf(true) }
+        Box(modifier = modifier) {
+            if (showBlurHash) {
+                BlurHashPlaceholder(
+                    blurHash = blurHash,
+                    modifier = Modifier.fillMaxSize(),
+                )
+            }
+            AsyncImage(
+                model = model,
+                contentDescription = contentDescription,
+                onSuccess = { showBlurHash = false },
+                contentScale = contentScale,
+                alignment = alignment,
+                filterQuality = filterQuality,
+                modifier = Modifier.fillMaxSize(),
+            )
+        }
+    }
 }
 
 @Composable

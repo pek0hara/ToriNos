@@ -10,13 +10,16 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.produceState
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.FilterQuality
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.text.font.FontWeight
@@ -30,6 +33,34 @@ fun LinkPreviewCard(
     url: String,
     modifier: Modifier = Modifier,
 ) {
+    val youTubeVideoId = extractYouTubeVideoId(url)
+    if (youTubeVideoId != null) {
+        Spacer(modifier = Modifier.height(8.dp))
+        YouTubePreviewCard(
+            videoId = youTubeVideoId,
+            sourceUrl = url,
+            modifier = modifier,
+        )
+        Spacer(modifier = Modifier.height(2.dp))
+        return
+    }
+
+    val xPostId = extractXPostId(url)
+    if (xPostId != null) {
+        val darkTheme = MaterialTheme.colorScheme.background.luminance() < 0.5f
+        Spacer(modifier = Modifier.height(8.dp))
+        XPostEmbed(
+            postId = xPostId,
+            sourceUrl = url,
+            darkTheme = darkTheme,
+            modifier = modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(12.dp)),
+        )
+        Spacer(modifier = Modifier.height(2.dp))
+        return
+    }
+
     val previewState by produceState<LinkPreviewState>(LinkPreviewState.Loading, url) {
         value = LinkPreviewRepository.fetch(url)?.let(LinkPreviewState::Loaded)
             ?: LinkPreviewState.Unavailable

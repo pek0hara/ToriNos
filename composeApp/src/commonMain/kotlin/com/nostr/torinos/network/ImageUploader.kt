@@ -1,6 +1,8 @@
 package com.nostr.torinos.network
 
 import com.nostr.torinos.account.AccountSigner
+import com.nostr.torinos.model.MediaMetadata
+import com.nostr.torinos.model.parseNip94Entries
 import com.nostr.torinos.util.networkTraceLog
 import io.ktor.client.request.forms.MultiPartFormDataContent
 import io.ktor.client.request.forms.formData
@@ -25,7 +27,15 @@ private val json = Json { ignoreUnknownKeys = true }
 object ImageUploader {
 
     @OptIn(ExperimentalEncodingApi::class)
-    suspend fun upload(bytes: ByteArray, mimeType: String, signer: AccountSigner?): Result<String> = runCatching {
+    suspend fun upload(bytes: ByteArray, mimeType: String, signer: AccountSigner?): Result<String> =
+        uploadMedia(bytes, mimeType, signer).map { it.url }
+
+    @OptIn(ExperimentalEncodingApi::class)
+    suspend fun uploadMedia(
+        bytes: ByteArray,
+        mimeType: String,
+        signer: AccountSigner?,
+    ): Result<MediaMetadata> = runCatching {
         val activeSigner = signer ?: error("秘密鍵が設定されていません")
         // NIP-98: kind:27235 イベントを署名して Authorization ヘッダーに付与
         val authEvent = activeSigner.sign(
@@ -68,10 +78,10 @@ object ImageUploader {
             error("サーバーエラー ${response.status.value}: $body")
         }
 
-        parseUrl(body) ?: error("URLが見つかりませんでした: $body")
+        parseMediaMetadata(body, mimeType) ?: error("URLが見つかりませんでした: $body")
     }
 
-    private fun parseUrl(body: String): String? {
+    internal fun parseMediaMetadata(body: String, fallbackMimeType: String? = null): MediaMetadata? {
         val root = try {
             json.parseToJsonElement(body).jsonObject
         } catch (e: Exception) {
@@ -79,25 +89,32 @@ object ImageUploader {
         }
 
         // NIP-96: nip94_event.tags に ["url", "..."]
-        (root["nip94_event"] as? JsonObject)
+        val nip94Entries = (root["nip94_event"] as? JsonObject)
             ?.let { it["tags"] as? JsonArray }
-            ?.forEach { tag ->
-                val arr = tag as? JsonArray ?: return@forEach
-                if (arr.size >= 2 && (arr[0] as? JsonPrimitive)?.content == "url") {
-                    return (arr[1] as? JsonPrimitive)?.content
-                }
+            ?.mapNotNull { tag ->
+                val arr = tag as? JsonArray ?: return@mapNotNull null
+                val key = (arr.getOrNull(0) as? JsonPrimitive)?.content ?: return@mapNotNull null
+                val value = (arr.getOrNull(1) as? JsonPrimitive)?.content ?: return@mapNotNull null
+                "$key $value"
             }
+        nip94Entries?.let(::parseNip94Entries)?.let { metadata ->
+            return if (metadata.mimeType == null && fallbackMimeType != null) {
+                metadata.copy(mimeType = fallbackMimeType.lowercase())
+            } else {
+                metadata
+            }
+        }
 
         // data[0].url
         ((root["data"] as? JsonArray)?.firstOrNull() as? JsonObject)
             ?.let { it["url"] as? JsonPrimitive }
             ?.content?.takeIf { it.isNotBlank() }
-            ?.let { return it }
+            ?.let { return MediaMetadata(url = it, mimeType = fallbackMimeType?.lowercase()) }
 
         // トップレベル url
         (root["url"] as? JsonPrimitive)?.content
             ?.takeIf { it.isNotBlank() }
-            ?.let { return it }
+            ?.let { return MediaMetadata(url = it, mimeType = fallbackMimeType?.lowercase()) }
 
         return null
     }

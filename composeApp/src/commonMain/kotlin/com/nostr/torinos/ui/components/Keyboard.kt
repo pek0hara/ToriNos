@@ -14,6 +14,9 @@ fun rememberDismissKeyboard(): () -> Unit {
         {
             focusManager.clearFocus(force = true)
             keyboardController?.hide()
+            dismissPlatformKeyboard()
         }
     }
 }
+
+internal expect fun dismissPlatformKeyboard()
