@@ -3,8 +3,6 @@ package com.nostr.torinos.ui.post
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.combinedClickable
-import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -29,14 +27,14 @@ import androidx.compose.material.icons.automirrored.filled.Article
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.Check
-import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Favorite
+import androidx.compose.material.icons.filled.NorthEast
+import androidx.compose.material.icons.filled.SouthWest
 import androidx.compose.material.icons.filled.FilterList
 import androidx.compose.material.icons.filled.MailOutline
 import androidx.compose.material.icons.filled.PostAdd
 import androidx.compose.material.icons.filled.Repeat
 import androidx.compose.material.icons.filled.Today
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.CircularProgressIndicator
@@ -50,9 +48,9 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import com.nostr.torinos.ui.components.AppTopBar
 import com.nostr.torinos.ui.components.AppFloatingActionButton
+import com.nostr.torinos.ui.components.DeleteNoteDialog
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -71,6 +69,8 @@ import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -78,6 +78,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.nostr.torinos.account.accountSessionViewModel
+import com.nostr.torinos.model.COMMENT_EVENT_KIND
 import com.nostr.torinos.model.NostrEvent
 import com.nostr.torinos.model.NostrProfile
 import com.nostr.torinos.model.NIP23_ARTICLE_KIND
@@ -103,17 +104,15 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.serialization.json.Json
 
-@OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun JournalScreen(
     onBack: () -> Unit,
-    onOpenMemo: (PostMemoData, () -> Unit) -> Unit,
     onNewPost: () -> Unit,
-    refreshTodayRequest: Int,
     toggleCalendarRequest: Int = 0,
     showCalendarRequest: Int = 0,
     onOpenThread: (eventId: String) -> Unit = {},
-    onReply: ((eventId: String, authorPubkey: String, preview: String) -> Unit)? = null,
+    onReply: ((event: NostrEvent, preview: String) -> Unit)? = null,
     onUserClick: (pubkey: String) -> Unit = {},
     onOpenArticle: (pubkey: String, identifier: String) -> Unit = { _, _ -> },
     ownPubkey: String? = null,
@@ -137,10 +136,11 @@ fun JournalScreen(
         mutableStateOf(defaultJournalEntryFilters().map { it.name })
     }
     val isUserJournal = targetPubkey != null
+    val journalPubkey = targetPubkey ?: ownPubkey
     val availableFilters = remember(isUserJournal) {
         JournalEntryFilter.entries.filter {
             it != JournalEntryFilter.Article &&
-                (!isUserJournal || it !in setOf(JournalEntryFilter.Like, JournalEntryFilter.Memo))
+                (!isUserJournal || it != JournalEntryFilter.Like)
         }
     }
     val selectedFilters = remember(selectedFilterNames, availableFilters) {
@@ -151,11 +151,17 @@ fun JournalScreen(
             .ifEmpty { defaultJournalEntryFilters() }
     }
     val baseEntries = if (state.showCalendar) state.selectedEntries else state.monthEntries
-    val visibleEntries = remember(baseEntries, selectedFilters) {
-        if (selectedFilters.isEmpty()) baseEntries else baseEntries.filter { it.filter in selectedFilters }
+    val visibleEntries = remember(baseEntries, selectedFilters, journalPubkey) {
+        baseEntries
+            .filterIsInstance<JournalEntry.Note>()
+            .filter { it.matchesAny(selectedFilters, journalPubkey) }
     }
-    val filteredEntryCountsByDate = remember(state.monthEntries, selectedFilters) {
-        filteredEntryCountsByDate(state, selectedFilters)
+    val filteredEntryCountsByDate = remember(
+        state.monthEntries,
+        selectedFilters,
+        journalPubkey,
+    ) {
+        filteredEntryCountsByDate(state, selectedFilters, journalPubkey)
     }
     val journalListState = rememberLazyListState()
     val isPullRefreshing = state.isLoading && (state.memos.isNotEmpty() || state.notes.isNotEmpty())
@@ -175,9 +181,8 @@ fun JournalScreen(
             val toIndex = (lastVisible + JournalEngagementPrefetchItems)
                 .coerceAtMost(visibleEntries.lastIndex)
             val noteIds = (fromIndex..toIndex).mapNotNullTo(mutableSetOf()) { index ->
-                (visibleEntries[index] as? JournalEntry.Note)
-                    ?.event
-                    ?.takeIf { it.kind == 1 }
+                visibleEntries[index].event
+                    .takeIf { it.kind == 1 || it.kind == COMMENT_EVENT_KIND }
                     ?.id
             }
             viewModel.setVisibleNoteIds(noteIds)
@@ -188,10 +193,6 @@ fun JournalScreen(
         val error = state.engagementError ?: return@LaunchedEffect
         snackbarHostState.showSnackbar(error)
         viewModel.consumeEngagementError()
-    }
-
-    LaunchedEffect(refreshTodayRequest) {
-        if (refreshTodayRequest > 0) viewModel.refreshToday()
     }
 
     LaunchedEffect(toggleCalendarRequest) {
@@ -368,6 +369,19 @@ fun JournalScreen(
                     state.isLoading && state.memos.isEmpty() && state.notes.isEmpty() -> {
                         CircularProgressIndicator(modifier = Modifier.align(Alignment.Center))
                     }
+                    state.isLoading && visibleEntries.isEmpty() -> {
+                        Column(
+                            modifier = Modifier.align(Alignment.Center),
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(12.dp),
+                        ) {
+                            CircularProgressIndicator()
+                            Text(
+                                "ジャーナルを読み込んでいます",
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
                     state.error != null -> {
                         LazyColumn(modifier = Modifier.fillMaxSize()) {
                             item(contentType = "message") {
@@ -396,7 +410,12 @@ fun JournalScreen(
                                     contentAlignment = Alignment.Center,
                                 ) {
                                     Text(
-                                        text = if (state.showCalendar) "この日の投稿はありません" else "この月の投稿はありません",
+                                        text = when {
+                                            JournalEntryFilter.ReceivedLike in selectedFilters ->
+                                                "被いいねされた投稿はありません"
+                                            state.showCalendar -> "この日の投稿はありません"
+                                            else -> "この月の投稿はありません"
+                                        },
                                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                                         textAlign = TextAlign.Center,
                                     )
@@ -411,28 +430,11 @@ fun JournalScreen(
                         ) {
                             items(
                                 items = visibleEntries,
-                                key = { entry ->
-                                    when (entry) {
-                                        is JournalEntry.Memo -> "memo-${entry.item.eventId}"
-                                        is JournalEntry.Note -> "note-${entry.event.id}"
-                                    }
-                                },
-                                contentType = { entry ->
-                                    when (entry) {
-                                        is JournalEntry.Memo -> "memo"
-                                        is JournalEntry.Note -> "note"
-                                    }
-                                },
+                                key = { entry -> "note-${entry.event.id}" },
+                                contentType = { "note" },
                             ) { entry ->
-                                when (entry) {
-                                    is JournalEntry.Memo -> MemoRow(
-                                        item = entry.item,
-                                        replyToProfile = entry.item.memo.replyToPubkey?.let { state.profiles[it] },
-                                        onClick = { onOpenMemo(entry.item.memo) { viewModel.showDeleteDialog(entry.item) } },
-                                        onLongClick = { viewModel.showDeleteDialog(entry.item) },
-                                    )
-                                    is JournalEntry.Note -> when (entry.event.kind) {
-                                        1 -> NoteCard(
+                                when (entry.event.kind) {
+                                        1, COMMENT_EVENT_KIND -> NoteCard(
                                             event = entry.event,
                                             profile = state.profiles[entry.event.pubkey],
                                             profiles = state.profiles,
@@ -495,8 +497,7 @@ fun JournalScreen(
                                             onReply = if (ownPubkey != null && onReply != null) {
                                                 {
                                                     onReply(
-                                                        entry.event.id,
-                                                        entry.event.pubkey,
+                                                        entry.event,
                                                         entry.event.content.take(100),
                                                     )
                                                 }
@@ -523,8 +524,7 @@ fun JournalScreen(
                                             onUserClick = onUserClick,
                                             onOpenArticle = onOpenArticle,
                                         )
-                                        else -> Unit
-                                    }
+                                    else -> Unit
                                 }
                                 HorizontalDivider()
                             }
@@ -535,95 +535,13 @@ fun JournalScreen(
         }
     }
 
-    state.deleteDialog?.let { dialog ->
-        AlertDialog(
-            onDismissRequest = viewModel::dismissDeleteDialog,
-            title = { Text("ポストメモを削除") },
-            text = {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text("このポストメモの削除要求をリレーへ送信します。対応していないリレーやキャッシュ済みデータからの削除は保証されません。")
-                    Text(
-                        text = memoPreview(dialog.item.memo),
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 3,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                    dialog.error?.let { error ->
-                        Text(
-                            text = error,
-                            color = MaterialTheme.colorScheme.error,
-                            style = MaterialTheme.typography.bodySmall,
-                        )
-                    }
-                }
-            },
-            confirmButton = {
-                TextButton(
-                    onClick = viewModel::deleteSelectedMemo,
-                    enabled = !dialog.isDeleting,
-                ) {
-                    if (dialog.isDeleting) {
-                        CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
-                    } else {
-                        Text("削除", color = MaterialTheme.colorScheme.error)
-                    }
-                }
-            },
-            dismissButton = {
-                TextButton(
-                    onClick = viewModel::dismissDeleteDialog,
-                    enabled = !dialog.isDeleting,
-                ) {
-                    Text("キャンセル")
-                }
-            },
-        )
-    }
-
     state.noteDeleteDialog?.let { dialog ->
-        AlertDialog(
-            onDismissRequest = viewModel::dismissNoteDeleteDialog,
-            title = { Text("投稿を削除") },
-            text = {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text("この投稿の削除要求をリレーへ送信します。対応していないリレーやキャッシュ済みデータからの削除は保証されません。")
-                    Text(
-                        text = dialog.event.content,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 3,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                    dialog.error?.let { error ->
-                        Text(
-                            text = error,
-                            color = MaterialTheme.colorScheme.error,
-                            style = MaterialTheme.typography.bodySmall,
-                        )
-                    }
-                }
-            },
-            confirmButton = {
-                TextButton(
-                    onClick = viewModel::deleteSelectedNote,
-                    enabled = !dialog.isDeleting,
-                ) {
-                    if (dialog.isDeleting) {
-                        CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
-                    } else {
-                        Text("削除", color = MaterialTheme.colorScheme.error)
-                    }
-                }
-            },
-            dismissButton = {
-                TextButton(
-                    onClick = viewModel::dismissNoteDeleteDialog,
-                    enabled = !dialog.isDeleting,
-                ) {
-                    Text("キャンセル")
-                }
-            },
+        DeleteNoteDialog(
+            isDeleting = dialog.isDeleting,
+            error = dialog.error,
+            preview = dialog.event.content,
+            onDismiss = viewModel::dismissNoteDeleteDialog,
+            onConfirm = viewModel::deleteSelectedNote,
         )
     }
 
@@ -633,8 +551,8 @@ private enum class JournalEntryFilter(val label: String, val icon: ImageVector) 
     Post("投稿", Icons.Default.PostAdd),
     Reply("返信", Icons.Default.MailOutline),
     Repost("リポスト", Icons.Default.Repeat),
-    Like("いいね", Icons.Default.Favorite),
-    Memo("メモ", Icons.Default.Edit),
+    Like("したいいね", Icons.Default.Favorite),
+    ReceivedLike("もらったいいね", Icons.Default.Favorite),
     Article("記事", Icons.AutoMirrored.Filled.Article),
 }
 
@@ -644,23 +562,34 @@ private val JournalEntryFilter.loadKind: JournalLoadKind
         JournalEntryFilter.Reply -> JournalLoadKind.Reply
         JournalEntryFilter.Repost -> JournalLoadKind.Repost
         JournalEntryFilter.Like -> JournalLoadKind.Like
-        JournalEntryFilter.Memo -> JournalLoadKind.Memo
+        JournalEntryFilter.ReceivedLike -> JournalLoadKind.ReceivedLike
         JournalEntryFilter.Article -> JournalLoadKind.Article
     }
 
 private fun defaultJournalEntryFilters(): Set<JournalEntryFilter> =
     setOf(JournalEntryFilter.Post)
 
-private val JournalEntry.filter: JournalEntryFilter
-    get() = when (this) {
-        is JournalEntry.Memo -> JournalEntryFilter.Memo
-        is JournalEntry.Note -> when (event.kind) {
-            6 -> JournalEntryFilter.Repost
-            7 -> JournalEntryFilter.Like
-            NIP23_ARTICLE_KIND -> JournalEntryFilter.Article
-            else -> if (event.replyTargetId() != null) JournalEntryFilter.Reply else JournalEntryFilter.Post
+private val JournalEntry.Note.journalFilter: JournalEntryFilter
+    get() = when (event.kind) {
+        6 -> JournalEntryFilter.Repost
+        7 -> JournalEntryFilter.Like
+        NIP23_ARTICLE_KIND -> JournalEntryFilter.Article
+        else -> if (event.replyTargetId() != null) JournalEntryFilter.Reply else JournalEntryFilter.Post
+    }
+
+private fun JournalEntry.Note.matchesAny(
+    filters: Set<JournalEntryFilter>,
+    journalPubkey: String?,
+): Boolean {
+    return filters.any { filter ->
+        when (filter) {
+            JournalEntryFilter.ReceivedLike ->
+                journalPubkey != null && event.isReceivedLikeForJournal(journalPubkey)
+            JournalEntryFilter.Like -> journalFilter == filter && event.pubkey == journalPubkey
+            else -> journalFilter == filter
         }
     }
+}
 
 private fun Modifier.journalHorizontalSwipe(
     canGoNext: Boolean,
@@ -699,12 +628,37 @@ private fun JournalFilterHeader(
             FilterChip(
                 selected = filter in selectedFilters,
                 onClick = { onToggle(filter) },
+                modifier = Modifier.semantics { contentDescription = filter.label },
                 label = {
-                    Icon(
-                        imageVector = filter.icon,
-                        contentDescription = filter.label,
-                        modifier = Modifier.size(18.dp),
-                    )
+                    Box(
+                        modifier = Modifier.size(36.dp, 24.dp),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        if (filter == JournalEntryFilter.Like || filter == JournalEntryFilter.ReceivedLike) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Icon(
+                                    imageVector = Icons.Default.Favorite,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(20.dp),
+                                )
+                                Icon(
+                                    imageVector = if (filter == JournalEntryFilter.Like) {
+                                        Icons.Default.NorthEast
+                                    } else {
+                                        Icons.Default.SouthWest
+                                    },
+                                    contentDescription = null,
+                                    modifier = Modifier.size(16.dp),
+                                )
+                            }
+                        } else {
+                            Icon(
+                                imageVector = filter.icon,
+                                contentDescription = null,
+                                modifier = Modifier.size(20.dp),
+                            )
+                        }
+                    }
                 },
             )
         }
@@ -864,56 +818,6 @@ private fun calendarEntryIntensity(entryCount: Int): Float {
 }
 
 @Composable
-private fun MemoRow(
-    item: JournalItem,
-    onClick: () -> Unit,
-    onLongClick: () -> Unit,
-    replyToProfile: NostrProfile? = null,
-) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .combinedClickable(
-                onClick = onClick,
-                onLongClick = onLongClick,
-            )
-            .padding(horizontal = 16.dp, vertical = 12.dp),
-        horizontalArrangement = Arrangement.spacedBy(12.dp),
-        verticalAlignment = Alignment.Top,
-    ) {
-        Icon(
-            imageVector = JournalEntryFilter.Memo.icon,
-            contentDescription = null,
-            tint = MaterialTheme.colorScheme.primary,
-            modifier = Modifier.size(22.dp),
-        )
-        Column(
-            modifier = Modifier.weight(1f),
-            verticalArrangement = Arrangement.spacedBy(4.dp),
-        ) {
-            Text(
-                text = formatTimestamp(item.displayTime),
-                style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            Text(
-                text = memoPreview(item.memo),
-                style = MaterialTheme.typography.bodyMedium,
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis,
-            )
-            if (item.memo.noteKind == 42 || item.memo.replyToId != null) {
-                Text(
-                    text = memoKindLabel(item.memo, replyToProfile),
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-        }
-    }
-}
-
-@Composable
 private fun JournalActivityRow(
     event: NostrEvent,
     profile: NostrProfile?,
@@ -963,7 +867,7 @@ private fun JournalActivityRow(
                         modifier = Modifier.weight(1f, fill = false),
                     )
                     Text(
-                        text = "が${type.label}",
+                        text = if (type == JournalEntryFilter.Repost) "がリポスト" else "がいいね",
                         style = MaterialTheme.typography.labelMedium,
                         fontWeight = FontWeight.Bold,
                         color = MaterialTheme.colorScheme.primary,
@@ -1118,29 +1022,15 @@ private fun JournalActivityIcon(icon: ImageVector, tint: Color) {
     )
 }
 
-private fun memoPreview(memo: PostMemoData): String =
-    memo.text.takeIf { it.isNotBlank() }
-        ?: memo.imageUrls.takeIf { it.isNotEmpty() }?.let { "画像 ${it.size} 件" }
-        ?: "空のメモ"
-
-private fun memoKindLabel(memo: PostMemoData, replyToProfile: NostrProfile? = null): String =
-    when {
-        memo.noteKind == 42 -> "チャンネル"
-        memo.replyToId != null -> {
-            val name = replyToProfile?.bestName
-                ?: memo.replyToPubkey?.let { it.take(8) + "…" + it.takeLast(4) }
-            if (name != null) "返信先: $name" else "返信"
-        }
-        else -> "通常投稿"
-    }
-
 private fun filteredEntryCountsByDate(
     state: JournalState,
     selectedFilters: Set<JournalEntryFilter>,
+    journalPubkey: String?,
 ): Map<LocalDate, Int> =
     state.monthEntries
         .asSequence()
-        .filter { selectedFilters.isEmpty() || it.filter in selectedFilters }
+        .filterIsInstance<JournalEntry.Note>()
+        .filter { entry -> entry.matchesAny(selectedFilters, journalPubkey) }
         .groupingBy { dateOfEpochSeconds(it.displayTime) }
         .eachCount()
 

@@ -27,6 +27,7 @@ internal class QuoteResolver(
         eventIds: Set<String>,
         kinds: List<Int>,
         target: RelayTarget = RelayTarget.AllEnabled,
+        onEvent: suspend (NostrEvent) -> Unit = {},
     ): QuoteResolution {
         if (eventIds.isEmpty()) return QuoteResolution(emptyMap(), emptySet())
         val events = linkedMapOf<String, NostrEvent>()
@@ -43,6 +44,7 @@ internal class QuoteResolver(
                 .onEach { signal ->
                     if (signal is SubscriptionSignal.Event && signal.event.id in eventIds) {
                         events[signal.event.id] = signal.event
+                        onEvent(signal.event)
                     }
                 }
                 .first { it is SubscriptionSignal.FetchCompleted }

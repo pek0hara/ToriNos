@@ -30,6 +30,7 @@ class JournalViewModel(
     fun refreshToday() = controller.refreshToday()
     fun refresh() = controller.refresh()
     fun setRelayUrl(url: String?) = controller.setRelayUrl(url)
+    fun loadAllMemos(relayUrl: String?) = controller.loadAllMemos(relayUrl)
     fun react(eventId: String, eventPubkey: String) = controller.react(eventId, eventPubkey)
     fun unreact(eventId: String) = controller.unreact(eventId)
     fun reactWithEmoji(eventId: String, eventPubkey: String, option: ReactionOption) =

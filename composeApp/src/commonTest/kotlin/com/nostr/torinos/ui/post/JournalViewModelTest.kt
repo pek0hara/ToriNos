@@ -1,9 +1,25 @@
 package com.nostr.torinos.ui.post
 
+import com.nostr.torinos.model.NostrEvent
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
+import kotlin.test.assertTrue
 
 class JournalViewModelTest {
+    @Test
+    fun receivedLikeAcceptsEveryReactionExceptDislikeAddressedToJournalOwner() {
+        val receivedLike = reaction(content = "+", pTag = "journal-owner")
+        val emojiReaction = reaction(content = "🔥", pTag = "journal-owner")
+        val dislikeReaction = reaction(content = "-", pTag = "journal-owner")
+        val someoneElsesLike = reaction(content = "+", pTag = "other-user")
+
+        assertTrue(receivedLike.isReceivedLikeForJournal("journal-owner"))
+        assertTrue(emojiReaction.isReceivedLikeForJournal("journal-owner"))
+        assertFalse(dislikeReaction.isReceivedLikeForJournal("journal-owner"))
+        assertFalse(someoneElsesLike.isReceivedLikeForJournal("journal-owner"))
+    }
+
     @Test
     fun mergeJournalMemosReplacesAnEditedMemoWithTheLatestEvent() {
         val original = journalItem(
@@ -86,5 +102,15 @@ class JournalViewModelTest {
             identifier = identifier,
         ),
         createdAt = createdAt,
+    )
+
+    private fun reaction(content: String, pTag: String) = NostrEvent(
+        id = "reaction-$content-$pTag",
+        pubkey = "reactor",
+        createdAt = 100,
+        kind = 7,
+        tags = listOf(listOf("e", "target-note"), listOf("p", pTag)),
+        content = content,
+        sig = "signature",
     )
 }
