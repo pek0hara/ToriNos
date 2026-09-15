@@ -447,6 +447,7 @@ internal fun ProfileHeader(
                 profile?.about?.takeIf { it.isNotBlank() }?.let { about ->
                     ProfileAboutText(
                         about = about,
+                        customEmojis = profile.customEmojis,
                         linkedProfiles = linkedProfiles,
                         isOwnProfile = isOwnProfile,
                         onUserClick = onUserClick,
@@ -528,6 +529,7 @@ private fun ProfileGeneralStatusText(
 @Composable
 private fun ProfileAboutText(
     about: String,
+    customEmojis: Map<String, String>,
     linkedProfiles: Map<String, NostrProfile>,
     isOwnProfile: Boolean,
     onUserClick: (String) -> Unit,
@@ -543,6 +545,7 @@ private fun ProfileAboutText(
                 modifier = Modifier.weight(1f),
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
+                customEmojis = customEmojis,
                 onProfileClick = onUserClick,
                 profiles = linkedProfiles,
                 maxLines = if (expanded) Int.MAX_VALUE else 5,
