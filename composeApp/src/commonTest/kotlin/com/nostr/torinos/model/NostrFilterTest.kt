@@ -63,6 +63,28 @@ class NostrFilterTest {
     }
 
     @Test
+    fun buildReqMessage_rootEventTags() {
+        val msg = buildReqMessage("s", NostrFilter(rootEventTags = listOf("root")))
+        assertTrue(msg.contains("\"#E\":[\"root\"]"))
+    }
+
+    @Test
+    fun buildReqMessage_commentKindTags() {
+        val msg = buildReqMessage(
+            "s",
+            NostrFilter(parentKindTags = listOf("1111"), rootKindTags = listOf("1")),
+        )
+        assertTrue(msg.contains("\"#k\":[\"1111\"]"))
+        assertTrue(msg.contains("\"#K\":[\"1\"]"))
+    }
+
+    @Test
+    fun buildReqMessage_rootPubkeyTags() {
+        val msg = buildReqMessage("s", NostrFilter(rootPubkeyTags = listOf("author")))
+        assertTrue(msg.contains("\"#P\":[\"author\"]"))
+    }
+
+    @Test
     fun buildReqMessage_qTags() {
         val msg = buildReqMessage("s", NostrFilter(qTags = listOf("ev1", "ev2")))
         assertTrue(msg.contains(""""#q":["ev1","ev2"]"""))

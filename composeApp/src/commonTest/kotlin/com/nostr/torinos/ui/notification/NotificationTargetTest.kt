@@ -1,6 +1,7 @@
 package com.nostr.torinos.ui.notification
 
 import com.nostr.torinos.model.NostrEvent
+import com.nostr.torinos.model.COMMENT_EVENT_KIND
 import com.nostr.torinos.network.TargetLoadState
 import com.nostr.torinos.network.TargetFetchFailure
 import kotlinx.serialization.encodeToString
@@ -29,6 +30,16 @@ class NotificationTargetTest {
     @Test fun replyUsesReplyMarkerNotLastETag() {
         val reply = event(1, listOf(listOf("e", parent, "", "reply"), listOf("e", id, "", "mention")))
         assertEquals(TargetReference.EventId(parent), resolveNotificationTarget(reply).reference)
+    }
+
+    @Test fun kind1111ReplyUsesParentThenRootEventTag() {
+        val nested = event(COMMENT_EVENT_KIND, listOf(listOf("E", id), listOf("e", parent)))
+        val direct = event(COMMENT_EVENT_KIND, listOf(listOf("E", id), listOf("K", "1")))
+
+        assertEquals(TargetReference.EventId(parent), resolveNotificationTarget(nested).reference)
+        assertEquals(TargetReference.EventId(id), resolveNotificationTarget(direct).reference)
+        assertEquals(NotificationTargetDestination.Thread(id), notificationTargetDestination(direct))
+        assertEquals("body", notificationTargetBody(direct))
     }
 
     @Test fun absentAndAddressOnlyReferencesDoNotStartIdLookup() {

@@ -185,13 +185,33 @@ class NostrUriTest {
         assertEquals(1, quotedEventIds(event).size)
     }
 
+    @Test
+    fun replyTargetId_kind1111UsesParentEventTag() {
+        val event = makeEvent(
+            tags = listOf(listOf("E", "root"), listOf("e", "parent")),
+            content = "reply",
+            kind = COMMENT_EVENT_KIND,
+        )
+        assertEquals("parent", event.replyTargetId())
+    }
+
+    @Test
+    fun replyTargetId_kind1111FallsBackToRootEventTag() {
+        val event = makeEvent(
+            tags = listOf(listOf("E", "root"), listOf("K", "1")),
+            content = "reply",
+            kind = COMMENT_EVENT_KIND,
+        )
+        assertEquals("root", event.replyTargetId())
+    }
+
     // ---- helpers ----
 
-    private fun makeEvent(tags: List<List<String>>, content: String) = NostrEvent(
+    private fun makeEvent(tags: List<List<String>>, content: String, kind: Int = 1) = NostrEvent(
         id = zeroId,
         pubkey = zeroId,
         createdAt = 0L,
-        kind = 1,
+        kind = kind,
         tags = tags,
         content = content,
         sig = "0".repeat(128),

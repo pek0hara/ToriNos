@@ -2,6 +2,7 @@ package com.nostr.torinos.model
 
 sealed interface NoteContext {
     val eventKind: Int
+    val readableEventKinds: List<Int> get() = listOf(eventKind)
 
     fun matches(event: NostrEvent): Boolean
 
@@ -11,9 +12,10 @@ sealed interface NoteContext {
 
     data object Timeline : NoteContext {
         override val eventKind: Int = 1
+        override val readableEventKinds: List<Int> = listOf(eventKind, COMMENT_EVENT_KIND)
 
         override fun matches(event: NostrEvent): Boolean =
-            event.kind == eventKind
+            event.kind == eventKind || event.isSupportedTimelineComment()
 
         override fun replyTargetId(event: NostrEvent): String? =
             event.replyTargetId()

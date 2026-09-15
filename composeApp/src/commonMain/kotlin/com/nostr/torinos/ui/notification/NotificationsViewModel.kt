@@ -2,6 +2,8 @@ package com.nostr.torinos.ui.notification
 
 import com.nostr.torinos.model.NostrEvent
 import com.nostr.torinos.model.NostrFilter
+import com.nostr.torinos.model.COMMENT_EVENT_KIND
+import com.nostr.torinos.model.isSupportedTimelineComment
 import com.nostr.torinos.model.NostrProfile
 import com.nostr.torinos.network.NostrRepository
 import com.nostr.torinos.network.MuteStore
@@ -192,7 +194,21 @@ class NotificationsViewModel(
     private suspend fun subscribeNotificationFeeds(limit: Int) {
         NostrRepository.subscribe(
             activitySubId,
-            NostrFilter(kinds = listOf(1, 6, 7), pTags = listOf(ownPubkey), limit = limit),
+            listOf(
+                NostrFilter(kinds = listOf(1, 6, 7), pTags = listOf(ownPubkey), limit = limit),
+                NostrFilter(
+                    kinds = listOf(COMMENT_EVENT_KIND),
+                    rootKindTags = listOf("1"),
+                    pTags = listOf(ownPubkey),
+                    limit = limit,
+                ),
+                NostrFilter(
+                    kinds = listOf(COMMENT_EVENT_KIND),
+                    rootKindTags = listOf("1"),
+                    rootPubkeyTags = listOf(ownPubkey),
+                    limit = limit,
+                ),
+            ),
         )
         NostrRepository.subscribe(
             followsSubId,
@@ -202,12 +218,13 @@ class NotificationsViewModel(
 
     private suspend fun handleActivityEvent(event: NostrEvent) {
         if (event.pubkey == ownPubkey) return
+        if (event.kind == COMMENT_EVENT_KIND && !event.isSupportedTimelineComment()) return
         if (muteStore?.isMuted(event.pubkey) == true) {
             rememberSeenId(event.id)
             return
         }
         val type = when (event.kind) {
-            1 -> NotificationType.Reply
+            1, COMMENT_EVENT_KIND -> NotificationType.Reply
             6 -> NotificationType.Repost
             7 -> NotificationType.Like
             else -> return

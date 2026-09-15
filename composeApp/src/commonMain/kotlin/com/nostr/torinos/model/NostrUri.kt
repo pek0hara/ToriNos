@@ -54,11 +54,17 @@ fun stripNostrEventUris(text: String): String =
     }.trim()
 
 fun NostrEvent.replyTargetId(): String? {
+    if (kind == COMMENT_EVENT_KIND) {
+        return tags.lastOrNull { it.firstOrNull() == "e" }?.getOrNull(1)
+            ?: tags.firstOrNull { it.firstOrNull() == "E" }?.getOrNull(1)
+    }
     val eTags = tags.filter { it.firstOrNull() == "e" }
     if (eTags.isEmpty()) return null
     return eTags.firstOrNull { it.getOrNull(3) == "reply" }?.getOrNull(1)
         ?: eTags.lastOrNull()?.getOrNull(1)
 }
+
+const val COMMENT_EVENT_KIND = 1111
 
 fun NostrEvent.channelRootId(): String? {
     val eTags = tags.filter { it.firstOrNull() == "e" }

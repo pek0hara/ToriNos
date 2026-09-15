@@ -1,6 +1,7 @@
 package com.nostr.torinos.engagement
 
 import com.nostr.torinos.account.AccountSigner
+import com.nostr.torinos.model.COMMENT_EVENT_KIND
 import com.nostr.torinos.model.NostrEvent
 import com.nostr.torinos.model.ReactionOption
 import com.nostr.torinos.model.eventTags
@@ -42,14 +43,19 @@ class NoteEngagementService(
                     kind = 5,
                     tags = listOf(listOf("e", command.reactionEventId.requireNotBlank("reactionEventId"))),
                 )
-                is NoteEngagementCommand.AddRepost -> activeSigner.sign(
-                    content = Json.encodeToString(NostrEvent.serializer(), command.event),
-                    kind = 6,
-                    tags = listOf(
-                        listOf("e", command.event.id.requireNotBlank("event.id")),
-                        listOf("p", command.event.pubkey.requireNotBlank("event.pubkey")),
-                    ),
-                )
+                is NoteEngagementCommand.AddRepost -> {
+                    require(command.event.kind != COMMENT_EVENT_KIND) {
+                        "kind 1111の汎用リポストには対応していません"
+                    }
+                    activeSigner.sign(
+                        content = Json.encodeToString(NostrEvent.serializer(), command.event),
+                        kind = 6,
+                        tags = listOf(
+                            listOf("e", command.event.id.requireNotBlank("event.id")),
+                            listOf("p", command.event.pubkey.requireNotBlank("event.pubkey")),
+                        ),
+                    )
+                }
                 is NoteEngagementCommand.RemoveRepost -> activeSigner.sign(
                     content = "",
                     kind = 5,

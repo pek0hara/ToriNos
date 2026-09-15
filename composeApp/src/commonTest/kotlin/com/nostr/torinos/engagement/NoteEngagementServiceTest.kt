@@ -122,6 +122,28 @@ class NoteEngagementServiceTest {
         )
     }
 
+    @Test
+    fun repostRejectsNonKind1WithoutSigningOrPublishing() = runBlocking {
+        val signer = RecordingSigner()
+        var publishCount = 0
+        val service = NoteEngagementService(signer) {
+            publishCount++
+            RelayPublishResult(setOf("relay"), emptyMap())
+        }
+        val comment = NostrEvent(
+            id = "comment-id",
+            pubkey = "author-pubkey",
+            createdAt = 10L,
+            kind = 1111,
+            tags = emptyList(),
+            content = "comment",
+            sig = "target-sig",
+        )
+
+        assertTrue(service.execute(NoteEngagementCommand.AddRepost(comment)).isFailure)
+        assertEquals(0, publishCount)
+    }
+
     private class RecordingSigner : AccountSigner {
         override val pubkey: String = "signer-pubkey"
         private var nextId = 0

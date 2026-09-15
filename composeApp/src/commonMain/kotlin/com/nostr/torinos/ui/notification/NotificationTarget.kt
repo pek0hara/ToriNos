@@ -2,6 +2,7 @@ package com.nostr.torinos.ui.notification
 
 import com.nostr.torinos.crypto.isValidEvent
 import com.nostr.torinos.model.NostrEvent
+import com.nostr.torinos.model.COMMENT_EVENT_KIND
 import com.nostr.torinos.model.channelRootId
 import com.nostr.torinos.model.replyTargetId
 import com.nostr.torinos.model.toArticleMeta
@@ -30,13 +31,16 @@ fun resolveNotificationTarget(
         else -> TargetReference.Invalid
     })
     val eTag = event.tags.lastOrNull { it.firstOrNull() == "e" }
-    val id = if (event.kind == 1) event.replyTargetId() else eTag?.getOrNull(1)
+    val eventReferenceTag = eTag ?: event.tags.firstOrNull {
+        event.kind == COMMENT_EVENT_KIND && it.firstOrNull() == "E"
+    }
+    val id = if (event.kind == 1 || event.kind == COMMENT_EVENT_KIND) event.replyTargetId() else eTag?.getOrNull(1)
     val embedded = if (event.kind == 6 && event.content.isNotBlank()) {
         runCatching { Json.decodeFromString<NostrEvent>(event.content) }.getOrNull()
             ?.takeIf { (id == null || it.id == id) && validateEmbedded(it) }
     } else null
     val reference = when {
-        eTag != null -> if (id != null && isFullEventId(id)) TargetReference.EventId(id) else TargetReference.Invalid
+        eventReferenceTag != null -> if (id != null && isFullEventId(id)) TargetReference.EventId(id) else TargetReference.Invalid
         embedded != null -> TargetReference.EventId(embedded.id)
         event.tags.any { it.firstOrNull() == "a" } -> TargetReference.AddressOnly
         event.kind == 6 && event.content.isNotBlank() -> TargetReference.Invalid
@@ -53,7 +57,7 @@ sealed interface NotificationTargetDestination {
 }
 
 fun notificationTargetDestination(event: NostrEvent): NotificationTargetDestination? = when (event.kind) {
-    1 -> NotificationTargetDestination.Thread(event.id)
+    1, COMMENT_EVENT_KIND -> NotificationTargetDestination.Thread(event.id)
     42 -> event.channelRootId()?.takeIf(::isFullEventId)?.let {
         NotificationTargetDestination.ChannelThread(event.id, it)
     }
@@ -64,7 +68,7 @@ fun notificationTargetDestination(event: NostrEvent): NotificationTargetDestinat
 
 /** Unknown kinds deliberately never render content (it may be JSON or ciphertext). */
 fun notificationTargetBody(event: NostrEvent): String = when (event.kind) {
-    1, 42 -> event.content
+    1, 42, COMMENT_EVENT_KIND -> event.content
     30023 -> event.toArticleMeta()?.let { it.title ?: it.summary ?: "長文記事" } ?: "Kind 30023"
     30311 -> event.toLiveActivityMeta()?.let { it.title ?: "ライブ" } ?: "Kind 30311"
     else -> "Kind ${event.kind} のイベント（専用画面は未対応）"

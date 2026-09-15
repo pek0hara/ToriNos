@@ -37,6 +37,7 @@ class EventByIdFetcher(
     private val validate: suspend (NostrEvent) -> Boolean = { event ->
         withContext(Dispatchers.Default) { isValidEvent(event) }
     },
+    private val timeoutMillis: Long = 5_000,
 ) : TargetEventFetcher {
     override suspend fun fetch(ids: Set<String>, onEvent: (NostrEvent) -> Unit): EventByIdResult {
         require(ids.all(::isFullEventId))
@@ -48,7 +49,7 @@ class EventByIdFetcher(
             SubscriptionSpec(
                 id = "event-by-id-${Random.nextLong().toULong()}",
                 filters = listOf(NostrFilter(ids = ids.toList(), limit = ids.size)),
-                behavior = SubscriptionBehavior.Fetch(timeoutMillis = 5_000),
+                behavior = SubscriptionBehavior.Fetch(timeoutMillis = timeoutMillis),
                 // An invalid first response must not suppress a valid copy from another relay.
                 deduplicateEvents = false,
             ),

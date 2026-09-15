@@ -5,6 +5,7 @@ import androidx.lifecycle.ViewModelProvider
 import com.nostr.torinos.ui.SafeViewModel
 import androidx.lifecycle.viewmodel.CreationExtras
 import kotlin.reflect.KClass
+import com.nostr.torinos.model.COMMENT_EVENT_KIND
 import com.nostr.torinos.model.NostrEvent
 import com.nostr.torinos.model.NostrFilter
 import com.nostr.torinos.model.NostrProfile
@@ -13,6 +14,8 @@ import com.nostr.torinos.model.UnicodeReaction
 import com.nostr.torinos.model.extractNpubReferences
 import com.nostr.torinos.model.incrementedWith
 import com.nostr.torinos.model.incrementedWithUnicodeReaction
+import com.nostr.torinos.model.isSupportedTimelineComment
+import com.nostr.torinos.model.replyTargetId
 import com.nostr.torinos.model.toCustomReaction
 import com.nostr.torinos.model.toUnicodeReaction
 import com.nostr.torinos.network.NostrRepository
@@ -235,9 +238,9 @@ class SearchViewModel : SafeViewModel() {
 
         subscriptionJobs += launch {
             NostrRepository.events(replySubId).collect { event ->
-                if (event.kind != 1) return@collect
+                if (event.kind != 1 && !event.isSupportedTimelineComment()) return@collect
                 if (!rememberSeenId(seenReplyIds, event.id)) return@collect
-                val targetId = event.tags.lastOrNull { it.firstOrNull() == "e" }?.getOrNull(1)
+                val targetId = event.replyTargetId()
                     ?: return@collect
                 currentReplyCounts = currentReplyCounts +
                     (targetId to (currentReplyCounts[targetId] ?: 0) + 1)
@@ -448,7 +451,18 @@ class SearchViewModel : SafeViewModel() {
             delay(500)
             val ids = watchedEventIds.toList()
             NostrRepository.subscribe(activeReactionSubId, NostrFilter(kinds = listOf(7), eTags = ids))
-            NostrRepository.subscribe(activeReplySubId, NostrFilter(kinds = listOf(1), eTags = ids))
+            NostrRepository.subscribe(
+                activeReplySubId,
+                listOf(
+                    NostrFilter(kinds = listOf(1), eTags = ids),
+                    NostrFilter(kinds = listOf(COMMENT_EVENT_KIND), rootKindTags = listOf("1"), eTags = ids),
+                    NostrFilter(
+                        kinds = listOf(COMMENT_EVENT_KIND),
+                        rootKindTags = listOf("1"),
+                        rootEventTags = ids,
+                    ),
+                ),
+            )
             NostrRepository.subscribe(activeRepostSubId, NostrFilter(kinds = listOf(6), eTags = ids))
             NostrRepository.subscribe(activeQuoteRepostSubId, NostrFilter(kinds = listOf(1), qTags = ids))
         }

@@ -2,16 +2,14 @@ package com.nostr.torinos.ui.thread
 
 import com.nostr.torinos.account.AccountSigner
 import com.nostr.torinos.model.NostrEvent
-import com.nostr.torinos.model.NoteContext
+import com.nostr.torinos.model.ReplyTarget
 import com.nostr.torinos.network.NostrRepository
 import com.nostr.torinos.network.RelayPublishResult
 import kotlinx.coroutines.CancellationException
 
 internal data class ReplyCommand(
     val content: String,
-    val replyToId: String,
-    val replyToPubkey: String,
-    val noteContext: NoteContext,
+    val target: ReplyTarget,
 )
 
 internal sealed interface ReplyPublishResult {
@@ -34,11 +32,11 @@ internal class ReplyPublisher(
         val activeSigner = signer ?: return ReplyPublishResult.Failure.MissingSigner
 
         return try {
-            val tags = command.noteContext.replyTags(command.replyToId, command.replyToPubkey) +
+            val tags = command.target.tags() +
                 listOf(listOf("client", "ToriNos"))
             val event = activeSigner.sign(
                 content = content,
-                kind = command.noteContext.eventKind,
+                kind = command.target.eventKind,
                 tags = tags,
             )
             val result = publisher(event)
