@@ -119,6 +119,7 @@ internal class ChannelController(
     private var currentOwnEmojiReactionEventIds = emptyMap<String, Map<String, String>>()
     private var currentRepostedEvents = emptyMap<String, String>()
     private var currentPendingEngagementOperations = emptyMap<String, Map<EngagementSlot, PendingEngagementOperation>>()
+    private val locallyDeletedMessageIds = mutableSetOf<String>()
     private var ownPubkey: String? = null
     private val engagementCoordinator = NoteEngagementCoordinator(accountSession?.signer)
     private val signedEventPublisher = SignedEventPublisher(accountSession?.signer)
@@ -147,14 +148,15 @@ internal class ChannelController(
                 behavior = SubscriptionBehavior.Fetch(10_000),
             ),
         ) { event -> if (noteContext.matches(event)) events.add(event) }
+        val retainedEvents = events.filterNot { it.id in locallyDeletedMessageIds }
         try {
-            relayUrl?.let { url -> events.forEach { ChannelCacheStore.upsertMessage(url, it, channelId) } }
+            relayUrl?.let { url -> retainedEvents.forEach { ChannelCacheStore.upsertMessage(url, it, channelId) } }
         } catch (cancelled: CancellationException) {
             throw cancelled
         } catch (error: Exception) {
             logException("ChannelController", error, "Could not cache messages")
         }
-        return ChannelHistoryPage(events.distinctBy { it.id }, complete)
+        return ChannelHistoryPage(retainedEvents.distinctBy { it.id }, complete)
     }
 
     init {
@@ -199,6 +201,39 @@ internal class ChannelController(
                         isPosting = false,
                         postError = result.cause.message ?: "送信に失敗しました",
                     )
+                }
+            }
+        }
+    }
+
+    fun deleteMessage(eventId: String) {
+        val event = currentMessages.firstOrNull { it.id == eventId } ?: return
+        if (ownPubkey == null || event.pubkey != ownPubkey) return
+        launch {
+            val result = signedEventPublisher.publish("", 5, listOf(listOf("e", eventId)))
+            when (result) {
+                is SignedPublishResult.Published -> {
+                    locallyDeletedMessageIds += eventId
+                    history.remove(eventId)
+                    try {
+                        ChannelCacheStore.deleteMessage(eventId)
+                    } catch (cancelled: CancellationException) {
+                        throw cancelled
+                    } catch (error: Exception) {
+                        logException("ChannelController", error, "Could not delete cached channel message")
+                    }
+                }
+                SignedPublishResult.MissingSigner -> {
+                    val ready = _state.value as? UiState.Ready
+                    if (ready != null) _state.value = ready.copy(engagementError = "秘密鍵が設定されていません")
+                }
+                is SignedPublishResult.Failed -> {
+                    val ready = _state.value as? UiState.Ready
+                    if (ready != null) {
+                        _state.value = ready.copy(
+                            engagementError = result.cause.message ?: "削除要求の送信に失敗しました",
+                        )
+                    }
                 }
             }
         }

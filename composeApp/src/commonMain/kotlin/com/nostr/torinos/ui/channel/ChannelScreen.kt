@@ -81,7 +81,7 @@ fun ChannelScreen(
     channelId: String,
     onBack: () -> Unit = {},
     onUserClick: (pubkey: String) -> Unit = {},
-    onReply: ((eventId: String, authorPubkey: String, preview: String, channelId: String) -> Unit)? = null,
+    onReply: ((event: NostrEvent, preview: String, channelId: String) -> Unit)? = null,
     onOpenThread: (eventId: String) -> Unit = {},
     onOpenLikes: (eventId: String) -> Unit = {},
     onOpenReposts: (eventId: String) -> Unit = {},
@@ -404,7 +404,7 @@ fun ChannelScreen(
                                                             { option -> viewModel.unreactWithEmoji(message.id, option) }
                                                         } else null,
                                                         onReply = if (ownPubkey != null && onReply != null) {
-                                                            { onReply(message.id, message.pubkey, message.content.replyPreviewText(), channelId) }
+                                                            { onReply(message, message.content.replyPreviewText(), channelId) }
                                                         } else null,
                                                         onOpenReplies = { onOpenThread(message.id) },
                                                         onOpenLikes = { onOpenLikes(message.id) },
@@ -419,6 +419,7 @@ fun ChannelScreen(
                                                             }
                                                         } else null,
                                                         ownPubkey = ownPubkey,
+                                                        onDelete = { viewModel.deleteMessage(message.id) },
                                                         isMuted = mutedPubkeys.contains(message.pubkey),
                                                         onNoteClick = onOpenThread,
                                                     )

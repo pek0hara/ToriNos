@@ -75,6 +75,23 @@ class ChannelHistoryTest {
     }
 
     @Test
+    fun removeDeletesPublishedAndPendingMessages() = runTest {
+        val response = CompletableDeferred<ChannelHistoryPage>()
+        val history = ChannelHistory(backgroundScope, "channel", { response.await() }, { null })
+        history.initialize(listOf(event(1)), null)
+        runCurrent()
+        history.receive(event(2))
+
+        history.remove("1")
+        history.remove("2")
+        response.complete(ChannelHistoryPage(emptyList(), true))
+        runCurrent()
+
+        assertTrue(history.state.value.messages.isEmpty())
+        history.close()
+    }
+
+    @Test
     fun previousPostMissingUsesNearbyTimestampAndExplainsIt() = runTest {
         val history = ChannelHistory(backgroundScope, "channel", {
             ChannelHistoryPage(if (it.until == null) events(100, 71) else events(19, 1), true)

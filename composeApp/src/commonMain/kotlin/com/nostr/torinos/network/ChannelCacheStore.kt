@@ -35,6 +35,7 @@ expect object ChannelCacheStore {
     suspend fun getMessages(relayUrl: String, channelId: String, limit: Int = 200): List<NostrEvent>
     suspend fun upsertChannel(relayUrl: String, event: NostrEvent, meta: ChannelMeta)
     suspend fun upsertMessage(relayUrl: String, event: NostrEvent, channelId: String)
+    internal suspend fun deleteMessage(messageId: String)
     suspend fun markRead(relayUrl: String, channelId: String, readAt: Long)
     suspend fun saveReadingPosition(relayUrl: String, channelId: String, position: ChannelReadingPosition)
     suspend fun getReadingPosition(relayUrl: String, channelId: String): ChannelReadingPosition?

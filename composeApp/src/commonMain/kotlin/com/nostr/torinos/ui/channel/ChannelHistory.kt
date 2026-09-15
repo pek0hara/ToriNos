@@ -210,6 +210,30 @@ internal class ChannelHistory(
         else mutableState.value = state.value.copy(newMessageCount = state.value.newMessageCount + 1)
     }
 
+    fun remove(eventId: String) {
+        pendingLive.remove(eventId)
+        val current = state.value
+        val removedIndex = current.messages.indexOfFirst { it.id == eventId }
+        if (removedIndex < 0) return
+        val updatedGap = when {
+            current.gap?.newerEdgeId == eventId -> current.messages.getOrNull(removedIndex - 1)
+                ?.takeUnless { it.id == current.gap.olderEdgeId }
+                ?.let { current.gap.copy(newerEdgeId = it.id) }
+            current.gap?.olderEdgeId == eventId -> current.messages.getOrNull(removedIndex + 1)
+                ?.takeUnless { it.id == current.gap.newerEdgeId }
+                ?.let { current.gap.copy(olderEdgeId = it.id) }
+            else -> current.gap
+        }
+        val removedNavigation = current.navigation?.messageId == eventId
+        if (viewportAnchorId == eventId) viewportAnchorId = null
+        mutableState.value = state.value.copy(
+            messages = current.messages.filterNot { it.id == eventId },
+            gap = updatedGap,
+            navigation = current.navigation?.takeUnless { removedNavigation },
+            navigationTarget = current.navigationTarget.takeUnless { removedNavigation },
+        )
+    }
+
     fun consumeNavigation(sequence: Long) {
         if (state.value.navigation?.sequence == sequence) {
             mutableState.value = state.value.copy(navigation = null, navigationTarget = null)

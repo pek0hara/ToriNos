@@ -70,6 +70,7 @@ class ChannelViewModel(
     fun onDraftChange(text: String) = controller.onDraftChange(text)
     fun consumeEngagementError() = controller.consumeEngagementError()
     fun sendMessage() = controller.sendMessage()
+    fun deleteMessage(eventId: String) = controller.deleteMessage(eventId)
     fun react(eventId: String, eventPubkey: String) = controller.react(eventId, eventPubkey)
     fun unreact(eventId: String) = controller.unreact(eventId)
     fun reactWithEmoji(eventId: String, eventPubkey: String, option: ReactionOption) =

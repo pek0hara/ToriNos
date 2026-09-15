@@ -72,6 +72,11 @@ actual object ChannelCacheStore {
         dao.upsertChannelRelay(relayUrl = relayUrl, channelId = channelId, seenAt = event.createdAt)
     }
 
+    internal actual suspend fun deleteMessage(messageId: String) {
+        dao.deleteMessageRelaysForMessage(messageId)
+        dao.deleteMessage(messageId)
+    }
+
     actual suspend fun deleteChannel(relayUrl: String, channelId: String) {
         dao.deleteMessageRelays(channelId)
         dao.deleteMessages(channelId)

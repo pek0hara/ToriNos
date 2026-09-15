@@ -370,6 +370,12 @@ interface ChannelCacheDao {
     @Query("DELETE FROM channel_messages WHERE channelId = :channelId")
     suspend fun deleteMessages(channelId: String)
 
+    @Query("DELETE FROM channel_message_relays WHERE eventId = :messageId")
+    suspend fun deleteMessageRelaysForMessage(messageId: String)
+
+    @Query("DELETE FROM channel_messages WHERE eventId = :messageId")
+    suspend fun deleteMessage(messageId: String)
+
     @Query("DELETE FROM channel_read_states WHERE channelId = :channelId")
     suspend fun deleteReadState(channelId: String)
 
