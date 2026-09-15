@@ -20,6 +20,7 @@ import com.nostr.torinos.model.NostrEvent
 import com.nostr.torinos.model.NostrFilter
 import com.nostr.torinos.model.NostrProfile
 import com.nostr.torinos.model.NoteContext
+import com.nostr.torinos.model.COMMENT_EVENT_KIND
 import com.nostr.torinos.model.CustomReaction
 import com.nostr.torinos.model.ReactionOption
 import com.nostr.torinos.model.UnicodeReaction
@@ -32,11 +33,14 @@ import com.nostr.torinos.model.toReactionOption
 import com.nostr.torinos.network.NostrRepository
 import com.nostr.torinos.network.ProfileFetchPolicy
 import com.nostr.torinos.network.ProfileRepository
+import com.nostr.torinos.network.resolveReplyTarget
 import com.nostr.torinos.ui.SafeCoroutineLauncher
 import com.nostr.torinos.ui.timeline.ProfileHydrator
 import com.nostr.torinos.ui.timeline.NoteEngagementCoordinator
 import com.nostr.torinos.ui.timeline.NoteCardSnapshot
 import com.nostr.torinos.ui.timeline.NoteCardSync
+import com.nostr.torinos.ui.timeline.NoteDeletionResult
+import com.nostr.torinos.ui.timeline.NoteDeletionService
 import com.nostr.torinos.ui.timeline.QuoteResolver
 import com.nostr.torinos.ui.thread.ThreadViewModel.UiState
 import kotlinx.coroutines.CoroutineScope
@@ -89,6 +93,7 @@ internal class ThreadController(
     private var ownPubkey: String? = null
     private val engagementCoordinator = NoteEngagementCoordinator(accountSession?.signer)
     private val replyPublisher = ReplyPublisher(accountSession?.signer)
+    private val noteDeletionService = NoteDeletionService(accountSession?.signer, accountSession?.sessionId)
     private val quoteResolver = QuoteResolver("thread-quote-$shortId")
     private val profileHydrator = ProfileHydrator(
         scope,
@@ -120,19 +125,65 @@ internal class ThreadController(
         _state.value = _state.value.copy(engagementError = null)
     }
 
+    fun deleteRoot() {
+        val root = _state.value.root ?: run {
+            _state.value = _state.value.copy(deleteError = "投稿が読み込まれていません")
+            return
+        }
+        if (_state.value.isDeleting) return
+
+        _state.value = _state.value.copy(isDeleting = true, deleteError = null)
+        launch {
+            when (val result = noteDeletionService.delete(root)) {
+                NoteDeletionResult.Deleted -> {
+                    _state.value = _state.value.copy(
+                        root = null,
+                        isLoading = false,
+                        isDeleting = false,
+                        deleteError = null,
+                        deleteCompletedCount = _state.value.deleteCompletedCount + 1,
+                    )
+                }
+                NoteDeletionResult.MissingSigner -> {
+                    _state.value = _state.value.copy(
+                        isDeleting = false,
+                        deleteError = "秘密鍵が設定されていません",
+                    )
+                }
+                NoteDeletionResult.NotOwner -> {
+                    _state.value = _state.value.copy(
+                        isDeleting = false,
+                        deleteError = "自分の投稿だけ削除できます",
+                    )
+                }
+                is NoteDeletionResult.Failed -> {
+                    _state.value = _state.value.copy(
+                        isDeleting = false,
+                        deleteError = result.cause.message ?: "投稿の削除要求を送信できませんでした",
+                    )
+                }
+            }
+        }
+    }
+
     fun submitReply() {
         val root = _state.value.root ?: return
         val text = _state.value.replyText.trim()
         if (text.isBlank()) return
         _state.value = _state.value.copy(isReplying = true, replyError = null)
         launch {
+            val target = resolveReplyTarget(root, noteContext) ?: run {
+                _state.value = _state.value.copy(
+                    isReplying = false,
+                    replyError = "返信元のスレッド情報を取得できませんでした",
+                )
+                return@launch
+            }
             when (
                 val result = replyPublisher.publish(
                     ReplyCommand(
                         content = text,
-                        replyToId = root.id,
-                        replyToPubkey = root.pubkey,
-                        noteContext = noteContext,
+                        target = target,
                     ),
                 )
             ) {
@@ -319,8 +370,8 @@ internal class ThreadController(
         scheduleRepostFetch(eventId)
 
         subscriptionJobs += launch {
-            NostrRepository.subscribe(rootSubId, NostrFilter(ids = listOf(eventId), kinds = listOf(noteContext.eventKind), limit = 1))
-            NostrRepository.subscribe(repliesSubId, NostrFilter(kinds = listOf(noteContext.eventKind), eTags = listOf(eventId), limit = 100))
+            NostrRepository.subscribe(rootSubId, NostrFilter(ids = listOf(eventId), kinds = noteContext.readableEventKinds, limit = 1))
+            NostrRepository.subscribe(repliesSubId, replyFilters(listOf(eventId), limit = 100))
         }
 
         subscriptionJobs += launch {
@@ -337,7 +388,7 @@ internal class ThreadController(
                 replyParentId?.let { parentId ->
                     NostrRepository.subscribe(
                         replyParentSubId,
-                        NostrFilter(ids = listOf(parentId), kinds = listOf(noteContext.eventKind), limit = 1),
+                        NostrFilter(ids = listOf(parentId), kinds = noteContext.readableEventKinds, limit = 1),
                     )
                 }
                 scheduleQuotedEventFetch(quotedEventIds(event).filter { it != replyParentId })
@@ -351,6 +402,7 @@ internal class ThreadController(
                 if (cur.quotedEvents.containsKey(event.id)) return@collect
                 _state.value = cur.copy(quotedEvents = cur.quotedEvents + (event.id to event))
                 scheduleProfileFetch(event.pubkey)
+                scheduleMentionedProfileFetch(event.content)
             }
         }
 
@@ -497,16 +549,22 @@ internal class ThreadController(
             try {
                 val resolution = quoteResolver.resolve(
                     eventIds = missingIds.toSet(),
-                    kinds = listOf(noteContext.eventKind),
+                    kinds = noteContext.readableEventKinds,
+                    onEvent = { event ->
+                        val cur = _state.value
+                        if (!cur.quotedEvents.containsKey(event.id)) {
+                            _state.value = cur.copy(
+                                quotedEvents = cur.quotedEvents + (event.id to event),
+                            )
+                            scheduleProfileFetch(event.pubkey)
+                            scheduleMentionedProfileFetch(event.content)
+                        }
+                    },
                 )
                 if (resolution.events.isNotEmpty()) {
                     _state.value = _state.value.copy(
                         quotedEvents = _state.value.quotedEvents + resolution.events,
                     )
-                    resolution.events.values.forEach { event ->
-                        scheduleProfileFetch(event.pubkey)
-                        scheduleMentionedProfileFetch(event.content)
-                    }
                 }
             } finally {
                 pendingQuotedEventIds.removeAll(missingIds.toSet())
@@ -681,7 +739,7 @@ internal class ThreadController(
             delay(300)
             NostrRepository.subscribe(
                 replyCountSubId,
-                NostrFilter(kinds = listOf(noteContext.eventKind), eTags = watchedEventIds.toList()),
+                replyFilters(watchedEventIds.toList()),
             )
         }
     }
@@ -716,10 +774,31 @@ internal class ThreadController(
             )
             NostrRepository.subscribe(
                 quoteRepostSubId,
-                NostrFilter(kinds = listOf(noteContext.eventKind), qTags = ids, limit = 500),
+                NostrFilter(kinds = noteContext.readableEventKinds, qTags = ids, limit = 500),
             )
         }
     }
+
+    private fun replyFilters(ids: List<String>, limit: Int? = null): List<NostrFilter> =
+        if (noteContext == NoteContext.Timeline) {
+            listOf(
+                NostrFilter(kinds = listOf(1), eTags = ids, limit = limit),
+                NostrFilter(
+                    kinds = listOf(COMMENT_EVENT_KIND),
+                    rootKindTags = listOf("1"),
+                    eTags = ids,
+                    limit = limit,
+                ),
+                NostrFilter(
+                    kinds = listOf(COMMENT_EVENT_KIND),
+                    rootKindTags = listOf("1"),
+                    rootEventTags = ids,
+                    limit = limit,
+                ),
+            )
+        } else {
+            listOf(NostrFilter(kinds = listOf(noteContext.eventKind), eTags = ids, limit = limit))
+        }
 
     companion object {
         private const val MAX_RECEIVED_ENGAGEMENT_EVENTS = 2_000

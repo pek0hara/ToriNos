@@ -1,6 +1,9 @@
 package com.nostr.torinos.ui.components
 
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyListScope
@@ -9,9 +12,12 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.unit.dp
+import com.nostr.torinos.model.NostrEvent
 import com.nostr.torinos.model.quotedEventIds
 import com.nostr.torinos.model.ReactionOption
 import com.nostr.torinos.model.replyTargetId
@@ -27,7 +33,7 @@ fun LazyListScope.noteListItems(
     onEmojiReact: (eventId: String, authorPubkey: String, option: ReactionOption) -> Unit,
     onEmojiUnreact: (eventId: String, option: ReactionOption) -> Unit,
     onDelete: (eventId: String) -> Unit,
-    onReply: ((eventId: String, authorPubkey: String, preview: String) -> Unit)? = null,
+    onReply: ((event: NostrEvent, preview: String) -> Unit)? = null,
     onOpenReplies: ((eventId: String) -> Unit)? = null,
     onOpenLikes: ((eventId: String) -> Unit)? = null,
     onOpenReposts: ((eventId: String) -> Unit)? = null,
@@ -40,24 +46,53 @@ fun LazyListScope.noteListItems(
     onUnmuteUser: ((pubkey: String) -> Unit)? = null,
     mutedPubkeys: Set<String> = emptySet(),
     emptyText: String = "ポストがありません",
+    emptyContent: (@Composable () -> Unit)? = null,
+    eventContentVisible: Boolean = true,
+    eventEnterFadeMillis: Int = 0,
 ) {
     when {
-        state.isInitialLoad && state.events.isEmpty() -> item(contentType = "loading") {
-            Box(
-                modifier = Modifier.fillMaxWidth().padding(48.dp),
-                contentAlignment = Alignment.Center,
-            ) { CircularProgressIndicator() }
-        }
+        state.events.isEmpty() &&
+            state.initialFeedState == FeedViewModel.InitialFeedState.Loading ->
+            item(contentType = "loading") {
+                Box(
+                    modifier = Modifier.fillMaxWidth().padding(48.dp),
+                    contentAlignment = Alignment.Center,
+                ) { CircularProgressIndicator() }
+            }
+        state.events.isEmpty() &&
+            state.initialFeedState == FeedViewModel.InitialFeedState.Slow ->
+            item(contentType = "slow") {
+                Box(
+                    modifier = Modifier.fillMaxWidth().padding(48.dp),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        CircularProgressIndicator()
+                        Text(
+                            text = "リレーから取得中…",
+                            modifier = Modifier.padding(top = 12.dp),
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+            }
+        state.events.isEmpty() &&
+            state.initialFeedState == FeedViewModel.InitialFeedState.Failed ->
+            item(contentType = "failed") {
+                Box(
+                    modifier = Modifier.fillMaxWidth().padding(48.dp),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    EmptyTimelineMessage("ポストを取得できませんでした")
+                }
+            }
         state.events.isEmpty() -> item(contentType = "empty") {
             Box(
                 modifier = Modifier.fillMaxWidth().padding(48.dp),
                 contentAlignment = Alignment.Center,
             ) {
-                Text(
-                    text = emptyText,
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
+                emptyContent?.invoke() ?: EmptyTimelineMessage(emptyText)
             }
         }
         else -> {
@@ -66,100 +101,106 @@ fun LazyListScope.noteListItems(
                 key = { it.id },
                 contentType = { "note" },
             ) { event ->
-                val repostedByPubkey = state.repostedByPubkeys[event.id]
-                NoteCard(
-                    event = event,
-                    profile = state.profiles[event.pubkey],
-                    repostedByPubkey = repostedByPubkey,
-                    repostedByProfile = repostedByPubkey?.let { state.profiles[it] },
-                    profiles = state.profiles,
-                    replyCount = state.replyCounts[event.id] ?: 0,
-                    replies = state.replies[event.id].orEmpty(),
-                    repostCount = state.repostCounts[event.id] ?: 0,
-                    repostPubkeys = state.repostPubkeys[event.id].orEmpty(),
-                    reactionCount = state.reactionCounts[event.id] ?: 0,
-                    likeReactionCount = state.likeReactionCounts[event.id] ?: 0,
-                    customReactions = state.customReactions[event.id].orEmpty(),
-                    unicodeReactions = state.unicodeReactions[event.id].orEmpty(),
-                    reactionEvents = state.reactionEvents[event.id].orEmpty(),
-                    isLiked = state.isLiked(event.id),
-                    ownEmojiReactionEventIds = state.displayOwnEmojiReactionEventIds(event.id),
-                    isReposted = state.isReposted(event.id),
-                    onUserClick = onUserClick,
-                    onLike = if (ownPubkey != null) {
-                        {
-                            if (state.isLiked(event.id))
-                                onUnlike(event.id)
-                            else
-                                onLike(event.id, event.pubkey)
-                        }
-                    } else null,
-                    onEmojiReact = if (ownPubkey != null) {
-                        { option -> onEmojiReact(event.id, event.pubkey, option) }
-                    } else null,
-                    onEmojiUnreact = if (ownPubkey != null) {
-                        { option -> onEmojiUnreact(event.id, option) }
-                    } else null,
-                    onReply = if (ownPubkey != null && onReply != null) {
-                        { onReply(event.id, event.pubkey, event.content.replyPreviewText()) }
-                    } else null,
-                    onOpenReplies = if (onOpenReplies != null) {
-                        { onOpenReplies(event.id) }
-                    } else null,
-                    onOpenLikes = if (onOpenLikes != null) {
-                        { onOpenLikes(event.id) }
-                    } else null,
-                    onOpenReposts = if (onOpenReposts != null) {
-                        { onOpenReposts(event.id) }
-                    } else null,
-                    onRefreshReactions = if (onRefreshReactions != null) {
-                        { onRefreshReactions(event.id) }
-                    } else null,
-                    onRepost = if (ownPubkey != null && onRepost != null) {
-                        {
-                            if (state.isReposted(event.id))
-                                onUnrepost?.invoke(event.id)
-                            else
-                                onRepost(event.id, event.pubkey)
-                        }
-                    } else null,
-                    onHashtagClick = onHashtagClick,
-                    onNoteClick = if (onOpenReplies != null) onOpenReplies else null,
-                    replyParent = run {
-                        val parentId = event.replyTargetId() ?: return@run null
-                        val parentEvent = state.quotedEvents[parentId] ?: return@run null
-                        QuotedEvent(event = parentEvent, profile = state.profiles[parentEvent.pubkey])
-                    },
-                    quotedEvents = run {
-                        val replyParentId = event.replyTargetId()
-                        quotedEventIds(event)
-                            .filter { it != replyParentId }
-                            .mapNotNull { quotedEventId ->
-                                state.quotedEvents[quotedEventId]?.let { quotedEvent ->
-                                    QuotedEvent(
-                                        event = quotedEvent,
-                                        profile = state.profiles[quotedEvent.pubkey],
-                                    )
-                                }
+                val contentAlpha = animateFloatAsState(
+                    targetValue = if (eventContentVisible) 1f else 0f,
+                    animationSpec = tween(eventEnterFadeMillis),
+                ).value
+                Column(modifier = Modifier.alpha(contentAlpha)) {
+                    val repostedByPubkey = state.repostedByPubkeys[event.id]
+                    NoteCard(
+                        event = event,
+                        profile = state.profiles[event.pubkey],
+                        repostedByPubkey = repostedByPubkey,
+                        repostedByProfile = repostedByPubkey?.let { state.profiles[it] },
+                        profiles = state.profiles,
+                        replyCount = state.replyCounts[event.id] ?: 0,
+                        replies = state.replies[event.id].orEmpty(),
+                        repostCount = state.repostCounts[event.id] ?: 0,
+                        repostPubkeys = state.repostPubkeys[event.id].orEmpty(),
+                        reactionCount = state.reactionCounts[event.id] ?: 0,
+                        likeReactionCount = state.likeReactionCounts[event.id] ?: 0,
+                        customReactions = state.customReactions[event.id].orEmpty(),
+                        unicodeReactions = state.unicodeReactions[event.id].orEmpty(),
+                        reactionEvents = state.reactionEvents[event.id].orEmpty(),
+                        isLiked = state.isLiked(event.id),
+                        ownEmojiReactionEventIds = state.displayOwnEmojiReactionEventIds(event.id),
+                        isReposted = state.isReposted(event.id),
+                        onUserClick = onUserClick,
+                        onLike = if (ownPubkey != null) {
+                            {
+                                if (state.isLiked(event.id))
+                                    onUnlike(event.id)
+                                else
+                                    onLike(event.id, event.pubkey)
                             }
-                    },
-                    ownPubkey = ownPubkey,
-                    onDelete = { onDelete(event.id) },
-                    isMuted = mutedPubkeys.contains(event.pubkey),
-                    onMute = if (onMuteUser != null) {
-                        { onMuteUser(event.pubkey) }
-                    } else null,
-                    onUnmute = if (onUnmuteUser != null) {
-                        { onUnmuteUser(event.pubkey) }
-                    } else null,
-                    onReport = if (ownPubkey != null && onReport != null) {
-                        { reason, detail -> onReport(event.id, reason, detail) }
-                    } else null,
-                )
-                HorizontalDivider(
-                    thickness = 0.5.dp,
-                    color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f),
-                )
+                        } else null,
+                        onEmojiReact = if (ownPubkey != null) {
+                            { option -> onEmojiReact(event.id, event.pubkey, option) }
+                        } else null,
+                        onEmojiUnreact = if (ownPubkey != null) {
+                            { option -> onEmojiUnreact(event.id, option) }
+                        } else null,
+                        onReply = if (ownPubkey != null && onReply != null) {
+                            { onReply(event, event.content.replyPreviewText()) }
+                        } else null,
+                        onOpenReplies = if (onOpenReplies != null) {
+                            { onOpenReplies(event.id) }
+                        } else null,
+                        onOpenLikes = if (onOpenLikes != null) {
+                            { onOpenLikes(event.id) }
+                        } else null,
+                        onOpenReposts = if (onOpenReposts != null) {
+                            { onOpenReposts(event.id) }
+                        } else null,
+                        onRefreshReactions = if (onRefreshReactions != null) {
+                            { onRefreshReactions(event.id) }
+                        } else null,
+                        onRepost = if (event.kind == 1 && ownPubkey != null && onRepost != null) {
+                            {
+                                if (state.isReposted(event.id))
+                                    onUnrepost?.invoke(event.id)
+                                else
+                                    onRepost(event.id, event.pubkey)
+                            }
+                        } else null,
+                        onHashtagClick = onHashtagClick,
+                        onNoteClick = if (onOpenReplies != null) onOpenReplies else null,
+                        replyParent = run {
+                            val parentId = event.replyTargetId() ?: return@run null
+                            val parentEvent = state.quotedEvents[parentId] ?: return@run null
+                            QuotedEvent(event = parentEvent, profile = state.profiles[parentEvent.pubkey])
+                        },
+                        quotedEvents = run {
+                            val replyParentId = event.replyTargetId()
+                            quotedEventIds(event)
+                                .filter { it != replyParentId }
+                                .mapNotNull { quotedEventId ->
+                                    state.quotedEvents[quotedEventId]?.let { quotedEvent ->
+                                        QuotedEvent(
+                                            event = quotedEvent,
+                                            profile = state.profiles[quotedEvent.pubkey],
+                                        )
+                                    }
+                                }
+                        },
+                        ownPubkey = ownPubkey,
+                        onDelete = { onDelete(event.id) },
+                        isMuted = mutedPubkeys.contains(event.pubkey),
+                        onMute = if (onMuteUser != null) {
+                            { onMuteUser(event.pubkey) }
+                        } else null,
+                        onUnmute = if (onUnmuteUser != null) {
+                            { onUnmuteUser(event.pubkey) }
+                        } else null,
+                        onReport = if (ownPubkey != null && onReport != null) {
+                            { reason, detail -> onReport(event.id, reason, detail) }
+                        } else null,
+                    )
+                    HorizontalDivider(
+                        thickness = 0.5.dp,
+                        color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f),
+                    )
+                }
             }
             if (state.isLoadingMore) {
                 item(contentType = "loadingMore") {
@@ -171,6 +212,15 @@ fun LazyListScope.noteListItems(
             }
         }
     }
+}
+
+@Composable
+internal fun EmptyTimelineMessage(text: String) {
+    Text(
+        text = text,
+        style = MaterialTheme.typography.bodyMedium,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
 }
 
 private fun String.replyPreviewText(): String =

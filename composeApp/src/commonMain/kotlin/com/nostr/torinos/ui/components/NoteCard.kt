@@ -37,11 +37,15 @@ import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.text.selection.SelectionContainer
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Reply
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.MailOutline
 import androidx.compose.material.icons.filled.MoreVert
@@ -58,6 +62,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.RadioButton
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -81,6 +86,7 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalClipboard
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.input.ImeAction
@@ -92,18 +98,23 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import com.nostr.torinos.model.NostrEvent
 import com.nostr.torinos.model.NostrProfile
+import com.nostr.torinos.model.MediaMetadata
 import com.nostr.torinos.model.CustomReaction
 import com.nostr.torinos.model.ReactionOption
 import com.nostr.torinos.model.UnicodeReaction
 import com.nostr.torinos.model.toCustomReaction
 import com.nostr.torinos.model.toReactionOption
 import com.nostr.torinos.model.stripNostrEventUris
+import com.nostr.torinos.model.parseImetaTags
+import com.nostr.torinos.model.parseNip94Event
+import com.nostr.torinos.model.timelinePreviewUrl
 import com.nostr.torinos.network.CustomEmojiStore
 import com.nostr.torinos.network.RecentReaction
 import com.nostr.torinos.ui.profile.customEmojiMap
 import com.nostr.torinos.ui.profile.AvatarCircle
 import com.nostr.torinos.ui.settings.setPlainText
 import kotlinx.coroutines.launch
+import kotlinx.serialization.json.Json
 import kotlinx.datetime.TimeZone
 import kotlinx.datetime.toLocalDateTime
 import kotlin.math.max
@@ -156,6 +167,7 @@ fun NoteCard(
 ) {
     val onQuote = LocalQuotePostHandler.current
     var showMenu by remember { mutableStateOf(false) }
+    var showDetails by remember(event.id) { mutableStateOf(false) }
     var showReportDialog by remember { mutableStateOf(false) }
     var showHeartReactionMenu by remember { mutableStateOf(false) }
     var showStandardEmojiPicker by remember { mutableStateOf(false) }
@@ -166,6 +178,14 @@ fun NoteCard(
     val coroutineScope = rememberCoroutineScope()
     val isOwnPost = ownPubkey != null && event.pubkey == ownPubkey
     val hasOwnReaction = isLiked || ownEmojiReactionEventIds.isNotEmpty()
+
+    if (showDetails) {
+        NoteDetailsDialog(
+            event = event,
+            onDismiss = { showDetails = false },
+        )
+    }
+
     val ownEmojiReaction = remember(
         customReactions,
         unicodeReactions,
@@ -186,8 +206,8 @@ fun NoteCard(
         else -> null
     }
     val hasMenu = true
-    val parsedContent = remember(event.content) {
-        parseNoteContent(event.content)
+    val parsedContent = remember(event.content, event.tags, event.kind) {
+        parseNoteContent(event)
     }
     val contentWarningPresent = remember(event.tags) {
         hasContentWarning(event.tags)
@@ -233,7 +253,6 @@ fun NoteCard(
             if (repostedByPubkey != null) {
                 Row(
                     modifier = Modifier
-                        .fillMaxWidth()
                         .clickable { onUserClick(repostedByPubkey) },
                     horizontalArrangement = Arrangement.spacedBy(4.dp),
                     verticalAlignment = Alignment.CenterVertically,
@@ -252,7 +271,6 @@ fun NoteCard(
                         enableWebLinks = false,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.weight(1f),
                     )
                 }
                 Spacer(modifier = Modifier.height(4.dp))
@@ -263,18 +281,18 @@ fun NoteCard(
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                ProfileNameText(
-                    profile = profile,
-                    fallback = event.shortPubkey,
-                    style = MaterialTheme.typography.labelMedium,
-                    fontWeight = FontWeight.Bold,
-                    color = MaterialTheme.colorScheme.primary,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier
-                        .weight(1f)
-                        .clickable { onUserClick(event.pubkey) },
-                )
+                Box(modifier = Modifier.weight(1f)) {
+                    ProfileNameText(
+                        profile = profile,
+                        fallback = event.shortPubkey,
+                        style = MaterialTheme.typography.labelLarge,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.primary,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.clickable { onUserClick(event.pubkey) },
+                    )
+                }
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
                     modifier = Modifier.padding(start = 8.dp),
@@ -302,6 +320,13 @@ fun NoteCard(
                             expanded = showMenu,
                             onDismissRequest = { showMenu = false },
                         ) {
+                            DropdownMenuItem(
+                                text = { Text("詳細を表示") },
+                                onClick = {
+                                    showMenu = false
+                                    showDetails = true
+                                },
+                            )
                             DropdownMenuItem(
                                 text = { Text("本文をコピー") },
                                 onClick = {
@@ -418,7 +443,7 @@ fun NoteCard(
                 if (parsedContent.imageUrls.isNotEmpty()) {
                     Spacer(modifier = Modifier.height(8.dp))
                     ImagePreviewGrid(
-                        imageUrls = parsedContent.imageUrls,
+                        images = parsedContent.images,
                         onImageClick = { urls, index -> expandedImageState = ExpandedImageState(urls, index) },
                     )
                 }
@@ -455,7 +480,7 @@ fun NoteCard(
             Row(
                 modifier = Modifier.offset(x = (-1).dp),
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
             ) {
                 EngagementCount(
                     icon = Icons.Default.MailOutline,
@@ -593,6 +618,112 @@ fun NoteCard(
                 onEmojiReact?.invoke(option)
             },
         )
+    }
+}
+
+private val prettyEventJson = Json {
+    prettyPrint = true
+}
+
+@Composable
+private fun NoteDetailsDialog(
+    event: NostrEvent,
+    onDismiss: () -> Unit,
+) {
+    val clipboard = LocalClipboard.current
+    val coroutineScope = rememberCoroutineScope()
+    val eventJson = remember(event) {
+        prettyEventJson.encodeToString(NostrEvent.serializer(), event)
+    }
+
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false),
+    ) {
+        Surface(
+            modifier = Modifier.fillMaxSize(),
+            color = MaterialTheme.colorScheme.background,
+        ) {
+            Column(modifier = Modifier.fillMaxSize()) {
+                AppTopBar(
+                    title = "投稿の詳細",
+                    navigationIcon = {
+                        IconButton(onClick = onDismiss) {
+                            Icon(
+                                Icons.AutoMirrored.Filled.ArrowBack,
+                                contentDescription = "戻る",
+                            )
+                        }
+                    },
+                    actions = {
+                        IconButton(
+                            onClick = {
+                                coroutineScope.launch {
+                                    clipboard.setPlainText(eventJson)
+                                }
+                            },
+                        ) {
+                            Icon(
+                                Icons.Default.ContentCopy,
+                                contentDescription = "JSONをコピー",
+                            )
+                        }
+                    },
+                )
+                Column(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .verticalScroll(rememberScrollState())
+                        .padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(16.dp),
+                ) {
+                    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        NoteDetailRow(label = "Kind", value = event.kind.toString())
+                        NoteDetailRow(label = "投稿日時", value = formatTimestamp(event.createdAt))
+                    }
+                    Text(
+                        text = "イベントJSON",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold,
+                    )
+                    SelectionContainer {
+                        Text(
+                            text = eventJson,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .background(
+                                    MaterialTheme.colorScheme.surfaceVariant,
+                                    RoundedCornerShape(8.dp),
+                                )
+                                .padding(12.dp),
+                            style = MaterialTheme.typography.bodySmall.copy(
+                                fontFamily = FontFamily.Monospace,
+                            ),
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun NoteDetailRow(
+    label: String,
+    value: String,
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        SelectionContainer {
+            Text(
+                text = value,
+                style = MaterialTheme.typography.bodyMedium,
+            )
+        }
     }
 }
 
@@ -1133,15 +1264,10 @@ private fun QuickReactionMenu(
     val recentReactions by CustomEmojiStore.recentReactions.collectAsState()
     val savedEmojiMap = remember(savedCustomEmojis) { savedCustomEmojis.associateBy { it.shortcode } }
     val recentOptions = remember(recentReactions, savedEmojiMap) {
-        recentReactions.mapNotNull { recent ->
-            when (recent.kind) {
-                RecentReaction.UnicodeKind -> ReactionOption.Unicode(recent.value)
-                RecentReaction.CustomKind -> savedEmojiMap[recent.value]?.let {
-                    ReactionOption.Custom(it.shortcode, it.imageUrl)
-                }
-                else -> null
-            }
-        }.distinctBy { it.key }.take(8)
+        recentReactions
+            .mapNotNull { recent -> recent.toReactionOption(savedEmojiMap) }
+            .distinctBy { it.key }
+            .take(16)
     }
 
     DropdownMenu(
@@ -1242,7 +1368,7 @@ private fun ReactionPickerTile(
 private fun markReactionUsed(option: ReactionOption) {
     when (option) {
         is ReactionOption.Unicode -> CustomEmojiStore.markUnicodeUsed(option.value)
-        is ReactionOption.Custom -> CustomEmojiStore.markCustomReactionUsed(option.shortcode)
+        is ReactionOption.Custom -> CustomEmojiStore.markCustomReactionUsed(option.shortcode, option.imageUrl)
     }
 }
 
@@ -1283,16 +1409,18 @@ private fun AllReactionPickerDialog(
         val savedEmojiMap = savedCustomEmojis.associateBy { it.shortcode }
         recentReactions
             .mapNotNull { recent ->
-                when (recent.kind) {
-                    RecentReaction.UnicodeKind -> ReactionOption.Unicode(recent.value)
-                        .takeUnless { filter == ReactionSearchFilter.Custom }
-                    RecentReaction.CustomKind -> savedEmojiMap[recent.value]?.let {
-                        ReactionOption.Custom(it.shortcode, it.imageUrl)
-                    }?.takeUnless { filter == ReactionSearchFilter.Unicode }
-                    else -> null
+                recent.toReactionOption(savedEmojiMap)?.let { option ->
+                    when (option) {
+                        is ReactionOption.Unicode -> option.takeUnless {
+                            filter == ReactionSearchFilter.Custom
+                        }
+                        is ReactionOption.Custom -> option.takeUnless {
+                            filter == ReactionSearchFilter.Unicode
+                        }
+                    }
                 }
             }
-            .take(8)
+            .take(16)
     }
     val resultCount = unicodeEntries.size + customOptions.size +
         if (
@@ -1647,23 +1775,31 @@ private data class ExpandedImageState(
 
 private data class ParsedNoteContent(
     val textContent: String,
-    val imageUrls: List<String>,
+    val images: List<MediaMetadata>,
     val linkPreviewUrl: String?,
-)
+) {
+    val imageUrls: List<String> get() = images.map { it.url }
+}
 
-private fun parseNoteContent(content: String): ParsedNoteContent {
-    val imageUrls = extractImageUrls(content)
+private fun parseNoteContent(event: NostrEvent): ParsedNoteContent {
+    val content = event.content
+    val inlineMetadata = parseImetaTags(event.tags)
+        .filter { metadata -> content.contains(metadata.url) && metadata.isImage }
+    val nip94Metadata = parseNip94Event(event)?.takeIf { it.isImage }
+    val metadataByUrl = (inlineMetadata + listOfNotNull(nip94Metadata)).associateBy { it.url }
+    val imageUrls = (extractImageUrls(content) + metadataByUrl.keys).distinct()
+    val images = imageUrls.map { url -> metadataByUrl[url] ?: MediaMetadata(url = url) }
     val contentWithoutQuotes = stripNostrEventUris(content)
     val linkPreviewUrl = extractWebUrls(contentWithoutQuotes)
-        .firstOrNull { !isImageUrl(it) }
+        .firstOrNull { it !in imageUrls && !isImageUrl(it) }
     val textContent = if (imageUrls.isNotEmpty()) {
-        stripImageUrls(contentWithoutQuotes)
+        imageUrls.fold(stripImageUrls(contentWithoutQuotes)) { text, url -> text.replace(url, "") }.trim()
     } else {
         contentWithoutQuotes
     }
     return ParsedNoteContent(
         textContent = textContent,
-        imageUrls = imageUrls,
+        images = images,
         linkPreviewUrl = linkPreviewUrl,
     )
 }
@@ -1703,8 +1839,8 @@ private fun QuotePreview(
     onNoteClick: ((eventId: String) -> Unit)? = null,
 ) {
     var sensitiveContentRevealed by remember(event.id) { mutableStateOf(false) }
-    val parsedContent = remember(event.content) {
-        parseNoteContent(event.content)
+    val parsedContent = remember(event.content, event.tags, event.kind) {
+        parseNoteContent(event)
     }
     val contentWarningPresent = remember(event.tags) {
         hasContentWarning(event.tags)
@@ -1787,7 +1923,7 @@ private fun QuotePreview(
             }
             if (parsedContent.imageUrls.isNotEmpty()) {
                 ImagePreviewGrid(
-                    imageUrls = parsedContent.imageUrls,
+                    images = parsedContent.images,
                     singleImageMaxHeight = 180.dp,
                     onImageClick = onImageClick,
                 )
@@ -1856,27 +1992,38 @@ private const val CollapsedTextCharacterLimit = 140
 private const val CollapsedTextMaxVisibleLines = 9
 private const val TimelineImageMaxDecodeSizePx = 720
 private const val TimelineGridImageMaxDecodeSizePx = 360
+private val TimelineImageGridSpacing = 4.dp
+private val TimelineImageGridShape = RoundedCornerShape(6.dp)
 
 @Composable
 private fun ImagePreviewGrid(
-    imageUrls: List<String>,
+    images: List<MediaMetadata>,
     singleImageMaxHeight: Dp = 400.dp,
     onImageClick: (List<String>, Int) -> Unit,
 ) {
+    val imageUrls = images.map { it.url }
+    val previewUrls = images.map { it.timelinePreviewUrl(TimelineImageMaxDecodeSizePx) }
     if (imageUrls.size == 1) {
         BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
-            val imageHeight = minOf(maxWidth * 9f / 16f, singleImageMaxHeight)
+            val media = images.first()
+            val aspectRatio = if (media.width != null && media.height != null) {
+                media.width.toFloat() / media.height.toFloat()
+            } else {
+                16f / 9f
+            }
+            val imageHeight = minOf(maxWidth / aspectRatio, singleImageMaxHeight)
             NetworkImage(
-                url = imageUrls.first(),
-                contentDescription = null,
+                url = previewUrls.first(),
+                contentDescription = images.first().alt,
+                blurHash = images.first().blurhash,
                 contentScale = ContentScale.Fit,
                 alignment = Alignment.CenterStart,
                 maxDecodeSizePx = TimelineImageMaxDecodeSizePx,
                 filterQuality = FilterQuality.Low,
                 animate = false,
                 modifier = Modifier
-                    .fillMaxWidth()
                     .height(imageHeight)
+                    .widthIn(max = maxWidth)
                     .clickable { onImageClick(imageUrls, 0) },
             )
         }
@@ -1886,12 +2033,13 @@ private fun ImagePreviewGrid(
     Box(
         modifier = Modifier
             .fillMaxWidth()
-            .aspectRatio(16f / 9f),
+            .aspectRatio(16f / 9f)
+            .clip(TimelineImageGridShape),
     ) {
         when (imageUrls.size) {
-            2 -> TwoImageGrid(imageUrls, onImageClick)
-            3 -> ThreeImageGrid(imageUrls, onImageClick)
-            else -> FourImageGrid(imageUrls, onImageClick)
+            2 -> TwoImageGrid(imageUrls, previewUrls, images.map { it.blurhash }, onImageClick)
+            3 -> ThreeImageGrid(imageUrls, previewUrls, images.map { it.blurhash }, onImageClick)
+            else -> FourImageGrid(imageUrls, previewUrls, images.map { it.blurhash }, onImageClick)
         }
     }
 }
@@ -1899,15 +2047,18 @@ private fun ImagePreviewGrid(
 @Composable
 private fun TwoImageGrid(
     imageUrls: List<String>,
+    previewUrls: List<String>,
+    blurHashes: List<String?>,
     onImageClick: (List<String>, Int) -> Unit,
 ) {
     Row(
         modifier = Modifier.fillMaxSize(),
-        horizontalArrangement = Arrangement.spacedBy(2.dp),
+        horizontalArrangement = Arrangement.spacedBy(TimelineImageGridSpacing),
     ) {
-        imageUrls.take(2).forEachIndexed { index, url ->
+        previewUrls.take(2).forEachIndexed { index, url ->
             GridImage(
                 url = url,
+                blurHash = blurHashes.getOrNull(index),
                 modifier = Modifier.weight(1f),
                 onClick = { onImageClick(imageUrls, index) },
             )
@@ -1918,28 +2069,33 @@ private fun TwoImageGrid(
 @Composable
 private fun ThreeImageGrid(
     imageUrls: List<String>,
+    previewUrls: List<String>,
+    blurHashes: List<String?>,
     onImageClick: (List<String>, Int) -> Unit,
 ) {
     Row(
         modifier = Modifier.fillMaxSize(),
-        horizontalArrangement = Arrangement.spacedBy(2.dp),
+        horizontalArrangement = Arrangement.spacedBy(TimelineImageGridSpacing),
     ) {
         GridImage(
-            url = imageUrls[0],
+            url = previewUrls[0],
+            blurHash = blurHashes.getOrNull(0),
             modifier = Modifier.weight(1f),
             onClick = { onImageClick(imageUrls, 0) },
         )
         Column(
             modifier = Modifier.weight(1f),
-            verticalArrangement = Arrangement.spacedBy(2.dp),
+            verticalArrangement = Arrangement.spacedBy(TimelineImageGridSpacing),
         ) {
             GridImage(
-                url = imageUrls[1],
+                url = previewUrls[1],
+                blurHash = blurHashes.getOrNull(1),
                 modifier = Modifier.weight(1f),
                 onClick = { onImageClick(imageUrls, 1) },
             )
             GridImage(
-                url = imageUrls[2],
+                url = previewUrls[2],
+                blurHash = blurHashes.getOrNull(2),
                 modifier = Modifier.weight(1f),
                 onClick = { onImageClick(imageUrls, 2) },
             )
@@ -1950,22 +2106,25 @@ private fun ThreeImageGrid(
 @Composable
 private fun FourImageGrid(
     imageUrls: List<String>,
+    previewUrls: List<String>,
+    blurHashes: List<String?>,
     onImageClick: (List<String>, Int) -> Unit,
 ) {
     Column(
         modifier = Modifier.fillMaxSize(),
-        verticalArrangement = Arrangement.spacedBy(2.dp),
+        verticalArrangement = Arrangement.spacedBy(TimelineImageGridSpacing),
     ) {
-        imageUrls.take(4).chunked(2).forEachIndexed { rowIndex, rowUrls ->
+        previewUrls.take(4).chunked(2).forEachIndexed { rowIndex, rowUrls ->
             Row(
                 modifier = Modifier.weight(1f),
-                horizontalArrangement = Arrangement.spacedBy(2.dp),
+                horizontalArrangement = Arrangement.spacedBy(TimelineImageGridSpacing),
             ) {
                 rowUrls.forEachIndexed { index, url ->
                     val imageIndex = rowIndex * 2 + index
                     Box(modifier = Modifier.weight(1f)) {
                         GridImage(
                             url = url,
+                            blurHash = blurHashes.getOrNull(imageIndex),
                             onClick = { onImageClick(imageUrls, imageIndex) },
                         )
                         if (imageIndex == 3 && imageUrls.size > 4) {
@@ -1984,13 +2143,15 @@ private fun FourImageGrid(
 @Composable
 private fun GridImage(
     url: String,
+    blurHash: String?,
     modifier: Modifier = Modifier,
     onClick: () -> Unit,
 ) {
     NetworkImage(
         url = url,
         contentDescription = null,
-        contentScale = ContentScale.Fit,
+        blurHash = blurHash,
+        contentScale = ContentScale.Crop,
         alignment = Alignment.Center,
         maxDecodeSizePx = TimelineGridImageMaxDecodeSizePx,
         filterQuality = FilterQuality.Low,
@@ -2143,7 +2304,7 @@ fun EngagementCount(
 ) {
     Row(
         verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(0.dp),
+        horizontalArrangement = Arrangement.spacedBy(2.dp),
     ) {
         Box(
             modifier = if (onClick != null) {
@@ -2161,7 +2322,7 @@ fun EngagementCount(
             Icon(
                 imageVector = icon,
                 contentDescription = contentDescription,
-                modifier = Modifier.size(20.dp),
+                modifier = Modifier.size(22.dp),
                 tint = tint,
             )
         }
@@ -2178,7 +2339,7 @@ fun EngagementCount(
         ) {
             Text(
                 text = countText,
-                style = MaterialTheme.typography.labelMedium,
+                style = MaterialTheme.typography.labelLarge,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.offset(y = (-1).dp),
                 maxLines = 1,

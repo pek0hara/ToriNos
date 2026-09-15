@@ -48,11 +48,13 @@ import androidx.compose.runtime.collectAsState
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.nostr.torinos.account.accountSessionViewModel
 import com.nostr.torinos.engagement.ReactionEventReducer
+import com.nostr.torinos.model.NostrEvent
 import com.nostr.torinos.model.noteContextForChannel
 import com.nostr.torinos.model.quotedEventIds
 import com.nostr.torinos.model.stripNostrEventUris
 import com.nostr.torinos.model.toCustomReaction
 import com.nostr.torinos.ui.components.CustomReactionLink
+import com.nostr.torinos.ui.components.DeleteNoteDialog
 import com.nostr.torinos.ui.components.NoteCard
 import com.nostr.torinos.ui.components.ProfileNameText
 import com.nostr.torinos.ui.components.QuotedEvent
@@ -68,7 +70,7 @@ fun ThreadScreen(
     channelId: String? = null,
     onBack: () -> Unit = {},
     onUserClick: (pubkey: String) -> Unit = {},
-    onReply: ((eventId: String, authorPubkey: String, preview: String, channelId: String?) -> Unit)? = null,
+    onReply: ((event: NostrEvent, preview: String, channelId: String?) -> Unit)? = null,
     onOpenThread: (eventId: String) -> Unit = {},
     onOpenLikes: (eventId: String) -> Unit = {},
     onOpenReposts: (eventId: String) -> Unit = {},
@@ -91,6 +93,7 @@ fun ThreadScreen(
     val listState = rememberSaveable(eventId, saver = LazyListState.Saver) { LazyListState() }
     var didApplyInitialBottomScroll by remember(eventId) { mutableStateOf(false) }
     var previousRepliesBottomIndex by remember(eventId) { mutableStateOf<Int?>(null) }
+    var showDeleteDialog by rememberSaveable(eventId) { mutableStateOf(false) }
     DisposableEffect(viewModel) {
         viewModel.startSubscriptions()
         onDispose { viewModel.stopSubscriptions() }
@@ -100,6 +103,13 @@ fun ThreadScreen(
         val error = state.engagementError ?: return@LaunchedEffect
         snackbarHostState.showSnackbar(error)
         viewModel.consumeEngagementError()
+    }
+
+    LaunchedEffect(state.deleteCompletedCount) {
+        if (state.deleteCompletedCount > 0) {
+            showDeleteDialog = false
+            onBack()
+        }
     }
 
     LaunchedEffect(
@@ -266,7 +276,7 @@ fun ThreadScreen(
                                     { option -> viewModel.unreactWithEmoji(root.id, option) }
                                 } else null,
                                 onReply = if (ownPubkey != null && onReply != null) {
-                                    { onReply(root.id, root.pubkey, root.content.replyPreviewText(), channelId) }
+                                    { onReply(root, root.content.replyPreviewText(), channelId) }
                                 } else null,
                                 onOpenReplies = {
                                     didSelectTabManually = true
@@ -281,7 +291,7 @@ fun ThreadScreen(
                                     selectedTab = ThreadTab.Reposts
                                 },
                                 onRefreshReactions = { viewModel.refreshReactions(root.id) },
-                                onRepost = if (ownPubkey != null) {
+                                onRepost = if (root.kind == 1 && ownPubkey != null) {
                                     {
                                         if (state.isRootReposted(root.id)) {
                                             viewModel.unrepost(root.id)
@@ -293,6 +303,9 @@ fun ThreadScreen(
                                 onQuotedNoteClick = onOpenThread,
                                 onReplyParentClick = onOpenThread,
                                 ownPubkey = ownPubkey,
+                                onDelete = if (root.pubkey == ownPubkey) {
+                                    { showDeleteDialog = true }
+                                } else null,
                             )
                             HorizontalDivider()
                         }
@@ -367,7 +380,7 @@ fun ThreadScreen(
                                                 { option -> viewModel.unreactWithEmoji(reply.id, option) }
                                             } else null,
                                             onReply = if (ownPubkey != null && onReply != null) {
-                                                { onReply(reply.id, reply.pubkey, reply.content.replyPreviewText(), channelId) }
+                                                { onReply(reply, reply.content.replyPreviewText(), channelId) }
                                             } else null,
                                             onOpenReplies = { onOpenThread(reply.id) },
                                             onOpenLikes = { onOpenLikes(reply.id) },
@@ -452,8 +465,7 @@ fun ThreadScreen(
                                             onReply = if (ownPubkey != null && onReply != null) {
                                                 {
                                                     onReply(
-                                                        quoteRepost.id,
-                                                        quoteRepost.pubkey,
+                                                        quoteRepost,
                                                         quoteRepost.content.replyPreviewText(),
                                                         channelId,
                                                     )
@@ -463,7 +475,7 @@ fun ThreadScreen(
                                             onOpenLikes = { onOpenLikes(quoteRepost.id) },
                                             onOpenReposts = { onOpenReposts(quoteRepost.id) },
                                             onRefreshReactions = { viewModel.refreshReactions(quoteRepost.id) },
-                                            onRepost = if (ownPubkey != null) {
+                                            onRepost = if (quoteRepost.kind == 1 && ownPubkey != null) {
                                                 {
                                                     if (state.isReposted(quoteRepost.id, eventId)) {
                                                         viewModel.unrepost(quoteRepost.id)
@@ -485,6 +497,18 @@ fun ThreadScreen(
                 }
             }
         }
+    }
+
+
+    if (showDeleteDialog) {
+        DeleteNoteDialog(
+            isDeleting = state.isDeleting,
+            error = state.deleteError,
+            onDismiss = {
+                if (!state.isDeleting) showDeleteDialog = false
+            },
+            onConfirm = viewModel::deleteRoot,
+        )
     }
 }
 

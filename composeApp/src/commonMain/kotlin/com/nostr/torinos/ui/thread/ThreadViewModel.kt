@@ -49,6 +49,9 @@ class ThreadViewModel(
         val replyText: String = "",
         val isReplying: Boolean = false,
         val replyError: String? = null,
+        val isDeleting: Boolean = false,
+        val deleteError: String? = null,
+        val deleteCompletedCount: Int = 0,
     ) {
         fun isLiked(eventId: String): Boolean = likedReactions.containsKey(eventId) ||
             pendingEngagementOperations[eventId]?.get(EngagementSlot.Reaction)?.request is EngagementRequest.AddLike
@@ -81,6 +84,7 @@ class ThreadViewModel(
     fun refreshReactions(eventId: String) = controller.refreshReactions(eventId)
     fun repost(event: NostrEvent) = controller.repost(event)
     fun unrepost(eventId: String) = controller.unrepost(eventId)
+    fun deleteRoot() = controller.deleteRoot()
     fun startSubscriptions() = controller.startSubscriptions()
     fun stopSubscriptions() = controller.stopSubscriptions()
 
