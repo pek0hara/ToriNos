@@ -31,6 +31,8 @@ import com.nostr.torinos.account.LocalAccountSession
 import com.nostr.torinos.ui.components.NoteTimeline
 import com.nostr.torinos.ui.components.AppFloatingActionButton
 import com.nostr.torinos.ui.feed.FeedViewModel
+import com.nostr.torinos.model.COMMENT_EVENT_KIND
+import com.nostr.torinos.model.NostrEvent
 import kotlinx.coroutines.delay
 
 private const val DEFERRED_PROFILE_CONTENT_DELAY_MS = 800L
@@ -44,7 +46,7 @@ fun UserProfileScreen(
     onUserClick: (String) -> Unit = {},
     onOpenFollowing: (() -> Unit)? = null,
     onOpenFollowers: (() -> Unit)? = null,
-    onReply: ((eventId: String, authorPubkey: String, preview: String) -> Unit)? = null,
+    onReply: ((event: NostrEvent, preview: String) -> Unit)? = null,
     onOpenReplies: (eventId: String) -> Unit = {},
     onOpenLikes: (eventId: String) -> Unit = {},
     onOpenReposts: (eventId: String) -> Unit = {},
@@ -74,6 +76,11 @@ fun UserProfileScreen(
             includeRepostsInFeed = true,
             includeRepliesInFeed = selectedTab == ProfileTimelineTab.PostsAndReplies,
             filterMutedUsers = false,
+            feedEventKinds = if (selectedTab == ProfileTimelineTab.PostsAndReplies) {
+                setOf(1, COMMENT_EVENT_KIND)
+            } else {
+                setOf(1)
+            },
         )
     }
     val state by viewModel.state.collectAsState()

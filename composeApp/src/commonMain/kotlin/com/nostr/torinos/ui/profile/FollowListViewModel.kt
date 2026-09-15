@@ -96,6 +96,10 @@ class FollowListViewModel(
         val eoseJob = launch(start = CoroutineStart.UNDISPATCHED) {
             NostrRepository.eoseRelays(followingListSubId).collect { relayUrl ->
                 completedRelayUrls.add(relayUrl)
+                // 空結果でも最初のリレー完了で表示待機を解除し、残りはバックグラウンドで収集する。
+                if (hasCompletedAnyFollowRelay(completedRelayUrls)) {
+                    _state.update { it.copy(isLoading = false) }
+                }
                 if (hasCompletedAllFollowRelays(targetRelayUrls, completedRelayUrls)) {
                     allRelaysComplete.complete(Unit)
                 }
@@ -122,6 +126,7 @@ class FollowListViewModel(
     }
 
     private suspend fun loadFollowers() {
+        val relayCompletion = CompletableDeferred<Unit>()
         collectorJobs += launch(start = CoroutineStart.UNDISPATCHED) {
             NostrRepository.events(followerSubId).collect { event ->
                 if (event.kind != 3) return@collect
@@ -134,17 +139,22 @@ class FollowListViewModel(
             }
         }
 
-        // EOSE 後にローディング終了
+        // 購読開始前から監視し、接続直後の EOSE/CLOSED を取り逃がさない。
         collectorJobs += launch(start = CoroutineStart.UNDISPATCHED) {
             NostrRepository.eose(followerSubId).collect {
-                _state.update { it.copy(isLoading = false) }
+                relayCompletion.complete(Unit)
             }
         }
 
-        NostrRepository.subscribe(
-            followerSubId,
-            NostrFilter(kinds = listOf(3), pTags = listOf(ownPubkey), limit = 1000),
-        )
+        try {
+            NostrRepository.subscribe(
+                followerSubId,
+                NostrFilter(kinds = listOf(3), pTags = listOf(ownPubkey), limit = 1000),
+            )
+            awaitFollowerRelayCompletion(relayCompletion, FOLLOWERS_LIST_TIMEOUT_MS)
+        } finally {
+            _state.update { it.copy(isLoading = false) }
+        }
     }
 
     private fun initPubkeys(pubkeys: List<String>) {
@@ -251,6 +261,7 @@ class FollowListViewModel(
         private const val PROFILE_BATCH_DELAY_MS = 120L
         private const val PUBLISH_DELAY_MS = 180L
         private const val FOLLOWING_LIST_TIMEOUT_MS = 10_000L
+        private const val FOLLOWERS_LIST_TIMEOUT_MS = 10_000L
         private const val PROFILE_MAX_AGE_MS = 15 * 60 * 1_000L
     }
 }
@@ -259,3 +270,14 @@ internal fun hasCompletedAllFollowRelays(
     targetRelayUrls: Set<String>,
     completedRelayUrls: Set<String>,
 ): Boolean = targetRelayUrls.isEmpty() || completedRelayUrls.containsAll(targetRelayUrls)
+
+internal fun hasCompletedAnyFollowRelay(completedRelayUrls: Set<String>): Boolean =
+    completedRelayUrls.isNotEmpty()
+
+internal suspend fun awaitFollowerRelayCompletion(
+    completion: CompletableDeferred<Unit>,
+    timeoutMillis: Long,
+): Boolean = withTimeoutOrNull(timeoutMillis) {
+    completion.await()
+    true
+} == true

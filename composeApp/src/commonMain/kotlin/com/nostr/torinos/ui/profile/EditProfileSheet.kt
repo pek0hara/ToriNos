@@ -444,7 +444,7 @@ fun NameEditDialog(
     onSaved: (NostrProfile) -> Unit,
 ) {
     val state by viewModel.state.collectAsState()
-    var name by remember { mutableStateOf(currentProfile?.bestName ?: "") }
+    var name by remember { mutableStateOf(currentProfile?.name ?: "") }
     var displayName by remember { mutableStateOf(currentProfile?.displayName ?: "") }
 
     LaunchedEffect(state.saved) {
