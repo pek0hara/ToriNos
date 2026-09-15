@@ -34,6 +34,7 @@ data class CustomEmojiList(
 data class RecentReaction(
     val kind: String,
     val value: String,
+    val imageUrl: String = "",
 ) {
     companion object {
         const val UnicodeKind = "unicode"
@@ -156,14 +157,21 @@ object CustomEmojiStore {
         saveRecent()
     }
 
-    fun markCustomReactionUsed(shortcode: String) {
+    fun markCustomReactionUsed(shortcode: String, imageUrl: String = "") {
         val normalizedShortcode = shortcode.trim().trim(':')
+        val normalizedImageUrl = imageUrl.trim()
         if (normalizedShortcode.isBlank()) return
         _recentEmojiShortcodes.update { current ->
             (listOf(normalizedShortcode) + current.filterNot { it == normalizedShortcode })
                 .take(MAX_RECENT_EMOJIS)
         }
-        markReactionUsed(RecentReaction(RecentReaction.CustomKind, normalizedShortcode))
+        markReactionUsed(
+            RecentReaction(
+                kind = RecentReaction.CustomKind,
+                value = normalizedShortcode,
+                imageUrl = normalizedImageUrl,
+            ),
+        )
         saveRecent()
     }
 
@@ -379,7 +387,7 @@ object CustomEmojiStore {
                 it.value.isNotBlank() &&
                     (it.kind == RecentReaction.UnicodeKind || it.kind == RecentReaction.CustomKind)
             }
-            .distinctBy { it.kind to it.value }
+            .distinctBy { Triple(it.kind, it.value, it.imageUrl) }
             .take(MAX_RECENT_EMOJIS)
         _recentReactions.value = savedRecentReactions.ifEmpty {
             _recentEmojiShortcodes.value.map {
@@ -448,7 +456,9 @@ object CustomEmojiStore {
     private fun markReactionUsed(reaction: RecentReaction) {
         _recentReactions.update { current ->
             (listOf(reaction) + current.filterNot {
-                it.kind == reaction.kind && it.value == reaction.value
+                it.kind == reaction.kind &&
+                    it.value == reaction.value &&
+                    it.imageUrl == reaction.imageUrl
             }).take(MAX_RECENT_EMOJIS)
         }
     }

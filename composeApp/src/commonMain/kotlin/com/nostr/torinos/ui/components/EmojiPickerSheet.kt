@@ -27,6 +27,7 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Star
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -52,9 +53,12 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.lifecycle.viewmodel.compose.viewModel
 import com.nostr.torinos.model.ReactionOption
+import com.nostr.torinos.network.CustomEmoji
 import com.nostr.torinos.network.CustomEmojiStore
 import com.nostr.torinos.network.RecentReaction
+import com.nostr.torinos.ui.settings.CustomEmojiSettingsViewModel
 
 private data class EmojiPickerSection(
     val title: String,
@@ -67,10 +71,14 @@ internal fun StandardEmojiPickerSheet(
     onDismiss: () -> Unit,
     onSelect: (ReactionOption) -> Unit,
     onOpenCustomEmojiSettings: (() -> Unit)? = null,
+    discoveryViewModel: CustomEmojiSettingsViewModel = viewModel(key = "emoji-picker-discovery") {
+        CustomEmojiSettingsViewModel()
+    },
 ) {
     val savedCustomEmojis by CustomEmojiStore.emojis.collectAsState()
     val recentReactions by CustomEmojiStore.recentReactions.collectAsState()
     val favoriteEmojis by CustomEmojiStore.favoriteEmojis.collectAsState()
+    val discoveryState by discoveryViewModel.state.collectAsState()
     var query by remember { mutableStateOf("") }
     var selectedCategory by remember { mutableStateOf<StandardEmojiCategory?>(null) }
     var customOnly by remember { mutableStateOf(false) }
@@ -79,21 +87,19 @@ internal fun StandardEmojiPickerSheet(
     val customOptions = remember(savedCustomEmojis) {
         savedCustomEmojis.map { ReactionOption.Custom(it.shortcode, it.imageUrl) }
     }
+    val searchableCustomOptions = remember(savedCustomEmojis, discoveryState.publishedSets) {
+        customEmojiSearchOptions(
+            registered = savedCustomEmojis,
+            published = discoveryState.publishedSets.flatMap { it.emojis },
+        )
+    }
     val recentOptions = remember(recentReactions, savedCustomEmojis) {
         val customEmojiMap = savedCustomEmojis.associateBy { it.shortcode }
         recentReactions
             .asSequence()
-            .mapNotNull { recent ->
-                when (recent.kind) {
-                    RecentReaction.UnicodeKind -> ReactionOption.Unicode(recent.value)
-                    RecentReaction.CustomKind -> customEmojiMap[recent.value]?.let {
-                        ReactionOption.Custom(it.shortcode, it.imageUrl)
-                    }
-                    else -> null
-                }
-            }
+            .mapNotNull { recent -> recent.toReactionOption(customEmojiMap) }
             .distinctBy { it.key }
-            .take(16)
+            .take(24)
             .toList()
     }
     val favoriteOptions = remember(favoriteEmojis) {
@@ -107,6 +113,7 @@ internal fun StandardEmojiPickerSheet(
         customOptions,
         favoriteOptions,
         recentOptions,
+        searchableCustomOptions,
     ) {
         when {
             normalizedQuery.isNotBlank() -> {
@@ -117,7 +124,7 @@ internal fun StandardEmojiPickerSheet(
                             EMOJI_SEARCH_KEYWORDS[emoji].orEmpty().any { normalizedQuery in it }
                     }
                 }.distinct().map { ReactionOption.Unicode(it) }
-                val customMatches = customOptions.filter {
+                val customMatches = searchableCustomOptions.filter {
                     normalizedQuery in it.shortcode.lowercase()
                 }
                 listOf(EmojiPickerSection("検索結果", customMatches + unicodeMatches))
@@ -206,12 +213,30 @@ internal fun StandardEmojiPickerSheet(
 
                 if (visibleSections.all { it.options.isEmpty() }) {
                     item(span = { GridItemSpan(maxLineSpan) }) {
-                        Text(
-                            text = "一致する絵文字はありません",
-                            modifier = Modifier.padding(vertical = 24.dp),
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            style = MaterialTheme.typography.bodyMedium,
-                        )
+                        if (normalizedQuery.isNotBlank() && discoveryState.isLoadingPublishedSets) {
+                            Row(
+                                modifier = Modifier.padding(vertical = 24.dp),
+                                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(20.dp),
+                                    strokeWidth = 2.dp,
+                                )
+                                Text(
+                                    text = "公開絵文字を検索中…",
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    style = MaterialTheme.typography.bodyMedium,
+                                )
+                            }
+                        } else {
+                            Text(
+                                text = "一致する絵文字はありません",
+                                modifier = Modifier.padding(vertical = 24.dp),
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                style = MaterialTheme.typography.bodyMedium,
+                            )
+                        }
                     }
                 }
             }
@@ -293,6 +318,23 @@ internal fun StandardEmojiPickerSheet(
             } ?: Spacer(modifier = Modifier.height(8.dp))
         }
     }
+}
+
+internal fun customEmojiSearchOptions(
+    registered: List<CustomEmoji>,
+    published: List<CustomEmoji>,
+): List<ReactionOption.Custom> = (registered + published)
+    .distinctBy { it.shortcode to it.imageUrl }
+    .map { ReactionOption.Custom(it.shortcode, it.imageUrl) }
+
+internal fun RecentReaction.toReactionOption(
+    registeredByShortcode: Map<String, CustomEmoji>,
+): ReactionOption? = when (kind) {
+    RecentReaction.UnicodeKind -> ReactionOption.Unicode(value)
+    RecentReaction.CustomKind -> imageUrl.takeIf { it.isNotBlank() }
+        ?.let { ReactionOption.Custom(value, it) }
+        ?: registeredByShortcode[value]?.let { ReactionOption.Custom(it.shortcode, it.imageUrl) }
+    else -> null
 }
 
 @Composable
