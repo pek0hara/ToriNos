@@ -70,7 +70,7 @@ object NostrRepository {
     internal val httpClient = createHttpClient()
     private val stateMutex = Mutex()
     private val activeRelays = mutableMapOf<String, ActiveRelayHandle>()
-    private var enabledRelayUrls: List<String> = RelayStore.defaults.filter { it.enabled }.map { it.url }
+    private var enabledRelayUrls: List<String> = readableRelayUrls(RelayStore.defaults)
     private val activeSubscriptions = mutableMapOf<String, ActiveSubscriptionRecord>()
     private val relayConnectionGenerations = mutableMapOf<String, Long>()
     private val temporaryRelays = mutableMapOf<String, TemporaryRelayHandle>()
@@ -239,6 +239,7 @@ object NostrRepository {
     }
 
     private suspend fun handleActiveRelayMessage(relayUrl: String, message: RelayMessage) {
+        if (message is RelayMessage.Event) ReactionEventStore.observe(message.event, setOf(relayUrl))
         val signals = mutableListOf<Pair<SubscriptionSessionImpl, SubscriptionSignal>>()
         var commands = emptyList<SubscriptionWireCommand>()
         var fetchToComplete: String? = null
@@ -371,6 +372,7 @@ object NostrRepository {
                         }
                         else -> networkTraceLog { "[Repo] message from ${relay.url}: $message" }
                     }
+                    if (message is RelayMessage.Event) ReactionEventStore.observe(message.event, setOf(relay.url))
                     bus.emit(RelayEnvelope(relay.url, message))
                 }
             } catch (e: CancellationException) {
@@ -441,14 +443,18 @@ object NostrRepository {
         newHandles.forEach { it.relay.connect(scope) }
         sendSubscriptionCommands(commands, removedHandles)
         closeRemovedRelayHandles(removedHandles)
+        replayCachedToLegacySubscription(subscriptionId, filters, targetUrls)
         return targetUrls
     }
 
     suspend fun openSubscription(spec: SubscriptionSpec): SubscriptionSession {
         require(spec.id.isNotBlank()) { "購読IDは空にできません" }
         require(spec.filters.isNotEmpty()) { "購読には1件以上のフィルターが必要です" }
-        val session = SubscriptionSessionImpl(spec.id)
-        val (commands, removedHandles, newHandles, completeImmediately) = stateMutex.withLock {
+        val session = SubscriptionSessionImpl(
+            id = spec.id,
+            lossless = spec.behavior is SubscriptionBehavior.Fetch,
+        )
+        val (commands, removedHandles, newHandles, completeImmediately, targetRelayUrls) = stateMutex.withLock {
             check(spec.id !in activeSubscriptions) { "購読IDはすでに使用されています: ${spec.id}" }
             val targetUrls = spec.target.urls(enabledRelayUrls).toSet()
             val record = ActiveSubscriptionRecord(
@@ -467,6 +473,7 @@ object NostrRepository {
                 removedHandles = removed,
                 newHandles = added,
                 completeImmediately = spec.behavior is SubscriptionBehavior.Fetch && targetUrls.isEmpty(),
+                targetRelayUrls = targetUrls,
             )
         }
         if (!completeImmediately && spec.behavior is SubscriptionBehavior.Fetch) {
@@ -478,6 +485,7 @@ object NostrRepository {
         newHandles.forEach { it.relay.connect(scope) }
         sendSubscriptionCommands(commands, removedHandles)
         closeRemovedRelayHandles(removedHandles)
+        replayCachedToSession(session, spec.filters, targetRelayUrls)
         if (completeImmediately) completeFetch(spec.id, timedOut = false)
         return session
     }
@@ -488,7 +496,7 @@ object NostrRepository {
         target: RelayTarget,
     ) {
         require(filters.isNotEmpty()) { "購読には1件以上のフィルターが必要です" }
-        val (commands, removedHandles, newHandles) = stateMutex.withLock {
+        val (targetUrls, commands, removedHandles, newHandles) = stateMutex.withLock {
             val record = activeSubscriptions[session.id]
                 ?: error("購読はすでに終了しています: ${session.id}")
             check(record.session === session) { "購読セッションが一致しません: ${session.id}" }
@@ -497,11 +505,51 @@ object NostrRepository {
             record.target = target
             val commands = reconcileSubscriptionLocked(session.id, record)
             val (removed, added) = reconcileActiveRelaysLocked()
-            Triple(commands, removed, added)
+            SubscriptionUpdateWork(target.urls(enabledRelayUrls).toSet(), commands, removed, added)
         }
         newHandles.forEach { it.relay.connect(scope) }
         sendSubscriptionCommands(commands, removedHandles)
         closeRemovedRelayHandles(removedHandles)
+        replayCachedToSession(session, filters, targetUrls)
+    }
+
+    private suspend fun replayCachedToLegacySubscription(
+        subscriptionId: String,
+        filters: List<NostrFilter>,
+        targetRelayUrls: Set<String>,
+    ) {
+        cachedEventsNotYetDelivered(subscriptionId, filters, targetRelayUrls).forEach { event ->
+            bus.emit(RelayEnvelope(CACHE_RELAY_URL, RelayMessage.Event(subscriptionId, event)))
+        }
+    }
+
+    private suspend fun replayCachedToSession(
+        session: SubscriptionSessionImpl,
+        filters: List<NostrFilter>,
+        targetRelayUrls: Set<String>,
+    ) {
+        cachedEventsNotYetDelivered(session.id, filters, targetRelayUrls).forEach { event ->
+            session.emit(
+                SubscriptionSignal.Event(
+                    relayUrl = CACHE_RELAY_URL,
+                    event = event,
+                    isLive = false,
+                ),
+            )
+        }
+    }
+
+    private suspend fun cachedEventsNotYetDelivered(
+        subscriptionId: String,
+        filters: List<NostrFilter>,
+        targetRelayUrls: Set<String>,
+    ): List<NostrEvent> {
+        val cached = ReactionEventStore.matching(filters, targetRelayUrls)
+        if (cached.isEmpty()) return emptyList()
+        return stateMutex.withLock {
+            val record = activeSubscriptions[subscriptionId] ?: return@withLock emptyList()
+            cached.filter { event -> !record.deduplicateEvents || record.seenEventIds.add(event.id) }
+        }
     }
 
     internal suspend fun closeSubscriptionSession(session: SubscriptionSessionImpl) {
@@ -558,21 +606,13 @@ object NostrRepository {
         val msg = buildCloseMessage(subscriptionId)
         scope.launch {
             val (targets, handlesToClose) = stateMutex.withLock {
-                val relayUrl = temporarySubscriptions.remove(subscriptionId)?.second
-                if (relayUrl != null) {
-                    val target = listOfNotNull(temporaryRelays[relayUrl]?.relay)
-                    val closeHandle = if (temporarySubscriptions.values.none { it.second == relayUrl }) {
-                        temporaryRelays.remove(relayUrl)
-                    } else {
-                        null
-                    }
-                    target to listOfNotNull(closeHandle)
-                } else {
-                    val target = temporaryRelays.values.map { it.relay }
-                    val closeHandles = temporaryRelays.values.toList()
-                    temporaryRelays.clear()
-                    target to closeHandles
-                }
+                val selection = removeTemporarySubscription(
+                    subscriptionId = subscriptionId,
+                    subscriptions = temporarySubscriptions,
+                    relays = temporaryRelays,
+                )
+                listOfNotNull(selection?.relayHandle?.relay) to
+                    listOfNotNull(selection?.handleToClose)
             }
             targets.forEach { it.send(msg) }
             handlesToClose.forEach { it.close() }
@@ -609,14 +649,15 @@ object NostrRepository {
     suspend fun targetRelayUrls(target: RelayTarget): Set<String> =
         stateMutex.withLock { target.urls(enabledRelayUrls).toSet() }
 
-    /** 署名済みイベントを有効な全リレーに送信する。 */
+    /** 署名済みイベントを有効な全リレーへ送信し、全送信先の結果を返す。 */
     suspend fun publish(event: NostrEvent): RelayPublishResult {
-        val targets = targetRelayUrls(RelayTarget.AllEnabled)
-        check(targets.isNotEmpty()) { "有効なリレーがありません" }
+        val targets = RelayStore.writableRelayUrlsSnapshot()
+        check(targets.isNotEmpty()) { "書き込み可能なリレーがありません" }
         val result = publishToRelaysWithResult(event, targets)
         check(result.succeededRelays.isNotEmpty()) {
             "すべてのリレーへの送信に失敗しました: ${result.failedRelays.keys.joinToString()}"
         }
+        ReactionEventStore.observe(event, result.succeededRelays)
         return result
     }
 
@@ -643,10 +684,17 @@ object NostrRepository {
         event: NostrEvent,
         relayUrls: Collection<String>,
         awaitAcceptance: Boolean = false,
+        respectRelayWritePolicy: Boolean = true,
     ): RelayPublishResult = coroutineScope {
-        val targets = relayUrls.map { it.trim() }.filter { it.isNotBlank() }.distinct()
+        val requestedTargets = relayUrls.map { it.trim() }.filter { it.isNotBlank() }.distinct()
+        val (targets, rejectedTargets) = requestedTargets.partition { url ->
+            !respectRelayWritePolicy || RelayStore.allowsWritingTo(url)
+        }
         if (targets.isEmpty()) {
-            return@coroutineScope RelayPublishResult(emptySet(), emptyMap())
+            return@coroutineScope RelayPublishResult(
+                succeededRelays = emptySet(),
+                failedRelays = rejectedTargets.associateWith { "NIP-65でread専用に設定されています" },
+            )
         }
 
         val message = buildEventMessage(event)
@@ -695,11 +743,16 @@ object NostrRepository {
 
         RelayPublishResult(
             succeededRelays = results.filter { it.second.isSuccess }.mapTo(linkedSetOf()) { it.first },
-            failedRelays = results.mapNotNull { (url, result) ->
-                result.exceptionOrNull()?.let { error ->
-                    url to (error.message ?: "送信に失敗しました")
+            failedRelays = buildMap {
+                rejectedTargets.forEach { url ->
+                    put(url, "NIP-65でread専用に設定されています")
                 }
-            }.toMap(),
+                results.forEach { (url, result) ->
+                    result.exceptionOrNull()?.let { error ->
+                        put(url, error.message ?: "送信に失敗しました")
+                    }
+                }
+            },
         )
     }
 
@@ -711,6 +764,7 @@ object NostrRepository {
         event: NostrEvent,
         relayUrls: Collection<String>,
         onRelayResult: suspend (RelayPublishResult) -> Unit = {},
+        respectRelayWritePolicy: Boolean = true,
     ): RelayPublishResult {
         val targets = relayUrls.map { it.trim() }.filter { it.isNotBlank() }.distinct()
         if (targets.isEmpty()) return RelayPublishResult(emptySet(), emptyMap())
@@ -722,7 +776,11 @@ object NostrRepository {
 
         targets.forEach { relayUrl ->
             scope.launch {
-                val result = publishToRelaysWithResult(event, listOf(relayUrl))
+                val result = publishToRelaysWithResult(
+                    event = event,
+                    relayUrls = listOf(relayUrl),
+                    respectRelayWritePolicy = respectRelayWritePolicy,
+                )
                 runCatching { onRelayResult(result) }
                     .onFailure { error ->
                         appLog("[Repo] publish result callback failed: ${error::class.simpleName}: ${error.message}")
@@ -794,6 +852,7 @@ object NostrRepository {
     private const val RETRY_BASE_DELAY_MS = 1_000L
     private const val MAX_TRANSIENT_RETRIES = 3
     private const val MAX_STRUCTURAL_REFUSALS = 3
+    private const val CACHE_RELAY_URL = "local://reaction-cache"
 }
 
 private data class RelayEnvelope(
@@ -803,8 +862,13 @@ private data class RelayEnvelope(
 
 internal class SubscriptionSessionImpl(
     override val id: String,
+    lossless: Boolean = false,
 ) : SubscriptionSession {
-    private val channel = Channel<SubscriptionSignal>(capacity = 512)
+    // finite fetch は EOSE/完了より前のイベントを欠落させてはならない。openSubscription は
+    // キャッシュ再生後に session を返すため、有限取得だけ無制限キューで確実に保持する。
+    private val channel = Channel<SubscriptionSignal>(
+        capacity = if (lossless) Channel.UNLIMITED else 512,
+    )
     override val signals: Flow<SubscriptionSignal> = channel.receiveAsFlow()
     internal var timeoutJob: Job? = null
 
@@ -879,6 +943,7 @@ private data class SessionOpenWork(
     val removedHandles: List<ActiveRelayHandle>,
     val newHandles: List<ActiveRelayHandle>,
     val completeImmediately: Boolean,
+    val targetRelayUrls: Set<String>,
 )
 
 private data class RetryRequest(
@@ -907,6 +972,29 @@ private data class TemporaryRelayHandle(
         relay.disconnect()
         collectorJobs.forEach { it.cancel() }
     }
+}
+
+internal data class TemporaryRelayCloseSelection<T>(
+    val relayHandle: T?,
+    val handleToClose: T?,
+)
+
+/**
+ * 一時購読を登録解除する。未登録のIDは他の一時購読・リレーに影響しない。
+ */
+internal fun <F, T> removeTemporarySubscription(
+    subscriptionId: String,
+    subscriptions: MutableMap<String, Pair<F, String>>,
+    relays: MutableMap<String, T>,
+): TemporaryRelayCloseSelection<T>? {
+    val relayUrl = subscriptions.remove(subscriptionId)?.second ?: return null
+    val relayHandle = relays[relayUrl]
+    val handleToClose = if (subscriptions.values.none { it.second == relayUrl }) {
+        relays.remove(relayUrl)
+    } else {
+        null
+    }
+    return TemporaryRelayCloseSelection(relayHandle, handleToClose)
 }
 
 private data class ActiveRelayHandle(
