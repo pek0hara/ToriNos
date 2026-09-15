@@ -5,6 +5,7 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.rememberTransformableState
 import androidx.compose.foundation.gestures.transformable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -30,13 +31,13 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ContentPaste
-import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.InsertEmoticon
 import androidx.compose.material.icons.filled.Public
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
@@ -77,6 +78,7 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.compose.ui.window.PopupProperties
 import com.nostr.torinos.model.NoteContext
+import com.nostr.torinos.model.ReplyTarget
 import com.nostr.torinos.account.accountSessionViewModel
 import com.nostr.torinos.model.encodeNevent
 import com.nostr.torinos.model.ReactionOption
@@ -91,17 +93,16 @@ import com.nostr.torinos.ui.components.rememberDismissKeyboard
 import com.nostr.torinos.ui.components.rememberClipboardImageReader
 import com.nostr.torinos.ui.components.rememberOptimizedImagePickerLauncher
 import kotlin.math.max
+import kotlinx.coroutines.delay
 
 private const val MAX_CHARS = 800
+private const val KEYBOARD_DISMISS_DELAY_MS = 300L
 
 @Composable
 fun PostSheet(
     onDismiss: () -> Unit,
-    onCancel: (PostMemoData?) -> Unit,
-    onMemoSaved: () -> Unit,
-    onDeleteMemo: (() -> Unit)? = null,
-    replyToId: String? = null,
-    replyToPubkey: String? = null,
+    onDraftSaved: () -> Unit,
+    replyTarget: ReplyTarget? = null,
     replyToPreview: String? = null,
     quoteToId: String? = null,
     quoteToPubkey: String? = null,
@@ -110,14 +111,15 @@ fun PostSheet(
     initialMemo: PostMemoData? = null,
     initialMemoRestoreMessage: String? = null,
     autoFocus: Boolean = false,
-    saveLocalDraftOnCancel: Boolean = true,
+    preserveLocalDraftOnNavigation: Boolean = true,
     onOpenCustomEmojiSettings: (PostMemoData?) -> Unit = {},
     onPosted: (
         eventId: String,
         replyToId: String?,
         noteContext: NoteContext,
         publishResult: RelayPublishResult,
-    ) -> Unit = { _, _, _, _ -> },
+        warning: String?,
+    ) -> Unit = { _, _, _, _, _ -> },
     viewModel: PostViewModel? = null,
 ) {
     val postViewModel = viewModel ?: accountSessionViewModel(
@@ -130,9 +132,24 @@ fun PostSheet(
     var isTextFocused by remember { mutableStateOf(false) }
     var isClosing by remember { mutableStateOf(false) }
     var showRelaySettingsDialog by remember { mutableStateOf(false) }
+    var showDraftListSheet by remember { mutableStateOf(false) }
+    var showSaveDraftDialog by remember { mutableStateOf(false) }
+    var isWaitingToShowSaveDraftDialog by remember { mutableStateOf(false) }
+    var selectedDraft by remember { mutableStateOf<PostMemoData?>(null) }
     var postRelayUrls by remember { mutableStateOf<Set<String>?>(null) }
-    val quoteReference = remember(quoteToId, quoteToPubkey) {
-        quoteToId?.let {
+    val activeMemo = selectedDraft ?: initialMemo
+    val activeNoteContext = selectedDraft?.let { memo ->
+        memo.channelId?.takeIf { it.isNotBlank() }?.let(NoteContext::Channel)
+            ?: NoteContext.Timeline
+    } ?: noteContext
+    val activeReplyTarget = if (selectedDraft != null) {
+        selectedDraft?.restoreReplyTarget(activeNoteContext)
+    } else {
+        replyTarget ?: initialMemo?.restoreReplyTarget(noteContext)
+    }
+    val replyToId = activeReplyTarget?.parent?.id
+    val quoteReference = remember(quoteToId, quoteToPubkey, selectedDraft) {
+        quoteToId?.takeIf { selectedDraft == null }?.let {
             "nostr:${encodeNevent(eventId = it, authorPubkey = quoteToPubkey)}"
         }
     }
@@ -165,39 +182,64 @@ fun PostSheet(
         onClosed()
     }
 
-    fun cancelWithOptionalLocalDraft() {
-        val draft = if (saveLocalDraftOnCancel) {
-            postViewModel.currentMemoSnapshot(replyToId, replyToPubkey, noteContext)
+    fun requestCancel() {
+        if (isClosing || showSaveDraftDialog || isWaitingToShowSaveDraftDialog) return
+        if (state.hasDraftContent) {
+            dismissKeyboard()
+            isWaitingToShowSaveDraftDialog = true
         } else {
-            null
+            closeOverlay(onDismiss)
         }
-        closeOverlay { onCancel(draft) }
     }
 
     fun openCustomEmojiSettings() {
-        val draft = if (saveLocalDraftOnCancel) {
-            postViewModel.currentMemoSnapshot(replyToId, replyToPubkey, noteContext)
+        val draft = if (preserveLocalDraftOnNavigation) {
+            postViewModel.currentMemoSnapshot(activeReplyTarget, activeNoteContext)
         } else {
             null
         }
         closeOverlay { onOpenCustomEmojiSettings(draft) }
     }
 
-    LaunchedEffect(state.posted, state.postedEventId, state.publishResult) {
+    LaunchedEffect(isWaitingToShowSaveDraftDialog) {
+        if (isWaitingToShowSaveDraftDialog) {
+            delay(KEYBOARD_DISMISS_DELAY_MS)
+            isWaitingToShowSaveDraftDialog = false
+            if (!isClosing) showSaveDraftDialog = true
+        }
+    }
+
+    LaunchedEffect(
+        state.posted,
+        state.postedEventId,
+        state.publishResult,
+        state.postWarning,
+    ) {
         val postedEventId = state.postedEventId
         val publishResult = state.publishResult
         if (state.posted && postedEventId != null && publishResult != null) {
             postViewModel.clearPosted()
             closeOverlay {
                 onDismiss()
-                onPosted(postedEventId, replyToId, noteContext, publishResult)
+                onPosted(
+                    postedEventId,
+                    replyToId,
+                    activeNoteContext,
+                    publishResult,
+                    state.postWarning,
+                )
             }
         }
     }
 
-    LaunchedEffect(initialMemo, replyToId, replyToPubkey, noteContext) {
-        if (initialMemo != null) {
-            postViewModel.restoreMemo(initialMemo, initialMemoRestoreMessage)
+    LaunchedEffect(activeMemo, activeReplyTarget, activeNoteContext) {
+        if (activeMemo != null) {
+            postViewModel.restoreMemo(
+                activeMemo,
+                if (selectedDraft != null) "下書きを復元しました" else initialMemoRestoreMessage,
+            )
+        } else {
+            postViewModel.reset()
         }
     }
 
@@ -213,7 +255,7 @@ fun PostSheet(
     }
 
     Dialog(
-        onDismissRequest = ::cancelWithOptionalLocalDraft,
+        onDismissRequest = ::requestCancel,
         properties = DialogProperties(
             usePlatformDefaultWidth = false,
             dismissOnBackPress = true,
@@ -227,7 +269,7 @@ fun PostSheet(
                 modifier = Modifier
                     .fillMaxSize()
                     .background(Color.Black.copy(alpha = 0.32f))
-                    .clickable(onClick = ::cancelWithOptionalLocalDraft),
+                    .clickable(onClick = ::requestCancel),
             )
             Surface(
                 modifier = Modifier.fillMaxSize(),
@@ -236,16 +278,18 @@ fun PostSheet(
                 PostSheetContent(
                     state = state,
                     title = when {
+                        selectedDraft != null -> "下書きを編集"
                         replyToId != null -> "返信"
                         quoteReference != null -> "投稿を引用"
-                        else -> "新しいポスト"
+                        else -> null
                     },
-                    replyToPreview = replyToPreview,
-                    quoteToPreview = quoteToPreview,
+                    replyToPreview = replyToPreview.takeIf { selectedDraft == null },
+                    quoteToPreview = quoteToPreview.takeIf { selectedDraft == null },
                     hasQuote = quoteReference != null,
-                    onDismiss = ::cancelWithOptionalLocalDraft,
-                    onDeleteMemo = onDeleteMemo?.let { deleteMemo ->
-                        { closeOverlay(deleteMemo) }
+                    onDismiss = ::requestCancel,
+                    onOpenDrafts = {
+                        dismissKeyboard()
+                        showDraftListSheet = true
                     },
                     onPickImage = pickImage,
                     onPasteImage = pasteImage,
@@ -256,23 +300,32 @@ fun PostSheet(
                     textFocusRequester = textFocusRequester,
                     onTextFocusChanged = { isTextFocused = it },
                     onRemoveImage = postViewModel::removeImage,
-                    onSaveMemo = {
-                        postViewModel.saveMemo(replyToId, replyToPubkey, noteContext) {
-                            closeOverlay {
-                                onDismiss()
-                                onMemoSaved()
-                            }
-                        }
-                    },
                     onPost = {
                         postViewModel.post(
-                            replyToId = replyToId,
-                            replyToPubkey = replyToPubkey,
-                            noteContext = noteContext,
+                            replyTarget = activeReplyTarget,
+                            noteContext = activeNoteContext,
                             quoteReference = quoteReference,
-                            relayUrls = postRelayUrls ?: RelayStore.enabledRelayUrlsSnapshot(),
+                            relayUrls = postRelayUrls ?: RelayStore.writableRelayUrlsSnapshot(),
                         )
                     }
+                )
+            }
+            if (isWaitingToShowSaveDraftDialog || showSaveDraftDialog) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .background(
+                            if (isWaitingToShowSaveDraftDialog) {
+                                Color.Black.copy(alpha = 0.32f)
+                            } else {
+                                Color.Transparent
+                            },
+                        )
+                        .clickable(
+                            interactionSource = remember { MutableInteractionSource() },
+                            indication = null,
+                            onClick = {},
+                        ),
                 )
             }
         }
@@ -280,22 +333,116 @@ fun PostSheet(
 
     if (showRelaySettingsDialog) {
         PostRelaySettingsDialog(
-            selectedRelayUrls = postRelayUrls ?: RelayStore.enabledRelayUrlsSnapshot().toSet(),
+            selectedRelayUrls = postRelayUrls ?: RelayStore.writableRelayUrlsSnapshot().toSet(),
             onSelectionChange = { postRelayUrls = it },
             onDismiss = { showRelaySettingsDialog = false },
         )
+    }
+
+    if (showDraftListSheet) {
+        DraftListSheet(
+            onDismiss = { showDraftListSheet = false },
+            onDraftClick = { memo ->
+                selectedDraft = memo
+                showDraftListSheet = false
+            },
+        )
+    }
+
+    if (showSaveDraftDialog) {
+        Dialog(
+            onDismissRequest = {
+                if (!state.isSavingMemo) showSaveDraftDialog = false
+            },
+        ) {
+            Surface(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .widthIn(max = 420.dp),
+                shape = MaterialTheme.shapes.extraLarge,
+                color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                tonalElevation = 6.dp,
+            ) {
+                Row(
+                    modifier = Modifier.padding(16.dp),
+                ) {
+                    Column(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalArrangement = Arrangement.spacedBy(12.dp),
+                    ) {
+                        state.error?.let { error ->
+                            Text(
+                                text = error,
+                                color = MaterialTheme.colorScheme.error,
+                                style = MaterialTheme.typography.bodySmall,
+                                modifier = Modifier.padding(horizontal = 8.dp),
+                            )
+                        }
+                        Button(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .heightIn(min = 52.dp),
+                            onClick = {
+                                postViewModel.saveMemo(activeReplyTarget, activeNoteContext) {
+                                    closeOverlay {
+                                        onDismiss()
+                                        onDraftSaved()
+                                    }
+                                }
+                            },
+                            enabled = state.canSaveMemo,
+                        ) {
+                            if (state.isSavingMemo) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(20.dp),
+                                    strokeWidth = 2.dp,
+                                )
+                            } else {
+                                Text("下書きに保存")
+                            }
+                        }
+                        Button(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .heightIn(min = 52.dp),
+                            onClick = { closeOverlay(onDismiss) },
+                            enabled = !state.isSavingMemo,
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = MaterialTheme.colorScheme.surfaceVariant,
+                                contentColor = MaterialTheme.colorScheme.error,
+                            ),
+                        ) {
+                            Text("保存せず閉じる")
+                        }
+                        Button(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .heightIn(min = 52.dp),
+                            onClick = { showSaveDraftDialog = false },
+                            enabled = !state.isSavingMemo,
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = MaterialTheme.colorScheme.surfaceVariant,
+                                contentColor = MaterialTheme.colorScheme.onSurface,
+                            ),
+                        ) {
+                            Text("編集を続ける")
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 
 @Composable
 private fun PostSheetContent(
     state: PostState,
-    title: String,
+    title: String?,
     replyToPreview: String?,
     quoteToPreview: String?,
     hasQuote: Boolean,
     onDismiss: () -> Unit,
-    onDeleteMemo: (() -> Unit)?,
+    onOpenDrafts: () -> Unit,
     onPickImage: () -> Unit,
     onPasteImage: () -> Unit,
     onOpenRelaySettings: () -> Unit,
@@ -305,7 +452,6 @@ private fun PostSheetContent(
     textFocusRequester: FocusRequester,
     onTextFocusChanged: (Boolean) -> Unit,
     onRemoveImage: (Int) -> Unit,
-    onSaveMemo: () -> Unit,
     onPost: () -> Unit,
 ) {
     var textValue by remember { mutableStateOf(TextFieldValue(state.text)) }
@@ -339,7 +485,10 @@ private fun PostSheetContent(
         )
         when (option) {
             is ReactionOption.Unicode -> CustomEmojiStore.markUnicodeUsed(option.value)
-            is ReactionOption.Custom -> CustomEmojiStore.markCustomReactionUsed(option.shortcode)
+            is ReactionOption.Custom -> CustomEmojiStore.markCustomReactionUsed(
+                option.shortcode,
+                option.imageUrl,
+            )
         }
         if (customEmoji != null) {
             onCustomEmojiInserted(newText, customEmoji)
@@ -365,27 +514,39 @@ private fun PostSheetContent(
             modifier = Modifier.fillMaxWidth(),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            TextButton(onClick = onDismiss) {
+            TextButton(
+                onClick = {
+                    dismissKeyboard()
+                    onDismiss()
+                },
+            ) {
                 Text("キャンセル", maxLines = 1)
             }
-            Text(
-                text = title,
-                modifier = Modifier.weight(1f),
-                style = MaterialTheme.typography.titleMedium,
-                textAlign = TextAlign.Center,
-                maxLines = 1,
-            )
-            if (onDeleteMemo != null) {
-                IconButton(
-                    onClick = onDeleteMemo,
-                    modifier = Modifier.size(36.dp),
-                ) {
-                    Icon(
-                        Icons.Default.Delete,
-                        contentDescription = "メモを削除",
-                        tint = MaterialTheme.colorScheme.error,
-                    )
-                }
+            if (title != null) {
+                Text(
+                    text = title,
+                    modifier = Modifier.weight(1f),
+                    style = MaterialTheme.typography.titleMedium,
+                    textAlign = TextAlign.Center,
+                    maxLines = 1,
+                )
+            } else {
+                Spacer(modifier = Modifier.weight(1f))
+            }
+            TextButton(
+                onClick = {
+                    dismissKeyboard()
+                    onOpenDrafts()
+                },
+                contentPadding = PaddingValues(horizontal = 8.dp),
+            ) {
+                Icon(
+                    Icons.Default.Edit,
+                    contentDescription = null,
+                    modifier = Modifier.size(18.dp),
+                )
+                Spacer(modifier = Modifier.size(4.dp))
+                Text("下書き", maxLines = 1)
             }
             Button(
                 onClick = onPost,
@@ -660,23 +821,6 @@ private fun PostSheetContent(
                     Spacer(modifier = Modifier.size(3.dp))
                     Text("リレー", maxLines = 1, style = MaterialTheme.typography.labelSmall)
                 }
-                TextButton(
-                    onClick = onSaveMemo,
-                    enabled = state.canSaveMemo,
-                    contentPadding = PaddingValues(horizontal = 4.dp),
-                ) {
-                    if (state.isSavingMemo) {
-                        CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
-                    } else {
-                        Icon(
-                            Icons.Default.Edit,
-                            contentDescription = null,
-                            modifier = Modifier.size(16.dp),
-                        )
-                    }
-                    Spacer(modifier = Modifier.size(3.dp))
-                    Text("メモ保存", maxLines = 1, style = MaterialTheme.typography.labelSmall)
-                }
                 Spacer(modifier = Modifier.weight(1f))
                 Text(
                     text = state.text.length.toString(),
@@ -836,13 +980,14 @@ private fun PostRelaySettingsDialog(
     onDismiss: () -> Unit,
 ) {
     val relayEntries by RelayStore.entries.collectAsState()
+    val writableRelayEntries = relayEntries.filter { it.enabled && it.write }
 
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("この投稿のリレー") },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                if (relayEntries.isEmpty()) {
+                if (writableRelayEntries.isEmpty()) {
                     Text(
                         text = "リレーが設定されていません",
                         style = MaterialTheme.typography.bodyMedium,
@@ -852,7 +997,7 @@ private fun PostRelaySettingsDialog(
                     LazyColumn(
                         modifier = Modifier.heightIn(max = 320.dp),
                     ) {
-                        items(relayEntries, key = { it.url }) { entry ->
+                        items(writableRelayEntries, key = { it.url }) { entry ->
                             PostRelayRow(
                                 entry = entry,
                                 checked = entry.url in selectedRelayUrls,

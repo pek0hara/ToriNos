@@ -14,6 +14,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Apps
 import androidx.compose.material.icons.filled.Home
+import androidx.compose.material.icons.filled.Sms
 import androidx.compose.material.icons.filled.Today
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -46,6 +47,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.runtime.setValue
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.Job
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.requiredHeight
 import androidx.compose.foundation.layout.size
@@ -65,9 +67,12 @@ import androidx.navigation.toRoute
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.nostr.torinos.account.AccountSession
 import com.nostr.torinos.account.accountSessionViewModel
 import com.nostr.torinos.crypto.isWriteSupported
+import com.nostr.torinos.model.COMMENT_EVENT_KIND
 import com.nostr.torinos.model.NoteContext
 import com.nostr.torinos.model.NostrEvent
 import com.nostr.torinos.model.NostrProfile
@@ -76,6 +81,7 @@ import com.nostr.torinos.network.ChannelCacheStore
 import com.nostr.torinos.network.CustomEmojiStore
 import com.nostr.torinos.network.RelayPublishResult
 import com.nostr.torinos.network.RelayStore
+import com.nostr.torinos.network.resolveReplyTarget
 import com.nostr.torinos.ui.article.ArticleDetailScreen
 import com.nostr.torinos.ui.article.ArticleEditorScreen
 import com.nostr.torinos.ui.article.ArticleHubScreen
@@ -86,6 +92,7 @@ import com.nostr.torinos.ui.components.AppFloatingActionButton
 import com.nostr.torinos.ui.components.LocalQuotePostHandler
 import com.nostr.torinos.ui.feed.FeedTab
 import com.nostr.torinos.ui.feed.FeedScreen
+import com.nostr.torinos.ui.feed.shouldResetFeedAfterBackground
 import com.nostr.torinos.ui.live.LiveDetailScreen
 import com.nostr.torinos.ui.live.LiveHubScreen
 import com.nostr.torinos.ui.notification.NotificationsDrawer
@@ -110,6 +117,7 @@ import com.nostr.torinos.ui.thread.ThreadViewModel
 import com.nostr.torinos.util.loggingExceptionHandler
 import com.nostr.torinos.util.logException
 import kotlinx.serialization.Serializable
+import kotlin.time.Clock
 
 // 型安全なルート定義（パラメータ付き画面）
 @Serializable data class ChannelRoute(val channelId: String)
@@ -163,6 +171,8 @@ internal fun AppSessionCoordinator(
         val uiExceptionHandler = remember {
             loggingExceptionHandler("App", "Uncaught UI coroutine exception")
         }
+        val replyResolutionTracker = remember { ReplyResolutionTracker() }
+        var replyResolutionJob by remember { mutableStateOf<Job?>(null) }
 
         val ownPubkey = accountSession?.pubkey
         var ownProfile by remember { mutableStateOf<NostrProfile?>(null) }
@@ -181,6 +191,8 @@ internal fun AppSessionCoordinator(
         var feedScrollToTopTargetTab by remember { mutableStateOf(FeedTab.Following) }
         var feedTabChangeRequest by remember { mutableStateOf(0) }
         var feedChromeCollapseFraction by remember { mutableStateOf(0f) }
+        var feedLongBackgroundResetRequest by remember { mutableStateOf(0) }
+        var backgroundedAtMillis by remember { mutableStateOf<Long?>(null) }
         var showQuickSettings by remember { mutableStateOf(false) }
         var relaySettingsNavigationRequest by remember { mutableStateOf(0) }
         val drawerCoordinator = rememberDrawerCoordinator(scope)
@@ -193,6 +205,23 @@ internal fun AppSessionCoordinator(
         val followingFeedListState = remember { LazyListState() }
         val globalFeedListState = remember { LazyListState() }
         var currentServiceTab by remember { mutableStateOf(ServiceTab.Articles) }
+        val appLifecycle = LocalLifecycleOwner.current.lifecycle
+
+        LaunchedEffect(appLifecycle) {
+            appLifecycle.currentStateFlow.collect { state ->
+                val nowMillis = Clock.System.now().toEpochMilliseconds()
+                if (state.isAtLeast(Lifecycle.State.STARTED)) {
+                    backgroundedAtMillis?.let { backgroundedAt ->
+                        if (shouldResetFeedAfterBackground(backgroundedAt, nowMillis)) {
+                            feedLongBackgroundResetRequest++
+                        }
+                    }
+                    backgroundedAtMillis = null
+                } else if (backgroundedAtMillis == null) {
+                    backgroundedAtMillis = nowMillis
+                }
+            }
+        }
 
         fun openProfileDrawer(pubkey: String) {
             drawerCoordinator.openProfile(pubkey)
@@ -302,6 +331,42 @@ internal fun AppSessionCoordinator(
             }
         }
 
+        fun cancelPendingReplyResolution() {
+            replyResolutionTracker.invalidate()
+            replyResolutionJob?.cancel()
+            replyResolutionJob = null
+        }
+
+        fun openReplyComposer(event: NostrEvent, preview: String?, noteContext: NoteContext) {
+            cancelPendingReplyResolution()
+            val requiresRootResolution = noteContext == NoteContext.Timeline &&
+                (event.kind == COMMENT_EVENT_KIND ||
+                    (event.kind == 1 && event.tags.any { it.firstOrNull() == "e" }))
+            if (!requiresRootResolution &&
+                composer.prepareReply(event, preview, noteContext)
+            ) {
+                runWithPrivateKey(PendingKeyAction.Reply) {
+                    composer.showPostSheet = true
+                }
+                return
+            }
+            val request = replyResolutionTracker.begin()
+            replyResolutionJob = scope.launch {
+                val target = resolveReplyTarget(event, noteContext)
+                if (!replyResolutionTracker.isCurrent(request)) return@launch
+                if (target == null) {
+                    replyResolutionJob = null
+                    snackbarHostState.showSnackbar("返信元のスレッド情報を取得できませんでした")
+                    return@launch
+                }
+                composer.prepareReply(target, preview, noteContext)
+                runWithPrivateKey(PendingKeyAction.Reply) {
+                    composer.showPostSheet = true
+                }
+                replyResolutionJob = null
+            }
+        }
+
         fun requestOwnProfile() {
             runWithPrivateKey(PendingKeyAction.Profile, ::openProfileDrawer)
         }
@@ -370,6 +435,7 @@ internal fun AppSessionCoordinator(
         val bottomBarAlpha = 1f - activeFeedChromeCollapseFraction
 
         LaunchedEffect(currentRoute) {
+            cancelPendingReplyResolution()
             if (currentRoute != "feed") {
                 feedChromeCollapseFraction = 0f
             }
@@ -400,6 +466,7 @@ internal fun AppSessionCoordinator(
 
         CompositionLocalProvider(
             LocalQuotePostHandler provides { event: NostrEvent ->
+                cancelPendingReplyResolution()
                 composer.prepareQuote(event)
                 runWithPrivateKey(PendingKeyAction.Quote) {
                     composer.showPostSheet = true
@@ -460,15 +527,9 @@ internal fun AppSessionCoordinator(
                                                 closeProfileDrawerAndThen { showQuickSettings = true }
                                             },
                                             onUserClick = ::openProfileDrawer,
-                                            onReply = { eventId, authorPk, preview ->
+                                            onReply = { event, preview ->
                                                 closeProfileDrawerAndThen {
-                                                    composer.replyToId = eventId
-                                                    composer.replyToPubkey = authorPk
-                                                    composer.replyToPreview = preview
-                                                    composer.replyNoteContext = NoteContext.Timeline
-                                                    runWithPrivateKey(PendingKeyAction.Reply) {
-                                                        composer.showPostSheet = true
-                                                    }
+                                                    openReplyComposer(event, preview, NoteContext.Timeline)
                                                 }
                                             },
                                             onOpenReplies = { eventId ->
@@ -494,15 +555,9 @@ internal fun AppSessionCoordinator(
                                                 drawerCoordinator.openFollowers(drawerDestination.pubkey)
                                             },
                                             onUserClick = ::openProfileDrawer,
-                                            onReply = { eventId, authorPk, preview ->
+                                            onReply = { event, preview ->
                                                 closeProfileDrawerAndThen {
-                                                    composer.replyToId = eventId
-                                                    composer.replyToPubkey = authorPk
-                                                    composer.replyToPreview = preview
-                                                    composer.replyNoteContext = NoteContext.Timeline
-                                                    runWithPrivateKey(PendingKeyAction.Reply) {
-                                                        composer.showPostSheet = true
-                                                    }
+                                                    openReplyComposer(event, preview, NoteContext.Timeline)
                                                 }
                                             },
                                             onOpenReplies = { eventId ->
@@ -538,15 +593,9 @@ internal fun AppSessionCoordinator(
                                             channelId = channelId,
                                             onBack = drawerCoordinator::navigateBackOrCloseProfile,
                                             onUserClick = ::openProfileDrawer,
-                                            onReply = { eventId, authorPk, preview, chId ->
+                                            onReply = { event, preview, chId ->
                                                 closeProfileDrawerAndThen {
-                                                    composer.replyToId = eventId
-                                                    composer.replyToPubkey = authorPk
-                                                    composer.replyToPreview = preview
-                                                    composer.replyNoteContext = noteContextForChannel(chId)
-                                                    runWithPrivateKey(PendingKeyAction.Reply) {
-                                                        composer.showPostSheet = true
-                                                    }
+                                                    openReplyComposer(event, preview, noteContextForChannel(chId))
                                                 }
                                             },
                                             onOpenThread = { eventId ->
@@ -626,11 +675,9 @@ internal fun AppSessionCoordinator(
                         when (currentRoute) {
                             "feed" -> PostFloatingActionButton(
                                 onPostClick = {
+                                    cancelPendingReplyResolution()
                                     runWithPrivateKey(PendingKeyAction.NewPost) {
-                                        composer.selectedMemo = null
-                                        composer.selectedMemoDeleteAction = null
-                                        composer.replyToId = null
-                                        composer.replyToPubkey = null
+                                        composer.replyTarget = null
                                         composer.replyToPreview = null
                                         composer.replyNoteContext = NoteContext.Timeline
                                         composer.showPostSheet = true
@@ -662,7 +709,7 @@ internal fun AppSessionCoordinator(
                                             composer.showStatusComposer = true
                                         }
                                     },
-                                    icon = Icons.Default.Add,
+                                    icon = Icons.Default.Sms,
                                     contentDescription = "ステータス追加",
                                 )
                                 else -> Unit
@@ -673,7 +720,7 @@ internal fun AppSessionCoordinator(
                                         composer.showStatusComposer = true
                                     }
                                 },
-                                icon = Icons.Default.Add,
+                                icon = Icons.Default.Sms,
                                 contentDescription = "ステータス追加",
                             )
                             else -> Unit
@@ -787,14 +834,8 @@ internal fun AppSessionCoordinator(
                             onOpenProfile = {
                                 requestOwnProfile()
                             },
-                            onReply = { eventId, authorPk, preview ->
-                                composer.replyToId = eventId
-                                composer.replyToPubkey = authorPk
-                                composer.replyToPreview = preview
-                                composer.replyNoteContext = NoteContext.Timeline
-                                runWithPrivateKey(PendingKeyAction.Reply) {
-                                    composer.showPostSheet = true
-                                }
+                            onReply = { event, preview ->
+                                openReplyComposer(event, preview, NoteContext.Timeline)
                             },
                             onOpenReplies = { eventId -> nav.navigate(ThreadRoute(eventId)) },
                             onOpenLikes = { eventId -> nav.navigate(ThreadRoute(eventId, "likes")) },
@@ -811,6 +852,7 @@ internal fun AppSessionCoordinator(
                             followingListState = followingFeedListState,
                             globalListState = globalFeedListState,
                             hasNotifications = notificationsState?.hasUnread == true,
+                            longBackgroundResetRequest = feedLongBackgroundResetRequest,
                             chromeCollapseFraction = feedChromeCollapseFraction,
                             onChromeCollapseFractionChange = { feedChromeCollapseFraction = it },
                         )
@@ -979,39 +1021,19 @@ internal fun AppSessionCoordinator(
                     composable("journal") {
                         JournalScreen(
                             onBack = { nav.popBackStack() },
-                            refreshTodayRequest = composer.memoRefreshTodayRequest,
                             toggleCalendarRequest = composer.journalToggleCalendarRequest,
                             showCalendarRequest = composer.journalShowCalendarRequest,
                             accountKey = accountSession?.sessionId.orEmpty(),
                             onNewPost = {
-                                composer.selectedMemo = null
-                                composer.selectedMemoDeleteAction = null
-                                composer.replyToId = null
-                                composer.replyToPubkey = null
+                                cancelPendingReplyResolution()
+                                composer.replyTarget = null
                                 composer.replyToPreview = null
                                 composer.replyNoteContext = NoteContext.Timeline
-                                composer.showPostSheet = true
-                            },
-                            onOpenMemo = { memo, deleteAction ->
-                                composer.selectedMemo = memo
-                                composer.selectedMemoDeleteAction = deleteAction
-                                composer.replyToId = memo.replyToId
-                                composer.replyToPubkey = memo.replyToPubkey
-                                composer.replyToPreview = null
-                                composer.replyNoteContext = memo.channelId
-                                    ?.let { NoteContext.Channel(it) }
-                                    ?: NoteContext.Timeline
                                 composer.showPostSheet = true
                             },
                             onOpenThread = { eventId -> nav.navigate(ThreadRoute(eventId)) },
-                            onReply = { eventId, authorPk, preview ->
-                                composer.replyToId = eventId
-                                composer.replyToPubkey = authorPk
-                                composer.replyToPreview = preview
-                                composer.replyNoteContext = NoteContext.Timeline
-                                runWithPrivateKey(PendingKeyAction.Reply) {
-                                    composer.showPostSheet = true
-                                }
+                            onReply = { event, preview ->
+                                openReplyComposer(event, preview, NoteContext.Timeline)
                             },
                             onUserClick = ::openProfileDrawer,
                             onOpenArticle = { pubkey, identifier -> nav.navigate(ArticleRoute(pubkey, identifier)) },
@@ -1028,14 +1050,8 @@ internal fun AppSessionCoordinator(
                             channelId = route.channelId,
                             onBack = { nav.popBackStack() },
                             onUserClick = ::openProfileDrawer,
-                            onReply = { eventId, authorPk, preview, chId ->
-                                composer.replyToId = eventId
-                                composer.replyToPubkey = authorPk
-                                composer.replyToPreview = preview
-                                composer.replyNoteContext = noteContextForChannel(chId)
-                                runWithPrivateKey(PendingKeyAction.Reply) {
-                                    composer.showPostSheet = true
-                                }
+                            onReply = { event, preview, chId ->
+                                openReplyComposer(event, preview, noteContextForChannel(chId))
                             },
                             onOpenThread = { eventId ->
                                 nav.navigate(ThreadRoute(eventId, source = ThreadSourceChannel, channelId = route.channelId))
@@ -1057,14 +1073,8 @@ internal fun AppSessionCoordinator(
                             channelId = route.channelId.takeIf { it.isNotBlank() },
                             onBack = { nav.popBackStack() },
                             onUserClick = ::openProfileDrawer,
-                            onReply = { eventId, authorPk, preview, chId ->
-                                composer.replyToId = eventId
-                                composer.replyToPubkey = authorPk
-                                composer.replyToPreview = preview
-                                composer.replyNoteContext = noteContextForChannel(chId)
-                                runWithPrivateKey(PendingKeyAction.Reply) {
-                                    composer.showPostSheet = true
-                                }
+                            onReply = { event, preview, chId ->
+                                openReplyComposer(event, preview, noteContextForChannel(chId))
                             },
                             onOpenThread = { eventId ->
                                 nav.navigate(
@@ -1095,14 +1105,8 @@ internal fun AppSessionCoordinator(
                             onUserClick = { pk ->
                                 openProfileDrawer(pk)
                             },
-                            onReply = { eventId, authorPk, preview ->
-                                composer.replyToId = eventId
-                                composer.replyToPubkey = authorPk
-                                composer.replyToPreview = preview
-                                composer.replyNoteContext = NoteContext.Timeline
-                                runWithPrivateKey(PendingKeyAction.Reply) {
-                                    composer.showPostSheet = true
-                                }
+                            onReply = { event, preview ->
+                                openReplyComposer(event, preview, NoteContext.Timeline)
                             },
                             onOpenReplies = { eventId ->
                                 nav.navigate(ThreadRoute(eventId))
@@ -1196,14 +1200,8 @@ internal fun AppSessionCoordinator(
                             onUserClick = { pk ->
                                 openProfileDrawer(pk)
                             },
-                            onReply = { eventId, authorPk, preview ->
-                                composer.replyToId = eventId
-                                composer.replyToPubkey = authorPk
-                                composer.replyToPreview = preview
-                                composer.replyNoteContext = NoteContext.Timeline
-                                runWithPrivateKey(PendingKeyAction.Reply) {
-                                    composer.showPostSheet = true
-                                }
+                            onReply = { event, preview ->
+                                openReplyComposer(event, preview, NoteContext.Timeline)
                             },
                             onOpenReplies = { eventId ->
                                 nav.navigate(ThreadRoute(eventId))
@@ -1225,18 +1223,10 @@ internal fun AppSessionCoordinator(
                         val route = backStack.toRoute<UserJournalRoute>()
                         JournalScreen(
                             onBack = { nav.popBackStack() },
-                            refreshTodayRequest = 0,
                             onNewPost = {},
-                            onOpenMemo = { _, _ -> },
                             onOpenThread = { eventId -> nav.navigate(ThreadRoute(eventId)) },
-                            onReply = { eventId, authorPk, preview ->
-                                composer.replyToId = eventId
-                                composer.replyToPubkey = authorPk
-                                composer.replyToPreview = preview
-                                composer.replyNoteContext = NoteContext.Timeline
-                                runWithPrivateKey(PendingKeyAction.Reply) {
-                                    composer.showPostSheet = true
-                                }
+                            onReply = { event, preview ->
+                                openReplyComposer(event, preview, NoteContext.Timeline)
                             },
                             onUserClick = ::openProfileDrawer,
                             onOpenArticle = { pubkey, identifier -> nav.navigate(ArticleRoute(pubkey, identifier)) },
@@ -1266,18 +1256,19 @@ internal fun AppSessionCoordinator(
 
         ComposerHost(
             coordinator = composer,
-            onMemoSaved = {
-                composer.memoRefreshTodayRequest++
-                navigateJournalTab()
+            onDraftSaved = {
+                scope.launch {
+                    snackbarHostState.showSnackbar("下書きを保存しました")
+                }
             },
             onOpenCustomEmojiSettings = { nav.navigate(CustomEmojiRoute()) },
-            onPosted = { eventId, postedReplyToId, postedNoteContext, publishResult ->
+            onPosted = { eventId, postedReplyToId, postedNoteContext, publishResult, warning ->
                 scope.launch {
                     snackbarHostState.currentSnackbarData?.dismiss()
                     snackbarFailedRelays = publishResult.failedRelays.keys.toList()
                     snackbarHostState.showSnackbar(
-                        message = publishResult.snackbarMessage(),
-                        duration = if (publishResult.failureCount > 0) {
+                        message = warning ?: publishResult.snackbarMessage(),
+                        duration = if (warning != null || publishResult.failureCount > 0) {
                             SnackbarDuration.Long
                         } else {
                             SnackbarDuration.Short

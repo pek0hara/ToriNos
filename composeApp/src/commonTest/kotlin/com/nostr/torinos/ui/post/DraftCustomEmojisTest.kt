@@ -1,9 +1,12 @@
 package com.nostr.torinos.ui.post
 
+import com.nostr.torinos.model.COMMENT_EVENT_KIND
+import com.nostr.torinos.model.NoteContext
 import com.nostr.torinos.network.CustomEmoji
 import com.nostr.torinos.ui.profile.customEmojiTagsForContent
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertNull
 import kotlinx.serialization.encodeToString
 
 class DraftCustomEmojisTest {
@@ -46,5 +49,56 @@ class DraftCustomEmojisTest {
         assertEquals(listOf(bird), restored.customEmojis)
         val legacy = memoJson.decodeFromString<PostMemoPayload>("""{"text":":bird:","updatedAt":10}""")
         assertEquals(emptyList(), legacy.customEmojis)
+    }
+
+    @Test
+    fun memoRoundTripPreservesNestedReplyRoot() {
+        val payload = PostMemoPayload(
+            text = "reply",
+            replyToId = "parent",
+            replyToPubkey = "parent-author",
+            noteKind = COMMENT_EVENT_KIND,
+            replyRootId = "root",
+            replyRootKind = 1,
+            replyRootPubkey = "root-author",
+            replyParentKind = COMMENT_EVENT_KIND,
+            replyRootRelayUrl = "wss://root-event.example",
+            replyRootPubkeyRelayUrl = "wss://root-author.example",
+            replyParentRelayUrl = "wss://parent-event.example",
+            replyParentPubkeyRelayUrl = "wss://parent-author.example",
+            updatedAt = 10,
+        )
+        val memo = memoJson.decodeFromString<PostMemoPayload>(memoJson.encodeToString(payload))
+            .toPostMemoData()
+
+        assertEquals(
+            listOf(
+                listOf("E", "root", "wss://root-event.example", "root-author"),
+                listOf("K", "1"),
+                listOf("P", "root-author", "wss://root-author.example"),
+                listOf("e", "parent", "wss://parent-event.example", "parent-author"),
+                listOf("k", COMMENT_EVENT_KIND.toString()),
+                listOf("p", "parent-author", "wss://parent-author.example"),
+            ),
+            memo.restoreReplyTarget(NoteContext.Timeline)?.tags(),
+        )
+    }
+
+    @Test
+    fun legacyMemoRestoresKind1ReplyButRejectsRootlessNestedReply() {
+        val legacy = PostMemoData(
+            text = "reply",
+            imageUrls = emptyList(),
+            replyToId = "parent",
+            replyToPubkey = "author",
+            noteKind = COMMENT_EVENT_KIND,
+            channelId = null,
+            updatedAt = 10,
+        )
+        assertEquals("parent", (legacy.restoreReplyTarget(NoteContext.Timeline))?.parent?.id)
+        assertNull(
+            legacy.copy(replyParentKind = COMMENT_EVENT_KIND)
+                .restoreReplyTarget(NoteContext.Timeline),
+        )
     }
 }

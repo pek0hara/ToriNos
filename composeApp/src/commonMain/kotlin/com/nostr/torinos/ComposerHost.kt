@@ -10,44 +10,31 @@ import com.nostr.torinos.ui.setup.KeySetupScreen
 @Composable
 internal fun ComposerHost(
     coordinator: ComposerCoordinator,
-    onMemoSaved: () -> Unit,
+    onDraftSaved: () -> Unit,
     onOpenCustomEmojiSettings: () -> Unit,
-    onPosted: (String, String?, NoteContext, RelayPublishResult) -> Unit,
+    onPosted: (String, String?, NoteContext, RelayPublishResult, String?) -> Unit,
 ) {
     if (coordinator.showPostSheet) {
         PostSheet(
             onDismiss = coordinator::dismissPost,
-            onCancel = coordinator::cancelPost,
-            onMemoSaved = onMemoSaved,
-            onDeleteMemo = coordinator.selectedMemoDeleteAction?.let { deleteAction ->
-                {
-                    coordinator.dismissPost()
-                    deleteAction()
-                }
-            },
-            replyToId = coordinator.replyToId,
-            replyToPubkey = coordinator.replyToPubkey,
+            onDraftSaved = onDraftSaved,
+            replyTarget = coordinator.replyTarget,
             replyToPreview = coordinator.replyToPreview,
             quoteToId = coordinator.quoteToId,
             quoteToPubkey = coordinator.quoteToPubkey,
             quoteToPreview = coordinator.quoteToPreview,
             noteContext = coordinator.replyNoteContext,
-            initialMemo = coordinator.selectedMemo ?: coordinator.localDraft,
-            initialMemoRestoreMessage = if (
-                coordinator.selectedMemo == null && coordinator.localDraft != null
-            ) {
+            initialMemo = coordinator.localDraft,
+            initialMemoRestoreMessage = if (coordinator.localDraft != null) {
                 "下書きを復元しました"
             } else {
                 null
             },
-            autoFocus = coordinator.selectedMemo == null &&
-                coordinator.replyToId == null &&
+            autoFocus = coordinator.replyTarget == null &&
                 coordinator.quoteToId == null,
-            saveLocalDraftOnCancel = coordinator.selectedMemo == null,
+            preserveLocalDraftOnNavigation = true,
             onOpenCustomEmojiSettings = { draft ->
-                if (coordinator.selectedMemo == null) {
-                    coordinator.localDraft = draft
-                }
+                coordinator.localDraft = draft
                 coordinator.clearPostContext(clearDraft = false)
                 coordinator.showPostSheet = false
                 onOpenCustomEmojiSettings()
