@@ -16,16 +16,21 @@ internal data class HistoryPageWindow(
 internal fun historyPageWindow(
     createdAts: List<Long>,
     pageSize: Int,
+    hasMore: Boolean = createdAts.size >= pageSize,
 ): HistoryPageWindow {
     require(pageSize > 0) { "pageSizeは正の値である必要があります" }
     if (createdAts.isEmpty()) return HistoryPageWindow(false, null, null)
 
     val newestFirst = createdAts.sortedDescending()
-    val hasMore = newestFirst.size >= pageSize
-    val revealOldestAt = if (hasMore) newestFirst[pageSize - 1] else newestFirst.last()
+    val revealOldestAt = if (hasMore && newestFirst.size >= pageSize) {
+        newestFirst[pageSize - 1]
+    } else {
+        newestFirst.last()
+    }
     return HistoryPageWindow(
         hasMore = hasMore,
-        nextUntil = if (hasMore) revealOldestAt - 1 else null,
+        // Nostr の created_at は秒精度なので、境界秒を再取得して ID で重複排除する。
+        nextUntil = if (hasMore) revealOldestAt else null,
         revealOldestAt = revealOldestAt,
     )
 }

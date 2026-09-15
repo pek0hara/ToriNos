@@ -15,7 +15,7 @@ class HistoryPageWindowTest {
 
         assertTrue(window.hasMore)
         assertEquals(71L, window.revealOldestAt)
-        assertEquals(70L, window.nextUntil)
+        assertEquals(71L, window.nextUntil)
     }
 
     @Test
@@ -33,5 +33,18 @@ class HistoryPageWindowTest {
             HistoryPageWindow(hasMore = false, nextUntil = null, revealOldestAt = null),
             historyPageWindow(emptyList(), pageSize = 30),
         )
+    }
+
+    @Test
+    fun explicitRelayExhaustionOverridesAggregateCount() {
+        val window = historyPageWindow(
+            createdAts = (1L..40L).toList(),
+            pageSize = 30,
+            hasMore = false,
+        )
+
+        assertFalse(window.hasMore)
+        assertEquals(1L, window.revealOldestAt)
+        assertEquals(null, window.nextUntil)
     }
 }

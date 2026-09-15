@@ -26,7 +26,16 @@ class FeedViewModel(
     includeRepliesInFeed: Boolean = false,
     hashtag: String? = null,
     filterMutedUsers: Boolean = true,
+    feedEventKinds: Set<Int> = setOf(1),
 ) : SafeViewModel() {
+    enum class InitialFeedState {
+        Loading,
+        ContentReady,
+        Empty,
+        Slow,
+        Failed,
+    }
+
     data class UiState(
         val events: List<NostrEvent> = emptyList(),
         val profiles: Map<String, NostrProfile> = emptyMap(),
@@ -49,7 +58,9 @@ class FeedViewModel(
         val canLoadMore: Boolean = false,
         val isLoadingMore: Boolean = false,
         val isInitialLoad: Boolean = true,
+        val initialFeedState: InitialFeedState = InitialFeedState.Loading,
         val isRefreshing: Boolean = false,
+        val historyRequestGeneration: Int = 0,
     ) {
         fun isLiked(eventId: String): Boolean = likedReactions.containsKey(eventId) ||
             pendingEngagementOperations[eventId]?.get(EngagementSlot.Reaction)?.request is EngagementRequest.AddLike
@@ -59,8 +70,17 @@ class FeedViewModel(
     }
 
     private val controller = FeedController(
-        accountSession, authorPubkey, authorPubkeys, relayUrl, autoStart,
-        includeRepostsInFeed, includeRepliesInFeed, hashtag, filterMutedUsers, viewModelScope,
+        accountSession = accountSession,
+        authorPubkey = authorPubkey,
+        authorPubkeys = authorPubkeys,
+        relayUrl = relayUrl,
+        autoStart = autoStart,
+        includeRepostsInFeed = includeRepostsInFeed,
+        includeRepliesInFeed = includeRepliesInFeed,
+        hashtag = hashtag,
+        filterMutedUsers = filterMutedUsers,
+        scope = viewModelScope,
+        feedEventKinds = feedEventKinds,
     )
     val state: StateFlow<UiState> = controller.state
 
@@ -80,6 +100,7 @@ class FeedViewModel(
     fun loadMore() = controller.loadMore()
     fun refresh() = controller.refresh()
     fun refreshReactions(eventId: String) = controller.refreshReactions(eventId)
+    fun resetToLatest(request: Int): Boolean = controller.resetToLatest(request)
     fun startSubscriptions() = controller.startSubscriptions()
     fun stopSubscriptions(clearRefreshing: Boolean = true) = controller.stopSubscriptions(clearRefreshing)
 

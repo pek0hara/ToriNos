@@ -64,6 +64,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.lifecycle.compose.LifecycleStartEffect
 import com.nostr.torinos.account.accountSessionViewModel
+import com.nostr.torinos.model.NostrEvent
 import com.nostr.torinos.model.NostrProfile
 import com.nostr.torinos.account.LocalAccountSession
 import com.nostr.torinos.network.NostrRepository
@@ -82,7 +83,7 @@ fun FeedScreen(
     onOpenNotifications: () -> Unit = {},
     onUserClick: (pubkey: String) -> Unit = {},
     onOpenProfile: () -> Unit = {},
-    onReply: ((eventId: String, authorPubkey: String, preview: String) -> Unit)? = null,
+    onReply: ((event: NostrEvent, preview: String) -> Unit)? = null,
     onOpenReplies: (eventId: String) -> Unit = {},
     onOpenLikes: (eventId: String) -> Unit = {},
     onOpenReposts: (eventId: String) -> Unit = {},
@@ -99,6 +100,7 @@ fun FeedScreen(
     followingListState: LazyListState? = null,
     globalListState: LazyListState? = null,
     hasNotifications: Boolean = false,
+    longBackgroundResetRequest: Int = 0,
     chromeCollapseFraction: Float = 0f,
     onChromeCollapseFractionChange: (Float) -> Unit = {},
     /** null = グローバルフィード、非null = 特定ユーザーのポスト */
@@ -130,6 +132,8 @@ fun FeedScreen(
     )
     val coroutineScope = rememberCoroutineScope()
     val visibleFeedTab = visibleFeedTabs.getOrElse(pagerState.currentPage) { savedVisibleFeedTab }
+    // スワイプ中は遷移元だけを購読し、ページが確定してから遷移先へ切り替える。
+    val subscriptionFeedTab = visibleFeedTabs.getOrElse(pagerState.settledPage) { savedVisibleFeedTab }
 
     fun setFeedTab(tab: FeedTab) {
         val nextTab = if (isLoggedOutMainFeed && tab == FeedTab.Following) FeedTab.Global else tab
@@ -503,6 +507,7 @@ fun FeedScreen(
                 onOpenReposts = onOpenReposts,
                 onHashtagClick = null,
                 scrollToTopRequest = scrollToTopRequest,
+                longBackgroundResetRequest = longBackgroundResetRequest,
             )
         } else {
             HorizontalPager(
@@ -551,6 +556,8 @@ fun FeedScreen(
                                         accountSession?.followRepository?.refresh()
                                     }
                                 },
+                                isActive = subscriptionFeedTab == FeedTab.Following,
+                                longBackgroundResetRequest = longBackgroundResetRequest,
                             )
                         }
                     }
@@ -574,6 +581,8 @@ fun FeedScreen(
                             onOpenReposts = onOpenReposts,
                             onHashtagClick = { tag -> onOpenSearch("#$tag") },
                             listState = globalListState,
+                            isActive = subscriptionFeedTab == FeedTab.Global,
+                            longBackgroundResetRequest = longBackgroundResetRequest,
                         )
                     }
                 }
@@ -631,7 +640,7 @@ private fun FeedTimelinePane(
     ownPubkey: String?,
     onUserClick: (String) -> Unit,
     modifier: Modifier,
-    onReply: ((eventId: String, authorPubkey: String, preview: String) -> Unit)?,
+    onReply: ((event: NostrEvent, preview: String) -> Unit)?,
     onOpenReplies: (eventId: String) -> Unit,
     onOpenLikes: (eventId: String) -> Unit,
     onOpenReposts: (eventId: String) -> Unit,
@@ -639,6 +648,8 @@ private fun FeedTimelinePane(
     scrollToTopRequest: Int = 0,
     listState: LazyListState? = null,
     onRefresh: (() -> Unit)? = null,
+    isActive: Boolean = true,
+    longBackgroundResetRequest: Int = 0,
 ) {
     val viewModel: FeedViewModel = accountSessionViewModel(
         key = viewModelKey,
@@ -656,6 +667,10 @@ private fun FeedTimelinePane(
     }
     val state by viewModel.state.collectAsState()
     val snackbarHostState = remember { SnackbarHostState() }
+    var resetToTopRequest by remember(viewModel) { mutableIntStateOf(0) }
+    var shouldStageInitialEvents by remember(viewModel) {
+        mutableStateOf(viewModel.state.value.isInitialLoad)
+    }
 
     LaunchedEffect(state.engagementError) {
         val error = state.engagementError ?: return@LaunchedEffect
@@ -663,10 +678,16 @@ private fun FeedTimelinePane(
         viewModel.consumeEngagementError()
     }
 
-    LifecycleStartEffect(viewModel) {
-        viewModel.startSubscriptions()
-        onStopOrDispose {
-            viewModel.stopSubscriptions()
+    if (isActive) {
+        LifecycleStartEffect(viewModel, longBackgroundResetRequest) {
+            if (viewModel.resetToLatest(longBackgroundResetRequest)) {
+                shouldStageInitialEvents = true
+                resetToTopRequest++
+            }
+            viewModel.startSubscriptions()
+            onStopOrDispose {
+                viewModel.stopSubscriptions()
+            }
         }
     }
 
@@ -692,8 +713,12 @@ private fun FeedTimelinePane(
             onReport = viewModel::reportEvent,
             onHashtagClick = onHashtagClick,
             scrollToTopRequest = scrollToTopRequest,
+            resetToTopRequest = resetToTopRequest,
             listState = listState,
             isRefreshing = state.isRefreshing,
+            emptyStateDelayMillis = 500L,
+            eventEnterFadeMillis = 150,
+            stageInitialEvents = shouldStageInitialEvents,
             onRefresh = {
                 onRefresh?.invoke()
                 viewModel.refresh()
