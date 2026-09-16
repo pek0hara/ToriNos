@@ -31,9 +31,9 @@ import com.nostr.torinos.model.replyTargetId
 import com.nostr.torinos.network.NostrRepository
 import com.nostr.torinos.network.ProfileFetchPolicy
 import com.nostr.torinos.network.ProfileRepository
-import com.nostr.torinos.network.RelayStore
 import com.nostr.torinos.network.RelayTarget
 import com.nostr.torinos.network.RelayOutcome
+import com.nostr.torinos.network.RetryDisposition
 import com.nostr.torinos.network.SubscriptionBehavior
 import com.nostr.torinos.network.SubscriptionSession
 import com.nostr.torinos.network.SubscriptionSignal
@@ -55,8 +55,6 @@ import kotlin.time.Clock
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.distinctUntilChanged
-import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 
@@ -80,7 +78,7 @@ internal interface FeedSubscriptionGateway {
 
 private object RepositoryFeedSubscriptionGateway : FeedSubscriptionGateway {
     override val readableRelayUrls: Flow<Set<String>> =
-        RelayStore.relays.map { it.toSet() }.distinctUntilChanged()
+        NostrRepository.routingRelayUrls
 
     override fun events(subscriptionId: String): Flow<NostrEvent> =
         NostrRepository.events(subscriptionId)
@@ -147,14 +145,19 @@ internal class FeedController(
     private var initialFeedSlowJob: Job? = null
     private val watchedEventIds = linkedSetOf<String>()
     private val engagementHistoryStates = mutableMapOf<String, EngagementHistoryState>()
-    private val engagementCompletedRelays = mutableMapOf<String, MutableSet<String>>()
+    private val engagementCompletedPartitions =
+        mutableMapOf<String, MutableMap<String, MutableSet<EngagementPartition>>>()
+    private val isolatedEngagementRelays = mutableSetOf<String>()
+    private val engagementFailureCounts = mutableMapOf<String, Int>()
     private val engagementEventMutex = Mutex()
     private val engagementSubscriptionMutex = Mutex()
     private var engagementHistoryDedup: EngagementHistoryDedup? = null
     private var lastEngagementTargetRelays: Set<String>? = null
     private var engagementBatchJob: Job? = null
+    private val engagementRetryJobs = mutableMapOf<String, Job>()
     private var engagementResumeSince: Long? = null
     private var nextEngagementHistoryRequestId = 0L
+    private var deferEngagementUntilInitialHistorySettled = false
     private val seenReactionIds = linkedSetOf<String>()
     private val seenReplyIds = linkedSetOf<String>()
     private val seenRepostIds = linkedSetOf<String>()
@@ -239,9 +242,20 @@ internal class FeedController(
 
                 val removedRelays = previousRelays - targetRelays
                 if (removedRelays.isNotEmpty()) {
-                    engagementCompletedRelays.values.forEach { it.removeAll(removedRelays) }
+                    engagementCompletedPartitions.values.forEach { completedByRelay ->
+                        removedRelays.forEach(completedByRelay::remove)
+                    }
+                    isolatedEngagementRelays.removeAll(removedRelays)
+                    removedRelays.forEach { relayUrl ->
+                        engagementFailureCounts.remove(relayUrl)
+                        engagementRetryJobs.remove(relayUrl)?.cancel()
+                    }
                 }
-                if (subscriptionsStarted && watchedEventIds.isNotEmpty()) {
+                if (
+                    subscriptionsStarted &&
+                    watchedEventIds.isNotEmpty() &&
+                    !deferEngagementUntilInitialHistorySettled
+                ) {
                     resubscribeEngagement()
                 }
             }
@@ -535,12 +549,16 @@ internal class FeedController(
         historyIndicatorSettleJob = null
         engagementBatchJob?.cancel()
         engagementBatchJob = null
+        engagementRetryJobs.values.forEach(Job::cancel)
+        engagementRetryJobs.clear()
 
         pendingTimelineEvents.clear()
         requestedProfilePubkeys.clear()
         watchedEventIds.clear()
         engagementHistoryStates.clear()
-        engagementCompletedRelays.clear()
+        engagementCompletedPartitions.clear()
+        isolatedEngagementRelays.clear()
+        engagementFailureCounts.clear()
         engagementHistoryDedup = null
         lastEngagementTargetRelays = null
         engagementResumeSince = null
@@ -576,6 +594,7 @@ internal class FeedController(
         consecutiveEmptyHistoryPages = 0
         initialHistoryRequested = false
         manualRefreshRequested = false
+        deferEngagementUntilInitialHistorySettled = false
 
         pendingFeedState = UiState()
         _state.value = pendingFeedState
@@ -635,6 +654,7 @@ internal class FeedController(
             val current = currentFeedState()
             if (current.isInitialLoad && current.events.isEmpty() && !initialHistoryRequested) {
                 // 初回のみ履歴ページを取得
+                deferEngagementUntilInitialHistorySettled = true
                 startRelayHistory()
             } else if (manualRefreshRequested) {
                 manualRefreshRequested = false
@@ -664,6 +684,8 @@ internal class FeedController(
     fun stopSubscriptions(clearRefreshing: Boolean = true) {
         if (!subscriptionsStarted) return
         subscriptionsStarted = false
+        // 初回取得を中断した場合は、再開時の gap fill と一緒にリアクションも再同期する。
+        deferEngagementUntilInitialHistorySettled = false
         if (engagementSession != null) {
             engagementResumeSince = (
                 Clock.System.now().epochSeconds - ENGAGEMENT_LIVE_OVERLAP_SECONDS
@@ -687,6 +709,8 @@ internal class FeedController(
         relayHistoryCoordinator?.close()
         relayHistoryCoordinator = null
         engagementBatchJob?.cancel()
+        engagementRetryJobs.values.forEach(Job::cancel)
+        engagementRetryJobs.clear()
         timelineBatchJob?.cancel()
         timelineBatchJob = null
         if (clearRefreshing) {
@@ -816,6 +840,17 @@ internal class FeedController(
                 ) {
                     initialFeedSlowJob?.cancel()
                     initialFeedSlowJob = null
+                }
+                if (
+                    deferEngagementUntilInitialHistorySettled &&
+                    history.isInitialFetchSettled
+                ) {
+                    deferEngagementUntilInitialHistorySettled = false
+                    engagementBatchJob?.cancel()
+                    engagementBatchJob = null
+                    if (watchedEventIds.isNotEmpty()) {
+                        launch { resubscribeEngagement() }
+                    }
                 }
             },
         )
@@ -1488,10 +1523,15 @@ internal class FeedController(
         if (previousRelays != null) {
             val removedRelays = previousRelays - targetRelays
             if (removedRelays.isNotEmpty()) {
-                engagementCompletedRelays.values.forEach { it.removeAll(removedRelays) }
+                engagementCompletedPartitions.values.forEach { completedByRelay ->
+                    removedRelays.forEach(completedByRelay::remove)
+                }
             }
         }
         if (retryPartialHistory) {
+            engagementRetryJobs.values.forEach(Job::cancel)
+            engagementRetryJobs.clear()
+            engagementFailureCounts.clear()
             engagementHistoryStates.keys.toList().forEach { eventId ->
                 if (engagementHistoryStates[eventId] == EngagementHistoryState.Partial) {
                     engagementHistoryStates[eventId] = EngagementHistoryState.Pending
@@ -1528,29 +1568,21 @@ internal class FeedController(
         }
 
         if (engagementHistorySession == null) {
-            ids.forEach { eventId ->
-                val missingRelays = targetRelays - engagementCompletedRelays[eventId].orEmpty()
-                if (missingRelays.isEmpty()) {
-                    engagementHistoryStates[eventId] = EngagementHistoryState.Complete
-                } else if (engagementHistoryStates[eventId] == EngagementHistoryState.Complete) {
-                    engagementHistoryStates[eventId] = EngagementHistoryState.Pending
+            if (targetRelays.isEmpty()) {
+                // 起動直後は RelayStore の読み込みと Repository への反映に時間差がある。
+                // 取得先が未確定な状態を「全リレー取得済み」とみなさず、確定通知を待つ。
+                engagementHistoryStates.keys.toList().forEach { eventId ->
+                    if (engagementHistoryStates[eventId] != EngagementHistoryState.InFlight) {
+                        engagementHistoryStates[eventId] = EngagementHistoryState.Pending
+                    }
                 }
+                return
             }
-            val nextBatch = ids
-                .asSequence()
-                .filter { engagementHistoryStates[it] == EngagementHistoryState.Pending }
-                .map { eventId ->
-                    eventId to (targetRelays - engagementCompletedRelays[eventId].orEmpty())
-                }
-                .filter { (_, missingRelays) -> missingRelays.isNotEmpty() }
-                .groupBy({ (_, missingRelays) -> missingRelays }, { (eventId, _) -> eventId })
-                .entries
-                .firstOrNull()
-            if (nextBatch != null) {
+            ids.forEach { eventId -> updateEngagementHistoryState(eventId, targetRelays) }
+            nextEngagementHistoryWork(ids, targetRelays)?.let { work ->
                 startEngagementHistoryFetch(
                     subIds = subIds,
-                    eventIds = nextBatch.value,
-                    targetRelays = nextBatch.key,
+                    work = work,
                     until = cutoff,
                 )
             }
@@ -1559,10 +1591,10 @@ internal class FeedController(
 
     private suspend fun startEngagementHistoryFetch(
         subIds: SubscriptionIds,
-        eventIds: List<String>,
-        targetRelays: Set<String>,
+        work: EngagementHistoryWork,
         until: Long,
     ) {
+        val eventIds = work.eventIds
         eventIds.forEach { engagementHistoryStates[it] = EngagementHistoryState.InFlight }
         engagementEventMutex.withLock {
             engagementHistoryDedup = EngagementHistoryDedup(eventIds.toSet())
@@ -1571,8 +1603,8 @@ internal class FeedController(
             subscriptions.open(
                 SubscriptionSpec(
                     id = "${subIds.reaction}-history-${++nextEngagementHistoryRequestId}",
-                    filters = engagementFilters(eventIds, until = until),
-                    target = RelayTarget.Explicit(targetRelays),
+                    filters = work.partitions.map { it.filter(eventIds, until = until) },
+                    target = RelayTarget.Explicit(setOf(work.relayUrl)),
                     behavior = SubscriptionBehavior.Fetch(ENGAGEMENT_FETCH_TIMEOUT_MS),
                 ),
             )
@@ -1584,6 +1616,7 @@ internal class FeedController(
                 }
             }
             if (error is CancellationException) throw error
+            scheduleEngagementHistoryRetry(work)
             return
         }
         if (!subscriptionsStarted || subscriptionIds !== subIds) {
@@ -1597,6 +1630,7 @@ internal class FeedController(
             return
         }
         engagementHistorySession = session
+        var closedDisposition: RetryDisposition? = null
         subscriptionJobs += launch {
             session.signals.collect { signal ->
                 if (engagementHistorySession !== session) return@collect
@@ -1604,40 +1638,122 @@ internal class FeedController(
                     is SubscriptionSignal.Event -> engagementEventMutex.withLock {
                         handleEngagementEvent(signal.event)
                     }
+                    is SubscriptionSignal.Closed -> if (signal.relayUrl == work.relayUrl) {
+                        closedDisposition = signal.retry
+                    }
                     is SubscriptionSignal.FetchCompleted -> {
+                        var shouldRetryImmediately = false
+                        var shouldRetryWithBackoff = false
                         engagementEventMutex.withLock {
-                            val completedRelays = if (signal.timedOut) {
-                                emptySet()
+                            val succeeded = !signal.timedOut &&
+                                signal.outcomes[work.relayUrl] is RelayOutcome.Eose
+                            if (succeeded) {
+                                eventIds.forEach { eventId ->
+                                    if (eventId !in watchedEventIds) return@forEach
+                                    engagementCompletedPartitions
+                                        .getOrPut(eventId) { mutableMapOf() }
+                                        .getOrPut(work.relayUrl) { mutableSetOf() }
+                                        .addAll(work.partitions)
+                                }
+                                engagementFailureCounts.remove(work.relayUrl)
+                                engagementRetryJobs.remove(work.relayUrl)?.cancel()
                             } else {
-                                signal.outcomes
-                                    .filterValues { it == RelayOutcome.Eose }
-                                    .keys intersect targetRelays
+                                val retry = closedDisposition ?: RetryDisposition.RetryWithBackoff
+                                if (
+                                    retry == RetryDisposition.RetryOnFilterChange &&
+                                    work.partitions.size > 1
+                                ) {
+                                    isolatedEngagementRelays += work.relayUrl
+                                    shouldRetryImmediately = true
+                                } else if (retry == RetryDisposition.RetryWithBackoff) {
+                                    shouldRetryWithBackoff = true
+                                }
                             }
                             eventIds.forEach { eventId ->
                                 if (eventId !in watchedEventIds) return@forEach
-                                engagementCompletedRelays
-                                    .getOrPut(eventId) { mutableSetOf() }
-                                    .addAll(completedRelays)
-                                if (engagementHistoryStates[eventId] == EngagementHistoryState.InFlight) {
-                                    engagementHistoryStates[eventId] =
-                                        if (completedRelays.containsAll(targetRelays)) {
-                                            EngagementHistoryState.Complete
-                                        } else {
-                                            EngagementHistoryState.Partial
-                                        }
-                                }
+                                engagementHistoryStates[eventId] =
+                                    if (succeeded || shouldRetryImmediately) {
+                                        EngagementHistoryState.Pending
+                                    } else {
+                                        EngagementHistoryState.Partial
+                                    }
                             }
                             engagementHistoryDedup = null
                         }
                         engagementHistorySession = null
                         session.close()
                         if (subscriptionsStarted) {
-                            resubscribeEngagement()
+                            if (shouldRetryWithBackoff) {
+                                scheduleEngagementHistoryRetry(work)
+                            } else {
+                                resubscribeEngagement()
+                            }
                         }
                     }
                     else -> Unit
                 }
             }
+        }
+    }
+
+    private fun nextEngagementHistoryWork(
+        eventIds: List<String>,
+        targetRelays: Set<String>,
+    ): EngagementHistoryWork? {
+        targetRelays.sorted().forEach { relayUrl ->
+            val firstEventId = eventIds.firstOrNull { eventId ->
+                engagementHistoryStates[eventId] == EngagementHistoryState.Pending &&
+                    missingEngagementPartitions(eventId, relayUrl).isNotEmpty()
+            } ?: return@forEach
+            val missing = missingEngagementPartitions(firstEventId, relayUrl)
+            val partitions = if (relayUrl in isolatedEngagementRelays) {
+                setOf(missing.first())
+            } else {
+                missing
+            }
+            val batch = eventIds.asSequence()
+                .filter { engagementHistoryStates[it] == EngagementHistoryState.Pending }
+                .filter { eventId -> missingEngagementPartitions(eventId, relayUrl).containsAll(partitions) }
+                .take(ENGAGEMENT_HISTORY_BATCH_SIZE)
+                .toList()
+            if (batch.isNotEmpty()) {
+                return EngagementHistoryWork(relayUrl, batch, partitions)
+            }
+        }
+        return null
+    }
+
+    private fun missingEngagementPartitions(eventId: String, relayUrl: String): Set<EngagementPartition> =
+        EngagementPartition.entries.toSet() -
+            engagementCompletedPartitions[eventId]?.get(relayUrl).orEmpty()
+
+    private fun updateEngagementHistoryState(eventId: String, targetRelays: Set<String>) {
+        val complete = targetRelays.all { relayUrl ->
+            missingEngagementPartitions(eventId, relayUrl).isEmpty()
+        }
+        engagementHistoryStates[eventId] = when {
+            complete -> EngagementHistoryState.Complete
+            engagementHistoryStates[eventId] == EngagementHistoryState.Complete -> EngagementHistoryState.Pending
+            else -> engagementHistoryStates[eventId] ?: EngagementHistoryState.Pending
+        }
+    }
+
+    private fun scheduleEngagementHistoryRetry(work: EngagementHistoryWork) {
+        if (!subscriptionsStarted || engagementRetryJobs[work.relayUrl]?.isActive == true) return
+        val attempt = (engagementFailureCounts[work.relayUrl] ?: 0) + 1
+        engagementFailureCounts[work.relayUrl] = attempt
+        if (attempt > MAX_ENGAGEMENT_HISTORY_RETRIES) return
+        val delayMillis = (ENGAGEMENT_RETRY_BASE_DELAY_MS * (1L shl (attempt - 1).coerceAtMost(4)))
+            .coerceAtMost(ENGAGEMENT_RETRY_MAX_DELAY_MS)
+        engagementRetryJobs[work.relayUrl] = launch {
+            delay(delayMillis)
+            engagementRetryJobs.remove(work.relayUrl)
+            work.eventIds.forEach { eventId ->
+                if (engagementHistoryStates[eventId] == EngagementHistoryState.Partial) {
+                    engagementHistoryStates[eventId] = EngagementHistoryState.Pending
+                }
+            }
+            resubscribeEngagement()
         }
     }
 
@@ -1648,8 +1764,9 @@ internal class FeedController(
             val removedId = watchedEventIds.first()
             watchedEventIds.remove(removedId)
             engagementHistoryStates.remove(removedId)
-            engagementCompletedRelays.remove(removedId)
+            engagementCompletedPartitions.remove(removedId)
         }
+        if (deferEngagementUntilInitialHistorySettled) return
         engagementBatchJob?.cancel()
         engagementBatchJob = launch {
             delay(500)
@@ -1661,26 +1778,7 @@ internal class FeedController(
         ids: List<String>,
         since: Long? = null,
         until: Long? = null,
-    ): List<NostrFilter> = listOf(
-        NostrFilter(kinds = listOf(7), eTags = ids, since = since, until = until),
-        NostrFilter(kinds = listOf(1), eTags = ids, since = since, until = until),
-        NostrFilter(
-            kinds = listOf(COMMENT_EVENT_KIND),
-            rootKindTags = listOf("1"),
-            eTags = ids,
-            since = since,
-            until = until,
-        ),
-        NostrFilter(
-            kinds = listOf(COMMENT_EVENT_KIND),
-            rootKindTags = listOf("1"),
-            rootEventTags = ids,
-            since = since,
-            until = until,
-        ),
-        NostrFilter(kinds = listOf(6), eTags = ids, since = since, until = until),
-        NostrFilter(kinds = listOf(1), qTags = ids, since = since, until = until),
-    )
+    ): List<NostrFilter> = EngagementPartition.entries.map { it.filter(ids, since, until) }
 
     private fun handleEngagementEvent(event: NostrEvent) {
         when (event.kind) {
@@ -1825,6 +1923,10 @@ internal class FeedController(
         private const val HISTORY_FETCH_TIMEOUT_MS = 10_000L
         private const val HISTORY_RELAY_SETTLE_DELAY_MS = 2_000L
         private const val ENGAGEMENT_FETCH_TIMEOUT_MS = 10_000L
+        private const val ENGAGEMENT_HISTORY_BATCH_SIZE = 20
+        private const val MAX_ENGAGEMENT_HISTORY_RETRIES = 4
+        private const val ENGAGEMENT_RETRY_BASE_DELAY_MS = 1_000L
+        private const val ENGAGEMENT_RETRY_MAX_DELAY_MS = 30_000L
         private const val ENGAGEMENT_LIVE_OVERLAP_SECONDS = 120L
         private const val MAX_AUTO_SKIP_EMPTY_HISTORY_PAGES = 5
         private var nextInstanceKeyValue = 0
@@ -1918,6 +2020,42 @@ private data class EngagementHistoryDedup(
     val eventIds: Set<String>,
     val seenKeys: MutableSet<String> = mutableSetOf(),
 )
+
+private data class EngagementHistoryWork(
+    val relayUrl: String,
+    val eventIds: List<String>,
+    val partitions: Set<EngagementPartition>,
+)
+
+private enum class EngagementPartition {
+    Reaction,
+    KindOneReply,
+    Nip22Reply,
+    Nip22RootReply,
+    Repost,
+    QuoteRepost;
+
+    fun filter(ids: List<String>, since: Long? = null, until: Long? = null): NostrFilter = when (this) {
+        Reaction -> NostrFilter(kinds = listOf(7), eTags = ids, since = since, until = until)
+        KindOneReply -> NostrFilter(kinds = listOf(1), eTags = ids, since = since, until = until)
+        Nip22Reply -> NostrFilter(
+            kinds = listOf(COMMENT_EVENT_KIND),
+            rootKindTags = listOf("1"),
+            eTags = ids,
+            since = since,
+            until = until,
+        )
+        Nip22RootReply -> NostrFilter(
+            kinds = listOf(COMMENT_EVENT_KIND),
+            rootKindTags = listOf("1"),
+            rootEventTags = ids,
+            since = since,
+            until = until,
+        )
+        Repost -> NostrFilter(kinds = listOf(6), eTags = ids, since = since, until = until)
+        QuoteRepost -> NostrFilter(kinds = listOf(1), qTags = ids, since = since, until = until)
+    }
+}
 
 private enum class EngagementHistoryState {
     Pending,

@@ -71,6 +71,9 @@ object NostrRepository {
     private val stateMutex = Mutex()
     private val activeRelays = mutableMapOf<String, ActiveRelayHandle>()
     private var enabledRelayUrls: List<String> = readableRelayUrls(RelayStore.defaults)
+    private val _routingRelayUrls = MutableStateFlow(enabledRelayUrls.toSet())
+    /** Repository の購読ルーティングへ反映済みの読み込み対象リレー。 */
+    internal val routingRelayUrls: StateFlow<Set<String>> = _routingRelayUrls.asStateFlow()
     private val activeSubscriptions = mutableMapOf<String, ActiveSubscriptionRecord>()
     private val relayConnectionGenerations = mutableMapOf<String, Long>()
     private val temporaryRelays = mutableMapOf<String, TemporaryRelayHandle>()
@@ -92,6 +95,9 @@ object NostrRepository {
                         val (removed, added) = reconcileActiveRelaysLocked()
                         Triple(commands, removed, added)
                     }
+                    // Feed などの購読側には、enabledRelayUrls と同じスナップショットだけを公開する。
+                    // RelayStore を直接監視すると、こちらの反映より先に通知される競合が起きる。
+                    _routingRelayUrls.value = urls.toSet()
                     newHandles.forEach { it.relay.connect(scope) }
                     sendSubscriptionCommands(commands, removedHandles)
                     closeRemovedRelayHandles(removedHandles)

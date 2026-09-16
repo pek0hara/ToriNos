@@ -18,4 +18,30 @@ class SubscriptionSessionDeliveryTest {
 
         assertEquals(600, received.size)
     }
+
+    @Test
+    fun finiteSessionRetainsCompletionBeforeCollectorStarts() = runTest {
+        val session = SubscriptionSessionImpl(id = "fast-finite", lossless = true)
+        session.emit(SubscriptionSignal.Eose("relay"))
+        session.emit(
+            SubscriptionSignal.FetchCompleted(
+                outcomes = mapOf("relay" to RelayOutcome.Eose),
+                timedOut = false,
+            ),
+        )
+        session.finish()
+
+        val received = session.signals.toList()
+
+        assertEquals(
+            listOf(
+                SubscriptionSignal.Eose("relay"),
+                SubscriptionSignal.FetchCompleted(
+                    outcomes = mapOf("relay" to RelayOutcome.Eose),
+                    timedOut = false,
+                ),
+            ),
+            received,
+        )
+    }
 }
