@@ -29,7 +29,7 @@ internal actual fun XPostEmbed(
 ) {
     var contentHeight by remember(postId) { mutableStateOf(MinimumXPostHeight) }
     var contentWidthPx by remember(postId) { mutableStateOf(0) }
-    val embedUrl = remember(postId, darkTheme) { xPostEmbedUrl(postId, darkTheme) }
+    val embedUrl = xPostEmbedUrl(postId, darkTheme)
 
     AndroidView(
         factory = { context ->
