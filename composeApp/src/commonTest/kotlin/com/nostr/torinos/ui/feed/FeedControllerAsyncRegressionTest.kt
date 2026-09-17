@@ -10,6 +10,8 @@ import com.nostr.torinos.network.SubscriptionBehavior
 import com.nostr.torinos.network.SubscriptionSession
 import com.nostr.torinos.network.SubscriptionSignal
 import com.nostr.torinos.network.SubscriptionSpec
+import com.nostr.torinos.ui.timeline.NoteDeletion
+import com.nostr.torinos.ui.timeline.NoteDeletionSync
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -674,24 +676,20 @@ class FeedControllerAsyncRegressionTest {
     }
 
     @Test
-    fun initialEngagementHistoryWaitsForInitialFeedHistoryCompletion() = runTest {
-        val gateway = FakeGateway()
+    fun initialEngagementHistoryStartsBeforeEveryFeedRelaySettles() = runTest {
+        val gateway = FakeGateway(initialRelayUrls = setOf("relay-a", "relay-b"))
         val controller = FeedController(scope = backgroundScope, subscriptions = gateway)
         runCurrent()
-        val initialHistory = gateway.feedFetchSessions.single()
+        val relayAHistory = gateway.feedFetchSessions.single {
+            it.target == RelayTarget.Single("relay-a")
+        }
 
-        initialHistory.event(event("note", 10))
-        runCurrent()
-        advanceTimeBy(500)
-        runCurrent()
-
-        assertTrue(gateway.engagementFetchSessions.isEmpty())
-
-        initialHistory.complete()
+        relayAHistory.event(event("note", 10), relay = "relay-a")
         runCurrent()
 
         val engagementHistory = gateway.engagementFetchSessions.single()
         assertTrue(engagementHistory.filters.all { it.targetIds() == listOf("note") })
+        assertTrue(gateway.feedFetchSessions.any { !it.closed && it !== relayAHistory })
         controller.close()
     }
 
@@ -717,7 +715,11 @@ class FeedControllerAsyncRegressionTest {
 
         feedLive.event(event("second", 20))
         runCurrent()
-        advanceTimeBy(500)
+        assertEquals(1, gateway.engagementFetchSessions.size)
+        advanceTimeBy(499)
+        runCurrent()
+        assertEquals(1, gateway.engagementFetchSessions.size)
+        advanceTimeBy(1)
         runCurrent()
 
         val secondHistory = gateway.engagementFetchSessions.last()
@@ -732,7 +734,7 @@ class FeedControllerAsyncRegressionTest {
     }
 
     @Test
-    fun engagementHistoryWaitsForRepositoryRelayRoutingToBecomeReady() = runTest {
+    fun engagementHistoryWaitsForRelayRoutingButNotFeedHistoryCompletion() = runTest {
         val gateway = FakeGateway(initialRelayUrls = setOf("relay-a")).apply {
             targetRelayUrlsOverride = emptySet()
         }
@@ -753,10 +755,6 @@ class FeedControllerAsyncRegressionTest {
 
         gateway.targetRelayUrlsOverride = setOf("relay-b")
         gateway.relayUrls.value = setOf("relay-b")
-        runCurrent()
-
-        assertTrue(gateway.engagementFetchSessions.isEmpty())
-        gateway.feedFetchSessions.single().complete("relay-b")
         runCurrent()
 
         val history = gateway.engagementFetchSessions.single()
@@ -1035,6 +1033,97 @@ class FeedControllerAsyncRegressionTest {
 
         val firstHistory = gateway.engagementFetchSessions.single()
         assertTrue(firstHistory.filters.all { it.targetIds()?.size == 20 })
+        controller.close()
+    }
+
+    @Test
+    fun engagementHistoryBackfillContinuesForEventsEvictedFromLiveTracking() = runTest {
+        val gateway = FakeGateway()
+        val controller = FeedController(scope = backgroundScope, subscriptions = gateway)
+        runCurrent()
+        gateway.completeInitialFeedHistory()
+        runCurrent()
+        val feedLive = gateway.liveSessions.single()
+
+        // MAX_TRACKED_ENGAGEMENT_EVENTS(100件)を超えて投稿を追加し、
+        // 最初期の投稿をwatchedEventIdsのFIFO上限から追い出す。
+        repeat(120) { index -> feedLive.event(event("note-$index", index.toLong())) }
+        runCurrent()
+        advanceTimeBy(500)
+        runCurrent()
+
+        // 追跡上限で外れた最初の20件(note-0..note-19)も、取得が完了していない限り
+        // バックフィル対象であり続けるべき。取得済みかどうかの記録がwatchedEventIdsの
+        // FIFO削除と一緒に消えていると、note-20..note-39が選ばれてしまい、
+        // 最初期の投稿は二度と取得されなくなる。
+        val firstHistory = gateway.engagementFetchSessions.single()
+        val expectedIds = (0 until 20).map { "note-$it" }
+        assertTrue(firstHistory.filters.all { it.targetIds() == expectedIds })
+        controller.close()
+    }
+
+    @Test
+    fun reactionForEventEvictedFromLiveTrackingIsStillApplied() = runTest {
+        val gateway = FakeGateway()
+        val controller = FeedController(scope = backgroundScope, subscriptions = gateway)
+        runCurrent()
+        gateway.completeInitialFeedHistory()
+        runCurrent()
+        val feedLive = gateway.liveSessions.single()
+
+        // targetを追加した直後に100件のfillerを追加し、targetだけを
+        // watchedEventIdsのFIFO上限からちょうど1件だけ追い出す。
+        feedLive.event(event("target", 0))
+        repeat(100) { index -> feedLive.event(event("filler-$index", (index + 1).toLong())) }
+        runCurrent()
+        advanceTimeBy(500)
+        runCurrent()
+
+        // 投稿自体はまだフィードに表示されている(追跡対象から外れただけ)。
+        assertTrue(controller.state.value.events.any { it.id == "target" })
+
+        // バックフィル(手動更新 refreshReactions() も内部的には同じ経路)からtargetへの
+        // リアクションが届いても、watchedEventIdsから外れているという理由だけで
+        // 握りつぶされてはならない。
+        val reaction = event("reaction-1", 200, kind = 7, tags = listOf(listOf("e", "target")))
+        gateway.engagementFetchSessions.single().event(reaction)
+        runCurrent()
+        advanceTimeBy(151)
+        runCurrent()
+
+        assertEquals(1, controller.state.value.reactionCounts["target"])
+        controller.close()
+    }
+
+    @Test
+    fun deletedEventDiscardsEngagementHistoryState() = runTest {
+        val gateway = FakeGateway()
+        val controller = FeedController(scope = backgroundScope, subscriptions = gateway)
+        runCurrent()
+        gateway.completeInitialFeedHistory()
+        runCurrent()
+        val feedLive = gateway.liveSessions.single()
+
+        feedLive.event(event("target", 0))
+        runCurrent()
+        advanceTimeBy(500)
+        runCurrent()
+        assertTrue(gateway.engagementFetchSessions.single().filters.all { it.targetIds() == listOf("target") })
+
+        NoteDeletionSync.publish(NoteDeletion(sessionId = null, eventId = "target"))
+        runCurrent()
+        assertFalse(controller.state.value.events.any { it.id == "target" })
+
+        // 削除後に同じ投稿IDへのリアクションが届いても、もう追跡していない投稿なので
+        // 適用されてはならない。適用されてしまう場合、削除時にwatchedEventIds /
+        // engagementHistoryStatesが破棄されていない。
+        val reaction = event("reaction-1", 200, kind = 7, tags = listOf(listOf("e", "target")))
+        gateway.engagementFetchSessions.single().event(reaction)
+        runCurrent()
+        advanceTimeBy(151)
+        runCurrent()
+
+        assertEquals(null, controller.state.value.reactionCounts["target"])
         controller.close()
     }
 

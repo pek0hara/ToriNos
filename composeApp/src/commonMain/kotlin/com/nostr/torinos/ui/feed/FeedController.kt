@@ -157,7 +157,6 @@ internal class FeedController(
     private val engagementRetryJobs = mutableMapOf<String, Job>()
     private var engagementResumeSince: Long? = null
     private var nextEngagementHistoryRequestId = 0L
-    private var deferEngagementUntilInitialHistorySettled = false
     private val seenReactionIds = linkedSetOf<String>()
     private val seenReplyIds = linkedSetOf<String>()
     private val seenRepostIds = linkedSetOf<String>()
@@ -253,8 +252,7 @@ internal class FeedController(
                 }
                 if (
                     subscriptionsStarted &&
-                    watchedEventIds.isNotEmpty() &&
-                    !deferEngagementUntilInitialHistorySettled
+                    watchedEventIds.isNotEmpty()
                 ) {
                     resubscribeEngagement()
                 }
@@ -333,6 +331,7 @@ internal class FeedController(
         rawEvents.remove(eventId)
         canonicalEvents.remove(eventId)
         eventSortTimes.remove(eventId)
+        forgetEngagementHistory(eventId)
     }
 
     fun consumeEngagementError() {
@@ -517,7 +516,7 @@ internal class FeedController(
     }
 
     fun refreshReactions(eventId: String) {
-        if (eventId !in watchedEventIds) return
+        if (eventId !in engagementHistoryStates) return
         launch {
             val events = ReactionRefreshFetcher.fetch(
                 subscriptionId = "feed-reaction-refresh-$instanceKey-${++nextReactionRefreshId}",
@@ -594,8 +593,6 @@ internal class FeedController(
         consecutiveEmptyHistoryPages = 0
         initialHistoryRequested = false
         manualRefreshRequested = false
-        deferEngagementUntilInitialHistorySettled = false
-
         pendingFeedState = UiState()
         _state.value = pendingFeedState
         return true
@@ -654,7 +651,6 @@ internal class FeedController(
             val current = currentFeedState()
             if (current.isInitialLoad && current.events.isEmpty() && !initialHistoryRequested) {
                 // 初回のみ履歴ページを取得
-                deferEngagementUntilInitialHistorySettled = true
                 startRelayHistory()
             } else if (manualRefreshRequested) {
                 manualRefreshRequested = false
@@ -684,8 +680,6 @@ internal class FeedController(
     fun stopSubscriptions(clearRefreshing: Boolean = true) {
         if (!subscriptionsStarted) return
         subscriptionsStarted = false
-        // 初回取得を中断した場合は、再開時の gap fill と一緒にリアクションも再同期する。
-        deferEngagementUntilInitialHistorySettled = false
         if (engagementSession != null) {
             engagementResumeSince = (
                 Clock.System.now().epochSeconds - ENGAGEMENT_LIVE_OVERLAP_SECONDS
@@ -840,17 +834,6 @@ internal class FeedController(
                 ) {
                     initialFeedSlowJob?.cancel()
                     initialFeedSlowJob = null
-                }
-                if (
-                    deferEngagementUntilInitialHistorySettled &&
-                    history.isInitialFetchSettled
-                ) {
-                    deferEngagementUntilInitialHistorySettled = false
-                    engagementBatchJob?.cancel()
-                    engagementBatchJob = null
-                    if (watchedEventIds.isNotEmpty()) {
-                        launch { resubscribeEngagement() }
-                    }
                 }
             },
         )
@@ -1244,6 +1227,7 @@ internal class FeedController(
             val removedId = rawEvents.keys.first()
             rawEvents.remove(removedId)
             eventSortTimes.remove(removedId)
+            forgetEngagementHistory(removedId)
         }
         while (canonicalEvents.size > MAX_SEEN_IDS) canonicalEvents.remove(canonicalEvents.keys.first())
         if (oldestCreatedAt == null || timelineCreatedAt < (oldestCreatedAt ?: Long.MAX_VALUE)) {
@@ -1578,8 +1562,12 @@ internal class FeedController(
                 }
                 return
             }
-            ids.forEach { eventId -> updateEngagementHistoryState(eventId, targetRelays) }
-            nextEngagementHistoryWork(ids, targetRelays)?.let { work ->
+            // Complete を事前に除外すると、targetRelaysが後から広がったときに
+            // 「古いリレー集合では完了済みだが新しいリレーではまだ」というケースを
+            // updateEngagementHistoryState() が再評価できなくなる。全件を渡す。
+            val backfillIds = engagementHistoryStates.keys.toList()
+            backfillIds.forEach { eventId -> updateEngagementHistoryState(eventId, targetRelays) }
+            nextEngagementHistoryWork(backfillIds, targetRelays)?.let { work ->
                 startEngagementHistoryFetch(
                     subIds = subIds,
                     work = work,
@@ -1649,7 +1637,7 @@ internal class FeedController(
                                 signal.outcomes[work.relayUrl] is RelayOutcome.Eose
                             if (succeeded) {
                                 eventIds.forEach { eventId ->
-                                    if (eventId !in watchedEventIds) return@forEach
+                                    if (eventId !in engagementHistoryStates) return@forEach
                                     engagementCompletedPartitions
                                         .getOrPut(eventId) { mutableMapOf() }
                                         .getOrPut(work.relayUrl) { mutableSetOf() }
@@ -1670,7 +1658,7 @@ internal class FeedController(
                                 }
                             }
                             eventIds.forEach { eventId ->
-                                if (eventId !in watchedEventIds) return@forEach
+                                if (eventId !in engagementHistoryStates) return@forEach
                                 engagementHistoryStates[eventId] =
                                     if (succeeded || shouldRetryImmediately) {
                                         EngagementHistoryState.Pending
@@ -1761,17 +1749,24 @@ internal class FeedController(
         if (!watchedEventIds.add(eventId)) return
         engagementHistoryStates[eventId] = EngagementHistoryState.Pending
         while (watchedEventIds.size > MAX_TRACKED_ENGAGEMENT_EVENTS) {
-            val removedId = watchedEventIds.first()
-            watchedEventIds.remove(removedId)
-            engagementHistoryStates.remove(removedId)
-            engagementCompletedPartitions.remove(removedId)
+            // 追跡数の上限に達しても、取得進捗(engagementHistoryStates /
+            // engagementCompletedPartitions)はここでは消さない。投稿自体がフィードから
+            // 消えるまでは forgetEngagementHistory() 経由でのみ破棄する。
+            watchedEventIds.remove(watchedEventIds.first())
         }
-        if (deferEngagementUntilInitialHistorySettled) return
+        val startImmediately = engagementSession == null
         engagementBatchJob?.cancel()
         engagementBatchJob = launch {
-            delay(500)
+            if (!startImmediately) delay(ENGAGEMENT_BATCH_DELAY_MS)
             resubscribeEngagement()
         }
+    }
+
+    /** 投稿がフィードから完全に消えるとき、リアクション取得の追跡状態も合わせて破棄する。 */
+    private fun forgetEngagementHistory(eventId: String) {
+        watchedEventIds.remove(eventId)
+        engagementHistoryStates.remove(eventId)
+        engagementCompletedPartitions.remove(eventId)
     }
 
     private fun engagementFilters(
@@ -1793,7 +1788,7 @@ internal class FeedController(
 
     private fun handleReactionEvent(event: NostrEvent) {
         val targetId = event.tags.lastOrNull { it.firstOrNull() == "e" }?.getOrNull(1)
-            ?.takeIf { it in watchedEventIds }
+            ?.takeIf { it in engagementHistoryStates }
             ?: return
         if (!rememberEngagementSeenId(
                 seenIds = seenReactionIds,
@@ -1815,7 +1810,7 @@ internal class FeedController(
     private fun handleReplyEvent(event: NostrEvent) {
         if (event.kind == COMMENT_EVENT_KIND && !event.isSupportedTimelineComment()) return
         val targetId = event.replyTargetId()
-            ?.takeIf { it in watchedEventIds }
+            ?.takeIf { it in engagementHistoryStates }
             ?: return
         if (!rememberEngagementSeenId(
                 seenIds = seenReplyIds,
@@ -1834,7 +1829,7 @@ internal class FeedController(
 
     private fun handleEngagementRepostEvent(event: NostrEvent) {
         val targetId = event.tags.lastOrNull { it.firstOrNull() == "e" }?.getOrNull(1)
-            ?.takeIf { it in watchedEventIds }
+            ?.takeIf { it in engagementHistoryStates }
             ?: return
         if (!rememberEngagementSeenId(
                 seenIds = seenRepostIds,
@@ -1858,7 +1853,7 @@ internal class FeedController(
             .filter { it.firstOrNull() == "q" }
             .mapNotNull { it.getOrNull(1) }
             .distinct()
-            .filter { it in watchedEventIds }
+            .filter { it in engagementHistoryStates }
             .filter { targetId ->
                 val key = "${event.id}:$targetId"
                 rememberEngagementSeenId(
@@ -1923,6 +1918,7 @@ internal class FeedController(
         private const val HISTORY_FETCH_TIMEOUT_MS = 10_000L
         private const val HISTORY_RELAY_SETTLE_DELAY_MS = 2_000L
         private const val ENGAGEMENT_FETCH_TIMEOUT_MS = 10_000L
+        private const val ENGAGEMENT_BATCH_DELAY_MS = 500L
         private const val ENGAGEMENT_HISTORY_BATCH_SIZE = 20
         private const val MAX_ENGAGEMENT_HISTORY_RETRIES = 4
         private const val ENGAGEMENT_RETRY_BASE_DELAY_MS = 1_000L
