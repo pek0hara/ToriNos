@@ -40,6 +40,7 @@ import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -133,7 +134,7 @@ fun JournalScreen(
     var showRelayMenu by remember { mutableStateOf(false) }
     var showFilterHeader by rememberSaveable(accountKey, targetPubkey) { mutableStateOf(true) }
     var selectedFilterNames by rememberSaveable(accountKey, targetPubkey) {
-        mutableStateOf(defaultJournalEntryFilters().map { it.name })
+        mutableStateOf(emptyList<String>())
     }
     val isUserJournal = targetPubkey != null
     val journalPubkey = targetPubkey ?: ownPubkey
@@ -143,12 +144,14 @@ fun JournalScreen(
                 (!isUserJournal || it != JournalEntryFilter.Like)
         }
     }
-    val selectedFilters = remember(selectedFilterNames, availableFilters) {
+    val explicitlySelectedFilters = remember(selectedFilterNames, availableFilters) {
         selectedFilterNames
             .mapNotNull { name -> JournalEntryFilter.entries.firstOrNull { it.name == name } }
             .filter { it in availableFilters }
             .toSet()
-            .ifEmpty { defaultJournalEntryFilters() }
+    }
+    val selectedFilters = remember(explicitlySelectedFilters) {
+        effectiveJournalEntryFilters(explicitlySelectedFilters)
     }
     val baseEntries = if (state.showCalendar) state.selectedEntries else state.monthEntries
     val visibleEntries = remember(baseEntries, selectedFilters, journalPubkey) {
@@ -341,15 +344,15 @@ fun JournalScreen(
             if (showFilterHeader) {
                 JournalFilterHeader(
                     filters = availableFilters,
-                    selectedFilters = selectedFilters,
+                    selectedFilters = explicitlySelectedFilters,
+                    defaultFilters = defaultJournalEntryFilters(),
                     onToggle = { filter ->
-                        val nextFilters = if (filter in selectedFilters) {
-                            selectedFilters - filter
+                        val nextFilters = if (filter in explicitlySelectedFilters) {
+                            explicitlySelectedFilters - filter
                         } else {
-                            selectedFilters + filter
+                            explicitlySelectedFilters + filter
                         }
                         selectedFilterNames = nextFilters
-                            .ifEmpty { defaultJournalEntryFilters() }
                             .sortedBy { JournalEntryFilter.entries.indexOf(it) }
                             .map { it.name }
                     },
@@ -547,10 +550,10 @@ fun JournalScreen(
 
 }
 
-private enum class JournalEntryFilter(val label: String, val icon: ImageVector) {
-    Post("投稿", Icons.Default.PostAdd),
-    Reply("返信", Icons.Default.MailOutline),
+internal enum class JournalEntryFilter(val label: String, val icon: ImageVector) {
+    Post("ポスト", Icons.Default.PostAdd),
     Repost("リポスト", Icons.Default.Repeat),
+    Reply("返信", Icons.Default.MailOutline),
     Like("したいいね", Icons.Default.Favorite),
     ReceivedLike("もらったいいね", Icons.Default.Favorite),
     Article("記事", Icons.AutoMirrored.Filled.Article),
@@ -566,8 +569,16 @@ private val JournalEntryFilter.loadKind: JournalLoadKind
         JournalEntryFilter.Article -> JournalLoadKind.Article
     }
 
-private fun defaultJournalEntryFilters(): Set<JournalEntryFilter> =
-    setOf(JournalEntryFilter.Post)
+internal fun defaultJournalEntryFilters(): Set<JournalEntryFilter> =
+    setOf(
+        JournalEntryFilter.Post,
+        JournalEntryFilter.Repost,
+        JournalEntryFilter.Reply,
+    )
+
+internal fun effectiveJournalEntryFilters(
+    explicitlySelectedFilters: Set<JournalEntryFilter>,
+): Set<JournalEntryFilter> = explicitlySelectedFilters.ifEmpty { defaultJournalEntryFilters() }
 
 private val JournalEntry.Note.journalFilter: JournalEntryFilter
     get() = when (event.kind) {
@@ -618,17 +629,35 @@ private fun Modifier.journalHorizontalSwipe(
 private fun JournalFilterHeader(
     filters: List<JournalEntryFilter>,
     selectedFilters: Set<JournalEntryFilter>,
+    defaultFilters: Set<JournalEntryFilter>,
     onToggle: (JournalEntryFilter) -> Unit,
 ) {
+    val hasExplicitSelection = selectedFilters.isNotEmpty()
+    val primary = MaterialTheme.colorScheme.primary
     LazyRow(
         contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
         horizontalArrangement = Arrangement.spacedBy(8.dp),
     ) {
         items(filters) { filter ->
+            val isImplicitlyShown = !hasExplicitSelection && filter in defaultFilters
             FilterChip(
                 selected = filter in selectedFilters,
                 onClick = { onToggle(filter) },
                 modifier = Modifier.semantics { contentDescription = filter.label },
+                colors = FilterChipDefaults.filterChipColors(
+                    containerColor = if (isImplicitlyShown) {
+                        primary.copy(alpha = 0.12f)
+                    } else {
+                        Color.Transparent
+                    },
+                    labelColor = if (isImplicitlyShown) {
+                        primary.copy(alpha = 0.72f)
+                    } else {
+                        MaterialTheme.colorScheme.onSurfaceVariant
+                    },
+                    selectedContainerColor = primary,
+                    selectedLabelColor = MaterialTheme.colorScheme.onPrimary,
+                ),
                 label = {
                     Box(
                         modifier = Modifier.size(36.dp, 24.dp),
