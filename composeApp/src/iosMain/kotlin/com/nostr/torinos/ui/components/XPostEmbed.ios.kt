@@ -162,31 +162,6 @@ private class XPostWebViewRef {
     var value: WKWebView? = null
 }
 
-private data class XPostSnapshotCacheKey(
-    val postId: String,
-    val darkTheme: Boolean,
-)
-
-/**
- * タイムライン項目が破棄・再生成されても、同じ投稿のWebViewを読み直さずに済むようにする。
- * 画像が際限なく残らないよう、直近の投稿だけをLRU方式で保持する。
- */
-private object XPostSnapshotCache {
-    private const val MaximumEntries = 8
-    private val entries = LinkedHashMap<XPostSnapshotCacheKey, ImageBitmap>()
-
-    operator fun get(key: XPostSnapshotCacheKey): ImageBitmap? =
-        entries.remove(key)?.also { image -> entries[key] = image }
-
-    operator fun set(key: XPostSnapshotCacheKey, image: ImageBitmap) {
-        entries.remove(key)
-        entries[key] = image
-        while (entries.size > MaximumEntries) {
-            entries.remove(entries.keys.first())
-        }
-    }
-}
-
 private class XPostHeightHandler(
     private val onHeight: (Double) -> Unit,
 ) : NSObject(), WKScriptMessageHandlerProtocol {
