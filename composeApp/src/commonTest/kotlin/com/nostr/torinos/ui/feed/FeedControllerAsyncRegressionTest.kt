@@ -687,9 +687,70 @@ class FeedControllerAsyncRegressionTest {
         relayAHistory.event(event("note", 10), relay = "relay-a")
         runCurrent()
 
-        val engagementHistory = gateway.engagementFetchSessions.single()
-        assertTrue(engagementHistory.filters.all { it.targetIds() == listOf("note") })
+        assertEquals(2, gateway.engagementFetchSessions.size)
+        assertEquals(
+            setOf(
+                RelayTarget.Explicit(setOf("relay-a")),
+                RelayTarget.Explicit(setOf("relay-b")),
+            ),
+            gateway.engagementFetchSessions.map { it.target }.toSet(),
+        )
+        assertTrue(
+            gateway.engagementFetchSessions.all { history ->
+                history.filters.all { it.targetIds() == listOf("note") }
+            },
+        )
         assertTrue(gateway.feedFetchSessions.any { !it.closed && it !== relayAHistory })
+        controller.close()
+    }
+
+    @Test
+    fun parallelRelayHistoryDoesNotDoubleCountTheSameReaction() = runTest {
+        val gateway = FakeGateway(initialRelayUrls = setOf("relay-a", "relay-b"))
+        val controller = FeedController(scope = backgroundScope, subscriptions = gateway)
+        runCurrent()
+        gateway.liveSessions.single().event(event("note", 10))
+        runCurrent()
+
+        val histories = gateway.engagementFetchSessions
+        assertEquals(2, histories.size)
+        val reaction = event(
+            id = "reaction",
+            createdAt = 20,
+            kind = 7,
+            tags = listOf(listOf("e", "note")),
+        )
+        histories.forEach { it.event(reaction) }
+        runCurrent()
+        advanceTimeBy(151)
+        runCurrent()
+
+        assertEquals(1, controller.state.value.reactionCounts["note"])
+        controller.close()
+    }
+
+    @Test
+    fun singleRelayHistoryContinuesWithTheNextBatchWithoutExtraDelay() = runTest {
+        val gateway = FakeGateway(initialRelayUrls = setOf("relay"))
+        val controller = FeedController(scope = backgroundScope, subscriptions = gateway)
+        runCurrent()
+        val feedLive = gateway.liveSessions.single()
+        repeat(25) { index -> feedLive.event(event("note-$index", index.toLong())) }
+        runCurrent()
+        advanceTimeBy(500)
+        runCurrent()
+
+        val firstHistory = gateway.engagementFetchSessions.single()
+        assertTrue(firstHistory.filters.all { it.targetIds()?.size == 20 })
+        firstHistory.complete()
+        runCurrent()
+
+        assertEquals(2, gateway.engagementFetchSessions.size)
+        assertTrue(
+            gateway.engagementFetchSessions.last().filters.all {
+                it.targetIds() == (20 until 25).map { index -> "note-$index" }
+            },
+        )
         controller.close()
     }
 
@@ -864,10 +925,10 @@ class FeedControllerAsyncRegressionTest {
         runCurrent()
         advanceTimeBy(500)
         runCurrent()
-        gateway.engagementFetchSessions.single().completeWith(
-            "relay-a" to RelayOutcome.Eose,
-            "relay-b" to RelayOutcome.Eose,
-        )
+        gateway.engagementFetchSessions.forEach { history ->
+            val relay = (history.target as RelayTarget.Explicit).urls.single()
+            history.complete(relay)
+        }
         runCurrent()
 
         gateway.relayUrls.value = setOf("relay-a")
@@ -875,7 +936,7 @@ class FeedControllerAsyncRegressionTest {
         gateway.relayUrls.value = setOf("relay-a", "relay-b")
         runCurrent()
 
-        assertEquals(2, gateway.engagementFetchSessions.size)
+        assertEquals(3, gateway.engagementFetchSessions.size)
         assertEquals(
             RelayTarget.Explicit(setOf("relay-b")),
             gateway.engagementFetchSessions.last().target,

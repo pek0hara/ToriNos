@@ -136,13 +136,13 @@ class NostrRelay(
     }
 
     suspend fun send(message: String) {
-        enqueue(PendingMessage(message, subscriptionQueueKey(message)))
+        enqueue(buildPendingMessage(message))
     }
 
     /** WebSocket へフレームを書き込むまで待つ。投稿結果の判定に使用する。 */
     suspend fun sendAndAwait(message: String) {
         val completion = CompletableDeferred<Unit>()
-        val pending = PendingMessage(message, subscriptionQueueKey(message), completion)
+        val pending = buildPendingMessage(message, completion)
         enqueue(pending)
         try {
             completion.await()
@@ -176,10 +176,7 @@ class NostrRelay(
 
     private suspend fun enqueue(pending: PendingMessage) {
         pendingMutex.withLock {
-            pending.key?.let { key ->
-                pendingMessages.removeAll { it.key == key }
-            }
-            pendingMessages.add(pending)
+            pendingMessages.enqueue(pending)
         }
         sendSignal.trySend(Unit)
     }
@@ -191,17 +188,41 @@ class NostrRelay(
     }
 }
 
-private data class PendingMessage(
+internal data class PendingMessage(
     val text: String,
     val key: String?,
+    val isPriority: Boolean = false,
     val completion: CompletableDeferred<Unit>? = null,
+)
+
+private data class ControlMessage(
+    val type: String,
+    val subscriptionId: String?,
 )
 
 private val relayMessageJson = Json { ignoreUnknownKeys = true }
 
-private fun subscriptionQueueKey(message: String): String? = runCatching {
+private fun parseControlMessage(message: String): ControlMessage? = runCatching {
     val array = relayMessageJson.parseToJsonElement(message).jsonArray
     val type = array.getOrNull(0)?.jsonPrimitive?.content ?: return@runCatching null
     if (type != "REQ" && type != "CLOSE") return@runCatching null
-    array.getOrNull(1)?.jsonPrimitive?.content
+    ControlMessage(type, array.getOrNull(1)?.jsonPrimitive?.content)
 }.getOrNull()
+
+internal fun buildPendingMessage(
+    message: String,
+    completion: CompletableDeferred<Unit>? = null,
+): PendingMessage {
+    val control = parseControlMessage(message)
+    return PendingMessage(
+        text = message,
+        key = control?.subscriptionId,
+        isPriority = control?.type == "CLOSE",
+        completion = completion,
+    )
+}
+
+internal fun MutableList<PendingMessage>.enqueue(pending: PendingMessage) {
+    pending.key?.let { key -> removeAll { it.key == key } }
+    if (pending.isPriority) add(0, pending) else add(pending)
+}

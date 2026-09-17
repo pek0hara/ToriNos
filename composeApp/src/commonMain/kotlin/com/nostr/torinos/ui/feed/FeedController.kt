@@ -134,7 +134,7 @@ internal class FeedController(
     private var subscriptionIds: SubscriptionIds? = null
     private var liveSession: SubscriptionSession? = null
     private var engagementSession: SubscriptionSession? = null
-    private var engagementHistorySession: SubscriptionSession? = null
+    private val engagementHistorySessions = mutableMapOf<String, SubscriptionSession>()
     private var currentHistorySession: SubscriptionSession? = null
     private var relayHistoryCoordinator: RelayFeedHistoryCoordinator? = null
     private var historyIndicatorSettleJob: Job? = null
@@ -151,7 +151,7 @@ internal class FeedController(
     private val engagementFailureCounts = mutableMapOf<String, Int>()
     private val engagementEventMutex = Mutex()
     private val engagementSubscriptionMutex = Mutex()
-    private var engagementHistoryDedup: EngagementHistoryDedup? = null
+    private val engagementHistoryDedups = mutableMapOf<String, EngagementHistoryDedup>()
     private var lastEngagementTargetRelays: Set<String>? = null
     private var engagementBatchJob: Job? = null
     private val engagementRetryJobs = mutableMapOf<String, Job>()
@@ -558,7 +558,7 @@ internal class FeedController(
         engagementCompletedPartitions.clear()
         isolatedEngagementRelays.clear()
         engagementFailureCounts.clear()
-        engagementHistoryDedup = null
+        engagementHistoryDedups.clear()
         lastEngagementTargetRelays = null
         engagementResumeSince = null
         seenReactionIds.clear()
@@ -728,13 +728,12 @@ internal class FeedController(
         val sessionsToClose = listOfNotNull(
             liveSession,
             engagementSession,
-            engagementHistorySession,
             currentHistorySession,
-        )
+        ) + engagementHistorySessions.values
         liveSession = null
         engagementSession = null
-        engagementHistorySession = null
-        engagementHistoryDedup = null
+        engagementHistorySessions.clear()
+        engagementHistoryDedups.clear()
         currentHistorySession = null
         if (sessionsToClose.isNotEmpty()) {
             launch { sessionsToClose.forEach { it.close() } }
@@ -1438,8 +1437,8 @@ internal class FeedController(
         batchKey: String,
         targetId: String,
     ): Boolean {
-        val batch = engagementHistoryDedup
-        if (batch != null && targetId in batch.eventIds && !batch.seenKeys.add(batchKey)) {
+        val activeBatches = engagementHistoryDedups.values.filter { targetId in it.eventIds }
+        if (activeBatches.isNotEmpty() && activeBatches.all { !it.seenKeys.add(batchKey) }) {
             return false
         }
         return rememberSeenId(seenIds, globalKey)
@@ -1551,29 +1550,31 @@ internal class FeedController(
             }
         }
 
-        if (engagementHistorySession == null) {
-            if (targetRelays.isEmpty()) {
-                // 起動直後は RelayStore の読み込みと Repository への反映に時間差がある。
-                // 取得先が未確定な状態を「全リレー取得済み」とみなさず、確定通知を待つ。
-                engagementHistoryStates.keys.toList().forEach { eventId ->
-                    if (engagementHistoryStates[eventId] != EngagementHistoryState.InFlight) {
-                        engagementHistoryStates[eventId] = EngagementHistoryState.Pending
-                    }
+        if (targetRelays.isEmpty()) {
+            // 起動直後は RelayStore の読み込みと Repository への反映に時間差がある。
+            // 取得先が未確定な状態を「全リレー取得済み」とみなさず、確定通知を待つ。
+            engagementHistoryStates.keys.toList().forEach { eventId ->
+                if (engagementHistoryStates[eventId] != EngagementHistoryState.InFlight) {
+                    engagementHistoryStates[eventId] = EngagementHistoryState.Pending
                 }
-                return
             }
-            // Complete を事前に除外すると、targetRelaysが後から広がったときに
-            // 「古いリレー集合では完了済みだが新しいリレーではまだ」というケースを
-            // updateEngagementHistoryState() が再評価できなくなる。全件を渡す。
-            val backfillIds = engagementHistoryStates.keys.toList()
-            backfillIds.forEach { eventId -> updateEngagementHistoryState(eventId, targetRelays) }
-            nextEngagementHistoryWork(backfillIds, targetRelays)?.let { work ->
-                startEngagementHistoryFetch(
-                    subIds = subIds,
-                    work = work,
-                    until = cutoff,
-                )
+            return
+        }
+        // Complete を事前に除外すると、targetRelaysが後から広がったときに
+        // 「古いリレー集合では完了済みだが新しいリレーではまだ」というケースを
+        // updateEngagementHistoryState() が再評価できなくなる。全件を渡す。
+        val backfillIds = engagementHistoryStates.keys.toList()
+        backfillIds.forEach { eventId -> updateEngagementHistoryState(eventId, targetRelays) }
+        val workByRelay = targetRelays.sorted().mapNotNull { relayUrl ->
+            if (relayUrl in engagementHistorySessions) return@mapNotNull null
+            if (engagementRetryJobs[relayUrl]?.isActive == true) return@mapNotNull null
+            if ((engagementFailureCounts[relayUrl] ?: 0) > MAX_ENGAGEMENT_HISTORY_RETRIES) {
+                return@mapNotNull null
             }
+            nextEngagementHistoryWork(backfillIds, setOf(relayUrl))
+        }
+        workByRelay.forEach { work ->
+            startEngagementHistoryFetch(subIds = subIds, work = work, until = cutoff)
         }
     }
 
@@ -1585,7 +1586,7 @@ internal class FeedController(
         val eventIds = work.eventIds
         eventIds.forEach { engagementHistoryStates[it] = EngagementHistoryState.InFlight }
         engagementEventMutex.withLock {
-            engagementHistoryDedup = EngagementHistoryDedup(eventIds.toSet())
+            engagementHistoryDedups[work.relayUrl] = EngagementHistoryDedup(eventIds.toSet())
         }
         val session = try {
             subscriptions.open(
@@ -1597,7 +1598,7 @@ internal class FeedController(
                 ),
             )
         } catch (error: Throwable) {
-            engagementEventMutex.withLock { engagementHistoryDedup = null }
+            engagementEventMutex.withLock { engagementHistoryDedups.remove(work.relayUrl) }
             eventIds.forEach { eventId ->
                 if (engagementHistoryStates[eventId] == EngagementHistoryState.InFlight) {
                     engagementHistoryStates[eventId] = EngagementHistoryState.Partial
@@ -1608,7 +1609,7 @@ internal class FeedController(
             return
         }
         if (!subscriptionsStarted || subscriptionIds !== subIds) {
-            engagementEventMutex.withLock { engagementHistoryDedup = null }
+            engagementEventMutex.withLock { engagementHistoryDedups.remove(work.relayUrl) }
             eventIds.forEach { eventId ->
                 if (engagementHistoryStates[eventId] == EngagementHistoryState.InFlight) {
                     engagementHistoryStates[eventId] = EngagementHistoryState.Partial
@@ -1617,11 +1618,11 @@ internal class FeedController(
             session.close()
             return
         }
-        engagementHistorySession = session
+        engagementHistorySessions[work.relayUrl] = session
         var closedDisposition: RetryDisposition? = null
         subscriptionJobs += launch {
             session.signals.collect { signal ->
-                if (engagementHistorySession !== session) return@collect
+                if (engagementHistorySessions[work.relayUrl] !== session) return@collect
                 when (signal) {
                     is SubscriptionSignal.Event -> engagementEventMutex.withLock {
                         handleEngagementEvent(signal.event)
@@ -1666,9 +1667,9 @@ internal class FeedController(
                                         EngagementHistoryState.Partial
                                     }
                             }
-                            engagementHistoryDedup = null
+                            engagementHistoryDedups.remove(work.relayUrl)
                         }
-                        engagementHistorySession = null
+                        engagementHistorySessions.remove(work.relayUrl)
                         session.close()
                         if (subscriptionsStarted) {
                             if (shouldRetryWithBackoff) {
@@ -1690,7 +1691,7 @@ internal class FeedController(
     ): EngagementHistoryWork? {
         targetRelays.sorted().forEach { relayUrl ->
             val firstEventId = eventIds.firstOrNull { eventId ->
-                engagementHistoryStates[eventId] == EngagementHistoryState.Pending &&
+                engagementHistoryStates[eventId] != EngagementHistoryState.Complete &&
                     missingEngagementPartitions(eventId, relayUrl).isNotEmpty()
             } ?: return@forEach
             val missing = missingEngagementPartitions(firstEventId, relayUrl)
@@ -1700,7 +1701,7 @@ internal class FeedController(
                 missing
             }
             val batch = eventIds.asSequence()
-                .filter { engagementHistoryStates[it] == EngagementHistoryState.Pending }
+                .filter { engagementHistoryStates[it] != EngagementHistoryState.Complete }
                 .filter { eventId -> missingEngagementPartitions(eventId, relayUrl).containsAll(partitions) }
                 .take(ENGAGEMENT_HISTORY_BATCH_SIZE)
                 .toList()
