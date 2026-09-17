@@ -137,8 +137,8 @@ android {
         applicationId = "com.nostr.torinos"
         minSdk = libs.versions.android.minSdk.get().toInt()
         targetSdk = libs.versions.android.targetSdk.get().toInt()
-        versionCode = 13
-        versionName = "1.0.7"
+        versionCode = 14
+        versionName = "1.0.8"
     }
 
     buildFeatures {
