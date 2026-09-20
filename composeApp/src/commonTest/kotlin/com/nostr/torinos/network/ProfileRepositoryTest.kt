@@ -3,6 +3,8 @@ package com.nostr.torinos.network
 import com.nostr.torinos.model.NostrProfile
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
+import kotlin.test.assertTrue
 
 class ProfileRepositoryTest {
     private val freshEntry = ProfileCache.Entry(
@@ -103,5 +105,21 @@ class ProfileRepositoryTest {
     fun noPrimaryRelaysWhenAllRelaysFitWithinTheLimit() {
         assertEquals(null, profilePrimaryRelays(listOf("wss://a", "wss://b"), count = 2))
         assertEquals(null, profilePrimaryRelays(emptyList(), count = 2))
+    }
+
+    @Test
+    fun progressiveFetchIsUsedOnlyForTheFirstFetchOfUncachedProfiles() {
+        assertTrue(useProgressiveProfileFetch(relayHint = null, escalated = false, anyCached = false))
+    }
+
+    @Test
+    fun refetchingCachedProfilesAsksAllRelaysBecauseAPrimaryRelayMayHoldAnOlderVersion() {
+        assertFalse(useProgressiveProfileFetch(relayHint = null, escalated = false, anyCached = true))
+    }
+
+    @Test
+    fun progressiveFetchIsNotUsedWithARelayHintOrAfterEscalation() {
+        assertFalse(useProgressiveProfileFetch(relayHint = "wss://example.com", escalated = false, anyCached = false))
+        assertFalse(useProgressiveProfileFetch(relayHint = null, escalated = true, anyCached = false))
     }
 }

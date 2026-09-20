@@ -244,7 +244,13 @@ private object ProfileFetchCoordinator {
         try {
             // リレー指定がなければ、まず先頭の少数リレーだけに聞く。全リレーに同じ kind:0 を聞くと
             // 同一イベントが台数分返る。取れなかった分は finishBatch で全リレーへ広げる。
-            val primaryRelays = if (batch.relayHint == null && !batch.escalated) {
+            val primaryRelays = if (
+                useProgressiveProfileFetch(
+                    relayHint = batch.relayHint,
+                    escalated = batch.escalated,
+                    anyCached = batch.pubkeys.any { ProfileCache.get(it) != null },
+                )
+            ) {
                 profilePrimaryRelays(NostrRepository.targetRelayUrls(RelayTarget.AllEnabled), PRIMARY_RELAY_COUNT)
             } else {
                 null
@@ -353,6 +359,14 @@ internal fun profileFallbackPubkeys(
 } else {
     requestedPubkeys - receivedPubkeys
 }
+
+/**
+ * 先頭の少数リレーへ先に聞く段階取得を使うか。キャッシュ済みのプロフィールの再取得(期限切れ・強制更新)は、
+ * 先頭のリレーが古い版を返しても「取得できた」と見なされ、他のリレーにある新しい版を取り逃がすため、
+ * 最初から全リレーへ聞く。段階取得は、まだ1件も持っていない(初回取得)の場合だけに使う。
+ */
+internal fun useProgressiveProfileFetch(relayHint: String?, escalated: Boolean, anyCached: Boolean): Boolean =
+    relayHint == null && !escalated && !anyCached
 
 /**
  * リレー指定がないプロフィール取得で最初に聞くリレー。設定順の先頭 [count] 台。
