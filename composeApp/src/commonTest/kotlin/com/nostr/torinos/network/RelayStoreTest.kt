@@ -1,12 +1,33 @@
 package com.nostr.torinos.network
 
 import com.nostr.torinos.model.NostrEvent
+import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.json.Json
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertNull
 
 class RelayStoreTest {
+    @Test
+    fun anonymousRelaySettingsAreNeitherReadByAccountsNorMigratedIntoThem() = runTest {
+        val stored = mapOf("relay_entries" to "anonymous")
+
+        assertEquals("anonymous", readRelaySetting({ stored[it] }, "relay_entries", null))
+        assertNull(readRelaySetting({ stored[it] }, "relay_entries", "account-pubkey"))
+    }
+
+    @Test
+    fun accountRelaySettingsAreReadFromTheAccountKey() = runTest {
+        val stored = mapOf(
+            "relay_entries" to "anonymous",
+            "relay_entries-account-pubkey" to "account",
+        )
+
+        assertEquals("account", readRelaySetting({ stored[it] }, "relay_entries", "account-pubkey"))
+        assertEquals("anonymous", readRelaySetting({ stored[it] }, "relay_entries", null))
+    }
+
     @Test
     fun anonymousAndAccountRelaySettingsUseSeparateStorageKeys() {
         assertEquals("relay_entries", relaySettingStorageKey("relay_entries", null))

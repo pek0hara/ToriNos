@@ -490,19 +490,22 @@ object RelayStore {
     private fun storageKey(base: String): String =
         relaySettingStorageKey(base, activeAccountPubkey)
 
-    private suspend fun readSetting(base: String): String? {
-        val scopedKey = storageKey(base)
-        LocalSettingsStorage.getString(scopedKey)?.let { return it }
-        if (scopedKey == base) return null
-        return LocalSettingsStorage.getString(base)?.also { legacy ->
-            LocalSettingsStorage.putString(scopedKey, legacy)
-            LocalSettingsStorage.putString(base, null)
-        }
-    }
+    private suspend fun readSetting(base: String): String? =
+        readRelaySetting({ LocalSettingsStorage.getString(it) }, base, activeAccountPubkey)
 }
 
 internal fun relaySettingStorageKey(base: String, accountPubkey: String?): String =
     accountPubkey?.let { "$base-$it" } ?: base
+
+/**
+ * 未ログイン(公開鍵なし)とアカウントは別のキーを読む。公開鍵なしの値は未ログイン用の匿名設定なので、
+ * ログイン後もアカウント領域へ移動・複製しない。書き込み手段を受け取らないことで、移行が起きないことを保証する。
+ */
+internal suspend fun readRelaySetting(
+    getString: suspend (String) -> String?,
+    base: String,
+    accountPubkey: String?,
+): String? = getString(relaySettingStorageKey(base, accountPubkey))
 
 internal fun mergeRelayEntriesFromPublishedList(
     currentEntries: List<RelayEntry>,
