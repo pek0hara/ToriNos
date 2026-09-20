@@ -118,8 +118,6 @@ internal class FeedController(
     private val subscriptions: FeedSubscriptionGateway = RepositoryFeedSubscriptionGateway,
     private val feedEventKinds: Set<Int> = setOf(1),
     private val computeDispatcher: CoroutineDispatcher = Dispatchers.Default,
-    // プロフィール画面の空ページ自動スキップ調査用の一時パラメータ。検証が終わったら削除する。
-    private val feedPageSize: Int = DEFAULT_FEED_PAGE_SIZE,
 ) {
     private val safeCoroutineLauncher = SafeCoroutineLauncher(scope, "FeedController")
     private val feedItemMapper = FeedItemMapper()
@@ -204,8 +202,8 @@ internal class FeedController(
     private var oldestCreatedAt: Long? = null
     private var nextHistoryUntil: Long? = null
     private var activeHistoryUntil: Long? = null
-    private var nextHistoryPageSize = feedPageSize
-    private var activeHistoryPageSize = feedPageSize
+    private var nextHistoryPageSize = FEED_PAGE_SIZE
+    private var activeHistoryPageSize = FEED_PAGE_SIZE
     private var shouldRetryHistoryPage = false
     private var loadingMore = false
     private var isGapFill = false
@@ -603,8 +601,8 @@ internal class FeedController(
         oldestCreatedAt = null
         nextHistoryUntil = null
         activeHistoryUntil = null
-        nextHistoryPageSize = feedPageSize
-        activeHistoryPageSize = feedPageSize
+        nextHistoryPageSize = FEED_PAGE_SIZE
+        activeHistoryPageSize = FEED_PAGE_SIZE
         shouldRetryHistoryPage = false
         loadingMore = false
         isGapFill = false
@@ -812,7 +810,7 @@ internal class FeedController(
             baseFilters = feedFilters(),
             historyFloor = historyFloor,
             fetchTimeoutMillis = HISTORY_FETCH_TIMEOUT_MS,
-            pageSize = feedPageSize,
+            pageSize = FEED_PAGE_SIZE,
             maxPageSize = MAX_HISTORY_PAGE_SIZE,
             settleDelayMillis = HISTORY_RELAY_SETTLE_DELAY_MS,
             onEvent = { event ->
@@ -913,7 +911,7 @@ internal class FeedController(
         activeHistoryUntil = until
         activeHistoryPageSize = when {
             retryRelayUrls != null -> activeHistoryPageSize
-            until == null -> feedPageSize
+            until == null -> FEED_PAGE_SIZE
             else -> nextHistoryPageSize
         }
         loadingMore = true
@@ -953,7 +951,7 @@ internal class FeedController(
         currentHistorySession?.close()
         val historySubId = nextHistorySubscriptionId(ids)
         isGapFill = true
-        activeHistoryPageSize = feedPageSize
+        activeHistoryPageSize = FEED_PAGE_SIZE
         loadingMore = true
         lastHistoryBatchUniqueCount = 0
         historyPageCreatedAtByEventId.clear()
@@ -962,7 +960,7 @@ internal class FeedController(
         val session = subscriptions.open(
             SubscriptionSpec(
                 id = historySubId,
-                filters = feedFilters(since = since, until = until, limit = feedPageSize),
+                filters = feedFilters(since = since, until = until, limit = FEED_PAGE_SIZE),
                 target = relayTarget,
                 behavior = SubscriptionBehavior.Fetch(HISTORY_FETCH_TIMEOUT_MS),
                 deduplicateEvents = false,
@@ -995,7 +993,7 @@ internal class FeedController(
                 // until を進めず取得上限を広げ、31件目以降を取りこぼさない。
                 (activeHistoryPageSize * 2).coerceAtMost(MAX_HISTORY_PAGE_SIZE)
             } else {
-                feedPageSize
+                FEED_PAGE_SIZE
             }
             revealHistoryThrough(pageWindow.revealOldestAt)
         }
@@ -1126,7 +1124,7 @@ internal class FeedController(
                 revealHistoryThrough(
                     historyPageWindow(
                         historyPageCreatedAtByEventId.values.toList(),
-                        feedPageSize,
+                        FEED_PAGE_SIZE,
                     ).revealOldestAt,
                 )
             }
@@ -2028,7 +2026,7 @@ internal class FeedController(
 
     companion object {
         private val DISPLAY_EVENT_KINDS = linkedSetOf(1, COMMENT_EVENT_KIND)
-        internal const val DEFAULT_FEED_PAGE_SIZE = 30
+        private const val FEED_PAGE_SIZE = 30
         private const val MAX_HISTORY_PAGE_SIZE = 3_840
         // FeedItemMapperのデフォルトのキャッシュ上限がこの値を下回らないよう、そちらから直接参照する。
         internal const val MAX_TIMELINE_EVENTS = 800

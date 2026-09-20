@@ -28,8 +28,6 @@ class FeedViewModel(
     hashtag: String? = null,
     filterMutedUsers: Boolean = true,
     feedEventKinds: Set<Int> = setOf(1),
-    // プロフィール画面の空ページ自動スキップ調査用の一時パラメータ。検証が終わったら削除する。
-    feedPageSize: Int? = null,
 ) : SafeViewModel() {
     enum class InitialFeedState {
         Loading,
@@ -86,7 +84,6 @@ class FeedViewModel(
         filterMutedUsers = filterMutedUsers,
         scope = viewModelScope,
         feedEventKinds = feedEventKinds,
-        feedPageSize = feedPageSize ?: FeedController.DEFAULT_FEED_PAGE_SIZE,
     )
     val state: StateFlow<UiState> = controller.state
 
