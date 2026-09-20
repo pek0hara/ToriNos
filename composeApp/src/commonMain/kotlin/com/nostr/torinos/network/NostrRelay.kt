@@ -85,7 +85,6 @@ class NostrRelay(
                                             networkTraceLog { "[Relay] send to $url: $msg" }
                                             try {
                                                 outgoing.send(Frame.Text(msg))
-                                                TrafficMetrics.onSend(url, pending.key, msg)
                                                 pending.completion?.complete(Unit)
                                             } catch (e: Throwable) {
                                                 pendingMutex.withLock {
@@ -93,6 +92,9 @@ class NostrRelay(
                                                 }
                                                 throw e
                                             }
+                                            // 送信に成功した後で計測する。再キューする try の中に置くと、計測の例外で送信済みの
+                                            // メッセージが再送されてしまう。
+                                            TrafficMetrics.onSend(url, pending.key, msg)
                                         }
                                         sendSignal.receive()
                                     }

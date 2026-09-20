@@ -2,6 +2,7 @@ package com.nostr.torinos.network
 
 import com.nostr.torinos.model.RelayMessage
 import com.nostr.torinos.util.appLog
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -50,8 +51,27 @@ internal object TrafficMetrics {
         val eventsByRelay = linkedMapOf<String, Int>()
     }
 
+    // 計測の失敗で中継の送受信を壊さない。
+    private suspend inline fun guarded(block: () -> Unit) {
+        try {
+            block()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Throwable) {
+        }
+    }
+
     suspend fun onSend(relayUrl: String, subscriptionId: String?, text: String) {
         if (!ENABLED) return
+        guarded { recordSend(relayUrl, subscriptionId, text) }
+    }
+
+    suspend fun onReceive(relayUrl: String, message: RelayMessage, bytes: Int) {
+        if (!ENABLED) return
+        guarded { recordReceive(relayUrl, message, bytes) }
+    }
+
+    private suspend fun recordSend(relayUrl: String, subscriptionId: String?, text: String) {
         val type = text.substringAfter('[').substringBefore(',').trim('"')
         if (type != "REQ" && type != "CLOSE") return
         val subscriptionId = subscriptionId ?: return
@@ -76,8 +96,7 @@ internal object TrafficMetrics {
         }
     }
 
-    suspend fun onReceive(relayUrl: String, message: RelayMessage, bytes: Int) {
-        if (!ENABLED) return
+    private suspend fun recordReceive(relayUrl: String, message: RelayMessage, bytes: Int) {
         val subscriptionId = when (message) {
             is RelayMessage.Event -> message.subscriptionId
             is RelayMessage.EndOfStoredEvents -> message.subscriptionId
