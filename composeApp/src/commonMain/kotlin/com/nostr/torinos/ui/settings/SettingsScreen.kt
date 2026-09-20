@@ -32,8 +32,10 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import com.nostr.torinos.network.DisplayPreferencesStore
 import com.nostr.torinos.ui.components.AppTopBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -80,6 +82,8 @@ fun SettingsScreen(
     }
     val clipboard = LocalClipboard.current
     var nsecClipboardCopied by remember { mutableStateOf(false) }
+    val showImagePreviews by DisplayPreferencesStore.showImagePreviews.collectAsState()
+    val showXPreviews by DisplayPreferencesStore.showXPreviews.collectAsState()
 
     LaunchedEffect(accountViewModel) {
         accountViewModel?.secretKeyEvent?.collect { nsec = it }
@@ -128,6 +132,15 @@ fun SettingsScreen(
                 .fillMaxSize()
                 .padding(padding),
         ) {
+            item {
+                DisplaySection(
+                    showImagePreviews = showImagePreviews,
+                    showXPreviews = showXPreviews,
+                    onShowImagePreviewsChange = DisplayPreferencesStore::setShowImagePreviews,
+                    onShowXPreviewsChange = DisplayPreferencesStore::setShowXPreviews,
+                )
+                HorizontalDivider()
+            }
             item {
                 FilterSection(
                     onMuteListClick = onMuteListClick,
@@ -585,6 +598,59 @@ private fun ConfirmAccountDialog(
             }
         },
     )
+}
+
+@Composable
+private fun DisplaySection(
+    showImagePreviews: Boolean,
+    showXPreviews: Boolean,
+    onShowImagePreviewsChange: (Boolean) -> Unit,
+    onShowXPreviewsChange: (Boolean) -> Unit,
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(0.dp),
+    ) {
+        Text(
+            text = "表示",
+            style = MaterialTheme.typography.titleSmall,
+            fontWeight = FontWeight.Bold,
+            modifier = Modifier.padding(bottom = 4.dp),
+        )
+        DisplayToggleRow(
+            label = "画像プレビュー",
+            checked = showImagePreviews,
+            onCheckedChange = onShowImagePreviewsChange,
+        )
+        DisplayToggleRow(
+            label = "X投稿プレビュー",
+            checked = showXPreviews,
+            onCheckedChange = onShowXPreviewsChange,
+        )
+    }
+}
+
+@Composable
+private fun DisplayToggleRow(
+    label: String,
+    checked: Boolean,
+    onCheckedChange: (Boolean) -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 6.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.bodyMedium,
+        )
+        Switch(checked = checked, onCheckedChange = onCheckedChange)
+    }
 }
 
 @Composable
