@@ -16,6 +16,7 @@ import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -35,6 +36,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 
 sealed interface RelayTarget {
@@ -482,17 +484,28 @@ object NostrRepository {
                 targetRelayUrls = targetUrls,
             )
         }
-        if (!completeImmediately && spec.behavior is SubscriptionBehavior.Fetch) {
-            session.timeoutJob = scope.launch {
-                delay(spec.behavior.timeoutMillis)
-                completeFetch(spec.id, timedOut = true)
+        try {
+            if (!completeImmediately && spec.behavior is SubscriptionBehavior.Fetch) {
+                session.timeoutJob = scope.launch {
+                    delay(spec.behavior.timeoutMillis)
+                    completeFetch(spec.id, timedOut = true)
+                }
             }
+            newHandles.forEach { it.relay.connect(scope) }
+            sendSubscriptionCommands(commands, removedHandles)
+            closeRemovedRelayHandles(removedHandles)
+            replayCachedToSession(session, spec.filters, targetRelayUrls)
+            if (completeImmediately) completeFetch(spec.id, timedOut = false)
+        } catch (e: Throwable) {
+            // 登録後に呼び出し元がキャンセルされると、session を受け取れないまま登録だけが残り、
+            // 同じIDでの再オープンが「使用済み」で失敗し続ける。登録を巻き戻してから再送出する。
+            appLog("[NostrRepository] openSubscription aborted after register id=${spec.id} cause=${e::class.simpleName}")
+            withContext(NonCancellable) {
+                closeActiveSubscription(spec.id, buildCloseMessage(spec.id))
+                removedHandles.forEach { it.close() }
+            }
+            throw e
         }
-        newHandles.forEach { it.relay.connect(scope) }
-        sendSubscriptionCommands(commands, removedHandles)
-        closeRemovedRelayHandles(removedHandles)
-        replayCachedToSession(session, spec.filters, targetRelayUrls)
-        if (completeImmediately) completeFetch(spec.id, timedOut = false)
         return session
     }
 
