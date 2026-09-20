@@ -89,6 +89,8 @@ fun NoteTimeline(
     initialEventMaxWaitMillis: Long = 500L,
     header: LazyListScope.() -> Unit = {},
     onAtTopChanged: (Boolean) -> Unit = {},
+    // 状態の受け手(ViewModel)が替わったとき、リストが使い回されていても現在の先頭判定を渡し直すためのキー。
+    atTopReportKey: Any? = null,
     topOverlayVisibility: Float = 1f,
 ) {
     val muteStore = LocalAccountSession.current?.muteStore
@@ -102,7 +104,7 @@ fun NoteTimeline(
     // 新しいラムダは再コンポーズのたびに新しいインスタンスとして生成されるため、
     // viewModelが変わっていなくても毎回購読し直してしまう。
     val currentOnAtTopChanged = rememberUpdatedState(onAtTopChanged)
-    LaunchedEffect(timelineListState) {
+    LaunchedEffect(timelineListState, atTopReportKey) {
         snapshotFlow {
             timelineListState.firstVisibleItemIndex == 0 && timelineListState.firstVisibleItemScrollOffset == 0
         }
@@ -232,7 +234,7 @@ fun NoteTimeline(
                     ?.takeIf { it >= 0 }
                     ?: return@collect
                 val imageLoader = SingletonImageLoader.get(prefetchPlatformContext)
-                state.events.drop(lastIndex + 1).take(ImagePrefetchAheadCount).forEach { event ->
+                prefetchCandidateEvents(state.events, lastIndex, ImagePrefetchAheadCount).forEach { event ->
                     val images = state.parsedContents[event.id]?.images ?: return@forEach
                     val request = firstImagePreviewRequest(prefetchPlatformContext, images) ?: return@forEach
                     if (prefetchedImageUrls.add(request.data.toString())) {
@@ -404,3 +406,17 @@ private const val PrefetchedImageUrlCacheLimit = 300
 
 /** スクロール停止からこの時間が経つまでは「停止」とみなさない（短い指の離し直しでの反復開始を防ぐ）。 */
 private const val ScrollSettleDebounceMillis = 200L
+
+/**
+ * 表示中の最後の投稿より後ろの [aheadCount] 件のうち、画像を先読みしてよい投稿。
+ * コンテンツ警告つきの投稿は、利用者が解除するまで画像を表示しないため、先読みで外部ホストへ
+ * リクエストを出さない。
+ */
+internal fun prefetchCandidateEvents(
+    events: List<NostrEvent>,
+    lastVisibleIndex: Int,
+    aheadCount: Int,
+): List<NostrEvent> = events
+    .drop(lastVisibleIndex + 1)
+    .take(aheadCount)
+    .filterNot { hasContentWarning(it.tags) }

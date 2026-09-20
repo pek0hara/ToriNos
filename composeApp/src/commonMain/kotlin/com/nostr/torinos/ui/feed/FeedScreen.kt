@@ -740,6 +740,7 @@ private fun FeedTimelinePane(
             eventEnterFadeMillis = 150,
             stageInitialEvents = shouldStageInitialEvents,
             onAtTopChanged = viewModel::setAtTop,
+            atTopReportKey = viewModel,
             onRefresh = {
                 onRefresh?.invoke()
                 viewModel.refresh()
