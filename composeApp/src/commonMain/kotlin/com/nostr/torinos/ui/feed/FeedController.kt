@@ -513,10 +513,6 @@ internal class FeedController(
     }
 
     fun loadMore() {
-        com.nostr.torinos.ui.profile.profileDebugLog(
-            "FeedController.loadMore instanceKey=$instanceKey canLoadMore=${currentFeedState().canLoadMore} " +
-                "isLoadingMore=${currentFeedState().isLoadingMore}",
-        )
         relayHistoryCoordinator?.let { coordinator ->
             if (currentFeedState().canLoadMore) coordinator.loadMore()
             return
@@ -896,9 +892,6 @@ internal class FeedController(
         until: Long?,
         retryRelayUrls: Set<String>? = null,
     ) {
-        com.nostr.torinos.ui.profile.profileDebugLog(
-            "requestHistoryPage instanceKey=$instanceKey until=$until pageSize=$feedPageSize",
-        )
         val ids = subscriptionIds ?: return
         if (authorPubkeys?.isEmpty() == true) {
             loadingMore = false
@@ -992,10 +985,6 @@ internal class FeedController(
         )
         val hasMore = pageWindow.hasMore
         val loadedVisibleEvents = lastHistoryBatchUniqueCount > 0
-        com.nostr.torinos.ui.profile.profileDebugLog(
-            "onHistoryPageCompleted instanceKey=$instanceKey loadedVisibleEvents=$loadedVisibleEvents " +
-                "uniqueCount=$lastHistoryBatchUniqueCount hasMore=$hasMore isGapFill=$isGapFill",
-        )
         if (!isGapFill) {
             shouldRetryHistoryPage = false
             nextHistoryUntil = pageWindow.nextUntil
@@ -1073,11 +1062,6 @@ internal class FeedController(
             return
         }
         consecutiveEmptyHistoryPages++
-        com.nostr.torinos.ui.profile.profileDebugLog(
-            "continuePastEmptyHistoryPageIfNeeded instanceKey=$instanceKey " +
-                "consecutiveEmptyHistoryPages=$consecutiveEmptyHistoryPages " +
-                "willSkip=${consecutiveEmptyHistoryPages <= MAX_AUTO_SKIP_EMPTY_HISTORY_PAGES}",
-        )
         if (consecutiveEmptyHistoryPages > MAX_AUTO_SKIP_EMPTY_HISTORY_PAGES) return
         launch {
             requestHistoryPage(until = nextHistoryUntil)

@@ -96,8 +96,6 @@ fun UserProfileScreen(
         LazyListState()
     }
 
-    remember(pubkey) { profileDebugLog("UserProfileScreen composed pubkey=${pubkey.take(16)}") }
-
     LaunchedEffect(viewModel) {
         viewModel.refreshProfile()
     }
@@ -105,7 +103,6 @@ fun UserProfileScreen(
     LaunchedEffect(state.profile) {
         val profile = state.profile ?: return@LaunchedEffect
         if (!deferredContentStarted) {
-            profileDebugLog("deferredContentStarted=true via profile arrival pubkey=${pubkey.take(16)}")
             deferredContentStarted = true
             viewModel.loadFollowingCount()
         }
@@ -114,7 +111,6 @@ fun UserProfileScreen(
     LaunchedEffect(pubkey) {
         delay(DEFERRED_PROFILE_CONTENT_DELAY_MS)
         if (!deferredContentStarted) {
-            profileDebugLog("deferredContentStarted=true via ${DEFERRED_PROFILE_CONTENT_DELAY_MS}ms timeout pubkey=${pubkey.take(16)}")
             deferredContentStarted = true
             viewModel.loadFollowingCount()
         }
@@ -126,18 +122,11 @@ fun UserProfileScreen(
 
     if (deferredContentStarted) {
         LifecycleStartEffect(feedViewModel, longBackgroundResetRequest) {
-            profileDebugLog("feedViewModel.startSubscriptions() pubkey=${pubkey.take(16)}")
             feedViewModel.resetToLatest(longBackgroundResetRequest)
             feedViewModel.startSubscriptions()
             onStopOrDispose {
                 feedViewModel.stopSubscriptions()
             }
-        }
-    }
-
-    LaunchedEffect(feedState.events.isEmpty()) {
-        if (!feedState.events.isEmpty()) {
-            profileDebugLog("timeline first non-empty pubkey=${pubkey.take(16)} count=${feedState.events.size}")
         }
     }
 

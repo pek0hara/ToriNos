@@ -124,14 +124,11 @@ class UserProfileViewModel(
     fun clearFollowError() { _state.update { it.copy(followError = null) } }
 
     private fun start() {
-        profileDebugLog("start() pubkey=$shortKey")
         RelayListEventCache.get(pubkey)?.let { cachedRelayList ->
             _state.update { it.copy(relayUrls = cachedRelayList.relayUrls()) }
         }
-        val cachedProfile = ProfileRepository.getCached(pubkey)
-        profileDebugLog("ProfileRepository.getCached pubkey=$shortKey hit=${cachedProfile != null}")
-        cachedProfile?.let {
-            _state.update { state -> state.copy(profile = cachedProfile) }
+        ProfileRepository.getCached(pubkey)?.let { cachedProfile ->
+            _state.update { it.copy(profile = cachedProfile) }
             scheduleLinkedProfileFetch(cachedProfile.about.orEmpty())
         }
         startCollectors()
@@ -204,7 +201,6 @@ class UserProfileViewModel(
         collectorJobs += launch {
             ProfileRepository.observe(pubkey).collect { profile ->
                 if (profile == null || profile == _state.value.profile) return@collect
-                profileDebugLog("ProfileRepository.observe delivered pubkey=$shortKey")
                 _state.update { it.copy(profile = profile) }
                 scheduleLinkedProfileFetch(profile.about.orEmpty())
             }
