@@ -48,9 +48,18 @@ data class PublishedRelayListUiState(
     val canPublishChanges: Boolean get() = hasCompletedInitialFetch && hasChanges && !isPublishing
 }
 
+internal fun initialPublishedRelayListUiState(canSyncPublishedRelayList: Boolean) =
+    PublishedRelayListUiState(
+        isLoading = canSyncPublishedRelayList,
+        isAwaitingFirstResponse = canSyncPublishedRelayList,
+        hasCompletedInitialFetch = !canSyncPublishedRelayList,
+    )
+
 class RelaySettingsViewModel(
     private val accountSession: AccountSession? = null,
 ) : SafeViewModel() {
+    private val canSyncPublishedRelayList = accountSession != null && isWriteSupported
+    val isAnonymous = accountSession == null
     private val _entries = MutableStateFlow(RelayStore.entries.value)
     val entries: StateFlow<List<RelayEntry>> = _entries.asStateFlow()
     private val _informationState = MutableStateFlow(RelayInformationUiState())
@@ -61,11 +70,7 @@ class RelaySettingsViewModel(
     private val _discoveryState = MutableStateFlow(FollowedRelayDiscoveryUiState())
     val discoveryState: StateFlow<FollowedRelayDiscoveryUiState> = _discoveryState.asStateFlow()
     private val _publishedRelayListState = MutableStateFlow(
-        PublishedRelayListUiState(
-            isLoading = isWriteSupported,
-            isAwaitingFirstResponse = isWriteSupported,
-            hasCompletedInitialFetch = !isWriteSupported,
-        ),
+        initialPublishedRelayListUiState(canSyncPublishedRelayList),
     )
     val publishedRelayListState: StateFlow<PublishedRelayListUiState> =
         _publishedRelayListState.asStateFlow()
@@ -80,8 +85,8 @@ class RelaySettingsViewModel(
     init {
         observeStoredEntries()
         loadRelayInformation(_entries.value.mapTo(linkedSetOf()) { it.url })
-        discoverFollowedRelays()
-        if (isWriteSupported) refreshPublishedRelayList()
+        if (accountSession != null) discoverFollowedRelays()
+        if (canSyncPublishedRelayList) refreshPublishedRelayList()
     }
 
     fun add(url: String) {
@@ -125,7 +130,7 @@ class RelaySettingsViewModel(
         )
         launch {
             try {
-                val result = if (isWriteSupported) {
+                val result = if (canSyncPublishedRelayList) {
                     checkNotNull(accountSession) { "アカウントセッションがありません" }
                         .relayListSynchronizer.updatePublishedRelayList(
                         additions = state.pendingAdditions.mapNotNull { url ->
@@ -190,6 +195,7 @@ class RelaySettingsViewModel(
     }
 
     fun refreshPublishedRelayList() {
+        if (!canSyncPublishedRelayList) return
         val state = _publishedRelayListState.value
         if ((state.isLoading && state.publishedUrls.isNotEmpty()) || state.isPublishing) return
         _publishedRelayListState.value = state.copy(

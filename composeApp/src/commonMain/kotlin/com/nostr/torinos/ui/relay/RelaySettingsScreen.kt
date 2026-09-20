@@ -144,6 +144,14 @@ fun RelaySettingsScreen(
 
             HorizontalDivider()
 
+            if (viewModel.isAnonymous) {
+                Text(
+                    text = "未ログイン中のリレー設定です。変更はこの端末内に保存されます。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+
             if (publishedRelayListState.hasChanges) {
                 PublishedRelayDiff(
                     additions = publishedRelayListState.pendingAdditions,

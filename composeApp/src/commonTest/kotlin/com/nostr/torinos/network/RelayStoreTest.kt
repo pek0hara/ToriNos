@@ -8,6 +8,15 @@ import kotlin.test.assertFailsWith
 
 class RelayStoreTest {
     @Test
+    fun anonymousAndAccountRelaySettingsUseSeparateStorageKeys() {
+        assertEquals("relay_entries", relaySettingStorageKey("relay_entries", null))
+        assertEquals(
+            "relay_entries-account-pubkey",
+            relaySettingStorageKey("relay_entries", "account-pubkey"),
+        )
+    }
+
+    @Test
     fun emptyRelayListCannotBePublished() {
         assertFailsWith<IllegalStateException> {
             checkRelayListCanBePublished(emptyList())

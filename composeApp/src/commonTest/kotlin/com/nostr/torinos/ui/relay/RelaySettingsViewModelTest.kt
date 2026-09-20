@@ -8,6 +8,28 @@ import kotlin.test.assertTrue
 
 class RelaySettingsViewModelTest {
     @Test
+    fun anonymousRelaySettingsCanBeSavedWithoutWaitingForPublishedList() {
+        val state = initialPublishedRelayListUiState(canSyncPublishedRelayList = false).copy(
+            pendingAdditions = setOf("wss://local.example"),
+        )
+
+        assertFalse(state.isLoading)
+        assertFalse(state.isAwaitingFirstResponse)
+        assertTrue(state.canPublishChanges)
+    }
+
+    @Test
+    fun accountRelaySettingsWaitForPublishedListBeforeSaving() {
+        val state = initialPublishedRelayListUiState(canSyncPublishedRelayList = true).copy(
+            pendingAdditions = setOf("wss://account.example"),
+        )
+
+        assertTrue(state.isLoading)
+        assertTrue(state.isAwaitingFirstResponse)
+        assertFalse(state.canPublishChanges)
+    }
+
+    @Test
     fun relayListCannotBePublishedBeforeInitialFetchCompletes() {
         val pending = PublishedRelayListUiState(
             pendingAdditions = setOf("wss://new.example"),

@@ -488,7 +488,7 @@ object RelayStore {
     }
 
     private fun storageKey(base: String): String =
-        activeAccountPubkey?.let { "$base-$it" } ?: base
+        relaySettingStorageKey(base, activeAccountPubkey)
 
     private suspend fun readSetting(base: String): String? {
         val scopedKey = storageKey(base)
@@ -500,6 +500,9 @@ object RelayStore {
         }
     }
 }
+
+internal fun relaySettingStorageKey(base: String, accountPubkey: String?): String =
+    accountPubkey?.let { "$base-$it" } ?: base
 
 internal fun mergeRelayEntriesFromPublishedList(
     currentEntries: List<RelayEntry>,
