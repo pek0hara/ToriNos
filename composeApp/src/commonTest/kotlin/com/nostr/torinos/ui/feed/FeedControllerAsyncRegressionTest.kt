@@ -795,6 +795,60 @@ class FeedControllerAsyncRegressionTest {
     }
 
     @Test
+    fun liveEngagementSubscriptionWatchesOnlyNewestEvents() = runTest {
+        val gateway = FakeGateway()
+        val controller = FeedController(scope = backgroundScope, subscriptions = gateway)
+        runCurrent()
+        gateway.completeInitialFeedHistory()
+        runCurrent()
+        val feedLive = gateway.liveSessions.single()
+
+        repeat(60) { index -> feedLive.event(event("note-$index", 100L + index)) }
+        runCurrent()
+        advanceTimeBy(500)
+        runCurrent()
+
+        // 新しい順に40件だけがライブ購読の対象になり、古い20件は履歴取得だけで扱う。
+        val engagementLive = gateway.engagementLiveSessions.single()
+        val expected = (20 until 60).map { "note-$it" }.toSet()
+        assertTrue(engagementLive.filters.all { it.targetIds()?.toSet() == expected })
+        val historyIds = gateway.engagementFetchSessions
+            .flatMap { session -> session.filters.mapNotNull { it.targetIds() } }
+            .flatten()
+            .toSet()
+        assertTrue((0 until 20).all { "note-$it" in historyIds })
+        controller.close()
+    }
+
+    @Test
+    fun loadingOlderEventsDoesNotResendLiveEngagementSubscription() = runTest {
+        val gateway = FakeGateway()
+        val controller = FeedController(scope = backgroundScope, subscriptions = gateway)
+        runCurrent()
+        gateway.completeInitialFeedHistory()
+        runCurrent()
+        val feedLive = gateway.liveSessions.single()
+
+        repeat(50) { index -> feedLive.event(event("new-$index", 1_000L + index)) }
+        runCurrent()
+        advanceTimeBy(500)
+        runCurrent()
+        val engagementLive = gateway.engagementLiveSessions.single()
+        val updatesBefore = engagementLive.filterUpdates.size
+        val idsBefore = engagementLive.filters.first().targetIds()?.toSet()
+
+        // スクロールで古い投稿が増えても、新しい40件が変わらなければ再送しない。
+        repeat(10) { index -> feedLive.event(event("old-$index", 1L + index)) }
+        runCurrent()
+        advanceTimeBy(500)
+        runCurrent()
+
+        assertEquals(updatesBefore, engagementLive.filterUpdates.size)
+        assertEquals(idsBefore, engagementLive.filters.first().targetIds()?.toSet())
+        controller.close()
+    }
+
+    @Test
     fun engagementHistoryWaitsForRelayRoutingButNotFeedHistoryCompletion() = runTest {
         val gateway = FakeGateway(initialRelayUrls = setOf("relay-a")).apply {
             targetRelayUrlsOverride = emptySet()

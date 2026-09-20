@@ -1529,16 +1529,19 @@ internal class FeedController(
         val liveSince = engagementResumeSince
             ?: (cutoff - ENGAGEMENT_LIVE_OVERLAP_SECONDS).coerceAtLeast(0L)
         engagementResumeSince = null
-        val filters = engagementFilters(ids, since = liveSince)
+        // ライブ購読は新しい投稿に絞る。既存分の取得は履歴フェッチが担うため、スクロールで古い投稿が
+        // 増えてもライブ側のREQは変わらない(全件を都度送り直すとREQが肥大化する)。
+        val liveIds = liveEngagementEventIds(ids)
+        val filters = engagementFilters(liveIds, since = liveSince)
         val existing = engagementSession
         if (existing != null) {
             // 履歴取得の完了ごとに呼ばれるが、監視IDも取得先も同じなら since が違うだけの再送になる。
-            if (ids != engagementLiveEventIds || targetRelays != previousRelays) {
+            if (liveIds.toSet() != engagementLiveEventIds?.toSet() || targetRelays != previousRelays) {
                 existing.update(filters, relayTarget)
             }
-            engagementLiveEventIds = ids
+            engagementLiveEventIds = liveIds
         } else {
-            engagementLiveEventIds = ids
+            engagementLiveEventIds = liveIds
             val session = subscriptions.open(
                 SubscriptionSpec(
                     id = subIds.reaction,
@@ -1778,6 +1781,14 @@ internal class FeedController(
         engagementCompletedPartitions.remove(eventId)
     }
 
+    /** 新しい順(タイムライン上の並び時刻)に [MAX_LIVE_ENGAGEMENT_EVENTS] 件まで。時刻不明は新着とみなす。 */
+    private fun liveEngagementEventIds(ids: List<String>): List<String> {
+        if (ids.size <= MAX_LIVE_ENGAGEMENT_EVENTS) return ids
+        return ids
+            .sortedByDescending { eventSortTimes[it] ?: Long.MAX_VALUE }
+            .take(MAX_LIVE_ENGAGEMENT_EVENTS)
+    }
+
     private fun engagementFilters(
         ids: List<String>,
         since: Long? = null,
@@ -1935,6 +1946,7 @@ internal class FeedController(
         private const val MAX_HISTORY_PAGE_SIZE = 3_840
         private const val MAX_TIMELINE_EVENTS = 800
         private const val MAX_TRACKED_ENGAGEMENT_EVENTS = 100
+        private const val MAX_LIVE_ENGAGEMENT_EVENTS = 40
         private const val MAX_SEEN_IDS = 2000
         private const val PROFILE_MAX_AGE_MS = 15 * 60 * 1_000L
         private const val TIMELINE_BATCH_DELAY_MS = 150L
