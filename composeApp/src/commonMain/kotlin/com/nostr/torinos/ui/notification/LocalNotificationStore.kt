@@ -43,7 +43,16 @@ object LocalNotificationStore {
         )
     }
 
+    suspend fun loadFollowSyncedAt(ownPubkey: String): Long? =
+        LocalSettingsStorage.getString(followSyncedAtKey(ownPubkey))?.toLongOrNull()
+
+    suspend fun saveFollowSyncedAt(ownPubkey: String, epochSeconds: Long) {
+        LocalSettingsStorage.putString(followSyncedAtKey(ownPubkey), epochSeconds.toString())
+    }
+
     private fun notificationsKey(ownPubkey: String): String = "notifications_$ownPubkey"
 
     private fun knownFollowersKey(ownPubkey: String): String = "notification_known_followers_$ownPubkey"
+
+    private fun followSyncedAtKey(ownPubkey: String): String = "notification_follow_synced_at_$ownPubkey"
 }

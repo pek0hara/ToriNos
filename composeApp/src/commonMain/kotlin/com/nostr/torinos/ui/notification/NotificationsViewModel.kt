@@ -81,6 +81,8 @@ class NotificationsViewModel(
     private var startupSyncJob: Job? = null
     private var liveSubscriptionJob: Job? = null
     private var hasStoredFollowerList = false
+    // フォロー検出(kind 3)を差分取得するための前回同期時刻。未保存なら全件取得する。
+    private var followSyncedAt: Long? = null
     private val knownFollowerPubkeys = linkedSetOf<String>()
     private var liveSubscriptionsStarted = false
     private var startupSyncActive = true
@@ -142,19 +144,25 @@ class NotificationsViewModel(
     }
 
     private suspend fun syncOnce() {
+        val syncStartedAt = Clock.System.now().epochSeconds
         try {
-            withTimeoutOrNull(INITIAL_SYNC_TIMEOUT_MS) {
+            val completed = withTimeoutOrNull(INITIAL_SYNC_TIMEOUT_MS) {
                 val activityEose = async { NostrRepository.eose(activitySubId).first() }
                 val followsEose = async { NostrRepository.eose(followsSubId).first() }
                 subscribeNotificationFeeds(limit = INITIAL_SYNC_LIMIT)
                 activityEose.await()
                 followsEose.await()
-            }
+            } != null
             // Activity events schedule profile/target fetches with a short debounce.
             delay(AUXILIARY_FETCH_DRAIN_MS)
             if (!hasStoredFollowerList) {
                 hasStoredFollowerList = true
                 saveKnownFollowers()
+            }
+            if (completed) {
+                // 同期開始時刻を記録し、同期中に届いたフォローを次回の差分取得で取りこぼさない。
+                followSyncedAt = syncStartedAt
+                LocalNotificationStore.saveFollowSyncedAt(ownPubkey, syncStartedAt)
             }
             _state.update { it.copy(isInitialLoad = false) }
         } finally {
@@ -212,7 +220,7 @@ class NotificationsViewModel(
         )
         NostrRepository.subscribe(
             followsSubId,
-            NostrFilter(kinds = listOf(3), pTags = listOf(ownPubkey), limit = limit),
+            followFilter(ownPubkey, limit, followSyncSince(hasStoredFollowerList, followSyncedAt)),
         )
     }
 
@@ -338,6 +346,7 @@ class NotificationsViewModel(
     private suspend fun loadKnownFollowers() {
         val decoded = LocalNotificationStore.loadKnownFollowers(ownPubkey)
         hasStoredFollowerList = decoded != null
+        followSyncedAt = LocalNotificationStore.loadFollowSyncedAt(ownPubkey)
         knownFollowerPubkeys.clear()
         decoded?.let { pubkeys ->
             knownFollowerPubkeys += pubkeys.filter { it.isNotBlank() }
@@ -452,3 +461,19 @@ internal fun List<NotificationItem>.filterNotMutedActors(
     val normalizedMutedPubkeys = mutedPubkeys.mapTo(hashSetOf()) { it.trim().lowercase() }
     return filterNot { it.actorPubkey.trim().lowercase() in normalizedMutedPubkeys }
 }
+
+/** 新しい順に最大 [limit] 件のフォロワーの contact list(kind 3)。フォロー1件が巨大なので、可能なら [since] で絞る。 */
+internal fun followFilter(ownPubkey: String, limit: Int, since: Long?): NostrFilter =
+    NostrFilter(kinds = listOf(3), pTags = listOf(ownPubkey), since = since, limit = limit)
+
+/**
+ * 既知フォロワーの一覧と前回同期時刻が揃っているときだけ、その時刻(余裕つき)以降に絞る。
+ * 一覧が未保存なら基準を作るため、従来どおり全件取得する。
+ */
+internal fun followSyncSince(hasStoredFollowerList: Boolean, lastSyncedAt: Long?): Long? {
+    if (!hasStoredFollowerList || lastSyncedAt == null) return null
+    return (lastSyncedAt - FOLLOW_SYNC_OVERLAP_SECONDS).coerceAtLeast(0L)
+}
+
+// リレーへの伝搬遅れやクライアントの時計ずれを吸収する。既知フォロワーは重複排除される。
+internal const val FOLLOW_SYNC_OVERLAP_SECONDS = 24 * 60 * 60L
