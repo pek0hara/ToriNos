@@ -89,6 +89,7 @@ class NostrRelay(
                                             )
                                             try {
                                                 outgoing.send(Frame.Text(msg))
+                                                TrafficMetrics.onSend(url, pending.key, msg)
                                                 pending.completion?.complete(Unit)
                                             } catch (e: Throwable) {
                                                 pendingMutex.withLock {
@@ -111,6 +112,7 @@ class NostrRelay(
                                     val text = frame.readText()
                                     networkTraceLog { "[Relay] recv from $url: ${text.take(200)}" }
                                     val message = parseRelayMessage(text)
+                                    TrafficMetrics.onReceive(url, message, text.length)
                                     if (message is RelayMessage.Ok) {
                                         okWaitersMutex.withLock {
                                             okWaiters.remove(message.eventId).orEmpty()
