@@ -16,6 +16,7 @@ import androidx.compose.ui.graphics.FilterQuality
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.unit.Dp
 import coil3.Bitmap
+import coil3.PlatformContext
 import coil3.compose.AsyncImage
 import coil3.compose.LocalPlatformContext
 import coil3.request.ImageRequest
@@ -25,6 +26,31 @@ import coil3.size.Precision
 import coil3.size.Scale
 import coil3.size.Size
 import coil3.transform.Transformation
+
+/**
+ * [NetworkImage] の表示リクエストと同一のキャッシュキーになるよう、プリフェッチ側もこの
+ * 関数を共用する（size / precision / scale が異なると別キャッシュエントリになるため）。
+ */
+fun buildNetworkImageRequest(
+    context: PlatformContext,
+    url: String,
+    contentScale: ContentScale = ContentScale.Fit,
+    maxDecodeSizePx: Int? = null,
+    animate: Boolean = true,
+): ImageRequest = ImageRequest.Builder(context)
+    .data(url)
+    .crossfade(false)
+    .apply {
+        if (maxDecodeSizePx != null) {
+            size(maxDecodeSizePx)
+            precision(Precision.INEXACT)
+            scale(contentScale.toCoilScale())
+        }
+        if (!animate) {
+            transformations(FirstFrameTransformation)
+        }
+    }
+    .build()
 
 @Composable
 fun NetworkImage(
@@ -40,20 +66,7 @@ fun NetworkImage(
 ) {
     val context = LocalPlatformContext.current
     val model = remember(context, url, contentScale, maxDecodeSizePx, animate) {
-        ImageRequest.Builder(context)
-            .data(url)
-            .crossfade(false)
-            .apply {
-                if (maxDecodeSizePx != null) {
-                    size(maxDecodeSizePx)
-                    precision(Precision.INEXACT)
-                    scale(contentScale.toCoilScale())
-                }
-                if (!animate) {
-                    transformations(FirstFrameTransformation)
-                }
-            }
-            .build()
+        buildNetworkImageRequest(context, url, contentScale, maxDecodeSizePx, animate)
     }
     if (blurHash == null) {
         AsyncImage(

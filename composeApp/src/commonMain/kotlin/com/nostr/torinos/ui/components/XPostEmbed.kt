@@ -28,11 +28,14 @@ internal expect fun XPostEmbed(
     sourceUrl: String,
     darkTheme: Boolean,
     modifier: Modifier = Modifier,
+    /** true の間はスナップショットキャッシュ命中時を除き WebView を新規生成しない。 */
+    deferLoad: Boolean = false,
 )
 
 internal data class XPostSnapshotCacheKey(
     val postId: String,
     val darkTheme: Boolean,
+    val widthPx: Int,
 )
 
 /**

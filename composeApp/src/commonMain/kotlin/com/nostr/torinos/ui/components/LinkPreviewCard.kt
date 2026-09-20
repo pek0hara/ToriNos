@@ -15,7 +15,10 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.FilterQuality
@@ -32,32 +35,65 @@ import com.nostr.torinos.network.LinkPreviewRepository
 fun LinkPreviewCard(
     url: String,
     modifier: Modifier = Modifier,
+    deferWebViewLoad: Boolean = false,
+    showXPreview: Boolean = true,
+    showImagePreview: Boolean = true,
 ) {
     val youTubeVideoId = extractYouTubeVideoId(url)
     if (youTubeVideoId != null) {
+        var revealed by remember(url) { mutableStateOf(false) }
         Spacer(modifier = Modifier.height(8.dp))
-        YouTubePreviewCard(
-            videoId = youTubeVideoId,
-            sourceUrl = url,
-            modifier = modifier,
-        )
+        if (showImagePreview || revealed) {
+            YouTubePreviewCard(
+                videoId = youTubeVideoId,
+                sourceUrl = url,
+                modifier = modifier,
+            )
+        } else {
+            PreviewLoadPlaceholder(
+                label = "YouTubeのプレビュー",
+                onReveal = { revealed = true },
+                modifier = modifier,
+            )
+        }
         Spacer(modifier = Modifier.height(2.dp))
         return
     }
 
     val xPostId = extractXPostId(url)
     if (xPostId != null) {
-        val darkTheme = MaterialTheme.colorScheme.background.luminance() < 0.5f
+        var revealed by remember(url) { mutableStateOf(false) }
         Spacer(modifier = Modifier.height(8.dp))
-        XPostEmbed(
-            postId = xPostId,
-            sourceUrl = url,
-            darkTheme = darkTheme,
-            modifier = modifier
-                .fillMaxWidth()
-                .clip(RoundedCornerShape(12.dp)),
-        )
+        if (showXPreview || revealed) {
+            val darkTheme = MaterialTheme.colorScheme.background.luminance() < 0.5f
+            XPostEmbed(
+                postId = xPostId,
+                sourceUrl = url,
+                darkTheme = darkTheme,
+                deferLoad = deferWebViewLoad,
+                modifier = modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(12.dp)),
+            )
+        } else {
+            PreviewLoadPlaceholder(
+                label = "Xの投稿プレビュー",
+                onReveal = { revealed = true },
+                modifier = modifier,
+            )
+        }
         Spacer(modifier = Modifier.height(2.dp))
+        return
+    }
+
+    var genericPreviewRevealed by remember(url) { mutableStateOf(false) }
+    if (!showImagePreview && !genericPreviewRevealed) {
+        Spacer(modifier = Modifier.height(8.dp))
+        PreviewLoadPlaceholder(
+            label = "リンクプレビュー",
+            onReveal = { genericPreviewRevealed = true },
+            modifier = modifier,
+        )
         return
     }
 
