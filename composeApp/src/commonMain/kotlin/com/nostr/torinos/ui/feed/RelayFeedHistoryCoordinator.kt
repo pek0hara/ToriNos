@@ -81,6 +81,10 @@ internal class RelayFeedHistoryCoordinator(
             !relay.opening && relay.session == null && relay.retryJob == null &&
                 relay.cursors.any { !it.exhausted && !it.suppressed }
         }.keys
+        com.nostr.torinos.ui.profile.profileDebugLog(
+            "RelayFeedHistoryCoordinator.loadMore idPrefix=$idPrefix generation=$generation " +
+                "candidates=${candidates.size} relaysTotal=${relays.size}",
+        )
         if (candidates.isEmpty()) {
             publishState()
             return
@@ -214,9 +218,18 @@ internal class RelayFeedHistoryCoordinator(
                 val timestamps = page.events[requested.index].orEmpty().values
                 oldest = listOfNotNull(oldest, timestamps.minOrNull()).minOrNull()
                 advanceCursor(cursor, requested, timestamps)
+                com.nostr.torinos.ui.profile.profileDebugLog(
+                    "RelayFeedHistoryCoordinator.finishPage idPrefix=$idPrefix url=$url " +
+                        "rawCount=${timestamps.size} limit=${requested.limit} exhausted=${cursor.exhausted} " +
+                        "visibleAdded=${page.visibleAdded}",
+                )
             }
             onPageBoundary(oldest)
         } else {
+            com.nostr.torinos.ui.profile.profileDebugLog(
+                "RelayFeedHistoryCoordinator.finishPage FAILED idPrefix=$idPrefix url=$url " +
+                    "outcome=${completed.outcomes[url]}",
+            )
             scheduleRetry(url, relay, page)
         }
         if (relays.values.none { it.session != null || it.opening }) {

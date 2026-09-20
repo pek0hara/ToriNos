@@ -24,6 +24,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.runtime.collectAsState
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.LifecycleStartEffect
 import com.nostr.torinos.account.accountSessionViewModel
 import com.nostr.torinos.ui.components.AppFloatingActionButton
 import com.nostr.torinos.ui.components.NoteTimeline
@@ -44,37 +45,38 @@ fun MyProfileScreen(
     onOpenReplies: (eventId: String) -> Unit = {},
     onOpenLikes: (eventId: String) -> Unit = {},
     onOpenReposts: (eventId: String) -> Unit = {},
+    longBackgroundResetRequest: Int = 0,
     viewModel: MyProfileViewModel = accountSessionViewModel(
         key = "my-profile-$ownPubkey",
     ) { accountSession -> MyProfileViewModel(ownPubkey, accountSession) },
 ) {
-    val postsViewModel: FeedViewModel = accountSessionViewModel(
-        key = "my-feed-$ownPubkey-posts",
-    ) { accountSession ->
-        FeedViewModel(
-            accountSession = accountSession,
-            authorPubkey = ownPubkey,
-            autoStart = false,
-            includeRepostsInFeed = true,
-            includeRepliesInFeed = false,
-        )
+    var selectedTabName by rememberSaveable(ownPubkey) {
+        mutableStateOf(ProfileTimelineTab.Posts.name)
     }
-    val postsAndRepliesViewModel: FeedViewModel = accountSessionViewModel(
-        key = "my-feed-$ownPubkey-posts-replies",
+    val selectedTab = ProfileTimelineTab.entries.firstOrNull { it.name == selectedTabName }
+        ?: ProfileTimelineTab.Posts
+    // 選択中のタブぶんだけFeedViewModel(内部でFeedControllerも生成)を作る。
+    // 両タブぶんを無条件に構築すると、表示していない方のタブの生成コストまで
+    // 画面を開く瞬間の同じフレームに乗ってしまう。
+    val feedViewModel: FeedViewModel = accountSessionViewModel(
+        key = "my-feed-$ownPubkey-${selectedTab.name}",
     ) { accountSession ->
         FeedViewModel(
             accountSession = accountSession,
             authorPubkey = ownPubkey,
             autoStart = false,
             includeRepostsInFeed = true,
-            includeRepliesInFeed = true,
-            feedEventKinds = setOf(1, COMMENT_EVENT_KIND),
+            includeRepliesInFeed = selectedTab == ProfileTimelineTab.PostsAndReplies,
+            feedEventKinds = if (selectedTab == ProfileTimelineTab.PostsAndReplies) {
+                setOf(1, COMMENT_EVENT_KIND)
+            } else {
+                setOf(1)
+            },
         )
     }
 
     val state by viewModel.state.collectAsState()
-    val postsState by postsViewModel.state.collectAsState()
-    val postsAndRepliesState by postsAndRepliesViewModel.state.collectAsState()
+    val feedState by feedViewModel.state.collectAsState()
     var showRelayList by remember(ownPubkey) { mutableStateOf(false) }
     var showBannerEdit by remember(ownPubkey) { mutableStateOf(false) }
     var showAvatarEdit by remember(ownPubkey) { mutableStateOf(false) }
@@ -82,11 +84,6 @@ fun MyProfileScreen(
     var showAboutEdit by remember(ownPubkey) { mutableStateOf(false) }
     var showStatusEdit by remember(ownPubkey) { mutableStateOf(false) }
     var bannerHeightPx by remember(ownPubkey) { mutableIntStateOf(0) }
-    var selectedTabName by rememberSaveable(ownPubkey) {
-        mutableStateOf(ProfileTimelineTab.Posts.name)
-    }
-    val selectedTab = ProfileTimelineTab.entries.firstOrNull { it.name == selectedTabName }
-        ?: ProfileTimelineTab.Posts
     val editProfileViewModel = accountSessionViewModel<EditProfileViewModel>(
         key = "edit-profile-$ownPubkey",
     ) { accountSession -> EditProfileViewModel(accountSession = accountSession) }
@@ -100,14 +97,14 @@ fun MyProfileScreen(
 
     LaunchedEffect(state.profile) {
         val profile = state.profile ?: return@LaunchedEffect
-        postsViewModel.injectProfile(ownPubkey, profile)
-        postsAndRepliesViewModel.injectProfile(ownPubkey, profile)
+        feedViewModel.injectProfile(ownPubkey, profile)
     }
 
-    LaunchedEffect(selectedTab, postsViewModel, postsAndRepliesViewModel) {
-        when (selectedTab) {
-            ProfileTimelineTab.Posts -> postsViewModel.startSubscriptions()
-            ProfileTimelineTab.PostsAndReplies -> postsAndRepliesViewModel.startSubscriptions()
+    LifecycleStartEffect(feedViewModel, longBackgroundResetRequest) {
+        feedViewModel.resetToLatest(longBackgroundResetRequest)
+        feedViewModel.startSubscriptions()
+        onStopOrDispose {
+            feedViewModel.stopSubscriptions()
         }
     }
 
@@ -250,54 +247,29 @@ fun MyProfileScreen(
             onOpenSettings = onOpenSettings,
             bannerHeightPx = bannerHeightPx,
         ) {
-            when (selectedTab) {
-                ProfileTimelineTab.Posts -> NoteTimeline(
-                    state = postsState,
-                    ownPubkey = ownPubkey,
-                    onUserClick = onUserClick,
-                    onLoadMore = postsViewModel::loadMore,
-                    onLike = postsViewModel::react,
-                    onUnlike = postsViewModel::unreact,
-                    onEmojiReact = postsViewModel::reactWithEmoji,
-                    onEmojiUnreact = postsViewModel::unreactWithEmoji,
-                    onDelete = postsViewModel::deleteEvent,
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .padding(padding),
-                    onReply = onReply,
-                    onOpenReplies = onOpenReplies,
-                    onOpenLikes = onOpenLikes,
-                    onOpenReposts = onOpenReposts,
-                    onRepost = postsViewModel::repost,
-                    onUnrepost = postsViewModel::unrepost,
-                    onReport = postsViewModel::reportEvent,
-                    listState = profileListState,
-                    header = profileHeader,
-                )
-                ProfileTimelineTab.PostsAndReplies -> NoteTimeline(
-                    state = postsAndRepliesState,
-                    ownPubkey = ownPubkey,
-                    onUserClick = onUserClick,
-                    onLoadMore = postsAndRepliesViewModel::loadMore,
-                    onLike = postsAndRepliesViewModel::react,
-                    onUnlike = postsAndRepliesViewModel::unreact,
-                    onEmojiReact = postsAndRepliesViewModel::reactWithEmoji,
-                    onEmojiUnreact = postsAndRepliesViewModel::unreactWithEmoji,
-                    onDelete = postsAndRepliesViewModel::deleteEvent,
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .padding(padding),
-                    onReply = onReply,
-                    onOpenReplies = onOpenReplies,
-                    onOpenLikes = onOpenLikes,
-                    onOpenReposts = onOpenReposts,
-                    onRepost = postsAndRepliesViewModel::repost,
-                    onUnrepost = postsAndRepliesViewModel::unrepost,
-                    onReport = postsAndRepliesViewModel::reportEvent,
-                    listState = profileListState,
-                    header = profileHeader,
-                )
-            }
+            NoteTimeline(
+                state = feedState,
+                ownPubkey = ownPubkey,
+                onUserClick = onUserClick,
+                onLoadMore = feedViewModel::loadMore,
+                onLike = feedViewModel::react,
+                onUnlike = feedViewModel::unreact,
+                onEmojiReact = feedViewModel::reactWithEmoji,
+                onEmojiUnreact = feedViewModel::unreactWithEmoji,
+                onDelete = feedViewModel::deleteEvent,
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(padding),
+                onReply = onReply,
+                onOpenReplies = onOpenReplies,
+                onOpenLikes = onOpenLikes,
+                onOpenReposts = onOpenReposts,
+                onRepost = feedViewModel::repost,
+                onUnrepost = feedViewModel::unrepost,
+                onReport = feedViewModel::reportEvent,
+                listState = profileListState,
+                header = profileHeader,
+            )
         }
     }
 }

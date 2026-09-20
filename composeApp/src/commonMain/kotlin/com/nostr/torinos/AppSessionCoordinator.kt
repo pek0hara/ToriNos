@@ -541,6 +541,7 @@ internal fun AppSessionCoordinator(
                                             onOpenReposts = { eventId ->
                                                 drawerCoordinator.openThread(drawerDestination, eventId, "reposts")
                                             },
+                                            longBackgroundResetRequest = feedLongBackgroundResetRequest,
                                         )
                                     } else {
                                         UserProfileScreen(
@@ -574,6 +575,7 @@ internal fun AppSessionCoordinator(
                                                     nav.navigate(UserJournalRoute(drawerDestination.pubkey))
                                                 }
                                             },
+                                            longBackgroundResetRequest = feedLongBackgroundResetRequest,
                                         )
                                     }
                                     is ProfileDrawerDestination.Thread -> {
@@ -1117,6 +1119,7 @@ internal fun AppSessionCoordinator(
                             onOpenReposts = { eventId ->
                                 nav.navigate(ThreadRoute(eventId, "reposts"))
                             },
+                            longBackgroundResetRequest = feedLongBackgroundResetRequest,
                         )
                     }
                     composable("settings") {
@@ -1217,6 +1220,7 @@ internal fun AppSessionCoordinator(
                                     nav.navigate(UserJournalRoute(route.pubkey))
                                 }
                             } else null,
+                            longBackgroundResetRequest = feedLongBackgroundResetRequest,
                         )
                     }
                     composable<UserJournalRoute> { backStack ->

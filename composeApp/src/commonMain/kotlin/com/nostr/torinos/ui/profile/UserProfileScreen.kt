@@ -25,6 +25,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.lifecycle.compose.LifecycleStartEffect
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.nostr.torinos.account.accountSessionViewModel
 import com.nostr.torinos.account.LocalAccountSession
@@ -51,6 +52,7 @@ fun UserProfileScreen(
     onOpenLikes: (eventId: String) -> Unit = {},
     onOpenReposts: (eventId: String) -> Unit = {},
     onOpenJournal: (() -> Unit)? = null,
+    longBackgroundResetRequest: Int = 0,
 ) {
     val ownerKey = ownPubkey ?: "anonymous"
     val accountSession = LocalAccountSession.current
@@ -81,6 +83,8 @@ fun UserProfileScreen(
             } else {
                 setOf(1)
             },
+            // 空ページ自動スキップの調査用。検証が終わったら削除する。
+            feedPageSize = 10,
         )
     }
     val state by viewModel.state.collectAsState()
@@ -94,6 +98,8 @@ fun UserProfileScreen(
         LazyListState()
     }
 
+    remember(pubkey) { profileDebugLog("UserProfileScreen composed pubkey=${pubkey.take(16)}") }
+
     LaunchedEffect(viewModel) {
         viewModel.refreshProfile()
     }
@@ -101,6 +107,7 @@ fun UserProfileScreen(
     LaunchedEffect(state.profile) {
         val profile = state.profile ?: return@LaunchedEffect
         if (!deferredContentStarted) {
+            profileDebugLog("deferredContentStarted=true via profile arrival pubkey=${pubkey.take(16)}")
             deferredContentStarted = true
             viewModel.loadFollowingCount()
         }
@@ -109,14 +116,31 @@ fun UserProfileScreen(
     LaunchedEffect(pubkey) {
         delay(DEFERRED_PROFILE_CONTENT_DELAY_MS)
         if (!deferredContentStarted) {
+            profileDebugLog("deferredContentStarted=true via ${DEFERRED_PROFILE_CONTENT_DELAY_MS}ms timeout pubkey=${pubkey.take(16)}")
             deferredContentStarted = true
             viewModel.loadFollowingCount()
         }
     }
 
-    LaunchedEffect(feedViewModel, state.profile, deferredContentStarted) {
+    LaunchedEffect(feedViewModel, state.profile) {
         state.profile?.let { feedViewModel.injectProfile(pubkey, it) }
-        if (deferredContentStarted) feedViewModel.startSubscriptions()
+    }
+
+    if (deferredContentStarted) {
+        LifecycleStartEffect(feedViewModel, longBackgroundResetRequest) {
+            profileDebugLog("feedViewModel.startSubscriptions() pubkey=${pubkey.take(16)}")
+            feedViewModel.resetToLatest(longBackgroundResetRequest)
+            feedViewModel.startSubscriptions()
+            onStopOrDispose {
+                feedViewModel.stopSubscriptions()
+            }
+        }
+    }
+
+    LaunchedEffect(feedState.events.isEmpty()) {
+        if (!feedState.events.isEmpty()) {
+            profileDebugLog("timeline first non-empty pubkey=${pubkey.take(16)} count=${feedState.events.size}")
+        }
     }
 
     LaunchedEffect(state.followError) {

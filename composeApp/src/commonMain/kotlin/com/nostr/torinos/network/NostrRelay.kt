@@ -83,6 +83,10 @@ class NostrRelay(
                                             } ?: break
                                             val msg = pending.text
                                             networkTraceLog { "[Relay] send to $url: $msg" }
+                                            com.nostr.torinos.ui.profile.profileDebugLog(
+                                                "NostrRelay SEND url=$url key=${pending.key} " +
+                                                    "type=${msg.take(20)}",
+                                            )
                                             try {
                                                 outgoing.send(Frame.Text(msg))
                                                 pending.completion?.complete(Unit)
@@ -175,9 +179,13 @@ class NostrRelay(
     }
 
     private suspend fun enqueue(pending: PendingMessage) {
-        pendingMutex.withLock {
+        val queueDepth = pendingMutex.withLock {
             pendingMessages.enqueue(pending)
+            pendingMessages.size
         }
+        com.nostr.torinos.ui.profile.profileDebugLog(
+            "NostrRelay ENQUEUE url=$url key=${pending.key} queueDepthAfter=$queueDepth",
+        )
         sendSignal.trySend(Unit)
     }
 
