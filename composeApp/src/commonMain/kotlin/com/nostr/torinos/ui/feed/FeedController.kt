@@ -1758,6 +1758,11 @@ internal class FeedController(
                                     shouldRetryImmediately = true
                                 } else if (retry == RetryDisposition.RetryWithBackoff) {
                                     shouldRetryWithBackoff = true
+                                } else {
+                                    // 認証必須・ブロック・単一フィルターでの拒否は、再送しても同じ結果になる。
+                                    // このままだと Partial のまま直ちに再選択されて REQ が繰り返されるため、
+                                    // 次の復帰(retryPartialHistory が失敗回数を戻す)まで、このリレーへの取得を止める。
+                                    engagementFailureCounts[work.relayUrl] = MAX_ENGAGEMENT_HISTORY_RETRIES + 1
                                 }
                             }
                             eventIds.forEach { eventId ->

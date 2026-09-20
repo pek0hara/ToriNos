@@ -1230,6 +1230,59 @@ class FeedControllerAsyncRegressionTest {
     }
 
     @Test
+    fun nonRetryableEngagementRefusalDoesNotRepeatTheRequest() = runTest {
+        val gateway = FakeGateway()
+        val controller = FeedController(computeDispatcher = Dispatchers.Unconfined, scope = backgroundScope, subscriptions = gateway)
+        runCurrent()
+        gateway.completeInitialFeedHistory()
+        runCurrent()
+        gateway.liveSessions.single().event(event("note", 10))
+        runCurrent()
+        advanceTimeBy(500)
+        runCurrent()
+
+        val first = gateway.engagementFetchSessions.single()
+        first.closed("relay", RetryDisposition.DoNotRetry)
+        first.completeWith("relay" to RelayOutcome.Closed("blocked: not allowed"))
+        runCurrent()
+        advanceTimeBy(60_000)
+        runCurrent()
+
+        // 拒否されたリレーへ、同じ取得を直ちに、あるいは繰り返し送らない。
+        assertEquals(1, gateway.engagementFetchSessions.size)
+        controller.close()
+    }
+
+    @Test
+    fun refusedEngagementRelayIsRetriedAfterResume() = runTest {
+        val gateway = FakeGateway()
+        val controller = FeedController(computeDispatcher = Dispatchers.Unconfined, scope = backgroundScope, subscriptions = gateway)
+        runCurrent()
+        gateway.completeInitialFeedHistory()
+        runCurrent()
+        gateway.liveSessions.single().event(event("note", 10))
+        runCurrent()
+        advanceTimeBy(500)
+        runCurrent()
+        val first = gateway.engagementFetchSessions.single()
+        first.closed("relay", RetryDisposition.DoNotRetry)
+        first.completeWith("relay" to RelayOutcome.Closed("auth-required: sign in"))
+        runCurrent()
+        assertEquals(1, gateway.engagementFetchSessions.size)
+
+        // 復帰(購読の停止と再開)で、停止していたリレーへの取得を再び試す。
+        controller.stopSubscriptions()
+        runCurrent()
+        controller.startSubscriptions()
+        runCurrent()
+        advanceTimeBy(500)
+        runCurrent()
+
+        assertTrue(gateway.engagementFetchSessions.size >= 2)
+        controller.close()
+    }
+
+    @Test
     fun engagementHistoryLimitsEachBatchToTwentyEvents() = runTest {
         val gateway = FakeGateway()
         val controller = FeedController(computeDispatcher = Dispatchers.Unconfined, scope = backgroundScope, subscriptions = gateway)
