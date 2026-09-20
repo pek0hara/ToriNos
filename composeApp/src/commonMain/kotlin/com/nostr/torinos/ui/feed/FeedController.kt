@@ -134,6 +134,8 @@ internal class FeedController(
     private var subscriptionIds: SubscriptionIds? = null
     private var liveSession: SubscriptionSession? = null
     private var engagementSession: SubscriptionSession? = null
+    // ライブ購読へ最後に送った監視ID。since は呼び出しごとに進むため、IDが同じなら REQ を再送しない。
+    private var engagementLiveEventIds: List<String>? = null
     private val engagementHistorySessions = mutableMapOf<String, SubscriptionSession>()
     private var currentHistorySession: SubscriptionSession? = null
     private var relayHistoryCoordinator: RelayFeedHistoryCoordinator? = null
@@ -732,6 +734,7 @@ internal class FeedController(
         ) + engagementHistorySessions.values
         liveSession = null
         engagementSession = null
+        engagementLiveEventIds = null
         engagementHistorySessions.clear()
         engagementHistoryDedups.clear()
         currentHistorySession = null
@@ -1529,8 +1532,13 @@ internal class FeedController(
         val filters = engagementFilters(ids, since = liveSince)
         val existing = engagementSession
         if (existing != null) {
-            existing.update(filters, relayTarget)
+            // 履歴取得の完了ごとに呼ばれるが、監視IDも取得先も同じなら since が違うだけの再送になる。
+            if (ids != engagementLiveEventIds || targetRelays != previousRelays) {
+                existing.update(filters, relayTarget)
+            }
+            engagementLiveEventIds = ids
         } else {
+            engagementLiveEventIds = ids
             val session = subscriptions.open(
                 SubscriptionSpec(
                     id = subIds.reaction,
@@ -1774,7 +1782,24 @@ internal class FeedController(
         ids: List<String>,
         since: Long? = null,
         until: Long? = null,
-    ): List<NostrFilter> = EngagementPartition.entries.map { it.filter(ids, since, until) }
+    ): List<NostrFilter> {
+        // kind 以外が同一の #e 系(リアクション・kind 1 返信・リポスト)は1本にまとめる。
+        // 別々に送るとID一覧を3回送ることになり、REQ が大きくなる。
+        val mergedEventTagPartitions = setOf(
+            EngagementPartition.Reaction,
+            EngagementPartition.KindOneReply,
+            EngagementPartition.Repost,
+        )
+        val merged = NostrFilter(
+            kinds = mergedEventTagPartitions.flatMap { it.filter(ids).kinds.orEmpty() },
+            eTags = ids,
+            since = since,
+            until = until,
+        )
+        return listOf(merged) + EngagementPartition.entries
+            .filterNot { it in mergedEventTagPartitions }
+            .map { it.filter(ids, since, until) }
+    }
 
     private fun handleEngagementEvent(event: NostrEvent) {
         when (event.kind) {
