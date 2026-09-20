@@ -501,7 +501,8 @@ object NostrRepository {
             // 同じIDでの再オープンが「使用済み」で失敗し続ける。登録を巻き戻してから再送出する。
             appLog("[NostrRepository] openSubscription aborted after register id=${spec.id} cause=${e::class.simpleName}")
             withContext(NonCancellable) {
-                closeActiveSubscription(spec.id, buildCloseMessage(spec.id))
+                // 同じIDが別の呼び出しに再利用されていた場合に、その購読を閉じないよう、所有者を確認して閉じる。
+                closeSubscriptionSession(session)
                 removedHandles.forEach { it.close() }
             }
             throw e
