@@ -83,8 +83,6 @@ fun UserProfileScreen(
             } else {
                 setOf(1)
             },
-            // 空ページ自動スキップの調査用。検証が終わったら削除する。
-            feedPageSize = 10,
         )
     }
     val state by viewModel.state.collectAsState()
