@@ -76,4 +76,32 @@ class ProfileRepositoryTest {
 
         assertEquals(emptySet(), result)
     }
+
+    @Test
+    fun missingProfilesOnPrimaryRelaysFallBackToAllRelays() {
+        val result = profileFallbackPubkeys(
+            requestedPubkeys = setOf("found", "missing"),
+            receivedPubkeys = setOf("found"),
+            relayHint = null,
+            progressive = true,
+        )
+
+        assertEquals(setOf("missing"), result)
+    }
+
+    @Test
+    fun primaryRelaysAreTheFirstConfiguredRelays() {
+        val result = profilePrimaryRelays(
+            allRelays = listOf("wss://a", "wss://b", "wss://c", "wss://d"),
+            count = 2,
+        )
+
+        assertEquals(listOf("wss://a", "wss://b"), result?.toList())
+    }
+
+    @Test
+    fun noPrimaryRelaysWhenAllRelaysFitWithinTheLimit() {
+        assertEquals(null, profilePrimaryRelays(listOf("wss://a", "wss://b"), count = 2))
+        assertEquals(null, profilePrimaryRelays(emptyList(), count = 2))
+    }
 }

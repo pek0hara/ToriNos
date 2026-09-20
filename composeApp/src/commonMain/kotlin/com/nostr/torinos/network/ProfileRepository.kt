@@ -164,6 +164,8 @@ private object ProfileFetchCoordinator {
         val pubkeys: Set<String>,
         val relayHint: String?,
         val subscriptionId: String,
+        /** 先頭リレーでの取得に失敗し、全リレーへ広げた再取得。 */
+        val escalated: Boolean,
     )
 
     private val scope = CoroutineScope(
@@ -173,6 +175,7 @@ private object ProfileFetchCoordinator {
     private val mutex = Mutex()
     private val pending = linkedMapOf<String, String?>()
     private val inFlight = linkedSetOf<String>()
+    private val escalatedPubkeys = linkedSetOf<String>()
     private val blockedUntil = mutableMapOf<String, Long>()
     private var flushJob: Job? = null
     private var subscriptionSerial = 0L
@@ -213,9 +216,10 @@ private object ProfileFetchCoordinator {
     private fun takeBatchLocked(): Batch? {
         val first = pending.entries.firstOrNull() ?: return null
         val relayHint = first.value
+        val escalated = first.key in escalatedPubkeys
         val pubkeys = pending.entries
             .asSequence()
-            .filter { it.value == relayHint }
+            .filter { it.value == relayHint && (it.key in escalatedPubkeys) == escalated }
             .map { it.key }
             .take(MAX_BATCH_SIZE)
             .toCollection(linkedSetOf())
@@ -228,6 +232,7 @@ private object ProfileFetchCoordinator {
             pubkeys = pubkeys,
             relayHint = relayHint,
             subscriptionId = "profile-fetch-${subscriptionSerial}-${Random.nextInt()}",
+            escalated = escalated,
         )
     }
 
@@ -235,7 +240,16 @@ private object ProfileFetchCoordinator {
         var completedSuccessfully = false
         val receivedPubkeys = linkedSetOf<String>()
         var session: SubscriptionSession? = null
+        var progressive = false
         try {
+            // リレー指定がなければ、まず先頭の少数リレーだけに聞く。全リレーに同じ kind:0 を聞くと
+            // 同一イベントが台数分返る。取れなかった分は finishBatch で全リレーへ広げる。
+            val primaryRelays = if (batch.relayHint == null && !batch.escalated) {
+                profilePrimaryRelays(NostrRepository.targetRelayUrls(RelayTarget.AllEnabled), PRIMARY_RELAY_COUNT)
+            } else {
+                null
+            }
+            progressive = primaryRelays != null
             session = NostrRepository.openSubscription(
                 SubscriptionSpec(
                     id = batch.subscriptionId,
@@ -246,8 +260,12 @@ private object ProfileFetchCoordinator {
                             limit = batch.pubkeys.size,
                         ),
                     ),
-                    target = batch.relayHint?.let(RelayTarget::Single) ?: RelayTarget.AllEnabled,
-                    behavior = SubscriptionBehavior.Fetch(FETCH_TIMEOUT_MS),
+                    target = batch.relayHint?.let(RelayTarget::Single)
+                        ?: primaryRelays?.let(RelayTarget::Explicit)
+                        ?: RelayTarget.AllEnabled,
+                    behavior = SubscriptionBehavior.Fetch(
+                        if (progressive) PRIMARY_FETCH_TIMEOUT_MS else FETCH_TIMEOUT_MS,
+                    ),
                 ),
             )
             session.signals.collect { signal ->
@@ -274,7 +292,7 @@ private object ProfileFetchCoordinator {
             appLog("[ProfileFetchCoordinator] fetch failed: ${e::class.simpleName}: ${e.message}")
         } finally {
             runCatching { session?.close() }
-            finishBatch(batch, receivedPubkeys, completedSuccessfully)
+            finishBatch(batch, receivedPubkeys, completedSuccessfully, progressive)
         }
     }
 
@@ -282,22 +300,26 @@ private object ProfileFetchCoordinator {
         batch: Batch,
         receivedPubkeys: Set<String>,
         completedSuccessfully: Boolean,
+        progressive: Boolean,
     ) {
         val now = Clock.System.now().toEpochMilliseconds()
         val fallbackPubkeys = profileFallbackPubkeys(
             requestedPubkeys = batch.pubkeys,
             receivedPubkeys = receivedPubkeys,
             relayHint = batch.relayHint,
+            progressive = progressive,
         )
         if (completedSuccessfully) {
             ProfileCache.markFetched(batch.pubkeys, fetchedAt = now)
         }
         mutex.withLock {
             inFlight.removeAll(batch.pubkeys)
+            escalatedPubkeys.removeAll(batch.pubkeys)
             batch.pubkeys.forEach { pubkey ->
                 if (pubkey in fallbackPubkeys) {
                     blockedUntil.remove(pubkey)
                     pending[pubkey] = null
+                    escalatedPubkeys.add(pubkey)
                 } else {
                     blockedUntil[pubkey] = now + when {
                         completedSuccessfully && pubkey !in receivedPubkeys -> MISSING_CACHE_MS
@@ -314,6 +336,8 @@ private object ProfileFetchCoordinator {
     private const val MAX_BATCH_SIZE = 100
     private const val BATCH_DELAY_MS = 200L
     private const val FETCH_TIMEOUT_MS = 8_000L
+    private const val PRIMARY_RELAY_COUNT = 2
+    private const val PRIMARY_FETCH_TIMEOUT_MS = 3_000L
     private const val MISSING_CACHE_MS = 60_000L
     private const val SUCCESS_COOLDOWN_MS = 5_000L
     private const val FAILURE_COOLDOWN_MS = 5_000L
@@ -323,8 +347,16 @@ internal fun profileFallbackPubkeys(
     requestedPubkeys: Set<String>,
     receivedPubkeys: Set<String>,
     relayHint: String?,
-): Set<String> = if (relayHint == null) {
+    progressive: Boolean = false,
+): Set<String> = if (relayHint == null && !progressive) {
     emptySet()
 } else {
     requestedPubkeys - receivedPubkeys
 }
+
+/**
+ * リレー指定がないプロフィール取得で最初に聞くリレー。設定順の先頭 [count] 台。
+ * 台数が [count] 以下なら段階取得の意味がないため null(全リレーへ直接聞く)。
+ */
+internal fun profilePrimaryRelays(allRelays: Collection<String>, count: Int): Set<String>? =
+    if (allRelays.size <= count) null else allRelays.take(count).toCollection(linkedSetOf())
