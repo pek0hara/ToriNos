@@ -1371,7 +1371,14 @@ internal class FeedController(
         pendingTimelineEvents.clear()
         if (!isAtTop) {
             val cur = currentFeedState()
-            setFeedState(cur.copy(newPostCount = cur.newPostCount + additions.size), immediate = false)
+            // 過去ページ(loadMore)も同じ経路で流れ込むため、現在の最上部より新しいものだけを新着として数える。
+            val newestSortTime = cur.events.firstOrNull()?.let { eventSortTimes[it.id] ?: it.createdAt }
+            val newCount = if (newestSortTime == null) 0 else additions.count {
+                (eventSortTimes[it.id] ?: it.createdAt) > newestSortTime
+            }
+            if (newCount > 0) {
+                setFeedState(cur.copy(newPostCount = cur.newPostCount + newCount), immediate = false)
+            }
         }
         updateEvents(immediate = true) { current -> sortTimelineEvents(current.events + additions) }
     }

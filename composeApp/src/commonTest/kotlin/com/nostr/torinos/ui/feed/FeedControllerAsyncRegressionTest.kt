@@ -886,6 +886,65 @@ class FeedControllerAsyncRegressionTest {
     }
 
     @Test
+    fun olderEventsLoadedWhileScrolledDownAreNotCountedAsNewPosts() = runTest {
+        val gateway = FakeGateway()
+        val controller = FeedController(computeDispatcher = Dispatchers.Unconfined, scope = backgroundScope, subscriptions = gateway)
+        runCurrent()
+        gateway.completeInitialFeedHistory()
+        runCurrent()
+        val feedLive = gateway.liveSessions.single()
+
+        repeat(5) { index -> feedLive.event(event("top-$index", 1_000L + index)) }
+        runCurrent()
+        advanceTimeBy(500)
+        runCurrent()
+
+        // 下へスクロール済み。過去ページ(最上部より古い投稿)が読み込まれても、新着ではない。
+        controller.setAtTop(false)
+        repeat(3) { index -> feedLive.event(event("old-$index", 10L + index)) }
+        runCurrent()
+        advanceTimeBy(500)
+        runCurrent()
+        assertEquals(0, controller.state.value.newPostCount)
+
+        // 最上部より新しい投稿だけが新着として数えられる。
+        feedLive.event(event("fresh", 2_000L))
+        runCurrent()
+        advanceTimeBy(500)
+        runCurrent()
+        assertEquals(1, controller.state.value.newPostCount)
+        controller.close()
+    }
+
+    @Test
+    fun newPostCountResetsWhenReturningToTop() = runTest {
+        val gateway = FakeGateway()
+        val controller = FeedController(computeDispatcher = Dispatchers.Unconfined, scope = backgroundScope, subscriptions = gateway)
+        runCurrent()
+        gateway.completeInitialFeedHistory()
+        runCurrent()
+        val feedLive = gateway.liveSessions.single()
+
+        feedLive.event(event("top", 1_000L))
+        runCurrent()
+        advanceTimeBy(500)
+        runCurrent()
+        controller.setAtTop(false)
+        feedLive.event(event("fresh", 2_000L))
+        runCurrent()
+        advanceTimeBy(500)
+        runCurrent()
+        assertEquals(1, controller.state.value.newPostCount)
+
+        controller.setAtTop(true)
+        runCurrent()
+        advanceTimeBy(500)
+        runCurrent()
+        assertEquals(0, controller.state.value.newPostCount)
+        controller.close()
+    }
+
+    @Test
     fun engagementHistoryWaitsForRelayRoutingButNotFeedHistoryCompletion() = runTest {
         val gateway = FakeGateway(initialRelayUrls = setOf("relay-a")).apply {
             targetRelayUrlsOverride = emptySet()
