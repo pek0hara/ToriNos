@@ -84,6 +84,8 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalClipboard
+import coil3.PlatformContext
+import coil3.request.ImageRequest
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontFamily
@@ -109,6 +111,7 @@ import com.nostr.torinos.model.parseImetaTags
 import com.nostr.torinos.model.parseNip94Event
 import com.nostr.torinos.model.timelinePreviewUrl
 import com.nostr.torinos.network.CustomEmojiStore
+import com.nostr.torinos.network.DisplayPreferencesStore
 import com.nostr.torinos.network.RecentReaction
 import com.nostr.torinos.ui.profile.customEmojiMap
 import com.nostr.torinos.ui.profile.AvatarCircle
@@ -164,6 +167,10 @@ fun NoteCard(
     onNoteClick: ((eventId: String) -> Unit)? = null,
     onQuotedNoteClick: ((eventId: String) -> Unit)? = onNoteClick,
     onReplyParentClick: ((eventId: String) -> Unit)? = onNoteClick,
+    /** 呼び出し側が背景スレッドで事前計算済みの場合に渡す。null の場合は Composable 内で計算する。 */
+    precomputedContent: ParsedNoteContent? = null,
+    /** true の間、X 投稿埋め込みなど重い WebView の新規生成を遅延させる（スナップショットキャッシュ命中時は除く）。 */
+    deferWebViewLoad: Boolean = false,
 ) {
     val onQuote = LocalQuotePostHandler.current
     var showMenu by remember { mutableStateOf(false) }
@@ -174,6 +181,9 @@ fun NoteCard(
     var expandedImageState by remember { mutableStateOf<ExpandedImageState?>(null) }
     var expandedEngagement by remember(event.id) { mutableStateOf<ExpandedEngagement?>(null) }
     var sensitiveContentRevealed by remember(event.id) { mutableStateOf(false) }
+    var imagePreviewRevealed by remember(event.id) { mutableStateOf(false) }
+    val showImagePreviews by DisplayPreferencesStore.showImagePreviews.collectAsState()
+    val showXPreviews by DisplayPreferencesStore.showXPreviews.collectAsState()
     val clipboard = LocalClipboard.current
     val coroutineScope = rememberCoroutineScope()
     val isOwnPost = ownPubkey != null && event.pubkey == ownPubkey
@@ -206,7 +216,7 @@ fun NoteCard(
         else -> null
     }
     val hasMenu = true
-    val parsedContent = remember(event.content, event.tags, event.kind) {
+    val parsedContent = precomputedContent ?: remember(event.content, event.tags, event.kind) {
         parseNoteContent(event)
     }
     val contentWarningPresent = remember(event.tags) {
@@ -422,6 +432,7 @@ fun NoteCard(
                     profiles = profiles,
                     onImageClick = { urls, index -> expandedImageState = ExpandedImageState(urls, index) },
                     onNoteClick = onReplyParentClick,
+                    showImagePreview = showImagePreviews,
                 )
                 Spacer(modifier = Modifier.height(4.dp))
             }
@@ -442,13 +453,25 @@ fun NoteCard(
                 }
                 if (parsedContent.imageUrls.isNotEmpty()) {
                     Spacer(modifier = Modifier.height(8.dp))
-                    ImagePreviewGrid(
-                        images = parsedContent.images,
-                        onImageClick = { urls, index -> expandedImageState = ExpandedImageState(urls, index) },
-                    )
+                    if (showImagePreviews || imagePreviewRevealed) {
+                        ImagePreviewGrid(
+                            images = parsedContent.images,
+                            onImageClick = { urls, index -> expandedImageState = ExpandedImageState(urls, index) },
+                        )
+                    } else {
+                        PreviewLoadPlaceholder(
+                            label = "画像 ${parsedContent.imageUrls.size}枚",
+                            onReveal = { imagePreviewRevealed = true },
+                        )
+                    }
                 }
                 parsedContent.linkPreviewUrl?.let { url ->
-                    LinkPreviewCard(url = url)
+                    LinkPreviewCard(
+                        url = url,
+                        deferWebViewLoad = deferWebViewLoad,
+                        showXPreview = showXPreviews,
+                        showImagePreview = showImagePreviews,
+                    )
                 }
                 quotedEvents.forEach { quote ->
                     Spacer(modifier = Modifier.height(8.dp))
@@ -458,6 +481,7 @@ fun NoteCard(
                         profiles = profiles,
                         onImageClick = { urls, index -> expandedImageState = ExpandedImageState(urls, index) },
                         onNoteClick = onQuotedNoteClick,
+                        showImagePreview = showImagePreviews,
                     )
                 }
             }
@@ -604,6 +628,7 @@ fun NoteCard(
                     onImageClick = { urls, index ->
                         expandedImageState = ExpandedImageState(urls, index)
                     },
+                    showImagePreview = showImagePreviews,
                 )
             }
         }
@@ -755,6 +780,7 @@ private fun EngagementDetailsPanel(
     onOpenReposts: (() -> Unit)?,
     onOpenNote: ((String) -> Unit)?,
     onImageClick: (List<String>, Int) -> Unit,
+    showImagePreview: Boolean = true,
 ) {
     val shape = RoundedCornerShape(12.dp)
     Column(
@@ -775,6 +801,7 @@ private fun EngagementDetailsPanel(
                         profiles = profiles,
                         onImageClick = onImageClick,
                         onNoteClick = onOpenNote,
+                        showImagePreview = showImagePreview,
                     )
                 }
                 if (replies.isEmpty()) {
@@ -1773,7 +1800,7 @@ private data class ExpandedImageState(
     val initialIndex: Int,
 )
 
-private data class ParsedNoteContent(
+data class ParsedNoteContent(
     val textContent: String,
     val images: List<MediaMetadata>,
     val linkPreviewUrl: String?,
@@ -1781,7 +1808,7 @@ private data class ParsedNoteContent(
     val imageUrls: List<String> get() = images.map { it.url }
 }
 
-private fun parseNoteContent(event: NostrEvent): ParsedNoteContent {
+fun parseNoteContent(event: NostrEvent): ParsedNoteContent {
     val content = event.content
     val inlineMetadata = parseImetaTags(event.tags)
         .filter { metadata -> content.contains(metadata.url) && metadata.isImage }
@@ -1837,8 +1864,10 @@ private fun QuotePreview(
     profiles: Map<String, NostrProfile>,
     onImageClick: (List<String>, Int) -> Unit,
     onNoteClick: ((eventId: String) -> Unit)? = null,
+    showImagePreview: Boolean = true,
 ) {
     var sensitiveContentRevealed by remember(event.id) { mutableStateOf(false) }
+    var imagePreviewRevealed by remember(event.id) { mutableStateOf(false) }
     val parsedContent = remember(event.content, event.tags, event.kind) {
         parseNoteContent(event)
     }
@@ -1922,11 +1951,18 @@ private fun QuotePreview(
                 )
             }
             if (parsedContent.imageUrls.isNotEmpty()) {
-                ImagePreviewGrid(
-                    images = parsedContent.images,
-                    singleImageMaxHeight = 180.dp,
-                    onImageClick = onImageClick,
-                )
+                if (showImagePreview || imagePreviewRevealed) {
+                    ImagePreviewGrid(
+                        images = parsedContent.images,
+                        singleImageMaxHeight = 180.dp,
+                        onImageClick = onImageClick,
+                    )
+                } else {
+                    PreviewLoadPlaceholder(
+                        label = "画像 ${parsedContent.imageUrls.size}枚",
+                        onReveal = { imagePreviewRevealed = true },
+                    )
+                }
             }
         }
     }
@@ -1990,10 +2026,36 @@ private fun CollapsibleNoteText(
 
 private const val CollapsedTextCharacterLimit = 140
 private const val CollapsedTextMaxVisibleLines = 9
-private const val TimelineImageMaxDecodeSizePx = 720
+internal const val TimelineImageMaxDecodeSizePx = 720
 private const val TimelineGridImageMaxDecodeSizePx = 360
 private val TimelineImageGridSpacing = 4.dp
 private val TimelineImageGridShape = RoundedCornerShape(6.dp)
+
+/**
+ * [ImagePreviewGrid] が実際に発行するリクエストと同じ URL・decode サイズ・scale になるよう、
+ * プリフェッチ側もこの関数を通す（値がずれると別キャッシュエントリになり先読みが無駄になる）。
+ */
+internal fun firstImagePreviewRequest(context: PlatformContext, images: List<MediaMetadata>): ImageRequest? {
+    val first = images.firstOrNull() ?: return null
+    val previewUrl = first.timelinePreviewUrl(TimelineImageMaxDecodeSizePx)
+    return if (images.size == 1) {
+        buildNetworkImageRequest(
+            context = context,
+            url = previewUrl,
+            contentScale = ContentScale.Fit,
+            maxDecodeSizePx = TimelineImageMaxDecodeSizePx,
+            animate = false,
+        )
+    } else {
+        buildNetworkImageRequest(
+            context = context,
+            url = previewUrl,
+            contentScale = ContentScale.Crop,
+            maxDecodeSizePx = TimelineGridImageMaxDecodeSizePx,
+            animate = false,
+        )
+    }
+}
 
 @Composable
 private fun ImagePreviewGrid(

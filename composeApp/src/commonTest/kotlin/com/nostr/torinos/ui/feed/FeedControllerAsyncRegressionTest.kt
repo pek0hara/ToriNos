@@ -3,6 +3,7 @@ package com.nostr.torinos.ui.feed
 import com.nostr.torinos.model.COMMENT_EVENT_KIND
 import com.nostr.torinos.model.NostrEvent
 import com.nostr.torinos.model.NostrFilter
+import com.nostr.torinos.model.NostrProfile
 import com.nostr.torinos.network.RelayOutcome
 import com.nostr.torinos.network.RelayTarget
 import com.nostr.torinos.network.RetryDisposition
@@ -12,6 +13,9 @@ import com.nostr.torinos.network.SubscriptionSignal
 import com.nostr.torinos.network.SubscriptionSpec
 import com.nostr.torinos.ui.timeline.NoteDeletion
 import com.nostr.torinos.ui.timeline.NoteDeletionSync
+import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Runnable
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -23,6 +27,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
+import kotlin.coroutines.CoroutineContext
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -31,9 +36,41 @@ import kotlin.test.assertTrue
 @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
 class FeedControllerAsyncRegressionTest {
     @Test
+    fun timelineComputationDoesNotOverwriteStateChangedWhileOffMainThread() = runTest {
+        val gateway = FakeGateway()
+        val computeDispatcher = QueuedDispatcher()
+        val controller = FeedController(
+            computeDispatcher = computeDispatcher,
+            scope = backgroundScope,
+            subscriptions = gateway,
+        )
+        runCurrent()
+
+        val author = "author-updated-during-computation"
+        gateway.liveSessions.single().event(event("note", 10, pubkey = author))
+        runCurrent()
+        advanceTimeBy(150)
+        runCurrent()
+
+        // 1回目の計算だけを完了させ、FeedController側の継続はまだ再開しない。
+        computeDispatcher.runNext()
+        val profile = NostrProfile(name = "updated-during-computation")
+        controller.injectProfile(author, profile)
+
+        // 古い計算結果を破棄させ、最新UiStateを使った再計算を完了させる。
+        runCurrent()
+        computeDispatcher.runNext()
+        runCurrent()
+
+        assertEquals(listOf("note"), controller.state.value.events.map { it.id })
+        assertEquals(profile, controller.state.value.profiles[author])
+        controller.close()
+    }
+
+    @Test
     fun longBackgroundResetClearsTimelineAndStartsFromLatestOnlyOnce() = runTest {
         val gateway = FakeGateway()
-        val controller = FeedController(scope = backgroundScope, subscriptions = gateway)
+        val controller = FeedController(computeDispatcher = Dispatchers.Unconfined, scope = backgroundScope, subscriptions = gateway)
         runCurrent()
 
         gateway.liveSessions.single().event(event("old", 10))
@@ -57,7 +94,7 @@ class FeedControllerAsyncRegressionTest {
     @Test
     fun longBackgroundResetDiscardsPendingTimelineBatch() = runTest {
         val gateway = FakeGateway()
-        val controller = FeedController(scope = backgroundScope, subscriptions = gateway)
+        val controller = FeedController(computeDispatcher = Dispatchers.Unconfined, scope = backgroundScope, subscriptions = gateway)
         runCurrent()
 
         gateway.liveSessions.single().event(event("pending", 10))
@@ -74,7 +111,7 @@ class FeedControllerAsyncRegressionTest {
     @Test
     fun liveEventBurstIsPublishedAsOneDelayedBatch() = runTest {
         val gateway = FakeGateway()
-        val controller = FeedController(scope = backgroundScope, subscriptions = gateway)
+        val controller = FeedController(computeDispatcher = Dispatchers.Unconfined, scope = backgroundScope, subscriptions = gateway)
         runCurrent()
         val live = gateway.liveSessions.single()
         val observedEventStates = mutableListOf<List<String>>()
@@ -111,7 +148,7 @@ class FeedControllerAsyncRegressionTest {
     @Test
     fun pendingTimelineWorkStaysDormantUntilSubscriptionsRestart() = runTest {
         val gateway = FakeGateway()
-        val controller = FeedController(scope = backgroundScope, subscriptions = gateway)
+        val controller = FeedController(computeDispatcher = Dispatchers.Unconfined, scope = backgroundScope, subscriptions = gateway)
         runCurrent()
 
         gateway.liveSessions.single().event(event("pending", 10))
@@ -140,7 +177,7 @@ class FeedControllerAsyncRegressionTest {
     @Test
     fun closingControllerCancelsPendingTimelineWork() = runTest {
         val gateway = FakeGateway()
-        val controller = FeedController(scope = backgroundScope, subscriptions = gateway)
+        val controller = FeedController(computeDispatcher = Dispatchers.Unconfined, scope = backgroundScope, subscriptions = gateway)
         runCurrent()
 
         gateway.liveSessions.single().event(event("pending", 10))
@@ -155,7 +192,7 @@ class FeedControllerAsyncRegressionTest {
     @Test
     fun closedControllerCannotRestartSubscriptions() = runTest {
         val gateway = FakeGateway()
-        val controller = FeedController(scope = backgroundScope, subscriptions = gateway)
+        val controller = FeedController(computeDispatcher = Dispatchers.Unconfined, scope = backgroundScope, subscriptions = gateway)
         runCurrent()
         val sessionCountBeforeClose = gateway.sessions.size
 
@@ -170,7 +207,7 @@ class FeedControllerAsyncRegressionTest {
     @Test
     fun historyCompletionFlushesPendingEventsWithoutWaitingForBatchDelay() = runTest {
         val gateway = FakeGateway()
-        val controller = FeedController(scope = backgroundScope, subscriptions = gateway)
+        val controller = FeedController(computeDispatcher = Dispatchers.Unconfined, scope = backgroundScope, subscriptions = gateway)
         runCurrent()
         val history = gateway.fetchSessions.single()
 
@@ -187,7 +224,7 @@ class FeedControllerAsyncRegressionTest {
     @Test
     fun responsiveRelayHidesIndicatorWhileSlowRelayContinuesLoading() = runTest {
         val gateway = FakeGateway(initialRelayUrls = setOf("relay-up", "relay-down"))
-        val controller = FeedController(scope = backgroundScope, subscriptions = gateway)
+        val controller = FeedController(computeDispatcher = Dispatchers.Unconfined, scope = backgroundScope, subscriptions = gateway)
         runCurrent()
         val firstUp = gateway.fetchSessions.single { it.target == RelayTarget.Single("relay-up") }
         val firstDown = gateway.fetchSessions.single { it.target == RelayTarget.Single("relay-down") }
@@ -233,7 +270,7 @@ class FeedControllerAsyncRegressionTest {
     @Test
     fun initialEmptyStateWaitsForSlowRelayAndLateEventBecomesContent() = runTest {
         val gateway = FakeGateway(initialRelayUrls = setOf("relay-up", "relay-down"))
-        val controller = FeedController(scope = backgroundScope, subscriptions = gateway)
+        val controller = FeedController(computeDispatcher = Dispatchers.Unconfined, scope = backgroundScope, subscriptions = gateway)
         runCurrent()
         val responsive = gateway.fetchSessions.single { it.target == RelayTarget.Single("relay-up") }
         val slow = gateway.fetchSessions.single { it.target == RelayTarget.Single("relay-down") }
@@ -257,7 +294,7 @@ class FeedControllerAsyncRegressionTest {
     @Test
     fun initialEmptyStateAppearsOnlyAfterEveryRelayCompletesSuccessfully() = runTest {
         val gateway = FakeGateway(initialRelayUrls = setOf("relay-a", "relay-b"))
-        val controller = FeedController(scope = backgroundScope, subscriptions = gateway)
+        val controller = FeedController(computeDispatcher = Dispatchers.Unconfined, scope = backgroundScope, subscriptions = gateway)
         runCurrent()
         val relayA = gateway.fetchSessions.single { it.target == RelayTarget.Single("relay-a") }
         val relayB = gateway.fetchSessions.single { it.target == RelayTarget.Single("relay-b") }
@@ -275,7 +312,7 @@ class FeedControllerAsyncRegressionTest {
     @Test
     fun timedOutRelayDoesNotPreventResponsiveRelayFromAdvancing() = runTest {
         val gateway = FakeGateway(initialRelayUrls = setOf("relay-up", "relay-down"))
-        val controller = FeedController(scope = backgroundScope, subscriptions = gateway)
+        val controller = FeedController(computeDispatcher = Dispatchers.Unconfined, scope = backgroundScope, subscriptions = gateway)
         runCurrent()
         val responsive = gateway.fetchSessions.single { it.target == RelayTarget.Single("relay-up") }
         val stalled = gateway.fetchSessions.single { it.target == RelayTarget.Single("relay-down") }
@@ -305,7 +342,7 @@ class FeedControllerAsyncRegressionTest {
     @Test
     fun multiRelayThirtyEventBoundaryLoadsNextPageWithInclusiveCursor() = runTest {
         val gateway = FakeGateway(initialRelayUrls = setOf("relay-a", "relay-b"))
-        val controller = FeedController(scope = backgroundScope, subscriptions = gateway)
+        val controller = FeedController(computeDispatcher = Dispatchers.Unconfined, scope = backgroundScope, subscriptions = gateway)
         runCurrent()
         val firstA = gateway.fetchSessions.single { it.target == RelayTarget.Single("relay-a") }
         val firstB = gateway.fetchSessions.single { it.target == RelayTarget.Single("relay-b") }
@@ -341,7 +378,7 @@ class FeedControllerAsyncRegressionTest {
     @Test
     fun sameSecondBoundaryExpandsLimitBeforeAdvancingCursor() = runTest {
         val gateway = FakeGateway()
-        val controller = FeedController(scope = backgroundScope, subscriptions = gateway)
+        val controller = FeedController(computeDispatcher = Dispatchers.Unconfined, scope = backgroundScope, subscriptions = gateway)
         runCurrent()
         val firstPage = gateway.fetchSessions.single()
         repeat(30) { index ->
@@ -381,7 +418,7 @@ class FeedControllerAsyncRegressionTest {
     @Test
     fun relayRemovedAfterPageStartsDoesNotRemainPendingForever() = runTest {
         val gateway = FakeGateway(initialRelayUrls = setOf("relay-up", "relay-removed"))
-        val controller = FeedController(scope = backgroundScope, subscriptions = gateway)
+        val controller = FeedController(computeDispatcher = Dispatchers.Unconfined, scope = backgroundScope, subscriptions = gateway)
         runCurrent()
         val firstPage = gateway.fetchSessions.single { it.target == RelayTarget.Single("relay-up") }
 
@@ -401,7 +438,7 @@ class FeedControllerAsyncRegressionTest {
     @Test
     fun relayAddedLaterStartsFromTheOriginalHistoryFloor() = runTest {
         val gateway = FakeGateway(initialRelayUrls = setOf("relay-a"))
-        val controller = FeedController(scope = backgroundScope, subscriptions = gateway)
+        val controller = FeedController(computeDispatcher = Dispatchers.Unconfined, scope = backgroundScope, subscriptions = gateway)
         runCurrent()
         val firstPage = gateway.fetchSessions.single()
         val historyFloor = firstPage.filters.single().until
@@ -422,7 +459,7 @@ class FeedControllerAsyncRegressionTest {
     @Test
     fun defaultFeedRequestsOnlyKind1() = runTest {
         val gateway = FakeGateway()
-        val controller = FeedController(scope = backgroundScope, subscriptions = gateway)
+        val controller = FeedController(computeDispatcher = Dispatchers.Unconfined, scope = backgroundScope, subscriptions = gateway)
         runCurrent()
 
         assertTrue(gateway.sessions.isNotEmpty())
@@ -435,7 +472,7 @@ class FeedControllerAsyncRegressionTest {
     @Test
     fun historyUsesFixedFloorAndAdvancesEachLogicalFilterIndependently() = runTest {
         val gateway = FakeGateway()
-        val controller = FeedController(
+        val controller = FeedController(computeDispatcher = Dispatchers.Unconfined,
             includeRepliesInFeed = true,
             scope = backgroundScope,
             subscriptions = gateway,
@@ -474,7 +511,7 @@ class FeedControllerAsyncRegressionTest {
     @Test
     fun structuralRelayRefusalIsolatesTheRejectedLogicalFilter() = runTest {
         val gateway = FakeGateway()
-        val controller = FeedController(
+        val controller = FeedController(computeDispatcher = Dispatchers.Unconfined,
             includeRepliesInFeed = true,
             scope = backgroundScope,
             subscriptions = gateway,
@@ -504,7 +541,7 @@ class FeedControllerAsyncRegressionTest {
     @Test
     fun profilePostsAndRepliesIncludesKind1111Comments() = runTest {
         val gateway = FakeGateway()
-        val controller = FeedController(
+        val controller = FeedController(computeDispatcher = Dispatchers.Unconfined,
             includeRepliesInFeed = true,
             scope = backgroundScope,
             subscriptions = gateway,
@@ -536,7 +573,7 @@ class FeedControllerAsyncRegressionTest {
     @Test
     fun profileRejectsUnsupportedAndMalformedKind1111Comments() = runTest {
         val gateway = FakeGateway()
-        val controller = FeedController(
+        val controller = FeedController(computeDispatcher = Dispatchers.Unconfined,
             includeRepliesInFeed = true,
             scope = backgroundScope,
             subscriptions = gateway,
@@ -558,7 +595,7 @@ class FeedControllerAsyncRegressionTest {
     @Test
     fun kind1111ReplyFetchesKind1111ParentForReplyCard() = runTest {
         val gateway = FakeGateway()
-        val controller = FeedController(
+        val controller = FeedController(computeDispatcher = Dispatchers.Unconfined,
             includeRepliesInFeed = true,
             scope = backgroundScope,
             subscriptions = gateway,
@@ -593,7 +630,7 @@ class FeedControllerAsyncRegressionTest {
     @Test
     fun delayedHistoryFromSubscriptionBeforeRefreshCannotOverwriteNewState() = runTest {
         val gateway = FakeGateway()
-        val controller = FeedController(scope = backgroundScope, subscriptions = gateway)
+        val controller = FeedController(computeDispatcher = Dispatchers.Unconfined, scope = backgroundScope, subscriptions = gateway)
         runCurrent()
         val historyA = gateway.fetchSessions.single()
 
@@ -616,7 +653,7 @@ class FeedControllerAsyncRegressionTest {
     @Test
     fun loadMoreAndLiveDeliveryOfTheSameEventProduceOneTimelineEntry() = runTest {
         val gateway = FakeGateway()
-        val controller = FeedController(scope = backgroundScope, subscriptions = gateway)
+        val controller = FeedController(computeDispatcher = Dispatchers.Unconfined, scope = backgroundScope, subscriptions = gateway)
         runCurrent()
         val firstPage = gateway.fetchSessions.single()
         repeat(30) { index -> firstPage.event(event("initial-$index", 100L - index)) }
@@ -640,7 +677,7 @@ class FeedControllerAsyncRegressionTest {
     @Test
     fun sameNostrEventFromMultipleRelaysIsAppliedOnce() = runTest {
         val gateway = FakeGateway()
-        val controller = FeedController(scope = backgroundScope, subscriptions = gateway)
+        val controller = FeedController(computeDispatcher = Dispatchers.Unconfined, scope = backgroundScope, subscriptions = gateway)
         runCurrent()
         val live = gateway.liveSessions.single()
         val duplicate = event("same-event", 10)
@@ -658,7 +695,7 @@ class FeedControllerAsyncRegressionTest {
     @Test
     fun eventArrivingAfterCloseCannotChangeState() = runTest {
         val gateway = FakeGateway()
-        val controller = FeedController(scope = backgroundScope, subscriptions = gateway)
+        val controller = FeedController(computeDispatcher = Dispatchers.Unconfined, scope = backgroundScope, subscriptions = gateway)
         runCurrent()
         val live = gateway.liveSessions.single()
         live.event(event("before-close", 10))
@@ -678,7 +715,7 @@ class FeedControllerAsyncRegressionTest {
     @Test
     fun initialEngagementHistoryStartsBeforeEveryFeedRelaySettles() = runTest {
         val gateway = FakeGateway(initialRelayUrls = setOf("relay-a", "relay-b"))
-        val controller = FeedController(scope = backgroundScope, subscriptions = gateway)
+        val controller = FeedController(computeDispatcher = Dispatchers.Unconfined, scope = backgroundScope, subscriptions = gateway)
         runCurrent()
         val relayAHistory = gateway.feedFetchSessions.single {
             it.target == RelayTarget.Single("relay-a")
@@ -707,7 +744,7 @@ class FeedControllerAsyncRegressionTest {
     @Test
     fun parallelRelayHistoryDoesNotDoubleCountTheSameReaction() = runTest {
         val gateway = FakeGateway(initialRelayUrls = setOf("relay-a", "relay-b"))
-        val controller = FeedController(scope = backgroundScope, subscriptions = gateway)
+        val controller = FeedController(computeDispatcher = Dispatchers.Unconfined, scope = backgroundScope, subscriptions = gateway)
         runCurrent()
         gateway.liveSessions.single().event(event("note", 10))
         runCurrent()
@@ -732,7 +769,7 @@ class FeedControllerAsyncRegressionTest {
     @Test
     fun singleRelayHistoryContinuesWithTheNextBatchWithoutExtraDelay() = runTest {
         val gateway = FakeGateway(initialRelayUrls = setOf("relay"))
-        val controller = FeedController(scope = backgroundScope, subscriptions = gateway)
+        val controller = FeedController(computeDispatcher = Dispatchers.Unconfined, scope = backgroundScope, subscriptions = gateway)
         runCurrent()
         val feedLive = gateway.liveSessions.single()
         repeat(25) { index -> feedLive.event(event("note-$index", index.toLong())) }
@@ -757,7 +794,7 @@ class FeedControllerAsyncRegressionTest {
     @Test
     fun engagementHistoryFetchOnlyContainsNewlyWatchedIds() = runTest {
         val gateway = FakeGateway()
-        val controller = FeedController(scope = backgroundScope, subscriptions = gateway)
+        val controller = FeedController(computeDispatcher = Dispatchers.Unconfined, scope = backgroundScope, subscriptions = gateway)
         runCurrent()
         gateway.completeInitialFeedHistory()
         runCurrent()
@@ -797,7 +834,7 @@ class FeedControllerAsyncRegressionTest {
     @Test
     fun liveEngagementSubscriptionWatchesOnlyNewestEvents() = runTest {
         val gateway = FakeGateway()
-        val controller = FeedController(scope = backgroundScope, subscriptions = gateway)
+        val controller = FeedController(computeDispatcher = Dispatchers.Unconfined, scope = backgroundScope, subscriptions = gateway)
         runCurrent()
         gateway.completeInitialFeedHistory()
         runCurrent()
@@ -823,7 +860,7 @@ class FeedControllerAsyncRegressionTest {
     @Test
     fun loadingOlderEventsDoesNotResendLiveEngagementSubscription() = runTest {
         val gateway = FakeGateway()
-        val controller = FeedController(scope = backgroundScope, subscriptions = gateway)
+        val controller = FeedController(computeDispatcher = Dispatchers.Unconfined, scope = backgroundScope, subscriptions = gateway)
         runCurrent()
         gateway.completeInitialFeedHistory()
         runCurrent()
@@ -853,7 +890,7 @@ class FeedControllerAsyncRegressionTest {
         val gateway = FakeGateway(initialRelayUrls = setOf("relay-a")).apply {
             targetRelayUrlsOverride = emptySet()
         }
-        val controller = FeedController(
+        val controller = FeedController(computeDispatcher = Dispatchers.Unconfined,
             relayUrl = "relay-b",
             scope = backgroundScope,
             subscriptions = gateway,
@@ -881,7 +918,7 @@ class FeedControllerAsyncRegressionTest {
     @Test
     fun overlappingHistoryAndLiveEngagementIsAppliedOnce() = runTest {
         val gateway = FakeGateway()
-        val controller = FeedController(scope = backgroundScope, subscriptions = gateway)
+        val controller = FeedController(computeDispatcher = Dispatchers.Unconfined, scope = backgroundScope, subscriptions = gateway)
         runCurrent()
         gateway.completeInitialFeedHistory()
         runCurrent()
@@ -909,7 +946,7 @@ class FeedControllerAsyncRegressionTest {
     @Test
     fun historyAndLiveOverlapStaysDeduplicatedBeyondGlobalCacheCapacity() = runTest {
         val gateway = FakeGateway()
-        val controller = FeedController(scope = backgroundScope, subscriptions = gateway)
+        val controller = FeedController(computeDispatcher = Dispatchers.Unconfined, scope = backgroundScope, subscriptions = gateway)
         runCurrent()
         gateway.completeInitialFeedHistory()
         runCurrent()
@@ -947,7 +984,7 @@ class FeedControllerAsyncRegressionTest {
     @Test
     fun newlyEnabledRelayFetchesHistoryOnlyFromThatRelay() = runTest {
         val gateway = FakeGateway(initialRelayUrls = setOf("relay-a"))
-        val controller = FeedController(scope = backgroundScope, subscriptions = gateway)
+        val controller = FeedController(computeDispatcher = Dispatchers.Unconfined, scope = backgroundScope, subscriptions = gateway)
         runCurrent()
         gateway.completeInitialFeedHistory()
         runCurrent()
@@ -971,7 +1008,7 @@ class FeedControllerAsyncRegressionTest {
     @Test
     fun reenabledRelayFetchesHistoryAgainAfterBeingDisabled() = runTest {
         val gateway = FakeGateway(initialRelayUrls = setOf("relay-a", "relay-b"))
-        val controller = FeedController(scope = backgroundScope, subscriptions = gateway)
+        val controller = FeedController(computeDispatcher = Dispatchers.Unconfined, scope = backgroundScope, subscriptions = gateway)
         runCurrent()
         gateway.completeInitialFeedHistory()
         runCurrent()
@@ -1001,7 +1038,7 @@ class FeedControllerAsyncRegressionTest {
     @Test
     fun completedEngagementHistoryIsNotFetchedAgainOnResume() = runTest {
         val gateway = FakeGateway()
-        val controller = FeedController(scope = backgroundScope, subscriptions = gateway)
+        val controller = FeedController(computeDispatcher = Dispatchers.Unconfined, scope = backgroundScope, subscriptions = gateway)
         runCurrent()
         gateway.completeInitialFeedHistory()
         runCurrent()
@@ -1026,7 +1063,7 @@ class FeedControllerAsyncRegressionTest {
     @Test
     fun timedOutEngagementHistoryIsRetriedOnResume() = runTest {
         val gateway = FakeGateway()
-        val controller = FeedController(scope = backgroundScope, subscriptions = gateway)
+        val controller = FeedController(computeDispatcher = Dispatchers.Unconfined, scope = backgroundScope, subscriptions = gateway)
         runCurrent()
         gateway.completeInitialFeedHistory()
         runCurrent()
@@ -1052,7 +1089,7 @@ class FeedControllerAsyncRegressionTest {
     @Test
     fun timedOutEngagementHistoryIsRetriedAutomatically() = runTest {
         val gateway = FakeGateway()
-        val controller = FeedController(scope = backgroundScope, subscriptions = gateway)
+        val controller = FeedController(computeDispatcher = Dispatchers.Unconfined, scope = backgroundScope, subscriptions = gateway)
         runCurrent()
         gateway.completeInitialFeedHistory()
         runCurrent()
@@ -1077,7 +1114,7 @@ class FeedControllerAsyncRegressionTest {
     @Test
     fun retriedEngagementHistoryDoesNotDoubleCountReceivedReaction() = runTest {
         val gateway = FakeGateway()
-        val controller = FeedController(scope = backgroundScope, subscriptions = gateway)
+        val controller = FeedController(computeDispatcher = Dispatchers.Unconfined, scope = backgroundScope, subscriptions = gateway)
         runCurrent()
         gateway.completeInitialFeedHistory()
         runCurrent()
@@ -1113,7 +1150,7 @@ class FeedControllerAsyncRegressionTest {
     @Test
     fun structuralEngagementRefusalRetriesOneFilterAtATime() = runTest {
         val gateway = FakeGateway()
-        val controller = FeedController(scope = backgroundScope, subscriptions = gateway)
+        val controller = FeedController(computeDispatcher = Dispatchers.Unconfined, scope = backgroundScope, subscriptions = gateway)
         runCurrent()
         gateway.completeInitialFeedHistory()
         runCurrent()
@@ -1136,7 +1173,7 @@ class FeedControllerAsyncRegressionTest {
     @Test
     fun engagementHistoryLimitsEachBatchToTwentyEvents() = runTest {
         val gateway = FakeGateway()
-        val controller = FeedController(scope = backgroundScope, subscriptions = gateway)
+        val controller = FeedController(computeDispatcher = Dispatchers.Unconfined, scope = backgroundScope, subscriptions = gateway)
         runCurrent()
         gateway.completeInitialFeedHistory()
         runCurrent()
@@ -1154,7 +1191,7 @@ class FeedControllerAsyncRegressionTest {
     @Test
     fun engagementHistoryBackfillContinuesForEventsEvictedFromLiveTracking() = runTest {
         val gateway = FakeGateway()
-        val controller = FeedController(scope = backgroundScope, subscriptions = gateway)
+        val controller = FeedController(computeDispatcher = Dispatchers.Unconfined, scope = backgroundScope, subscriptions = gateway)
         runCurrent()
         gateway.completeInitialFeedHistory()
         runCurrent()
@@ -1180,7 +1217,7 @@ class FeedControllerAsyncRegressionTest {
     @Test
     fun reactionForEventEvictedFromLiveTrackingIsStillApplied() = runTest {
         val gateway = FakeGateway()
-        val controller = FeedController(scope = backgroundScope, subscriptions = gateway)
+        val controller = FeedController(computeDispatcher = Dispatchers.Unconfined, scope = backgroundScope, subscriptions = gateway)
         runCurrent()
         gateway.completeInitialFeedHistory()
         runCurrent()
@@ -1213,7 +1250,7 @@ class FeedControllerAsyncRegressionTest {
     @Test
     fun deletedEventDiscardsEngagementHistoryState() = runTest {
         val gateway = FakeGateway()
-        val controller = FeedController(scope = backgroundScope, subscriptions = gateway)
+        val controller = FeedController(computeDispatcher = Dispatchers.Unconfined, scope = backgroundScope, subscriptions = gateway)
         runCurrent()
         gateway.completeInitialFeedHistory()
         runCurrent()
@@ -1299,6 +1336,19 @@ class FeedControllerAsyncRegressionTest {
         override fun close(subscriptionId: String) = Unit
     }
 
+    private class QueuedDispatcher : CoroutineDispatcher() {
+        private val tasks = ArrayDeque<Runnable>()
+
+        override fun dispatch(context: CoroutineContext, block: Runnable) {
+            tasks.addLast(block)
+        }
+
+        fun runNext() {
+            check(tasks.isNotEmpty()) { "No queued computation" }
+            tasks.removeFirst().run()
+        }
+    }
+
     private class FakeSession(
         override val id: String,
         val behavior: SubscriptionBehavior,
@@ -1371,9 +1421,10 @@ class FeedControllerAsyncRegressionTest {
         createdAt: Long,
         kind: Int = 1,
         tags: List<List<String>> = emptyList(),
+        pubkey: String = "author",
     ) = NostrEvent(
         id = id,
-        pubkey = "author",
+        pubkey = pubkey,
         createdAt = createdAt,
         kind = kind,
         tags = tags,

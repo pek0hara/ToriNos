@@ -13,11 +13,13 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.unit.dp
 import com.nostr.torinos.model.NostrEvent
+import com.nostr.torinos.model.extractNpubReferences
 import com.nostr.torinos.model.quotedEventIds
 import com.nostr.torinos.model.ReactionOption
 import com.nostr.torinos.model.replyTargetId
@@ -49,6 +51,7 @@ fun LazyListScope.noteListItems(
     emptyContent: (@Composable () -> Unit)? = null,
     eventContentVisible: Boolean = true,
     eventEnterFadeMillis: Int = 0,
+    deferWebViewLoad: Boolean = false,
 ) {
     when {
         state.events.isEmpty() &&
@@ -107,21 +110,85 @@ fun LazyListScope.noteListItems(
                 ).value
                 Column(modifier = Modifier.alpha(contentAlpha)) {
                     val repostedByPubkey = state.repostedByPubkeys[event.id]
+                    val repliesForEvent = state.replies[event.id].orEmpty()
+                    val repostPubkeysForEvent = state.repostPubkeys[event.id].orEmpty()
+                    val reactionEventsForEvent = state.reactionEvents[event.id].orEmpty()
+                    val replyParentForEvent = run {
+                        val parentId = event.replyTargetId() ?: return@run null
+                        val parentEvent = state.quotedEvents[parentId] ?: return@run null
+                        QuotedEvent(event = parentEvent, profile = state.profiles[parentEvent.pubkey])
+                    }
+                    val quotedEventsForEvent = run {
+                        val replyParentId = event.replyTargetId()
+                        quotedEventIds(event)
+                            .filter { it != replyParentId }
+                            .mapNotNull { quotedEventId ->
+                                state.quotedEvents[quotedEventId]?.let { quotedEvent ->
+                                    QuotedEvent(
+                                        event = quotedEvent,
+                                        profile = state.profiles[quotedEvent.pubkey],
+                                    )
+                                }
+                            }
+                    }
+                    // このノートが実際に参照しうるpubkeyだけに絞り込み、無関係なプロフィール更新で
+                    // 表示中の全アイテムが再コンポーズされるのを防ぐ。state.profilesはキーに含めない。
+                    val relevantPubkeys = remember(
+                        event.id,
+                        event.content,
+                        event.pubkey,
+                        repostedByPubkey,
+                        replyParentForEvent?.event?.id,
+                        replyParentForEvent?.event?.content,
+                        quotedEventsForEvent.map { it.event.id to it.event.content },
+                        repostPubkeysForEvent,
+                        reactionEventsForEvent.map { it.pubkey },
+                        repliesForEvent.map { it.id to it.content },
+                    ) {
+                        buildSet {
+                            add(event.pubkey)
+                            repostedByPubkey?.let(::add)
+                            replyParentForEvent?.event?.let { parentEvent ->
+                                add(parentEvent.pubkey)
+                                extractNpubReferences(parentEvent.content).forEach { add(it.pubkey) }
+                            }
+                            quotedEventsForEvent.forEach { quoted ->
+                                add(quoted.event.pubkey)
+                                extractNpubReferences(quoted.event.content).forEach { add(it.pubkey) }
+                            }
+                            addAll(repostPubkeysForEvent)
+                            reactionEventsForEvent.forEach { add(it.pubkey) }
+                            repliesForEvent.forEach { reply ->
+                                add(reply.pubkey)
+                                extractNpubReferences(reply.content).forEach { add(it.pubkey) }
+                            }
+                            extractNpubReferences(event.content).forEach { add(it.pubkey) }
+                        }
+                    }
+                    val relevantProfileEntries = relevantPubkeys.mapNotNull { pubkey ->
+                        state.profiles[pubkey]?.let { profile -> pubkey to profile }
+                    }
+                    // 無関係なプロフィールが更新されても、NoteCardへ渡すMapの同一性を維持する。
+                    val relevantProfiles = remember(relevantProfileEntries) {
+                        relevantProfileEntries.toMap()
+                    }
                     NoteCard(
                         event = event,
+                        precomputedContent = state.parsedContents[event.id],
+                        deferWebViewLoad = deferWebViewLoad,
                         profile = state.profiles[event.pubkey],
                         repostedByPubkey = repostedByPubkey,
                         repostedByProfile = repostedByPubkey?.let { state.profiles[it] },
-                        profiles = state.profiles,
+                        profiles = relevantProfiles,
                         replyCount = state.replyCounts[event.id] ?: 0,
-                        replies = state.replies[event.id].orEmpty(),
+                        replies = repliesForEvent,
                         repostCount = state.repostCounts[event.id] ?: 0,
-                        repostPubkeys = state.repostPubkeys[event.id].orEmpty(),
+                        repostPubkeys = repostPubkeysForEvent,
                         reactionCount = state.reactionCounts[event.id] ?: 0,
                         likeReactionCount = state.likeReactionCounts[event.id] ?: 0,
                         customReactions = state.customReactions[event.id].orEmpty(),
                         unicodeReactions = state.unicodeReactions[event.id].orEmpty(),
-                        reactionEvents = state.reactionEvents[event.id].orEmpty(),
+                        reactionEvents = reactionEventsForEvent,
                         isLiked = state.isLiked(event.id),
                         ownEmojiReactionEventIds = state.displayOwnEmojiReactionEventIds(event.id),
                         isReposted = state.isReposted(event.id),
@@ -165,24 +232,8 @@ fun LazyListScope.noteListItems(
                         } else null,
                         onHashtagClick = onHashtagClick,
                         onNoteClick = if (onOpenReplies != null) onOpenReplies else null,
-                        replyParent = run {
-                            val parentId = event.replyTargetId() ?: return@run null
-                            val parentEvent = state.quotedEvents[parentId] ?: return@run null
-                            QuotedEvent(event = parentEvent, profile = state.profiles[parentEvent.pubkey])
-                        },
-                        quotedEvents = run {
-                            val replyParentId = event.replyTargetId()
-                            quotedEventIds(event)
-                                .filter { it != replyParentId }
-                                .mapNotNull { quotedEventId ->
-                                    state.quotedEvents[quotedEventId]?.let { quotedEvent ->
-                                        QuotedEvent(
-                                            event = quotedEvent,
-                                            profile = state.profiles[quotedEvent.pubkey],
-                                        )
-                                    }
-                                }
-                        },
+                        replyParent = replyParentForEvent,
+                        quotedEvents = quotedEventsForEvent,
                         ownPubkey = ownPubkey,
                         onDelete = { onDelete(event.id) },
                         isMuted = mutedPubkeys.contains(event.pubkey),

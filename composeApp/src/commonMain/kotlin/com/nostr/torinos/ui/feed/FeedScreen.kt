@@ -42,6 +42,7 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
@@ -224,10 +225,12 @@ fun FeedScreen(
     val chromeSettleAnimation = remember { Animatable(chromeCollapseFraction) }
     var lastChromeScrollDelta by remember { mutableStateOf(0f) }
     var chromeSettleRequest by remember { mutableIntStateOf(0) }
+    var hideChromeForCurrentGesture by remember { mutableStateOf(false) }
+    val currentChromeCollapseFraction = rememberUpdatedState(chromeCollapseFraction)
+    val currentOnChromeCollapseFractionChange = rememberUpdatedState(onChromeCollapseFractionChange)
     val chromeNestedScrollConnection = remember(
         authorPubkey,
         activeListState,
-        chromeCollapseFraction,
         chromeCollapseDistancePx,
     ) {
         object : NestedScrollConnection {
@@ -237,13 +240,19 @@ fun FeedScreen(
                 }
                 val delta = -available.y
                 if (delta == 0f) return Offset.Zero
-
-                val nextFraction = (chromeCollapseFraction + delta / chromeCollapseDistancePx.toFloat())
-                    .coerceIn(0f, 1f)
-                if (nextFraction != chromeCollapseFraction) {
-                    onChromeCollapseFractionChange(nextFraction)
+                if (delta > 0f) {
+                    hideChromeForCurrentGesture = true
+                } else if (hideChromeForCurrentGesture) {
+                    return Offset.Zero
                 }
-                val consumedDelta = (nextFraction - chromeCollapseFraction) * chromeCollapseDistancePx
+
+                val fraction = currentChromeCollapseFraction.value
+                val nextFraction = (fraction + delta / chromeCollapseDistancePx.toFloat())
+                    .coerceIn(0f, 1f)
+                if (nextFraction != fraction) {
+                    currentOnChromeCollapseFractionChange.value(nextFraction)
+                }
+                val consumedDelta = (nextFraction - fraction) * chromeCollapseDistancePx
                 if (consumedDelta != 0f) {
                     lastChromeScrollDelta = consumedDelta
                     chromeSettleRequest++
@@ -252,18 +261,23 @@ fun FeedScreen(
             }
 
             override suspend fun onPostFling(consumed: Velocity, available: Velocity): Velocity {
-                if (chromeCollapseFraction <= 0f || chromeCollapseFraction >= 1f) {
+                try {
+                    val fraction = currentChromeCollapseFraction.value
+                    if (fraction <= 0f || fraction >= 1f) {
+                        return Velocity.Zero
+                    }
+                    val targetFraction = if (lastChromeScrollDelta >= 0f) 1f else 0f
+                    chromeSettleAnimation.snapTo(fraction)
+                    chromeSettleAnimation.animateTo(
+                        targetValue = targetFraction,
+                        animationSpec = tween(ChromeSettleAnimationMillis),
+                    ) {
+                        currentOnChromeCollapseFractionChange.value(value)
+                    }
                     return Velocity.Zero
+                } finally {
+                    hideChromeForCurrentGesture = false
                 }
-                val targetFraction = if (lastChromeScrollDelta >= 0f) 1f else 0f
-                chromeSettleAnimation.snapTo(chromeCollapseFraction)
-                chromeSettleAnimation.animateTo(
-                    targetValue = targetFraction,
-                    animationSpec = tween(ChromeSettleAnimationMillis),
-                ) {
-                    onChromeCollapseFractionChange(value)
-                }
-                return Velocity.Zero
             }
         }
     }
@@ -284,6 +298,7 @@ fun FeedScreen(
     }
 
     LaunchedEffect(activeListState, authorPubkey) {
+        hideChromeForCurrentGesture = false
         if (authorPubkey != null || activeListState == null) {
             onChromeCollapseFractionChange(0f)
             return@LaunchedEffect
@@ -292,7 +307,7 @@ fun FeedScreen(
         snapshotFlow {
             activeListState.firstVisibleItemIndex == 0 && activeListState.firstVisibleItemScrollOffset == 0
         }.collect { atTop ->
-            if (atTop) {
+            if (atTop && !hideChromeForCurrentGesture) {
                 onChromeCollapseFractionChange(0f)
             }
         }
@@ -501,6 +516,7 @@ fun FeedScreen(
                 ownPubkey = ownPubkey,
                 onUserClick = onUserClick,
                 modifier = timelineModifier,
+                topOverlayVisibility = chromeAlpha,
                 onReply = onReply,
                 onOpenReplies = onOpenReplies,
                 onOpenLikes = onOpenLikes,
@@ -545,6 +561,7 @@ fun FeedScreen(
                                 ownPubkey = ownPubkey,
                                 onUserClick = onUserClick,
                                 modifier = Modifier.fillMaxSize(),
+                                topOverlayVisibility = chromeAlpha,
                                 onReply = onReply,
                                 onOpenReplies = onOpenReplies,
                                 onOpenLikes = onOpenLikes,
@@ -575,6 +592,7 @@ fun FeedScreen(
                             ownPubkey = ownPubkey,
                             onUserClick = onUserClick,
                             modifier = Modifier.fillMaxSize(),
+                            topOverlayVisibility = chromeAlpha,
                             onReply = onReply,
                             onOpenReplies = onOpenReplies,
                             onOpenLikes = onOpenLikes,
@@ -640,6 +658,7 @@ private fun FeedTimelinePane(
     ownPubkey: String?,
     onUserClick: (String) -> Unit,
     modifier: Modifier,
+    topOverlayVisibility: Float,
     onReply: ((event: NostrEvent, preview: String) -> Unit)?,
     onOpenReplies: (eventId: String) -> Unit,
     onOpenLikes: (eventId: String) -> Unit,
@@ -703,6 +722,7 @@ private fun FeedTimelinePane(
             onEmojiUnreact = viewModel::unreactWithEmoji,
             onDelete = viewModel::deleteEvent,
             modifier = modifier,
+            topOverlayVisibility = topOverlayVisibility,
             onReply = onReply,
             onOpenReplies = onOpenReplies,
             onOpenLikes = onOpenLikes,
@@ -719,6 +739,7 @@ private fun FeedTimelinePane(
             emptyStateDelayMillis = 500L,
             eventEnterFadeMillis = 150,
             stageInitialEvents = shouldStageInitialEvents,
+            onAtTopChanged = viewModel::setAtTop,
             onRefresh = {
                 onRefresh?.invoke()
                 viewModel.refresh()

@@ -49,7 +49,10 @@ import com.nostr.torinos.ui.timeline.StateStore
 import com.nostr.torinos.ui.timeline.SignedEventPublisher
 import kotlinx.serialization.json.Json
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlin.time.Clock
 import kotlinx.coroutines.delay
@@ -57,6 +60,7 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 
 internal interface FeedSubscriptionGateway {
     val readableRelayUrls: Flow<Set<String>>
@@ -113,14 +117,31 @@ internal class FeedController(
     private val scope: CoroutineScope,
     private val subscriptions: FeedSubscriptionGateway = RepositoryFeedSubscriptionGateway,
     private val feedEventKinds: Set<Int> = setOf(1),
+    private val computeDispatcher: CoroutineDispatcher = Dispatchers.Default,
+    // プロフィール画面の空ページ自動スキップ調査用の一時パラメータ。検証が終わったら削除する。
+    private val feedPageSize: Int = DEFAULT_FEED_PAGE_SIZE,
 ) {
     private val safeCoroutineLauncher = SafeCoroutineLauncher(scope, "FeedController")
-    private fun launch(block: suspend CoroutineScope.() -> Unit): Job =
-        safeCoroutineLauncher.launch(block = block)
+    private val feedItemMapper = FeedItemMapper()
+    /** UI から「先頭にいるか」の境界値だけを受け取る。高頻度なスクロール位置そのものは渡さない。 */
+    private var isAtTop = true
+
+    fun setAtTop(value: Boolean) {
+        if (isAtTop == value) return
+        isAtTop = value
+        if (value && currentFeedState().newPostCount != 0) {
+            setFeedState(currentFeedState().copy(newPostCount = 0), immediate = false)
+        }
+    }
+    private fun launch(
+        start: CoroutineStart = CoroutineStart.DEFAULT,
+        block: suspend CoroutineScope.() -> Unit,
+    ): Job = safeCoroutineLauncher.launch(start = start, block = block)
 
     private val _state = StateStore(UiState())
     val state: StateFlow<UiState> = _state.state
     private var pendingFeedState = UiState()
+    private var feedStateRevision = 0L
     private var feedStateEmitJob: Job? = null
     private val pendingTimelineEvents = linkedMapOf<String, NostrEvent>()
     private var timelineBatchJob: Job? = null
@@ -183,8 +204,8 @@ internal class FeedController(
     private var oldestCreatedAt: Long? = null
     private var nextHistoryUntil: Long? = null
     private var activeHistoryUntil: Long? = null
-    private var nextHistoryPageSize = FEED_PAGE_SIZE
-    private var activeHistoryPageSize = FEED_PAGE_SIZE
+    private var nextHistoryPageSize = feedPageSize
+    private var activeHistoryPageSize = feedPageSize
     private var shouldRetryHistoryPage = false
     private var loadingMore = false
     private var isGapFill = false
@@ -268,6 +289,7 @@ internal class FeedController(
     private fun setFeedState(value: UiState, immediate: Boolean = true) {
         if (closed) return
         pendingFeedState = value
+        feedStateRevision++
         if (immediate) {
             emitFeedStateNow()
         } else {
@@ -327,8 +349,7 @@ internal class FeedController(
 
     private fun removeEventLocally(eventId: String) {
         pendingTimelineEvents.remove(eventId)
-        val cur = currentFeedState()
-        updateEvents(cur.events.filter { it.id != eventId }, immediate = true)
+        updateEvents(immediate = true) { current -> current.events.filter { it.id != eventId } }
         seenEventIds.remove(eventId)
         rawEvents.remove(eventId)
         canonicalEvents.remove(eventId)
@@ -492,6 +513,10 @@ internal class FeedController(
     }
 
     fun loadMore() {
+        com.nostr.torinos.ui.profile.profileDebugLog(
+            "FeedController.loadMore instanceKey=$instanceKey canLoadMore=${currentFeedState().canLoadMore} " +
+                "isLoadingMore=${currentFeedState().isLoadingMore}",
+        )
         relayHistoryCoordinator?.let { coordinator ->
             if (currentFeedState().canLoadMore) coordinator.loadMore()
             return
@@ -582,8 +607,8 @@ internal class FeedController(
         oldestCreatedAt = null
         nextHistoryUntil = null
         activeHistoryUntil = null
-        nextHistoryPageSize = FEED_PAGE_SIZE
-        activeHistoryPageSize = FEED_PAGE_SIZE
+        nextHistoryPageSize = feedPageSize
+        activeHistoryPageSize = feedPageSize
         shouldRetryHistoryPage = false
         loadingMore = false
         isGapFill = false
@@ -597,6 +622,7 @@ internal class FeedController(
         manualRefreshRequested = false
         pendingFeedState = UiState()
         _state.value = pendingFeedState
+        isAtTop = true
         return true
     }
 
@@ -790,7 +816,7 @@ internal class FeedController(
             baseFilters = feedFilters(),
             historyFloor = historyFloor,
             fetchTimeoutMillis = HISTORY_FETCH_TIMEOUT_MS,
-            pageSize = FEED_PAGE_SIZE,
+            pageSize = feedPageSize,
             maxPageSize = MAX_HISTORY_PAGE_SIZE,
             settleDelayMillis = HISTORY_RELAY_SETTLE_DELAY_MS,
             onEvent = { event ->
@@ -870,6 +896,9 @@ internal class FeedController(
         until: Long?,
         retryRelayUrls: Set<String>? = null,
     ) {
+        com.nostr.torinos.ui.profile.profileDebugLog(
+            "requestHistoryPage instanceKey=$instanceKey until=$until pageSize=$feedPageSize",
+        )
         val ids = subscriptionIds ?: return
         if (authorPubkeys?.isEmpty() == true) {
             loadingMore = false
@@ -891,7 +920,7 @@ internal class FeedController(
         activeHistoryUntil = until
         activeHistoryPageSize = when {
             retryRelayUrls != null -> activeHistoryPageSize
-            until == null -> FEED_PAGE_SIZE
+            until == null -> feedPageSize
             else -> nextHistoryPageSize
         }
         loadingMore = true
@@ -931,7 +960,7 @@ internal class FeedController(
         currentHistorySession?.close()
         val historySubId = nextHistorySubscriptionId(ids)
         isGapFill = true
-        activeHistoryPageSize = FEED_PAGE_SIZE
+        activeHistoryPageSize = feedPageSize
         loadingMore = true
         lastHistoryBatchUniqueCount = 0
         historyPageCreatedAtByEventId.clear()
@@ -940,7 +969,7 @@ internal class FeedController(
         val session = subscriptions.open(
             SubscriptionSpec(
                 id = historySubId,
-                filters = feedFilters(since = since, until = until, limit = FEED_PAGE_SIZE),
+                filters = feedFilters(since = since, until = until, limit = feedPageSize),
                 target = relayTarget,
                 behavior = SubscriptionBehavior.Fetch(HISTORY_FETCH_TIMEOUT_MS),
                 deduplicateEvents = false,
@@ -963,6 +992,10 @@ internal class FeedController(
         )
         val hasMore = pageWindow.hasMore
         val loadedVisibleEvents = lastHistoryBatchUniqueCount > 0
+        com.nostr.torinos.ui.profile.profileDebugLog(
+            "onHistoryPageCompleted instanceKey=$instanceKey loadedVisibleEvents=$loadedVisibleEvents " +
+                "uniqueCount=$lastHistoryBatchUniqueCount hasMore=$hasMore isGapFill=$isGapFill",
+        )
         if (!isGapFill) {
             shouldRetryHistoryPage = false
             nextHistoryUntil = pageWindow.nextUntil
@@ -973,7 +1006,7 @@ internal class FeedController(
                 // until を進めず取得上限を広げ、31件目以降を取りこぼさない。
                 (activeHistoryPageSize * 2).coerceAtMost(MAX_HISTORY_PAGE_SIZE)
             } else {
-                FEED_PAGE_SIZE
+                feedPageSize
             }
             revealHistoryThrough(pageWindow.revealOldestAt)
         }
@@ -1040,6 +1073,11 @@ internal class FeedController(
             return
         }
         consecutiveEmptyHistoryPages++
+        com.nostr.torinos.ui.profile.profileDebugLog(
+            "continuePastEmptyHistoryPageIfNeeded instanceKey=$instanceKey " +
+                "consecutiveEmptyHistoryPages=$consecutiveEmptyHistoryPages " +
+                "willSkip=${consecutiveEmptyHistoryPages <= MAX_AUTO_SKIP_EMPTY_HISTORY_PAGES}",
+        )
         if (consecutiveEmptyHistoryPages > MAX_AUTO_SKIP_EMPTY_HISTORY_PAGES) return
         launch {
             requestHistoryPage(until = nextHistoryUntil)
@@ -1104,7 +1142,7 @@ internal class FeedController(
                 revealHistoryThrough(
                     historyPageWindow(
                         historyPageCreatedAtByEventId.values.toList(),
-                        FEED_PAGE_SIZE,
+                        feedPageSize,
                     ).revealOldestAt,
                 )
             }
@@ -1255,10 +1293,11 @@ internal class FeedController(
         timelineBatchJob?.cancel()
         timelineBatchJob = null
         pendingTimelineEvents.clear()
-        val filtered = rawEvents.values
-            .filter { !isFiltered(it) }
-            .let(::sortTimelineEvents)
-        updateEvents(filtered)
+        updateEvents { _ ->
+            rawEvents.values
+                .filter { !isFiltered(it) }
+                .let(::sortTimelineEvents)
+        }
     }
 
     private fun appendRepostedEvent(repost: NostrEvent): Int {
@@ -1326,7 +1365,7 @@ internal class FeedController(
         val cur = currentFeedState()
         if (cur.events.none { it.id == eventId } && eventId !in pendingTimelineEvents) return
         if (eventId in pendingTimelineEvents) return
-        updateEvents(sortTimelineEvents(cur.events))
+        updateEvents { current -> sortTimelineEvents(current.events) }
     }
 
     private fun sortTimelineEvents(events: List<NostrEvent>): List<NostrEvent> =
@@ -1348,16 +1387,80 @@ internal class FeedController(
         if (closed || pendingTimelineEvents.isEmpty()) return
         val additions = pendingTimelineEvents.values.toList()
         pendingTimelineEvents.clear()
-        val merged = sortTimelineEvents(currentFeedState().events + additions)
-        updateEvents(merged, immediate = true)
+        if (!isAtTop) {
+            val cur = currentFeedState()
+            setFeedState(cur.copy(newPostCount = cur.newPostCount + additions.size), immediate = false)
+        }
+        updateEvents(immediate = true) { current -> sortTimelineEvents(current.events + additions) }
     }
 
-    private fun updateEvents(events: List<NostrEvent>, immediate: Boolean = false) {
+    private val updateEventsMutex = Mutex()
+
+    /**
+     * [computeEvents] はロック取得後・メインスレッド側で評価すること。直前の呼び出しが適用済みの
+     * 最新[UiState]を渡すので、呼び出し元で事前に計算したイベントリストをそのまま渡すのではなく、
+     * ここで初めて最新状態から導出する。そうしないと、後発の呼び出しが古いイベントリストで
+     * 上書きしてしまい、削除・フィルタ済みのノートが復活する競合を防げない。
+     */
+    private fun updateEvents(
+        immediate: Boolean = false,
+        computeEvents: (current: UiState) -> List<NostrEvent>,
+    ) {
+        // filterKeys・extractNpubReferencesによる全件走査はコストが大きいため、
+        // メインスレッドを塞がずバックグラウンドで計算する。呼び出しはMutexで直列化し、
+        // 各呼び出しが必ず直前の呼び出しの適用結果(setFeedState済み)を踏まえて
+        // currentFeedState()を取得するようにする。
+        //
+        // UNDISPATCHED: Mutexが空いていれば呼び出し元と同じフレームで同期的に進む。
+        // テスト用のUnconfinedディスパッチャーと組み合わせると余分なスケジューリングホップが
+        // 生まれず、本番のDispatchers.Defaultでは正しく別スレッドへディスパッチされる。
+        launch(start = CoroutineStart.UNDISPATCHED) {
+            updateEventsMutex.withLock {
+                while (!closed) {
+                    val revision = feedStateRevision
+                    val oldestVisibleAt = historyRevealOldestAt
+                    val current = currentFeedState()
+                    val events = computeEvents(current)
+                    val ownPubkeySnapshot = ownPubkey
+                    val eventSortTimesSnapshot = eventSortTimes.toMap()
+                    val newState = withContext(computeDispatcher) {
+                        computeUpdatedFeedState(
+                            events = events,
+                            oldestVisibleAt = oldestVisibleAt,
+                            current = current,
+                            ownPubkeySnapshot = ownPubkeySnapshot,
+                            eventSortTimesSnapshot = eventSortTimesSnapshot,
+                        )
+                    }
+
+                    // バックグラウンド計算中にプロフィールやリアクションなどが更新された場合、
+                    // 古いUiStateをコミットするとその更新を巻き戻してしまう。最新状態から再計算する。
+                    if (feedStateRevision != revision) continue
+
+                    if (newState.events.isNotEmpty()) {
+                        initialFeedSlowJob?.cancel()
+                        initialFeedSlowJob = null
+                    }
+                    setFeedState(newState, immediate = immediate)
+                    break
+                }
+            }
+        }
+    }
+
+    // FeedControllerの可変フィールドを読み書きしない純粋関数。Dispatchers.Default上から呼ばれる。
+    private fun computeUpdatedFeedState(
+        events: List<NostrEvent>,
+        oldestVisibleAt: Long?,
+        current: UiState,
+        ownPubkeySnapshot: String?,
+        eventSortTimesSnapshot: Map<String, Long>,
+    ): UiState {
         val visibleEvents = events
             .let { timelineEvents ->
-                historyRevealOldestAt?.let { oldestVisibleAt ->
+                oldestVisibleAt?.let { oldest ->
                     timelineEvents.filter { event ->
-                        (eventSortTimes[event.id] ?: event.createdAt) >= oldestVisibleAt
+                        (eventSortTimesSnapshot[event.id] ?: event.createdAt) >= oldest
                     }
                 } ?: timelineEvents
             }
@@ -1365,7 +1468,6 @@ internal class FeedController(
         val visibleEventIds = visibleEvents.mapTo(linkedSetOf()) { it.id }
         val retainedEventIds = visibleEventIds + visibleEvents.mapNotNull { it.replyTargetId() } +
             visibleEvents.flatMap { quotedEventIds(it) }
-        val current = currentFeedState()
         val quotedEvents = current.quotedEvents.filterKeys { it in retainedEventIds }
         val replies = current.replies.filterKeys { it in visibleEventIds }
         val retainedPubkeys = buildSet {
@@ -1394,17 +1496,17 @@ internal class FeedController(
             current.repostedByPubkeys.forEach { (eventId, pubkey) ->
                 if (eventId in visibleEventIds) add(pubkey)
             }
-            ownPubkey?.let(::add)
+            ownPubkeySnapshot?.let(::add)
         }
         val profiles = current.profiles.filterKeys { it in retainedPubkeys } +
             ProfileRepository.getCached(retainedPubkeys)
+        val parsedContents = feedItemMapper.map(visibleEvents)
 
-        setFeedState(current.copy(
+        return current.copy(
             events = visibleEvents,
+            parsedContents = parsedContents,
             isInitialLoad = if (visibleEvents.isNotEmpty()) false else current.isInitialLoad,
             initialFeedState = if (visibleEvents.isNotEmpty()) {
-                initialFeedSlowJob?.cancel()
-                initialFeedSlowJob = null
                 InitialFeedState.ContentReady
             } else {
                 current.initialFeedState
@@ -1425,7 +1527,7 @@ internal class FeedController(
             ownEmojiReactionEventIds = current.ownEmojiReactionEventIds
                 .filterKeys { it in retainedEventIds },
             repostedEvents = current.repostedEvents.filterKeys { it in retainedEventIds },
-        ), immediate = immediate)
+        )
     }
 
     private fun rememberSeenId(seenIds: LinkedHashSet<String>, eventId: String): Boolean {
@@ -1942,9 +2044,10 @@ internal class FeedController(
 
     companion object {
         private val DISPLAY_EVENT_KINDS = linkedSetOf(1, COMMENT_EVENT_KIND)
-        private const val FEED_PAGE_SIZE = 30
+        internal const val DEFAULT_FEED_PAGE_SIZE = 30
         private const val MAX_HISTORY_PAGE_SIZE = 3_840
-        private const val MAX_TIMELINE_EVENTS = 800
+        // FeedItemMapperのデフォルトのキャッシュ上限がこの値を下回らないよう、そちらから直接参照する。
+        internal const val MAX_TIMELINE_EVENTS = 800
         private const val MAX_TRACKED_ENGAGEMENT_EVENTS = 100
         private const val MAX_LIVE_ENGAGEMENT_EVENTS = 40
         private const val MAX_SEEN_IDS = 2000

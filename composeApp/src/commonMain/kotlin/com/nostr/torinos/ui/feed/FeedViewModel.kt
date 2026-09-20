@@ -13,6 +13,7 @@ import com.nostr.torinos.model.NostrProfile
 import com.nostr.torinos.model.ReactionOption
 import com.nostr.torinos.model.UnicodeReaction
 import com.nostr.torinos.ui.SafeViewModel
+import com.nostr.torinos.ui.components.ParsedNoteContent
 import kotlinx.coroutines.flow.StateFlow
 
 /** Feed画面のFacade。履歴・ライブ・gap fill・集約の所有者はFeedController。 */
@@ -27,6 +28,8 @@ class FeedViewModel(
     hashtag: String? = null,
     filterMutedUsers: Boolean = true,
     feedEventKinds: Set<Int> = setOf(1),
+    // プロフィール画面の空ページ自動スキップ調査用の一時パラメータ。検証が終わったら削除する。
+    feedPageSize: Int? = null,
 ) : SafeViewModel() {
     enum class InitialFeedState {
         Loading,
@@ -38,6 +41,7 @@ class FeedViewModel(
 
     data class UiState(
         val events: List<NostrEvent> = emptyList(),
+        val parsedContents: Map<String, ParsedNoteContent> = emptyMap(),
         val profiles: Map<String, NostrProfile> = emptyMap(),
         val reactionCounts: Map<String, Int> = emptyMap(),
         val likeReactionCounts: Map<String, Int> = emptyMap(),
@@ -61,6 +65,7 @@ class FeedViewModel(
         val initialFeedState: InitialFeedState = InitialFeedState.Loading,
         val isRefreshing: Boolean = false,
         val historyRequestGeneration: Int = 0,
+        val newPostCount: Int = 0,
     ) {
         fun isLiked(eventId: String): Boolean = likedReactions.containsKey(eventId) ||
             pendingEngagementOperations[eventId]?.get(EngagementSlot.Reaction)?.request is EngagementRequest.AddLike
@@ -81,6 +86,7 @@ class FeedViewModel(
         filterMutedUsers = filterMutedUsers,
         scope = viewModelScope,
         feedEventKinds = feedEventKinds,
+        feedPageSize = feedPageSize ?: FeedController.DEFAULT_FEED_PAGE_SIZE,
     )
     val state: StateFlow<UiState> = controller.state
 
@@ -101,6 +107,7 @@ class FeedViewModel(
     fun refresh() = controller.refresh()
     fun refreshReactions(eventId: String) = controller.refreshReactions(eventId)
     fun resetToLatest(request: Int): Boolean = controller.resetToLatest(request)
+    fun setAtTop(value: Boolean) = controller.setAtTop(value)
     fun startSubscriptions() = controller.startSubscriptions()
     fun stopSubscriptions(clearRefreshing: Boolean = true) = controller.stopSubscriptions(clearRefreshing)
 
