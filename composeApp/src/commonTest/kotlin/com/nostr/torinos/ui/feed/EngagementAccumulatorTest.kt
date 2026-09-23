@@ -69,12 +69,15 @@ class EngagementAccumulatorTest {
     @Test
     fun quoteRepostIncrementsEveryTarget() {
         val initial = FeedViewModel.UiState(repostCounts = mapOf("a" to 2))
+        val quoteRepost = event(id = "quote-1", pubkey = "quoter", kind = 1, content = "見て！")
 
-        val updated = EngagementAccumulator.quoteReposts(initial, listOf("a", "b"), pubkey = "quoter")
+        val updated = EngagementAccumulator.quoteReposts(initial, listOf("a", "b"), quoteRepost)
 
         assertEquals(mapOf("a" to 3, "b" to 1), updated.repostCounts)
         assertEquals(listOf("quoter"), updated.repostPubkeys["a"])
         assertEquals(listOf("quoter"), updated.repostPubkeys["b"])
+        assertEquals(listOf("quote-1"), updated.quoteRepostEvents["a"]?.map { it.id })
+        assertEquals(listOf("quote-1"), updated.quoteRepostEvents["b"]?.map { it.id })
         assertEquals(mapOf("a" to 2), initial.repostCounts)
     }
 

@@ -33,27 +33,17 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import com.nostr.torinos.model.ChannelMetadataResolver
 import com.nostr.torinos.model.NostrEvent
 import com.nostr.torinos.ui.components.AppTopBar
 import com.nostr.torinos.ui.components.NetworkImage
 import com.nostr.torinos.ui.components.formatTimestamp
 import com.nostr.torinos.ui.settings.setPlainText
 import kotlinx.coroutines.launch
-import kotlinx.serialization.Serializable
-import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 
 private val prettyChannelEventJson = Json { prettyPrint = true }
-private val channelDetailsJson = Json { ignoreUnknownKeys = true }
-
-@Serializable
-private data class ChannelDetailsContent(
-    val name: String = "",
-    val about: String = "",
-    val picture: String = "",
-    val relays: List<String> = emptyList(),
-)
 
 @Composable
 internal fun ChannelDetailsDialog(
@@ -120,17 +110,17 @@ internal fun ChannelDetailsDialog(
 
 @Composable
 private fun ChannelOverview(state: ChannelListViewModel.DetailDialogState) {
-    val creation = state.events.firstOrNull { it.kind == 40 }
-    val latestUpdate = state.events
-        .filter { it.kind == 41 }
-        .maxByOrNull { it.createdAt }
-    val effectiveEvent = latestUpdate ?: creation
-    val content = remember(effectiveEvent?.id, effectiveEvent?.content) {
-        effectiveEvent?.let {
-            runCatching { channelDetailsJson.decodeFromString<ChannelDetailsContent>(it.content) }
-                .getOrNull()
-        }
+    val resolution = remember(state.channelId, state.events) {
+        ChannelMetadataResolver.resolve(
+            channelId = state.channelId,
+            createCandidates = state.events.filter { it.kind == 40 },
+            updateCandidates = state.events.filter { it.kind == 41 },
+        )
     }
+    val creation = resolution?.channelCreateEvent ?: state.events.firstOrNull { it.kind == 40 }
+    val effectiveEvent = resolution?.effectiveEvent
+    val latestUpdate = effectiveEvent?.takeIf { it.kind == 41 }
+    val content = resolution?.metadata
     val displayName = content?.name?.ifBlank { state.channelName } ?: state.channelName
 
     Surface(

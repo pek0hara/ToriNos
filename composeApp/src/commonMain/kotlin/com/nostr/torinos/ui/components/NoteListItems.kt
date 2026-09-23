@@ -112,6 +112,7 @@ fun LazyListScope.noteListItems(
                     val repostedByPubkey = state.repostedByPubkeys[event.id]
                     val repliesForEvent = state.replies[event.id].orEmpty()
                     val repostPubkeysForEvent = state.repostPubkeys[event.id].orEmpty()
+                    val quoteRepostEventsForEvent = state.quoteRepostEvents[event.id].orEmpty()
                     val reactionEventsForEvent = state.reactionEvents[event.id].orEmpty()
                     val replyParentForEvent = run {
                         val parentId = event.replyTargetId() ?: return@run null
@@ -144,6 +145,7 @@ fun LazyListScope.noteListItems(
                         repostPubkeysForEvent,
                         reactionEventsForEvent.map { it.pubkey },
                         repliesForEvent.map { it.id to it.content },
+                        quoteRepostEventsForEvent.map { it.id to it.content },
                     ) {
                         buildSet {
                             add(event.pubkey)
@@ -161,6 +163,10 @@ fun LazyListScope.noteListItems(
                             repliesForEvent.forEach { reply ->
                                 add(reply.pubkey)
                                 extractNpubReferences(reply.content).forEach { add(it.pubkey) }
+                            }
+                            quoteRepostEventsForEvent.forEach { quoteRepost ->
+                                add(quoteRepost.pubkey)
+                                extractNpubReferences(quoteRepost.content).forEach { add(it.pubkey) }
                             }
                             extractNpubReferences(event.content).forEach { add(it.pubkey) }
                         }
@@ -184,6 +190,7 @@ fun LazyListScope.noteListItems(
                         replies = repliesForEvent,
                         repostCount = state.repostCounts[event.id] ?: 0,
                         repostPubkeys = repostPubkeysForEvent,
+                        quoteRepostEvents = quoteRepostEventsForEvent,
                         reactionCount = state.reactionCounts[event.id] ?: 0,
                         likeReactionCount = state.likeReactionCounts[event.id] ?: 0,
                         customReactions = state.customReactions[event.id].orEmpty(),

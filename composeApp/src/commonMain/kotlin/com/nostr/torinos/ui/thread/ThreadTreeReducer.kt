@@ -72,8 +72,15 @@ internal object ThreadTreeReducer {
             if (state.replies.none { it.id == action.eventId }) {
                 state
             } else {
+                // 削除された返信にぶら下がっていた子返信は、そのまま消してしまうと
+                // 表示する場所を失って迷子になるため、トップレベルへ引き上げて残す。
+                val orphanedReplies = state.repliesByEventId[action.eventId].orEmpty()
+                val remainingReplies = state.replies.filterNot { it.id == action.eventId }
+                val promotedReplies = orphanedReplies.filterNot { orphan ->
+                    remainingReplies.any { it.id == orphan.id }
+                }
                 state.copy(
-                    replies = state.replies.filterNot { it.id == action.eventId },
+                    replies = (remainingReplies + promotedReplies).sortedByEventOrder(),
                     repliesByEventId = state.repliesByEventId - action.eventId,
                     replyCounts = state.replyCounts[action.rootId]?.let { count ->
                         state.replyCounts + (action.rootId to (count - 1).coerceAtLeast(0))

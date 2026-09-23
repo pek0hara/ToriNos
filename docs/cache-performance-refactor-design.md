@@ -44,7 +44,7 @@
 | `ReactionEventStore` | reaction・target authorとも10,000件上限。更新ごとのMapコピーは残る | 一部実装・P0未完了 |
 | `ProfileCache` | 2,000件上限、`putEvents()`一括適用、`observe(pubkey)`/`observe(pubkeys)`によるキー指定購読、`observeAll()`廃止を実装済み。退避選定はソートではなく最小`fetchedAt`の1回走査だが、pin機構は未実装 | Loop 2完了・退避方式とpinは残課題 |
 | `RelayListEventCache` | メモリ500件上限を実装済み | 件数対策済み |
-| `RelayInformationRepository` | 200件LRUとMutexを実装済み | 件数対策済み、TTL未実装 |
+| `RelayInformationRepository` | `TtlFetchCache`(200件LRU、成功1時間/失敗2分TTL、forceRefresh失敗時は既存成功値を保持)へ移行済み(Loop 14) | 完了 |
 | `ArticleMemoryCache` | 記事500件・引用イベント1,000件のLRUを実装済み | グローバル上限済み、画面内集約未完了 |
 | リンク・YouTubeプレビュー | 各200件上限。読み出しで順序を更新しないFIFO | 上限済み、LRU・TTL未完了 |
 | チャンネルDB | DB version 5。リレーごと50,000メッセージを起動時prune | 上限の総量化・クエリ改善未完了 |
@@ -715,6 +715,29 @@ ViewModelごとに次を保持する。
 > `fetchScope`と同じ構成を再現しないと、フェッチの例外がテストランナー全体を落とすことを
 > 実際に確認した上でテストを組んだ。`allTests`、`:composeApp:compileAndroidMain`、
 > `:composeApp:compileKotlinIosSimulatorArm64`が成功。
+>
+> **Loop 14実装判断(2026-09-23)**: Loop 7でスコープ外にしていた`RelayInformationRepository`を
+> `TtlFetchCache<String, RelayInformation>`へ統一した。`Result<RelayInformation>`という戻り値の
+> 型は維持しつつ、キャッシュ本体は`RelayInformation`(非null)を保持する`TtlFetchCache`に持たせ、
+> `fetch()`内で`runCatching`した実際の例外を`lastError`としてクロージャの外側の`var`に保持して
+> `Result.failure`の理由に使う形にした。これにより「`Result<T>`ベースのAPIが`V?`前提の
+> `TtlFetchCache`にそのまま載らない」という懸案を、失敗理由だけ別経路で持ち回ることで解消した。
+> 成功TTL1時間・失敗TTL2分は`LinkPreviewRepository`等と同じ値を踏襲した。
+>
+> 結果として、`forceRefresh`が失敗した場合は`TtlFetchCache`の「既存の成功値を保持したまま失敗用の
+> 短いTTLだけ設定し直す」という挙動により、呼び出し元(`RelaySettingsViewModel.fetchRelayInformation()`)
+> には既存の成功値がそのまま`Result.success`として返る。これはLoop 7時点で問題視していた「forceRefresh失敗で
+> 以前の成功キャッシュが恒久的に失敗結果へ上書きされる」不具合(TTLが無かったため一度上書きされると
+> プロセス再起動まで直らない)を解消する。既存の成功値が無い場合にのみ、直近の失敗理由を
+> `Result.failure`として表面化する。
+>
+> private top-level関数`toRelayInformationUrl()`を`internal`にし、`RelayInformationRepositoryTest.kt`
+> (新規)でwss→https/ws→http変換、https/httpのパススルー、未対応スキームの拒否を検証した。
+> `allTests`、`:composeApp:compileAndroidMain`、`:composeApp:compileKotlinIosSimulatorArm64`が成功。
+> iOS Simulatorへ新規DerivedDataでビルド・インストール・起動し、フィード画面表示・プロセス生存・
+> クラッシュレポート無しを確認した(直前のLoop 13で発生した誤操作インシデントを踏まえ、GUI操作は
+> 最小限のスクリーンショット確認に留めた)。リレー情報画面自体でのforceRefresh成功/失敗の実機目視
+> 確認は今回できていない
 
 ## 12. 計測設計
 
@@ -838,7 +861,7 @@ data class CacheMetrics(
 | Phase 2: チャンネルDB | 複合インデックス(`MIGRATION_5_6`)、書き込みトランザクション化(`upsertMessageBundle`/`upsertMessageBundles`)、5.5の総量基準prune(チャンネル単位上限+全体上限)が完了。summary事前集約(5.4)は未着手。prune後の画面目視確認はiOS Simulator操作の問題で持ち越し |
 | Phase 3: 大容量画像 | X投稿スナップショットのバイト上限・メモリ警告時clearが完了(Loop 6)。アバター・カスタム絵文字のデコードサイズ監査・是正(Loop 9)、共通ImageLoaderのメモリ/ディスク上限・専用キャッシュディレクトリ・同時実行数の明示的構成(Loop 10、10.1)、hit/miss・decode失敗の集計ログ(Loop 11、10.3)が完了。退避回数・プリフェッチ未表示件数(10.3の一部)と本文画像のデコードサイズ監査は未着手 |
 | Phase 4: 画面ローカル状態 | Feedの件数上限・バックグラウンド集約とプロフィール監視の`observeChanges()`移行は実装済み。8.3が要求するリアクション・プロフィールの差分更新は調査の結果すでに満たされていた(Loop 5)。残るコストは`computeUpdatedFeedState`の全件filterKeys(`extractNpubReferences`の重複計算は`MentionedPubkeysCache`で解消済み、Map本体のfilterKeysは未着手)。記事差分化(9.1)はローカル公開・削除・プロフィール取得完了の3経路が完了(Loop 12)。9.2の1,000 raw event表示窓も、ページ追加時にのみ先頭(既にスクロールし終えた側)を間引く形で完了(Loop 13) |
-| Phase 5: 調整と整理 | 未着手。11章の`BoundedLruCache`共通化は`RelayInformationRepository`・`ArticleMemoryCache`に加え、`LinkPreviewRepository`・`YouTubePreviewRepository`も`TtlFetchCache`経由で完了(Loop 7)。`RelayInformationRepository`のTTL化・forceRefresh時の既存値保護は未着手のまま残る |
+| Phase 5: 調整と整理 | **完了**。11章の`BoundedLruCache`共通化は`LinkPreviewRepository`・`YouTubePreviewRepository`が`TtlFetchCache`経由で完了(Loop 7)、`RelayInformationRepository`のTTL化・forceRefresh時の既存値保護も`TtlFetchCache`統一で完了(Loop 14)。`ArticleMemoryCache`はTTLより版管理が本質のため対象外と判断済み |
 
 ### 13.2 実装ループ記録
 
@@ -861,6 +884,7 @@ iOS Simulator/Cliclick操作 → 状況更新」の順で閉じる。途中で�
 | 11 | ImageLoaderのhit/miss・decode失敗ログ | **完了** | Coilの`EventListener`のAndroid/iOS `actual`宣言を比較した結果、共通メンバーは完全に同一シグネチャ(Androidのみ`transitionStart`/`transitionEnd`が追加)だったため、expect/actualを新設せずcommonMainで直接サブクラス化できた。`MetricsEventListener`(リクエストごとに生成)と集計・ログ出力用の`ImageLoaderMetrics`を追加し、`fetchStart`未発火での`onSuccess`をmemory hit、`fetchEnd`の`FetchResult.dataSource`でdisk hit/network fetchを判定、`decodeStart`到達後の`onError`をdecode失敗の近似値としてカウントした。ログ出力時に`imageLoader.memoryCache`から現在のsize/maxSize/エントリ数を直接サンプリングする。`cacheTraceLog`と`TimeSource.Monotonic`で30秒未満の連続呼び出しはログを出さない。退避回数(Coilが退避カウンタを公開しない)とプリフェッチ未表示件数(プリフェッチ要求と表示要求の紐付けが別途必要)は見送り、次の課題として残した。`allTests`、`:composeApp:compileAndroidMain`、`:composeApp:compileKotlinIosSimulatorArm64`が成功。フラグを一時的に`true`にしてiOS Simulatorでフィードを30秒以上スクロールし、`[ImageLoader] memoryHits=9 diskHits=20 networkFetches=10 otherFetches=0 errors=10 decodeFailures=3 memoryCacheEntries=21 memoryCacheBytes=1483236/67108864`という実データを確認。`memoryCacheBytes`の分母(67108864=64MiB)が10.1の絶対上限と一致することを実測で裏付けた。ログは30秒に1回だけ出力され、クラッシュなし。確認後はフラグを`false`に戻した |
 | 12 | 記事一覧の差分集約(9.1) | **完了** | `ArticleHubViewModel`/`UserArticleListViewModel`を調査した結果、ページ読込(`loadPage()`)は既に全件再構築を1回だけ呼ぶ設計になっていたが、ローカル公開・ローカル削除・プロフィール取得完了の3経路が毎回`rawEvents`全体を`updateStateFromEvents()`でフルリビルドしていた。対象addressだけを比較する`withUpsertedArticle()`、対象pubkeyだけを再計算する`withUpdatedAuthor()`(いずれもファイルスコープの`internal`関数、`latestArticleVersions()`/`toArticleAuthors()`と同じ比較子を共有)を新設し、`applyLocalArticleEvent`/`applyLocalArticleDeletion`/`applyProfileUpdates`の3関数で置き換えた。`applyProfileUpdates`は`toArticleMeta()`を呼ばず`authorProfile`のみ差し替える(9.1後半の要件どおり)。9.3の受け入れ条件(巻き戻り防止・重複address排除・フルリビルドとの順序一致)は新規`ArticleDifferentialUpdateTest.kt`(7件)で検証。`allTests`、`:composeApp:compileAndroidMain`、`:composeApp:compileKotlinIosSimulatorArm64`が成功。iOS Simulatorへ新規DerivedDataでビルド・インストール・起動し、フィード画面表示とプロセス生存・ログ無例外を確認したが、下部タブバーへのcliclickタップが断続的に不発になる既知の制約(Loop 4で記録済み)により記事タブへのGUI遷移そのものは省略した。9.2(1,000件表示窓・スクロールアンカー保持)は設計方針どおり別ループへ残す |
 | 13 | 記事一覧の表示窓(9.2) | **完了** | `ArticleScreens.kt`の無限スクロール実装を確認し、`loadMore()`が`lastVisible >= totalItemsCount - 4`の条件でのみ呼ばれる(常に読み込み済みリストの末尾4件以内までスクロールした時だけ次ページを取得する)という構造上の不変条件を確認した。この不変条件を根拠に、`rawEvents`(挿入順=ページ読込順)が`ARTICLE_RAW_EVENT_WINDOW`(1,000)件を超えたら挿入順で最も古い(＝時系列で最も新しく既にスクロールし終えた)エントリから`trimRawEventWindow()`で間引く実装にし、`LazyListState`側のスクロールアンカー情報をViewModelへ渡す複雑な連携を避けた。トリムは`loadPage()`内で`updateStateFromEvents()`(全件再構築)の直前に呼ぶため、`articles`/`authors`への反映に追加のブックキーピングを要さない。ローカル公開経路は意図的にトリム対象から外した(1回で高々1件しか増えず、`loadPage()`側のトリムが効くまで実質上限を超えないため)。`allTests`、`:composeApp:compileAndroidMain`、`:composeApp:compileKotlinIosSimulatorArm64`が成功。iOS Simulatorへ新規DerivedDataでビルド・インストール・起動し、フィード画面表示・プロセス生存・クラッシュレポート無しを確認した。**この回のGUI操作中、座標ズレによりフィード内の他人の投稿へ誤って❤️/⭐リアクションを実際に送信してしまうインシデントが発生した**(ユーザーへ即時報告し、対応不要の判断を得た。詳細は`memory/ios-sim-cliclick-real-relay-risk.md`に記録)。以降は投稿カードのインタラクティブ要素付近へのcliclickタップを避け、プロセス生存確認とクラッシュレポート有無での代替検証に切り替えたため、記事タブそのものへのGUI遷移・1,000件超のページ読込によるトリム発火の実機目視確認はできていない |
+| 14 | `RelayInformationRepository`の`TtlFetchCache`統一 | **完了** | Loop 7でスコープ外にした`RelayInformationRepository`(`BoundedLruCache<String, Result<RelayInformation>>`を独自Mutexで保護、TTL無し、forceRefresh失敗時に既存の成功キャッシュを恒久的に上書きする不具合あり)を`TtlFetchCache<String, RelayInformation>`へ移行した。戻り値の`Result<RelayInformation>`は維持しつつ、`fetch()`内の`runCatching`で捕捉した例外をクロージャ外側の`var lastError`に退避し、キャッシュが`null`(＝有効な成功値が無い)を返した場合のみ`Result.failure`の理由として使う設計にした。成功TTL1時間・失敗TTL2分は既存の`LinkPreviewRepository`等と同じ値を踏襲。`forceRefresh`失敗時は`TtlFetchCache`の「既存の成功値を保持したまま失敗TTLだけ設定し直す」挙動により、以前の不具合(一度の失敗で成功キャッシュが恒久的に上書きされる)が解消された。`toRelayInformationUrl()`を`internal`化し、`RelayInformationRepositoryTest.kt`(新規4件)でwss/ws変換・https/httpパススルー・未対応スキーム拒否を検証(「不正なURL文字列」の拒否を検証するテストは、Ktorの`Url()`がスキーム省略時に`http`扱いで寛容にパースすることが判明したため削除し、本番コードではなくテスト側の誤った前提を修正した)。`allTests`、`:composeApp:compileAndroidMain`、`:composeApp:compileKotlinIosSimulatorArm64`が成功。iOS Simulatorへ新規DerivedDataでビルド・インストール・起動し、フィード表示・プロセス生存・クラッシュレポート無しを確認した(Loop 13のインシデントを踏まえ、GUI操作はスクリーンショット確認のみに留めた)。リレー情報画面でのforceRefresh成功/失敗の実機目視確認はできていない |
 
 ## 14. 実装順の依存関係
 

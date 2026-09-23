@@ -50,6 +50,7 @@ class FeedViewModel(
         val replies: Map<String, List<NostrEvent>> = emptyMap(),
         val repostCounts: Map<String, Int> = emptyMap(),
         val repostPubkeys: Map<String, List<String>> = emptyMap(),
+        val quoteRepostEvents: Map<String, List<NostrEvent>> = emptyMap(),
         val quotedEvents: Map<String, NostrEvent> = emptyMap(),
         val repostedByPubkeys: Map<String, String> = emptyMap(),
         val likedReactions: Map<String, String> = emptyMap(),

@@ -143,6 +143,7 @@ fun NoteCard(
     reactionEvents: List<NostrEvent> = emptyList(),
     repostCount: Int = 0,
     repostPubkeys: List<String> = emptyList(),
+    quoteRepostEvents: List<NostrEvent> = emptyList(),
     isLiked: Boolean = false,
     isReposted: Boolean = false,
     ownEmojiReactionEventIds: Map<String, String> = emptyMap(),
@@ -620,6 +621,7 @@ fun NoteCard(
                     reactionEvents = reactionEvents,
                     repostCount = repostCount,
                     repostPubkeys = repostPubkeys,
+                    quoteRepostEvents = quoteRepostEvents,
                     profiles = profiles,
                     onUserClick = onUserClick,
                     onOpenReplies = onOpenReplies,
@@ -774,6 +776,7 @@ private fun EngagementDetailsPanel(
     reactionEvents: List<NostrEvent>,
     repostCount: Int,
     repostPubkeys: List<String>,
+    quoteRepostEvents: List<NostrEvent>,
     profiles: Map<String, NostrProfile>,
     onUserClick: (String) -> Unit,
     onOpenReplies: (() -> Unit)?,
@@ -815,6 +818,16 @@ private fun EngagementDetailsPanel(
                 )
             }
             ExpandedEngagement.Reposts -> {
+                quoteRepostEvents.take(3).forEach { quoteRepost ->
+                    QuotePreview(
+                        event = quoteRepost,
+                        profile = profiles[quoteRepost.pubkey],
+                        profiles = profiles,
+                        onImageClick = onImageClick,
+                        onNoteClick = onOpenNote,
+                        showImagePreview = showImagePreview,
+                    )
+                }
                 EngagementUserGroup(
                     emoji = { Text("🔁", fontSize = 18.sp) },
                     count = repostCount,

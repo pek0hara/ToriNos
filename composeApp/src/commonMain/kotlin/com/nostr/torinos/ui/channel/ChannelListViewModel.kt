@@ -5,6 +5,7 @@ import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewmodel.CreationExtras
 import com.nostr.torinos.account.AccountSession
 import com.nostr.torinos.model.ChannelMeta
+import com.nostr.torinos.model.ChannelMetadataResolver
 import com.nostr.torinos.model.NostrEvent
 import com.nostr.torinos.model.NostrFilter
 import com.nostr.torinos.model.NostrProfile
@@ -136,6 +137,7 @@ class ChannelListViewModel(
     private var emitJob: Job? = null
     private var newMetaJob: Job? = null
     private var authorSubscriptionJob: Job? = null
+    private var detailDialogJob: Job? = null
     private val pendingNewMetaIds = linkedSetOf<String>()
     private val requestedNewMetaIds = mutableSetOf<String>()
     private var subscribedAuthorPubkeys: Set<String> = emptySet()
@@ -349,6 +351,7 @@ class ChannelListViewModel(
     fun showDetailDialog(channelId: String) {
         val current = _state.value as? UiState.Ready ?: return
         val item = current.channels.firstOrNull { it.event.id == channelId } ?: return
+        detailDialogJob?.cancel()
         val initialEvents = item.event.takeIf { it.content.isNotBlank() || it.sig.isNotBlank() }
             ?.let(::listOf)
             .orEmpty()
@@ -359,7 +362,7 @@ class ChannelListViewModel(
                 events = initialEvents,
             ),
         )
-        launch {
+        detailDialogJob = launch {
             val events = linkedMapOf<String, NostrEvent>()
             initialEvents.forEach { events[it.id] = it }
             val completed = fetch(
@@ -374,7 +377,7 @@ class ChannelListViewModel(
                     ),
                 ),
             ) { event ->
-                if (event.isChannelMetadataEvent(channelId, item.event.pubkey)) {
+                if (ChannelMetadataResolver.acceptsCandidate(channelId, item.event.pubkey, event)) {
                     events[event.id] = event
                     updateDetailDialog(channelId, events.values.toList(), isLoading = true)
                 }
@@ -389,6 +392,8 @@ class ChannelListViewModel(
     }
 
     fun dismissDetailDialog() {
+        detailDialogJob?.cancel()
+        detailDialogJob = null
         val current = _state.value as? UiState.Ready ?: return
         _state.value = current.copy(detailDialog = null)
     }
@@ -403,7 +408,11 @@ class ChannelListViewModel(
         val dialog = current.detailDialog?.takeIf { it.channelId == channelId } ?: return
         _state.value = current.copy(
             detailDialog = dialog.copy(
-                events = events.sortedWith(compareBy<NostrEvent> { it.kind }.thenByDescending { it.createdAt }),
+                events = events.sortedWith(
+                    compareBy<NostrEvent> { it.kind }
+                        .thenByDescending { it.createdAt }
+                        .thenByDescending { it.id },
+                ),
                 isLoading = isLoading,
                 error = error,
             ),
@@ -717,21 +726,13 @@ class ChannelListViewModel(
             ?.getOrNull(1)
             ?: tags.firstOrNull { it.firstOrNull() == "e" }?.getOrNull(1)
 
-    private fun NostrEvent.isChannelMetadataEvent(channelId: String, ownerPubkey: String): Boolean =
-        when (kind) {
-            40 -> id == channelId
-            41 -> pubkey == ownerPubkey && tags.any {
-                it.firstOrNull() == "e" && it.getOrNull(1) == channelId
-            }
-            else -> false
-        }
-
     override fun onCleared() {
         activityQueue.stop()
-        super.onCleared()
         jobs.forEach { it.cancel() }
         newMetaJob?.cancel()
         authorSubscriptionJob?.cancel()
+        detailDialogJob?.cancel()
         NostrRepository.close(liveSubId)
+        super.onCleared()
     }
 }

@@ -1467,6 +1467,7 @@ internal class FeedController(
             visibleEvents.flatMap { quotedEventIds(it) }
         val quotedEvents = current.quotedEvents.filterKeys { it in retainedEventIds }
         val replies = current.replies.filterKeys { it in visibleEventIds }
+        val quoteRepostEvents = current.quoteRepostEvents.filterKeys { it in visibleEventIds }
         val retainedPubkeys = buildSet {
             visibleEvents.forEach { event ->
                 add(event.pubkey)
@@ -1477,6 +1478,10 @@ internal class FeedController(
                 addAll(mentionedPubkeysCache.mentionedPubkeys(event))
             }
             replies.values.flatten().forEach { event ->
+                add(event.pubkey)
+                addAll(mentionedPubkeysCache.mentionedPubkeys(event))
+            }
+            quoteRepostEvents.values.flatten().forEach { event ->
                 add(event.pubkey)
                 addAll(mentionedPubkeysCache.mentionedPubkeys(event))
             }
@@ -1518,6 +1523,7 @@ internal class FeedController(
             replies = replies,
             repostCounts = current.repostCounts.filterKeys { it in retainedEventIds },
             repostPubkeys = current.repostPubkeys.filterKeys { it in retainedEventIds },
+            quoteRepostEvents = quoteRepostEvents,
             quotedEvents = quotedEvents,
             repostedByPubkeys = current.repostedByPubkeys.filterKeys { it in visibleEventIds },
             likedReactions = current.likedReactions.filterKeys { it in retainedEventIds },
@@ -2006,7 +2012,7 @@ internal class FeedController(
             }
         if (targetIds.isEmpty()) return
         setFeedState(
-            EngagementAccumulator.quoteReposts(currentFeedState(), targetIds, event.pubkey),
+            EngagementAccumulator.quoteReposts(currentFeedState(), targetIds, event),
             immediate = false,
         )
         scheduleProfileFetch(event.pubkey)

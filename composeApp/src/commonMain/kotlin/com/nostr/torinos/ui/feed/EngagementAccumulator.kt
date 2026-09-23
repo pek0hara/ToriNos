@@ -106,21 +106,30 @@ internal object EngagementAccumulator {
     fun quoteReposts(
         state: FeedViewModel.UiState,
         targetIds: Collection<String>,
-        pubkey: String? = null,
+        event: NostrEvent,
     ): FeedViewModel.UiState {
         if (targetIds.isEmpty()) return state
+        val pubkey = event.pubkey
         val counts = state.repostCounts.toMutableMap()
         targetIds.forEach { targetId -> counts[targetId] = (counts[targetId] ?: 0) + 1 }
-        val pubkeys = if (pubkey == null) {
-            state.repostPubkeys
-        } else {
-            state.repostPubkeys.toMutableMap().apply {
-                targetIds.forEach { targetId ->
-                    this[targetId] = this[targetId].orEmpty().plus(pubkey).distinct()
+        val pubkeys = state.repostPubkeys.toMutableMap().apply {
+            targetIds.forEach { targetId ->
+                this[targetId] = this[targetId].orEmpty().plus(pubkey).distinct()
+            }
+        }
+        val quoteRepostEvents = state.quoteRepostEvents.toMutableMap().apply {
+            targetIds.forEach { targetId ->
+                val existing = this[targetId].orEmpty()
+                if (existing.none { it.id == event.id }) {
+                    this[targetId] = (existing + event).sortedBy { it.createdAt }
                 }
             }
         }
-        return state.copy(repostCounts = counts, repostPubkeys = pubkeys)
+        return state.copy(
+            repostCounts = counts,
+            repostPubkeys = pubkeys,
+            quoteRepostEvents = quoteRepostEvents,
+        )
     }
 
     fun reconcileOwnEngagement(

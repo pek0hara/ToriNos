@@ -1,6 +1,7 @@
 package com.nostr.torinos.network
 
 import com.nostr.torinos.createHttpClient
+import com.nostr.torinos.util.TtlFetchCache
 import io.ktor.client.request.get
 import io.ktor.client.request.header
 import io.ktor.client.statement.HttpResponse
@@ -8,9 +9,9 @@ import io.ktor.client.statement.bodyAsText
 import io.ktor.http.HttpHeaders
 import io.ktor.http.Url
 import io.ktor.http.isSuccess
-import com.nostr.torinos.util.BoundedLruCache
-import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
@@ -68,36 +69,52 @@ data class RelayLimitation(
 object RelayInformationRepository {
     private val httpClient = createHttpClient()
     private val json = Json { ignoreUnknownKeys = true }
-    private val cacheMutex = Mutex()
-    private val cache = BoundedLruCache<String, Result<RelayInformation>>(MaximumCacheEntries)
+    private val fetchScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    private val cache = TtlFetchCache<String, RelayInformation>(
+        scope = fetchScope,
+        maximumSize = MaximumCacheEntries,
+        successTtlMillis = SuccessTtlMillis,
+        failureTtlMillis = FailureTtlMillis,
+        name = "RelayInformationRepository",
+    )
 
+    /**
+     * `forceRefresh`が失敗しても、既存の成功キャッシュがあれば[TtlFetchCache]がそれを保持したまま
+     * 返す(短い失敗TTLだけ設定し直す)。呼び出し元には既存の成功値がそのまま`Result.success`として
+     * 返り、直近の失敗理由は既存の成功値が無い場合にのみ`Result.failure`として表面化する。
+     */
     suspend fun fetch(relayUrl: String, forceRefresh: Boolean = false): Result<RelayInformation> {
         val normalizedUrl = relayUrl.trim()
-        if (!forceRefresh) {
-            cacheMutex.withLock { cache[normalizedUrl] }?.let { return it }
+        var lastError: Throwable? = null
+        val information = cache.get(normalizedUrl, forceRefresh) {
+            runCatching { fetchFromNetwork(normalizedUrl) }
+                .onFailure { lastError = it }
+                .getOrNull()
         }
+        return information?.let { Result.success(it) }
+            ?: Result.failure(lastError ?: IllegalStateException("リレー情報を取得できませんでした"))
+    }
 
-        val result = runCatching {
-            val informationUrl = normalizedUrl.toRelayInformationUrl()
-            withTimeout(5_000) {
-                val response: HttpResponse = httpClient.get(informationUrl) {
-                    header(HttpHeaders.Accept, "application/nostr+json")
-                    header(HttpHeaders.UserAgent, "ToriNos/1.0")
-                }
-                if (!response.status.isSuccess()) {
-                    error("HTTP ${response.status.value}")
-                }
-                json.decodeFromString(RelayInformation.serializer(), response.bodyAsText())
+    private suspend fun fetchFromNetwork(normalizedUrl: String): RelayInformation {
+        val informationUrl = normalizedUrl.toRelayInformationUrl()
+        return withTimeout(5_000) {
+            val response: HttpResponse = httpClient.get(informationUrl) {
+                header(HttpHeaders.Accept, "application/nostr+json")
+                header(HttpHeaders.UserAgent, "ToriNos/1.0")
             }
+            if (!response.status.isSuccess()) {
+                error("HTTP ${response.status.value}")
+            }
+            json.decodeFromString(RelayInformation.serializer(), response.bodyAsText())
         }
-        cacheMutex.withLock { cache[normalizedUrl] = result }
-        return result
     }
 
     private const val MaximumCacheEntries = 200
+    private const val SuccessTtlMillis = 60 * 60 * 1_000L
+    private const val FailureTtlMillis = 2 * 60 * 1_000L
 }
 
-private fun String.toRelayInformationUrl(): String {
+internal fun String.toRelayInformationUrl(): String {
     val trimmed = trim()
     val url = runCatching { Url(trimmed) }.getOrNull() ?: error("URL が正しくありません")
     when (url.protocol.name.lowercase()) {

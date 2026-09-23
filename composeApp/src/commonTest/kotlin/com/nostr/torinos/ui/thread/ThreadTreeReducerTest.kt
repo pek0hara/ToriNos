@@ -46,6 +46,28 @@ class ThreadTreeReducerTest {
     }
 
     @Test
+    fun removingAReplyPromotesItsOrphanedDescendantsToTopLevel() {
+        val parent = event("parent", createdAt = 10)
+        val child = event("child", createdAt = 20)
+        val withParent = ThreadTreeReducer.reduce(
+            ThreadTreeState(),
+            ThreadTreeAction.DirectReplyReceived(parent),
+        )
+        val withChild = ThreadTreeReducer.reduce(
+            withParent,
+            ThreadTreeAction.DescendantReplyReceived("parent", child),
+        )
+
+        val result = ThreadTreeReducer.reduce(
+            withChild,
+            ThreadTreeAction.ReplyRemoved("root", "parent"),
+        )
+
+        assertEquals(listOf("child"), result.replies.map { it.id })
+        assertEquals(emptyList(), result.repliesByEventId["parent"] ?: emptyList())
+    }
+
+    @Test
     fun publishedReplyUsesExistingAggregateAsTheCountBase() {
         val state = ThreadTreeState(replyCounts = mapOf("root" to 4))
 

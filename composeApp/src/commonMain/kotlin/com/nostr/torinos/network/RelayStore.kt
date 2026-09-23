@@ -520,13 +520,60 @@ internal fun mergeRelayEntriesFromPublishedList(
 internal fun normalizeRelayUrl(url: String): String? {
     val trimmed = url.trim()
     if (trimmed.isBlank()) return null
-    if (!trimmed.startsWith("wss://", ignoreCase = true) &&
-        !trimmed.startsWith("ws://", ignoreCase = true)
-    ) {
-        return null
-    }
-    return trimmed
+    val match = RELAY_URL_PATTERN.matchEntire(trimmed) ?: return null
+    val scheme = match.groupValues[1].lowercase()
+    val authority = match.groupValues[2]
+    val suffix = match.groupValues[3]
+    if (authority.isBlank() || authority.any(Char::isWhitespace) || '@' in authority) return null
+    if ('?' in suffix) return null
+
+    val normalizedAuthority = normalizeRelayAuthority(authority, scheme) ?: return null
+    val normalizedSuffix = suffix.takeUnless { it == "/" }.orEmpty()
+    return "$scheme://$normalizedAuthority$normalizedSuffix"
 }
+
+internal fun normalizeRelayUrls(
+    urls: Iterable<String>,
+    limit: Int = MAX_NORMALIZED_RELAY_URLS,
+): List<String> {
+    if (limit <= 0) return emptyList()
+    val normalized = linkedSetOf<String>()
+    for (url in urls) {
+        normalizeRelayUrl(url)?.let(normalized::add)
+        if (normalized.size >= limit) break
+    }
+    return normalized.toList()
+}
+
+private fun normalizeRelayAuthority(authority: String, scheme: String): String? {
+    if (authority.startsWith("[")) {
+        val closing = authority.indexOf(']')
+        if (closing <= 1) return null
+        val host = authority.substring(0, closing + 1).lowercase()
+        val port = authority.substring(closing + 1)
+        if (port.isNotEmpty() && !port.matches(RELAY_PORT_PATTERN)) return null
+        return host + port.omitIfDefaultPort(scheme)
+    }
+
+    if (authority.count { it == ':' } > 1) return null
+    val separator = authority.lastIndexOf(':')
+    val host = if (separator >= 0) authority.substring(0, separator) else authority
+    val port = if (separator >= 0) authority.substring(separator) else ""
+    if (host.isBlank() || host.any { it.isWhitespace() || it == '[' || it == ']' }) return null
+    if (port.isNotEmpty() && !port.matches(RELAY_PORT_PATTERN)) return null
+    return host.lowercase() + port.omitIfDefaultPort(scheme)
+}
+
+/** FR-01: 既定ポート ws:80 / wss:443 は同一リレーとして扱うため省略する。 */
+private fun String.omitIfDefaultPort(scheme: String): String {
+    if (isEmpty()) return this
+    val defaultPort = if (scheme == "wss") ":443" else ":80"
+    return if (this == defaultPort) "" else this
+}
+
+private const val MAX_NORMALIZED_RELAY_URLS = 10
+private val RELAY_URL_PATTERN = Regex("(?i)^(wss?)://([^/?#]+)([^#]*)$")
+private val RELAY_PORT_PATTERN = Regex(":[0-9]{1,5}")
 
 internal fun readableRelayUrls(entries: List<RelayEntry>): List<String> =
     entries.filter { it.enabled && it.read }.map { it.url }
