@@ -150,16 +150,15 @@ sealed interface TargetLoadState {
 | 1 | 投稿本文 | `ThreadRoute(eventId)` |
 | 42 | チャンネル本文 | 有効な `channelRootId()` を取得できればチャンネル用 `ThreadRoute(eventId, source = channel, channelId)` |
 | 30023 | 既存 Article メタデータのタイトル・要約 | 既存パーサーで識別子を解決できれば `ArticleRoute(pubkey, identifier)` |
-| 30311 | 既存 Live メタデータのタイトル | 必須情報を解決できれば `LiveRoute(pubkey, identifier)` |
-| 1311 / 30315 / その他 | Kind・作者・日時を含む汎用カード | 初版は専用画面なし。イベント ID コピーのみ |
+| 30311 / 1311 / 30315 / その他 | Kind・作者・日時を含む汎用カード | 初版は専用画面なし。イベント ID コピーのみ |
 
-Kind 42 のチャンネル ID 不明、記事・ライブのメタデータ不正も汎用カードに落とす。Kind 1 へフォールバックしない。Live チャットを配信画面へ紐付けて開く機能は初版に含めない。
+Kind 42 のチャンネル ID 不明、記事のメタデータ不正も汎用カードに落とす。Kind 1 へフォールバックしない。ライブ機能は廃止したため、30311 / 1311 も汎用カードで扱う。
 
 未知 Kind の `content` は JSON、暗号文などの可能性があるため、無条件に本文表示・HTML 解釈・URL 読み込みをしない。既知 Kind のプレビューも既存の安全なテキスト表示処理を利用する。
 
-記事・ライブの既存 Route は作者＋識別子で開くため、通知が指す版ではなく最新版を表示し得る。カードは取得した対象イベントの内容を表示し、操作は「記事の最新版を開く」「ライブを開く」と区別する。今回、過去版ビューアーは新設しない。
+記事の既存 Route は作者＋識別子で開くため、通知が指す版ではなく最新版を表示し得る。カードは取得した対象イベントの内容を表示し、操作は「記事の最新版を開く」とする。今回、過去版ビューアーは新設しない。
 
-`onOpenThread(String)` だけで全 Kind を処理せず、`onOpenTarget(NotificationTargetDestination)` に変更する。遷移先は Thread / ChannelThread / Article / Live を型で表し、汎用カードには専用遷移先を作らない。
+`onOpenThread(String)` だけで全 Kind を処理せず、`onOpenTarget(NotificationTargetDestination)` に変更する。遷移先は Thread / ChannelThread / Article を型で表し、汎用カードには専用遷移先を作らない。
 
 ## 8. 保存互換性と展開順
 

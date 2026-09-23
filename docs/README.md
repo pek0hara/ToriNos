@@ -13,7 +13,11 @@
 - [`subscription-architecture-design.md`](./subscription-architecture-design.md) — Nostr購読セッション、リレー別状態管理、フィードのエンゲージメント履歴取得と送信キュー
 - [`feed-relay-merge-design.md`](./feed-relay-merge-design.md) — フォローフィードのリレー別履歴カーソル、停止リレー分離、復旧マージ
 - [`feed-scroll-performance-design.md`](./feed-scroll-performance-design.md) — フィードの状態分離、描画軽量化、位置保持、画像・プリフェッチ方針
+- [`feed-chrome-interaction-design.md`](./feed-chrome-interaction-design.md) — フィードヘッダー／ボトムナビのドラッグ、慣性中断、先頭再表示を扱う操作状態機械
+- [`feed-chrome-refactor-design.md`](./feed-chrome-refactor-design.md) — 現行のフィードヘッダー動作を固定したまま分岐を純粋ロジックへ移す段階的リファクタ計画
 - [`profile-cache-design.md`](./profile-cache-design.md) — kind 0プロフィールの取得、キャッシュ、更新方針
+- [`cache-performance-refactor-design.md`](./cache-performance-refactor-design.md) — キャッシュと長寿命状態の上限、差分通知、DB・画像メモリの性能改善方針
+- [`search-performance-fix-plan.md`](./search-performance-fix-plan.md) — 検索種別ごとの遅延取得、購読の有限化、検索後にフィードへ持ち越す負荷の解消方針
 - [`notification-target-resolution-design.md`](./notification-target-resolution-design.md) — 通知対象のKind非依存取得、取得状態とKind別表示・遷移の境界
 - [`post-auto-translation-design.md`](./post-auto-translation-design.md) — OS機能を使う投稿言語判定、自動翻訳、言語モデル準備と安全なフォールバック
 

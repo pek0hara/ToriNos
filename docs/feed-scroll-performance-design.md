@@ -239,6 +239,99 @@ LazyColumn(
 
 このタスクは Phase 5（計測整備）の後に着手する。それまで現行実装を維持する。
 
+### 5.2 最上部へ戻ったときの強制表示
+
+> **再設計予定**: 慣性スクロールを新しい直接操作で中断するケースを含む最終要件は
+> [`feed-chrome-interaction-design.md`](./feed-chrome-interaction-design.md) を正とする。本節は現行の
+> 暫定実装に至った判断記録であり、次のリファクタリングで置き換える。
+
+フィードの絶対先頭（`firstVisibleItemIndex == 0 && firstVisibleItemScrollOffset == 0`）へ戻った
+ときは、直前までトップバー・ボトムナビゲーションが完全に隠れていた場合も、両方を表示状態へ
+戻す。フォロー／グローバルのどちらのタブでも同じ規則とする。
+
+ただし、先頭から上方向へドラッグしてクロームを隠し始める間もリスト位置は一時的に絶対先頭の
+ままである。この間に「先頭なら常に表示」を毎フレーム適用すると、折りたたみ操作と強制表示が
+競合する。そのため、絶対先頭は常時上書きする条件ではなく、**ジェスチャー開始時にクロームが
+完全非表示だった場合だけ、ジェスチャー終了時の settle target を決める最優先条件**として扱う。
+
+```text
+スクロール入力
+    |
+    +-- 最初の入力 ----------> 開始時に完全非表示だったかを記録
+    |
+    +-- ドラッグ中 ----------> 現行どおり collapseFraction を更新
+    |                           （先頭判定による割り込みはしない）
+    |
+    +-- isAtTop が true ------> ジェスチャー終了時の再評価対象にする
+    |
+    `-- ジェスチャー終了／idle settle
+                                |
+                                +-- 開始時に完全非表示
+                                |   かつ現在 isAtTop -> target = 0（表示）
+                                `-- それ以外 --------> 最後の方向で 0 / 1
+```
+
+満たすべき不変条件は次のとおり。
+
+1. ジェスチャー開始時に `collapseFraction == 1f` であり、終了時にアクティブなフィードが
+   絶対先頭なら `collapseFraction == 0f` へ収束する。開始時に少しでも表示されていた場合は、
+   先頭到達を理由とする再表示要求やアニメーションを発生させない。
+2. settle target の決定では `isAtTop` が最後のスクロール方向より優先される。
+3. 60ms の idle settle と `onPostFling` が別々の target を書かない。settle 要求を一つの経路へ
+   集約し、新しい要求が古いアニメーションを取り消す。
+4. `isAtTop` の `false -> true` 通知をジェスチャー中に抑止した場合も、ジェスチャー終了時に
+   `LazyListState` の現在値を読み直す。通知が再発火することには依存しない。
+5. タブ切り替え、フィードタブの再タップ、新着ボタン、長時間バックグラウンド復帰などの
+   programmatic scroll でも同じ判定経路を使う。
+
+実装では `hideChromeForCurrentGesture` を単なる表示抑止フラグとして使わず、最低限、次の状態を
+`FeedScreen` 内の小さな chrome coordinator にまとめる。
+
+```kotlin
+data class FeedChromeGestureState(
+    val isCollapseGestureInProgress: Boolean = false,
+    val wasChromeHiddenAtGestureStart: Boolean = false,
+    val lastScrollDelta: Float = 0f,
+)
+
+internal fun feedChromeSettleTarget(
+    isAtTop: Boolean,
+    forceRevealAtTop: Boolean,
+    lastScrollDelta: Float,
+): Float = when {
+    isAtTop && forceRevealAtTop -> 0f
+    lastScrollDelta >= 0f -> 1f
+    else -> 0f
+}
+```
+
+`wasChromeHiddenAtGestureStart` は最初の `UserInput` で一度だけ決め、ジェスチャー終了まで変更
+しない。最上部へ一度到達した事実はラッチせず、終了時の位置がすでに先頭でなければ強制表示
+しない。これにより、途中表示のクロームを先頭到達だけで全表示へ寄せたり、新着挿入や
+同一ジェスチャー内の再移動で古くなった先頭判定を適用したりしない。
+
+`snapshotFlow` は `isAtTop` を coordinator へ渡す。`onPostFling` と idle timeout はアニメーションを
+直接開始せず、同じ `requestSettle()` を呼ぶ。`requestSettle()` はその時点の
+`LazyListState` を読み、上の純粋関数で target を一度だけ決める。これにより、先頭到達後に古い
+idle settle がクロームを再び隠す競合を防ぐ。
+
+この変更はフィードデータ、ViewModel、ナビゲーション状態を増やさず、UI 内の一時状態だけで
+完結させる。`collapseFraction` はトップバーとボトムナビゲーションの同期に引き続き共有するが、
+共有値へ書くアニメーション経路は一つにする。
+
+回帰テストは少なくとも次を含める。
+
+- 途中位置でクロームが完全非表示の状態から絶対先頭へ戻り、終了後に target が `0f` になる。
+- 開始時にクロームが途中表示または完全表示なら、先頭到達だけでは強制表示しない。
+- 完全非表示で開始し、一つのジェスチャー内で方向を反転して先頭へ戻っても表示される。
+- 絶対先頭から上方向へドラッグすると、ジェスチャー中は従来どおりクロームを隠せる。
+- 先頭到達直前の idle settle が残っていても、表示後に再び隠れない。
+- 非先頭では従来どおり最後の方向に応じて表示／非表示へ settle する。
+- フォロー／グローバルのタブ切り替え先が絶対先頭なら表示される。
+
+純粋関数の common test に加え、方向反転と古い settle の競合は Compose UI テストまたは実機操作で
+確認する。これら二つは最終位置だけを入力する単体テストでは再現できないためである。
+
 ## 6. 新着投稿と位置保持
 
 > **設計変更（2026-09、実装時レビュー）**: 当初案は新着投稿を `pendingLiveEvents` として
