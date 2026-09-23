@@ -35,6 +35,8 @@ expect object ChannelCacheStore {
     suspend fun getMessages(relayUrl: String, channelId: String, limit: Int = 200): List<NostrEvent>
     suspend fun upsertChannel(relayUrl: String, event: NostrEvent, meta: ChannelMeta)
     suspend fun upsertMessage(relayUrl: String, event: NostrEvent, channelId: String)
+    /** ページ単位の履歴取得で、複数イベントを1トランザクションで保存する。 */
+    suspend fun upsertMessages(relayUrl: String, events: List<NostrEvent>, channelId: String)
     internal suspend fun deleteMessage(messageId: String)
     suspend fun markRead(relayUrl: String, channelId: String, readAt: Long)
     suspend fun saveReadingPosition(relayUrl: String, channelId: String, position: ChannelReadingPosition)
@@ -43,5 +45,6 @@ expect object ChannelCacheStore {
     suspend fun deleteChannel(relayUrl: String, channelId: String)
     suspend fun setFavorite(relayUrl: String, channelId: String, isFavorite: Boolean)
     suspend fun deleteNonFavorites(relayUrl: String)
+    /** [maxMessages]は特定リレーではなく、全チャンネル合計のメッセージ件数に対する上限。 */
     suspend fun prune(maxMessages: Int = 50_000)
 }

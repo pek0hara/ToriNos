@@ -150,7 +150,7 @@ internal class ChannelController(
         ) { event -> if (noteContext.matches(event)) events.add(event) }
         val retainedEvents = events.filterNot { it.id in locallyDeletedMessageIds }
         try {
-            relayUrl?.let { url -> retainedEvents.forEach { ChannelCacheStore.upsertMessage(url, it, channelId) } }
+            relayUrl?.let { url -> ChannelCacheStore.upsertMessages(url, retainedEvents, channelId) }
         } catch (cancelled: CancellationException) {
             throw cancelled
         } catch (error: Exception) {
@@ -210,7 +210,11 @@ internal class ChannelController(
         val event = currentMessages.firstOrNull { it.id == eventId } ?: return
         if (ownPubkey == null || event.pubkey != ownPubkey) return
         launch {
-            val result = signedEventPublisher.publish("", 5, listOf(listOf("e", eventId)))
+            val result = signedEventPublisher.publish(
+                content = "",
+                kind = 5,
+                tags = listOf(listOf("e", eventId), listOf("k", event.kind.toString())),
+            )
             when (result) {
                 is SignedPublishResult.Published -> {
                     locallyDeletedMessageIds += eventId
@@ -618,8 +622,11 @@ internal class ChannelController(
 
         // 共通プロフィールキャッシュを監視
         jobs += launch {
-            ProfileRepository.observeAll().collect { cachedProfiles ->
-                val profiles = cachedProfiles.filterKeys { it in pendingPubkeys || it in currentProfiles }
+            ProfileRepository.observeChanges().collect { changedPubkeys ->
+                val targets = pendingPubkeys + currentProfiles.keys
+                val affected = if (changedPubkeys.isEmpty()) targets else changedPubkeys.intersect(targets)
+                if (affected.isEmpty()) return@collect
+                val profiles = currentProfiles - affected + ProfileRepository.getCached(affected)
                 if (profiles != currentProfiles) {
                     currentProfiles = profiles
                     syncReadyState()

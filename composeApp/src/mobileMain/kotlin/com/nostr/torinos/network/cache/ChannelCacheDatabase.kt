@@ -11,6 +11,7 @@ import androidx.room.OnConflictStrategy
 import androidx.room.Query
 import androidx.room.RoomDatabase
 import androidx.room.RoomDatabaseConstructor
+import androidx.room.Transaction
 import androidx.room.migration.Migration
 import androidx.sqlite.SQLiteConnection
 import androidx.sqlite.execSQL
@@ -20,6 +21,20 @@ val MIGRATION_4_5 = object : Migration(4, 5) {
     override fun migrate(connection: SQLiteConnection) {
         connection.execSQL("ALTER TABLE channel_read_states ADD COLUMN lastScrolledCreatedAt INTEGER")
         connection.execSQL("ALTER TABLE channel_read_states ADD COLUMN lastScrolledOffset INTEGER NOT NULL DEFAULT 0")
+    }
+}
+
+/**
+ * `channelId`単独indexを`(channelId, createdAt, eventId)`の複合indexへ置き換える。
+ * 先頭列が`channelId`のため単一列indexは以後不要になり、書き込みごとのindex更新を1本に減らす。
+ */
+val MIGRATION_5_6 = object : Migration(5, 6) {
+    override fun migrate(connection: SQLiteConnection) {
+        connection.execSQL("DROP INDEX IF EXISTS index_channel_messages_channelId")
+        connection.execSQL(
+            "CREATE INDEX IF NOT EXISTS index_channel_messages_channelId_createdAt_eventId " +
+                "ON channel_messages(channelId, createdAt, eventId)"
+        )
     }
 }
 
@@ -186,7 +201,7 @@ data class CachedChannelRelayEntity(
 @Entity(
     tableName = "channel_messages",
     primaryKeys = ["eventId"],
-    indices = [Index("channelId")],
+    indices = [Index(value = ["channelId", "createdAt", "eventId"])],
 )
 data class CachedChannelMessageEntity(
     val channelId: String,
@@ -217,6 +232,15 @@ data class ChannelReadStateEntity(
     val lastScrolledMessageId: String? = null,
     val lastScrolledCreatedAt: Long? = null,
     @ColumnInfo(defaultValue = "0") val lastScrolledOffset: Int = 0,
+)
+
+/** 1メッセージ分の3書き込み(本体・relay対応・channel relay更新)を1トランザクションへまとめるための入力。 */
+data class ChannelMessageBundle(
+    val message: CachedChannelMessageEntity,
+    val relay: CachedChannelMessageRelayEntity,
+    val relayUrl: String,
+    val channelId: String,
+    val seenAt: Long,
 )
 
 data class CachedChannelSummaryRow(
@@ -354,6 +378,30 @@ interface ChannelCacheDao {
     @Insert(onConflict = OnConflictStrategy.IGNORE)
     suspend fun insertMessageRelay(relay: CachedChannelMessageRelayEntity)
 
+    /** メッセージ本体・relay対応・channel relay更新の3書き込みを1トランザクションにまとめる。 */
+    @Transaction
+    suspend fun upsertMessageBundle(
+        message: CachedChannelMessageEntity,
+        relay: CachedChannelMessageRelayEntity,
+        relayUrl: String,
+        channelId: String,
+        seenAt: Long,
+    ) {
+        insertMessage(message)
+        insertMessageRelay(relay)
+        upsertChannelRelay(relayUrl, channelId, seenAt)
+    }
+
+    /** 履歴ページ全体を、イベントごとではなく1トランザクションで保存する。 */
+    @Transaction
+    suspend fun upsertMessageBundles(bundles: List<ChannelMessageBundle>) {
+        bundles.forEach { bundle ->
+            insertMessage(bundle.message)
+            insertMessageRelay(bundle.relay)
+            upsertChannelRelay(bundle.relayUrl, bundle.channelId, bundle.seenAt)
+        }
+    }
+
     @Query(
         """
         SELECT rawJson FROM channel_messages
@@ -392,23 +440,45 @@ interface ChannelCacheDao {
     )
     suspend fun deleteMessageRelays(channelId: String)
 
-    @Query("SELECT DISTINCT relayUrl FROM channel_message_relays")
-    suspend fun getDistinctRelayUrls(): List<String>
+    @Query("SELECT DISTINCT channelId FROM channel_messages")
+    suspend fun getChannelIdsWithMessages(): List<String>
 
+    @Query("SELECT channelId FROM channels WHERE isFavorite = 1")
+    suspend fun getAllFavoriteChannelIds(): List<String>
+
+    /** 動作確認用。pruneの前後でメッセージ総数を比較する。 */
+    @Query("SELECT COUNT(*) FROM channel_messages")
+    suspend fun countMessages(): Int
+
+    /** 1チャンネルが全体を占有しないよう、チャンネル単位で保持件数を上限に切り詰める。 */
     @Query(
         """
-        DELETE FROM channel_message_relays
-        WHERE relayUrl = :relayUrl AND eventId NOT IN (
-            SELECT m.eventId
-            FROM channel_messages m
-            INNER JOIN channel_message_relays mr ON mr.eventId = m.eventId
-            WHERE mr.relayUrl = :relayUrl
-            ORDER BY createdAt DESC
+        DELETE FROM channel_messages
+        WHERE channelId = :channelId AND eventId NOT IN (
+            SELECT eventId FROM channel_messages
+            WHERE channelId = :channelId
+            ORDER BY createdAt DESC, eventId DESC
             LIMIT :maxMessages
         )
         """
     )
-    suspend fun pruneMessagesByRelay(relayUrl: String, maxMessages: Int)
+    suspend fun pruneMessagesByChannel(channelId: String, maxMessages: Int)
+
+    /** チャンネル単位の切り詰め後、なお総量が上限を超える場合に全チャンネル横断で古い順に削除する。 */
+    @Query(
+        """
+        DELETE FROM channel_messages
+        WHERE eventId NOT IN (
+            SELECT eventId FROM channel_messages
+            ORDER BY createdAt DESC, eventId DESC
+            LIMIT :maxMessages
+        )
+        """
+    )
+    suspend fun pruneMessagesGlobally(maxMessages: Int)
+
+    @Query("DELETE FROM channel_message_relays WHERE eventId NOT IN (SELECT eventId FROM channel_messages)")
+    suspend fun deleteOrphanMessageRelays()
 
     @Query("DELETE FROM channel_messages WHERE eventId NOT IN (SELECT eventId FROM channel_message_relays)")
     suspend fun deleteOrphanMessages()
@@ -474,7 +544,7 @@ interface ChannelCacheDao {
         CachedChannelMessageRelayEntity::class,
         ChannelReadStateEntity::class,
     ],
-    version = 5,
+    version = 6,
 )
 @ConstructedBy(ChannelCacheDatabaseConstructor::class)
 abstract class ChannelCacheDatabase : RoomDatabase() {

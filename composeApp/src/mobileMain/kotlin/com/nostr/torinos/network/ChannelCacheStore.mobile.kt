@@ -4,7 +4,9 @@ import com.nostr.torinos.model.ChannelMeta
 import com.nostr.torinos.model.NostrEvent
 import com.nostr.torinos.network.cache.CachedChannelMessageEntity
 import com.nostr.torinos.network.cache.CachedChannelMessageRelayEntity
+import com.nostr.torinos.network.cache.ChannelMessageBundle
 import com.nostr.torinos.network.cache.createChannelCacheDatabase
+import com.nostr.torinos.util.cacheTraceLog
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 import kotlinx.serialization.json.Json
@@ -12,6 +14,12 @@ import kotlinx.serialization.json.Json
 actual object ChannelCacheStore {
     private val json = Json { encodeDefaults = true }
     private val dao by lazy { createChannelCacheDatabase().channelCacheDao() }
+
+    /** 非お気に入りチャンネル1件が保持できるメッセージ数の初期値。実機計測後に見直す。 */
+    private const val NON_FAVORITE_CHANNEL_MESSAGE_LIMIT = 2_000
+
+    /** お気に入りチャンネルは無制限にせず、非お気に入りより高い上限だけを設定する。実機計測後に見直す。 */
+    private const val FAVORITE_CHANNEL_MESSAGE_LIMIT = 20_000
 
     actual fun observeChannels(relayUrl: String): Flow<List<CachedChannelSummary>> =
         dao.observeChannels(relayUrl).map { rows ->
@@ -58,19 +66,36 @@ actual object ChannelCacheStore {
     }
 
     actual suspend fun upsertMessage(relayUrl: String, event: NostrEvent, channelId: String) {
-        dao.insertMessage(
-            CachedChannelMessageEntity(
-                channelId = channelId,
-                eventId = event.id,
-                pubkey = event.pubkey,
-                createdAt = event.createdAt,
-                content = event.content,
-                rawJson = json.encodeToString(NostrEvent.serializer(), event),
-            )
+        val bundle = event.toMessageBundle(relayUrl, channelId)
+        dao.upsertMessageBundle(
+            message = bundle.message,
+            relay = bundle.relay,
+            relayUrl = bundle.relayUrl,
+            channelId = bundle.channelId,
+            seenAt = bundle.seenAt,
         )
-        dao.insertMessageRelay(CachedChannelMessageRelayEntity(relayUrl = relayUrl, eventId = event.id))
-        dao.upsertChannelRelay(relayUrl = relayUrl, channelId = channelId, seenAt = event.createdAt)
     }
+
+    actual suspend fun upsertMessages(relayUrl: String, events: List<NostrEvent>, channelId: String) {
+        if (events.isEmpty()) return
+        dao.upsertMessageBundles(events.map { it.toMessageBundle(relayUrl, channelId) })
+        cacheTraceLog { "[ChannelCacheStore] upsertMessages channelId=$channelId count=${events.size} (1 transaction)" }
+    }
+
+    private fun NostrEvent.toMessageBundle(relayUrl: String, channelId: String) = ChannelMessageBundle(
+        message = CachedChannelMessageEntity(
+            channelId = channelId,
+            eventId = id,
+            pubkey = pubkey,
+            createdAt = createdAt,
+            content = content,
+            rawJson = json.encodeToString(NostrEvent.serializer(), this),
+        ),
+        relay = CachedChannelMessageRelayEntity(relayUrl = relayUrl, eventId = id),
+        relayUrl = relayUrl,
+        channelId = channelId,
+        seenAt = createdAt,
+    )
 
     internal actual suspend fun deleteMessage(messageId: String) {
         dao.deleteMessageRelaysForMessage(messageId)
@@ -118,9 +143,22 @@ actual object ChannelCacheStore {
     }
 
     actual suspend fun prune(maxMessages: Int) {
-        dao.getDistinctRelayUrls().forEach { relayUrl ->
-            dao.pruneMessagesByRelay(relayUrl, maxMessages)
+        val countBefore = dao.countMessages()
+        val favoriteChannelIds = dao.getAllFavoriteChannelIds().toSet()
+        dao.getChannelIdsWithMessages().forEach { channelId ->
+            val perChannelLimit = if (channelId in favoriteChannelIds) {
+                FAVORITE_CHANNEL_MESSAGE_LIMIT
+            } else {
+                NON_FAVORITE_CHANNEL_MESSAGE_LIMIT
+            }
+            dao.pruneMessagesByChannel(channelId, perChannelLimit)
         }
-        dao.deleteOrphanMessages()
+        dao.pruneMessagesGlobally(maxMessages)
+        dao.deleteOrphanMessageRelays()
+        val countAfter = dao.countMessages()
+        cacheTraceLog {
+            "[ChannelCacheStore] prune favoriteChannels=${favoriteChannelIds.size} " +
+                "messages=$countBefore->$countAfter (removed=${countBefore - countAfter})"
+        }
     }
 }

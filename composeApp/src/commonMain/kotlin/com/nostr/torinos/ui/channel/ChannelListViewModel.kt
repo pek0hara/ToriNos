@@ -89,6 +89,14 @@ class ChannelListViewModel(
         val isDeleting: Boolean = false,
     )
 
+    data class DetailDialogState(
+        val channelId: String,
+        val channelName: String,
+        val events: List<NostrEvent> = emptyList(),
+        val isLoading: Boolean = true,
+        val error: String? = null,
+    )
+
     sealed interface UiState {
         data object Loading : UiState
         data class Ready(
@@ -96,6 +104,7 @@ class ChannelListViewModel(
             val createDialog: CreateDialogState? = null,
             val deleteDialog: DeleteDialogState? = null,
             val bulkDeleteDialog: BulkDeleteDialogState? = null,
+            val detailDialog: DetailDialogState? = null,
             val createdChannelIdToOpen: String? = null,
             val canLoadMore: Boolean = false,
             val isLoadingMore: Boolean = false,
@@ -172,11 +181,25 @@ class ChannelListViewModel(
 
         // 共通プロフィールキャッシュ
         jobs += launch {
-            ProfileRepository.observeAll().collect { cachedProfiles ->
-                val profiles = cachedProfiles.filterKeys { it in subscribedAuthorPubkeys }
-                if (profiles != authorProfiles) {
-                    authorProfiles.clear()
-                    authorProfiles.putAll(profiles)
+            ProfileRepository.observeChanges().collect { changedPubkeys ->
+                val affected = if (changedPubkeys.isEmpty()) {
+                    subscribedAuthorPubkeys
+                } else {
+                    changedPubkeys.intersect(subscribedAuthorPubkeys)
+                }
+                if (affected.isEmpty()) return@collect
+                val profiles = ProfileRepository.getCached(affected)
+                var changed = false
+                affected.forEach { pubkey ->
+                    val profile = profiles[pubkey]
+                    if (profile == null) {
+                        if (authorProfiles.remove(pubkey) != null) changed = true
+                    } else if (authorProfiles[pubkey] != profile) {
+                        authorProfiles[pubkey] = profile
+                        changed = true
+                    }
+                }
+                if (changed) {
                     emitReady()
                 }
             }
@@ -321,6 +344,70 @@ class ChannelListViewModel(
         launch {
             ChannelCacheStore.setFavorite(cacheRelayUrl, channelId, newFavorite)
         }
+    }
+
+    fun showDetailDialog(channelId: String) {
+        val current = _state.value as? UiState.Ready ?: return
+        val item = current.channels.firstOrNull { it.event.id == channelId } ?: return
+        val initialEvents = item.event.takeIf { it.content.isNotBlank() || it.sig.isNotBlank() }
+            ?.let(::listOf)
+            .orEmpty()
+        _state.value = current.copy(
+            detailDialog = DetailDialogState(
+                channelId = channelId,
+                channelName = item.meta.name.ifBlank { "（名前なし）" },
+                events = initialEvents,
+            ),
+        )
+        launch {
+            val events = linkedMapOf<String, NostrEvent>()
+            initialEvents.forEach { events[it.id] = it }
+            val completed = fetch(
+                prefix = "ch-list-detail-$relayKey",
+                filters = listOf(
+                    NostrFilter(ids = listOf(channelId), kinds = listOf(40)),
+                    NostrFilter(
+                        authors = listOf(item.event.pubkey),
+                        kinds = listOf(41),
+                        eTags = listOf(channelId),
+                        limit = 100,
+                    ),
+                ),
+            ) { event ->
+                if (event.isChannelMetadataEvent(channelId, item.event.pubkey)) {
+                    events[event.id] = event
+                    updateDetailDialog(channelId, events.values.toList(), isLoading = true)
+                }
+            }
+            updateDetailDialog(
+                channelId = channelId,
+                events = events.values.toList(),
+                isLoading = false,
+                error = if (completed) null else "リレーからの取得が完了しませんでした",
+            )
+        }
+    }
+
+    fun dismissDetailDialog() {
+        val current = _state.value as? UiState.Ready ?: return
+        _state.value = current.copy(detailDialog = null)
+    }
+
+    private fun updateDetailDialog(
+        channelId: String,
+        events: List<NostrEvent>,
+        isLoading: Boolean,
+        error: String? = null,
+    ) {
+        val current = _state.value as? UiState.Ready ?: return
+        val dialog = current.detailDialog?.takeIf { it.channelId == channelId } ?: return
+        _state.value = current.copy(
+            detailDialog = dialog.copy(
+                events = events.sortedWith(compareBy<NostrEvent> { it.kind }.thenByDescending { it.createdAt }),
+                isLoading = isLoading,
+                error = error,
+            ),
+        )
     }
 
     fun showBulkDeleteDialog() {
@@ -474,6 +561,7 @@ class ChannelListViewModel(
             createDialog = current?.createDialog,
             deleteDialog = current?.deleteDialog,
             bulkDeleteDialog = current?.bulkDeleteDialog,
+            detailDialog = current?.detailDialog,
             createdChannelIdToOpen = current?.createdChannelIdToOpen,
             canLoadMore = hasMoreChannels,
             isLoadingMore = loadingMore,
@@ -484,10 +572,16 @@ class ChannelListViewModel(
         prefix: String,
         filter: NostrFilter,
         onEvent: suspend (NostrEvent) -> Unit,
+    ): Boolean = fetch(prefix, listOf(filter), onEvent)
+
+    private suspend fun fetch(
+        prefix: String,
+        filters: List<NostrFilter>,
+        onEvent: suspend (NostrEvent) -> Unit,
     ): Boolean = fetchChannelEvents(
         SubscriptionSpec(
             id = "$prefix-${requestSequence++}",
-            filters = listOf(filter),
+            filters = filters,
             target = relayUrl?.let(RelayTarget::Single) ?: RelayTarget.AllEnabled,
             behavior = SubscriptionBehavior.Fetch(PAGE_TIMEOUT_MS),
         ),
@@ -622,6 +716,15 @@ class ChannelListViewModel(
             .firstOrNull { it.firstOrNull() == "e" && it.getOrNull(3) == "root" }
             ?.getOrNull(1)
             ?: tags.firstOrNull { it.firstOrNull() == "e" }?.getOrNull(1)
+
+    private fun NostrEvent.isChannelMetadataEvent(channelId: String, ownerPubkey: String): Boolean =
+        when (kind) {
+            40 -> id == channelId
+            41 -> pubkey == ownerPubkey && tags.any {
+                it.firstOrNull() == "e" && it.getOrNull(1) == channelId
+            }
+            else -> false
+        }
 
     override fun onCleared() {
         activityQueue.stop()

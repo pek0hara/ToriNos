@@ -19,25 +19,25 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.CleaningServices
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Star
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.outlined.StarBorder
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Badge
+import androidx.compose.material3.BadgedBox
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -67,6 +67,7 @@ import com.nostr.torinos.account.accountSessionViewModel
 import com.nostr.torinos.model.NostrProfile
 import com.nostr.torinos.network.RelayStore
 import com.nostr.torinos.ui.components.LinkedText
+import com.nostr.torinos.ui.components.RelaySelector
 import com.nostr.torinos.ui.profile.AvatarCircle
 import com.nostr.torinos.ui.service.ServiceTab
 import com.nostr.torinos.ui.service.ServiceTabRow
@@ -89,7 +90,6 @@ fun ChannelListScreen(
     val relays by RelayStore.relays.collectAsState(initial = emptyList())
     val selectedRelayUrl by RelayStore.selectedChannelRelayUrl.collectAsState()
     val isRelayStoreLoaded by RelayStore.isLoaded.collectAsState()
-    var showRelayMenu by remember { mutableStateOf(false) }
 
     LaunchedEffect(relays, selectedRelayUrl) {
         if (selectedRelayUrl == null || selectedRelayUrl !in relays) {
@@ -168,54 +168,12 @@ fun ChannelListScreen(
                         }
                     },
                     title = {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.Start,
-                        ) {
-                            Text(
-                                text = selectedRelayUrl?.relayDisplayName() ?: "—",
-                                modifier = Modifier.weight(1f, fill = false),
-                                color = headerContentColor,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                            )
-                            IconButton(onClick = { showRelayMenu = true }) {
-                                Icon(
-                                    Icons.Default.ArrowDropDown,
-                                    contentDescription = "リレー切り替え",
-                                    tint = headerContentColor,
-                                )
-                            }
-                            DropdownMenu(
-                                expanded = showRelayMenu,
-                                onDismissRequest = { showRelayMenu = false },
-                            ) {
-                                DropdownMenuItem(
-                                    text = { Text("リレー設定") },
-                                    onClick = {
-                                        showRelayMenu = false
-                                        onOpenRelaySettings()
-                                    },
-                                )
-                                relays.forEach { url ->
-                                    DropdownMenuItem(
-                                        text = { Text(url.relayDisplayName()) },
-                                        onClick = {
-                                            RelayStore.setSelectedChannelRelayUrl(url)
-                                            showRelayMenu = false
-                                        },
-                                        trailingIcon = if (url == selectedRelayUrl) {
-                                            {
-                                                Icon(
-                                                    Icons.Default.Check,
-                                                    contentDescription = null,
-                                                )
-                                            }
-                                        } else null,
-                                    )
-                                }
-                            }
-                        }
+                        RelaySelector(
+                            relays = relays,
+                            selectedRelayUrl = selectedRelayUrl,
+                            onRelaySelected = RelayStore::setSelectedChannelRelayUrl,
+                            onOpenRelaySettings = onOpenRelaySettings,
+                        )
                     },
                     actions = {
                         if (state is ChannelListViewModel.UiState.Ready) {
@@ -307,6 +265,7 @@ fun ChannelListScreen(
                                 ChannelRow(
                                     item = item,
                                     onClick = { onChannelClick(item.event.id) },
+                                    onDetailClick = { viewModel.showDetailDialog(item.event.id) },
                                     onLongClick = {
                                         viewModel.showDeleteDialog(
                                             channelId = item.event.id,
@@ -389,6 +348,14 @@ fun ChannelListScreen(
                     Text("キャンセル")
                 }
             },
+        )
+    }
+
+    val detailDialog = (state as? ChannelListViewModel.UiState.Ready)?.detailDialog
+    if (detailDialog != null) {
+        ChannelDetailsDialog(
+            state = detailDialog,
+            onDismiss = viewModel::dismissDetailDialog,
         )
     }
 
@@ -545,10 +512,17 @@ private fun CreateChannelDialog(
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun ChannelRow(item: ChannelItem, onClick: () -> Unit, onLongClick: () -> Unit = {}, onFavoriteClick: () -> Unit = {}) {
+private fun ChannelRow(
+    item: ChannelItem,
+    onClick: () -> Unit,
+    onLongClick: () -> Unit = {},
+    onFavoriteClick: () -> Unit = {},
+    onDetailClick: () -> Unit = {},
+) {
     val activityTime = item.lastActivityAt ?: item.event.createdAt
     val timeText = relativeTime(activityTime)
     val barColor = if (item.hasBeenOpened) Color(0xFF4DD0E1) else Color(0xFFBDBDBD)
+    var menuExpanded by remember(item.event.id) { mutableStateOf(false) }
 
     Row(
         modifier = Modifier
@@ -623,37 +597,55 @@ private fun ChannelRow(item: ChannelItem, onClick: () -> Unit, onLongClick: () -
             )
         }
 
-        Column(
-            horizontalAlignment = Alignment.End,
-            verticalArrangement = Arrangement.spacedBy(4.dp),
-            modifier = Modifier.padding(start = 12.dp),
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier.padding(start = 8.dp),
         ) {
-            IconButton(
-                onClick = onFavoriteClick,
-                modifier = Modifier.size(32.dp),
-            ) {
-                Icon(
-                    imageVector = if (item.isFavorite) Icons.Filled.Star else Icons.Outlined.StarBorder,
-                    contentDescription = if (item.isFavorite) "お気に入り解除" else "お気に入り登録",
-                    tint = if (item.isFavorite) Color(0xFFFFC107) else MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.size(20.dp),
-                )
-            }
-            if (item.unreadCount > 0) {
-                Box(
-                    contentAlignment = Alignment.Center,
-                    modifier = Modifier
-                        .defaultMinSize(minWidth = 20.dp, minHeight = 20.dp)
-                        .background(
-                            color = MaterialTheme.colorScheme.primary,
-                            shape = CircleShape,
-                        )
-                        .padding(horizontal = 6.dp, vertical = 2.dp),
+            Box {
+                IconButton(
+                    onClick = { menuExpanded = true },
+                    modifier = Modifier.size(32.dp),
                 ) {
-                    Text(
-                        text = if (item.unreadCount > 99) "99+" else "${item.unreadCount}",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onPrimary,
+                    Icon(
+                        imageVector = Icons.Default.MoreVert,
+                        contentDescription = "チャンネルメニュー",
+                        modifier = Modifier.size(20.dp),
+                    )
+                }
+                DropdownMenu(
+                    expanded = menuExpanded,
+                    onDismissRequest = { menuExpanded = false },
+                ) {
+                    DropdownMenuItem(
+                        text = { Text("チャンネル詳細") },
+                        onClick = {
+                            menuExpanded = false
+                            onDetailClick()
+                        },
+                    )
+                }
+            }
+            BadgedBox(
+                badge = {
+                    if (item.unreadCount > 0) {
+                        Badge(
+                            containerColor = MaterialTheme.colorScheme.primary,
+                            contentColor = MaterialTheme.colorScheme.onPrimary,
+                        ) {
+                            Text(if (item.unreadCount > 99) "99+" else "${item.unreadCount}")
+                        }
+                    }
+                },
+            ) {
+                IconButton(
+                    onClick = onFavoriteClick,
+                    modifier = Modifier.size(32.dp),
+                ) {
+                    Icon(
+                        imageVector = if (item.isFavorite) Icons.Filled.Star else Icons.Outlined.StarBorder,
+                        contentDescription = if (item.isFavorite) "お気に入り解除" else "お気に入り登録",
+                        tint = if (item.isFavorite) Color(0xFFFFC107) else MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(20.dp),
                     )
                 }
             }
@@ -673,6 +665,3 @@ private fun relativeTime(epochSeconds: Long): String {
         else -> "${diff / (86400L * 30L)}ヶ月前"
     }
 }
-
-private fun String.relayDisplayName(): String =
-    removePrefix("wss://").removePrefix("ws://").trimEnd('/')
