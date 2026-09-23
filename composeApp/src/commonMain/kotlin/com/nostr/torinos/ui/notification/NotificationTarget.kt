@@ -6,7 +6,6 @@ import com.nostr.torinos.model.COMMENT_EVENT_KIND
 import com.nostr.torinos.model.channelRootId
 import com.nostr.torinos.model.replyTargetId
 import com.nostr.torinos.model.toArticleMeta
-import com.nostr.torinos.model.toLiveActivityMeta
 import com.nostr.torinos.network.isFullEventId
 import kotlinx.serialization.json.Json
 
@@ -53,7 +52,6 @@ sealed interface NotificationTargetDestination {
     data class Thread(val eventId: String) : NotificationTargetDestination
     data class ChannelThread(val eventId: String, val channelId: String) : NotificationTargetDestination
     data class Article(val pubkey: String, val identifier: String) : NotificationTargetDestination
-    data class Live(val pubkey: String, val identifier: String) : NotificationTargetDestination
 }
 
 fun notificationTargetDestination(event: NostrEvent): NotificationTargetDestination? = when (event.kind) {
@@ -62,7 +60,6 @@ fun notificationTargetDestination(event: NostrEvent): NotificationTargetDestinat
         NotificationTargetDestination.ChannelThread(event.id, it)
     }
     30023 -> event.toArticleMeta()?.let { NotificationTargetDestination.Article(event.pubkey, it.identifier) }
-    30311 -> event.toLiveActivityMeta()?.let { NotificationTargetDestination.Live(event.pubkey, it.identifier) }
     else -> null
 }
 
@@ -70,6 +67,5 @@ fun notificationTargetDestination(event: NostrEvent): NotificationTargetDestinat
 fun notificationTargetBody(event: NostrEvent): String = when (event.kind) {
     1, 42, COMMENT_EVENT_KIND -> event.content
     30023 -> event.toArticleMeta()?.let { it.title ?: it.summary ?: "長文記事" } ?: "Kind 30023"
-    30311 -> event.toLiveActivityMeta()?.let { it.title ?: "ライブ" } ?: "Kind 30311"
     else -> "Kind ${event.kind} のイベント（専用画面は未対応）"
 }

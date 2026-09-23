@@ -93,8 +93,6 @@ import com.nostr.torinos.ui.components.LocalQuotePostHandler
 import com.nostr.torinos.ui.feed.FeedTab
 import com.nostr.torinos.ui.feed.FeedScreen
 import com.nostr.torinos.ui.feed.shouldResetFeedAfterBackground
-import com.nostr.torinos.ui.live.LiveDetailScreen
-import com.nostr.torinos.ui.live.LiveHubScreen
 import com.nostr.torinos.ui.notification.NotificationsDrawer
 import com.nostr.torinos.ui.notification.NotificationsViewModel
 import com.nostr.torinos.ui.notification.NotificationTargetDestination
@@ -126,7 +124,6 @@ import kotlin.time.Clock
 @Serializable data class ArticleRoute(val pubkey: String, val identifier: String)
 @Serializable data class ArticleEditorRoute(val pubkey: String, val identifier: String)
 @Serializable data class UserArticlesRoute(val pubkey: String)
-@Serializable data class LiveRoute(val pubkey: String, val identifier: String, val openChat: Boolean = false)
 @Serializable data class FollowingRoute(val pubkey: String)
 @Serializable data class FollowersRoute(val pubkey: String)
 @Serializable data class SearchRoute(val query: String = "")
@@ -150,7 +147,6 @@ internal enum class PendingKeyAction {
     Profile,
     Status,
     Journal,
-    Live,
 }
 
 @Composable
@@ -652,7 +648,6 @@ internal fun AppSessionCoordinator(
                                     ThreadRoute(destination.eventId, source = ThreadSourceChannel, channelId = destination.channelId),
                                 )
                                 is NotificationTargetDestination.Article -> nav.navigate(ArticleRoute(destination.pubkey, destination.identifier))
-                                is NotificationTargetDestination.Live -> nav.navigate(LiveRoute(destination.pubkey, destination.identifier))
                             }
                         },
                     )
@@ -696,15 +691,6 @@ internal fun AppSessionCoordinator(
                                     },
                                     icon = Icons.Default.Add,
                                     contentDescription = "記事を書く",
-                                )
-                                ServiceTab.Live -> AppFloatingActionButton(
-                                    onClick = {
-                                        runWithPrivateKey(PendingKeyAction.Live) {
-                                            composer.liveCreateRequest++
-                                        }
-                                    },
-                                    icon = Icons.Default.Add,
-                                    contentDescription = "ライブを投稿",
                                 )
                                 ServiceTab.Status -> AppFloatingActionButton(
                                     onClick = {
@@ -899,30 +885,6 @@ internal fun AppSessionCoordinator(
                                     onServiceTabSelected = { currentServiceTab = it },
                                 )
                             }
-                            ServiceTab.Live -> {
-                                LiveHubScreen(
-                                    ownPubkey = ownPubkey,
-                                    ownProfile = ownProfile,
-                                    onOpenProfile = {
-                                        requestOwnProfile()
-                                    },
-                                    onOpenSettings = { showQuickSettings = true },
-                                    onOpenRelaySettings = {
-                                        requestRelaySettings()
-                                    },
-                                    onLiveClick = { pubkey, identifier ->
-                                        nav.navigate(LiveRoute(pubkey, identifier))
-                                    },
-                                    onLiveChatClick = { pubkey, identifier ->
-                                        nav.navigate(LiveRoute(pubkey, identifier, openChat = true))
-                                    },
-                                    onUserClick = ::openProfileDrawer,
-                                    selectedServiceTab = currentServiceTab,
-                                    onServiceTabSelected = { currentServiceTab = it },
-                                    createLiveRequest = composer.liveCreateRequest,
-                                    onCreateLiveRequestConsumed = { composer.liveCreateRequest = 0 },
-                                )
-                            }
                             ServiceTab.Status -> {
                                 StatusScreen(
                                     ownPubkey = ownPubkey,
@@ -998,17 +960,6 @@ internal fun AppSessionCoordinator(
                                     popUpTo(ArticleEditorRoute(route.pubkey, route.identifier)) { inclusive = true }
                                 }
                             },
-                        )
-                    }
-                    composable<LiveRoute> { backStack ->
-                        val route = backStack.toRoute<LiveRoute>()
-                        LiveDetailScreen(
-                            pubkey = route.pubkey,
-                            identifier = route.identifier,
-                            openChatInitially = route.openChat,
-                            ownPubkey = ownPubkey,
-                            onBack = { nav.popBackStack() },
-                            onUserClick = ::openProfileDrawer,
                         )
                     }
                     composable<UserArticlesRoute> { backStack ->

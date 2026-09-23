@@ -22,7 +22,6 @@ internal class ComposerCoordinator {
     var localDraft by mutableStateOf<PostMemoData?>(null)
     var journalToggleCalendarRequest by mutableStateOf(0)
     var journalShowCalendarRequest by mutableStateOf(0)
-    var liveCreateRequest by mutableStateOf(0)
     var showKeySetup by mutableStateOf(false)
     var pendingKeyAction by mutableStateOf<PendingKeyAction?>(null)
 

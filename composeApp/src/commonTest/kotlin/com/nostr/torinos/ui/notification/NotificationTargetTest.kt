@@ -70,14 +70,14 @@ class NotificationTargetTest {
         assertNull(notificationTargetDestination(event(42, emptyList())))
         assertNull(notificationTargetDestination(event(42, listOf(listOf("e", "bad")))))
         assertEquals(NotificationTargetDestination.Article("c".repeat(64), "article"), notificationTargetDestination(event(30023, listOf(listOf("d", "article")))))
-        assertEquals(NotificationTargetDestination.Live("c".repeat(64), "live"), notificationTargetDestination(event(30311, listOf(listOf("d", "live")))))
+        assertNull(notificationTargetDestination(event(30311, listOf(listOf("d", "live")))))
         listOf(30023, 30311, 1311, 30315, 99999).forEach { kind ->
             assertNull(notificationTargetDestination(event(kind, emptyList())))
         }
     }
 
     @Test fun unknownContentIsNotRenderedAndFailuresNeverSayLoading() {
-        listOf(1311, 30315, 99999).forEach { kind ->
+        listOf(30311, 1311, 30315, 99999).forEach { kind ->
             val body = notificationTargetBody(event(kind, content = "secret ciphertext"))
             assertFalse(body.contains("secret"))
             assertTrue(body.contains(kind.toString()))

@@ -57,9 +57,6 @@ fun NotificationTargetPreview(
                 is NotificationTargetDestination.Article -> TextButton(onClick = { onOpenTarget(destination) }) {
                     Text("記事の最新版を開く")
                 }
-                is NotificationTargetDestination.Live -> TextButton(onClick = { onOpenTarget(destination) }) {
-                    Text("ライブを開く")
-                }
                 null -> {
                     Text(formatTimestamp(event.createdAt), style = MaterialTheme.typography.labelSmall)
                     TextButton(onClick = { scope.launch { clipboard.setPlainText(event.id) } }) {
