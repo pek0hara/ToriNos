@@ -370,15 +370,15 @@ relay-jp.nostr.wirednet.jp   失敗
 ### FR-12: ローカル永続化
 
 > [!NOTE]
-> 2026-09-23 のレビューで方針を変更した（第26章参照）。チャンネル機能は利用チャンネル数・メッセージ数とも少なく（実測: チャンネル83件、蓄積メッセージ計2317件）、リレーが一次ストアとして存在する以上、メッセージ本体の全履歴をローカルDBへ複製する設計はコストに見合わないと判断した。本節は変更後の要件を記載する。旧要件（Room DBへのメッセージ全履歴キャッシュ）は第26.1節に経緯として残す。
+> 2026-09-23 のレビューで方針を変更した（第22章参照）。チャンネル機能は利用チャンネル数・メッセージ数とも少なく（実測: チャンネル83件、蓄積メッセージ計2317件）、リレーが一次ストアとして存在する以上、メッセージ本体の全履歴をローカルDBへ複製する設計はコストに見合わないと判断した。本節は変更後の要件を記載する。旧要件（Room DBへのメッセージ全履歴キャッシュ）は第22.1節に経緯として残す。
 
-- 次を端末に永続化する（`ChannelLocalState`、第26.2節）。
+- 次を端末に永続化する（`ChannelLocalState`、第22.2節）。
   - 実効メタデータ（kind 40/41 由来の name/about/picture）、`sourceEventId`/`sourceKind`/`sourceCreatedAt`、正規化済み推奨リレー。
   - お気に入りフラグ。
   - 既読位置（`lastReadAt` と直近のスクロール位置）。
   - 一覧プレビュー用に、チャンネルごと直近1件のメッセージ（event ID・created_at・pubkey・本文先頭の切り詰め）のみ。全履歴は保持しない。
 - メッセージ本体の全履歴はローカルへ永続化しない。チャンネルを開くたびにリレーから取得し、表示用に一時的にメモリ上へ保持する（event ID による重複排除はメモリ上のセッション内で行う）。
-- 未読件数はローカルに保持する数値ではなく、起動時にリレーへの一括問い合わせ（`kinds:42`、対象 `channelId` を `e` タグに列挙、`since` は保持済み `lastReadAt` の最小値）で取得した件数からセッション開始時に算出し、以後はライブ受信でメモリ上のみ加算する（第26.3節）。
+- 未読件数はローカルに保持する数値ではなく、起動時にリレーへの一括問い合わせ（`kinds:42`、対象 `channelId` を `e` タグに列挙、`since` は保持済み `lastReadAt` の最小値）で取得した件数からセッション開始時に算出し、以後はライブ受信でメモリ上のみ加算する（第22.3節）。
 - 永続化先は Room/SQLite ではなく、`RelayStore` と同じ `LocalSettingsStorage` ベースの JSON 保存（`Map<channelId, ChannelLocalState>`）とする。migration・DAO・schema export・prune はいずれも不要になる。
 
 ## 7. 第2段階の要件
@@ -1056,7 +1056,7 @@ val publishState: ChannelPublishUiState = ChannelPublishUiState.Idle
 ### 16.12 ローカル永続化の設計（FR-12）
 
 > [!NOTE]
-> 本節は 2026-09-23 の方針変更後の設計を記載する。Room/SQLite（DB v1〜v7）ベースの旧設計は Loop 0・Loop 2 で実装済みだが、本方針により置き換える。旧設計の記録は第26.1節および第22・24章の Loop 実施記録に残す。
+> 本節は 2026-09-23 の方針変更後の設計を記載する。Room/SQLite（DB v1〜v7）ベースの旧設計は Loop 0・Loop 2 で実装済みだが、本方針により置き換える。旧設計の経緯は第22.1節、詳細な実装記録は第21.1節の要約とgit commit historyを参照。
 
 #### 概念分離（変更なし）
 
@@ -1714,7 +1714,7 @@ iOS Simulatorテスト
 | 1 | モデルと純粋ロジック | URL正規化、`ChannelMeta.relays`、metadata resolver、relay context、タグbuilder | 完了 |
 | 2 | 明示購読とDB v7 | 未登録推奨リレー購読、metadata cache、migration 6→7 | 完了 |
 | 3 | チャンネル購読 | 推奨リレーからkind 42取得、kind 41更新時の再購読 | 着手中(3a完了、3bは未着手) |
-| 3.5 | ローカル永続化の簡素化 | Room/SQLite撤去、`ChannelLocalState`のJSON永続化、未読件数のキャッチアップ方式への移行(第26章) | 計画中 |
+| 3.5 | ローカル永続化の簡素化 | Room/SQLite撤去、`ChannelLocalState`のJSON永続化、未読件数のキャッチアップ方式への移行(第22章) | 計画中 |
 | 4 | チャンネル投稿 | kind 40/41/42の配送、relay hint、リレー別結果 | 未着手 |
 | 5 | UIと返信連携 | ヘッダー、投稿先、詳細、編集、通常返信画面 | 未着手 |
 | 6 | モデレーション | kind 43/44 | 未着手 |
@@ -1722,33 +1722,31 @@ iOS Simulatorテスト
 
 依存関係やレビュー結果によってループを分割・統合してよい。ただし、変更した理由を直前ループのフィードバックへ記録する。
 
-## 21. Loop 0 計画: 現在差分の安定化
+## 21. 実施済みループの記録
 
-### 21.1 対象
+### 21.1 概要
 
-- `ChannelDetailsDialog` と一覧からの導線
-- kind 40/41 の診断取得
-- 共通 `RelaySelector`
-- チャンネル履歴の一括キャッシュ書き込み
-- Room schema v6 / migration 5→6
-- チャンネル単位・全体単位のprune
-- kind 5の `k` タグ
-- `ChannelMessageReducer` 削除後の重複排除回帰
+| Loop | 状態 | 対象 | 主な指摘（Blocker/Major） | Commit |
+| --- | --- | --- | --- | --- |
+| 0: 現在差分の安定化 | 保留（L0-S08/L0-S10未実施） | チャンネル詳細・一覧UI・履歴キャッシュ一括保存・DB v6・prune・kind 5の`k`タグ | 詳細取得Jobの再表示後キャンセル漏れ／kind 41同時刻tie-breakの受信順依存／不正メタデータ優先の3件。いずれも解消 | `25156a9` |
+| 1: モデルと純粋ロジック | 完了 | URL正規化、`ChannelMeta.relays`、`ChannelMetadataResolver`、`ChannelRelayContextBuilder`、`ChannelEventTags` | `normalizeRelayUrl`がFR-01のquery/fragment拒否に違反。既定ポート省略も未実装。両方修正・回帰テスト追加 | `25156a9` |
+| 2: 明示購読とDB v7 | 完了（Room実装はLoop 3.5で置換予定、第22章） | `RelayTarget.Explicit`の意味修正、DB migration 6→7、`ChannelCacheStore`のmetadata API | なし | `55a6018` |
+| 3a: resolver接続 | 完了 | `ChannelController`のkind 40/41ライブ判定を`ChannelMetadataResolver`へ移行 | 同時刻kind 41の受信順依存が実チャンネル画面側に残存。resolver移行で解消 | `3e3464f` |
 
-NIP-28推奨リレーの動的購読・投稿は Loop 0 には含めない。
+設計レビュー・実装レビューの詳細、自動テストコマンド、Simulator実施環境（macOS/Xcode/Simulatorバージョン等）は各コミットメッセージ（`git log`）に記載している。
 
-### 21.2 設計レビューで確認する項目
+### 21.2 未解決の申し送り事項
 
-- 詳細画面が所有者以外のkind 41を表示対象にしない。
-- kind 40/41取得の有限購読がダイアログ破棄後に状態を更新しない。
-- 同一 `createdAt` のkind 41表示が決定的になる。
-- 詳細画面の独自メタデータ型が後続resolver導入時に置換可能である。
-- 履歴ページ保存が1トランザクションになり、個別保存と同じ観測元情報を保持する。
-- prune後に孤立したmessage-relay行、message行、channel行が残らない。
-- migration 5→6で既存メッセージ・既読・お気に入りが維持される。
-- reducer削除後も `ChannelHistory` / subscription session で重複排除される。
+1. L0-S08（自分のkind 40削除要求の実リレー送信確認）、L0-S10（接続不能リレーでのUI確認）は副作用・障害注入が必要なため未実施のまま。
+2. L3a-S01（仮称）: チャンネル画面を開き、kind 40のみ／kind 40+41／同時刻複数kind 41の各ケースで表示メタデータが正しいことをSimulatorで確認する。Mac画面のロックでSimulator GUIが操作できず保留、ロック解除後に再試行する。
+3. Loop 3b: `ChannelRelayContext`・`SubscriptionSession`・kind 41受信時の二段階再購読（FR-08、第16.7節）を`ChannelController`へ接続する。
+4. `saveThreadMeta()`（kind 41自己編集）の楽観的更新を候補プール（`metadataUpdateCandidates`）経由に統合し、自己発行イベントも同じresolver経路で扱う（Phase 2 kind 41編集強化、第16.10節と合わせて検討）。
+5. `ChannelController`向けのテスト基盤（NostrRepository/ChannelCacheStoreのfake化）導入を検討する。
+6. 第22章の方針により、Loop 2で実装したRoom関連コード（DB v7 migration、`ChannelListViewModel.kt`×2・`ChannelController.kt`×1の`upsertChannel`呼び出し）はLoop 3.5で置換する。
 
-### 21.3 Simulatorテストケース
+### 21.3 Simulator定義済みシナリオ（再利用可能）
+
+Loop 0で定義したシナリオはLoop横断で再利用する。
 
 | ID | シナリオ | 期待結果 |
 | --- | --- | --- |
@@ -1763,299 +1761,9 @@ NIP-28推奨リレーの動的購読・投稿は Loop 0 には含めない。
 | L0-S09 | バックグラウンド化して復帰する | 購読再開後に重複せず、新着を受信できる |
 | L0-S10 | 接続不能または応答しないリレーを選択する | UIが固まらず、タイムアウトまたはエラー表示から戻れる |
 
-### 21.4 Loop 0 完了後の判断
+## 22. アーキテクチャ変更: ローカル永続化の簡素化（2026-09-23）
 
-Loop 0 で Blocker / Major がなければ Loop 1 へ進む。Loop 0 の差分にNIP-28 relay contextの変更を混在させず、ベースラインの挙動を先に確定する。
-
-Loop 0 で判明した詳細表示・キャッシュ・購読の問題が Loop 1以降の設計へ影響する場合は、該当する第16章の設計を更新してから次の実装を開始する。
-
-## 22. Loop 0 実施記録: 現在差分の安定化
-
-- 状態: 保留
-- 対象: 第21.1節の現在差分、特にチャンネル詳細のkind 40/41取得と表示
-- 対象外: NIP-28推奨リレーの動的購読・投稿、DB v7、kind 43/44、kind 10005
-- 開始時commit: `46d796b`
-- 対象ファイル:
-  - `composeApp/src/commonMain/kotlin/com/nostr/torinos/ui/channel/ChannelListViewModel.kt`
-  - `composeApp/src/commonMain/kotlin/com/nostr/torinos/ui/channel/ChannelDetailsDialog.kt`
-  - `composeApp/src/commonMain/kotlin/com/nostr/torinos/ui/channel/ChannelMetadataSelection.kt`
-  - `composeApp/src/commonTest/kotlin/com/nostr/torinos/ui/channel/ChannelMetadataSelectionTest.kt`
-
-### 22.1 設計レビュー
-
-| 重大度 | 指摘 | 対応 |
-| --- | --- | --- |
-| Major | 詳細を閉じた後、または同一チャンネルを閉じて再表示した後に、以前の有限購読が新しいダイアログを更新できる | 詳細取得用 `Job` を保持し、再表示・dismiss・`onCleared` でキャンセルする |
-| Major | kind 41の `created_at` が同じ場合、受信順によって表示内容が変わる | `(createdAt, eventId)` の降順で決定し、同時刻でも結果を固定する |
-| Major | 新しいkind 41のJSONが不正な場合に、正常な過去メタデータより不正イベントが優先される | `toChannelMeta()` で解釈できるイベントだけを候補にして最新を選ぶ |
-| Minor | kind 41の `e` tag markerを検証しておらず、`reply` など明示的な非root参照を採用し得る | markerなしの旧形式、空文字、`root` のみを許可する |
-| Note | 元のL0-S08はkind 42削除と記載していたが、Loop 0のチャンネル一覧削除はkind 40が対象 | シナリオをkind 40、`k=40` に訂正した |
-
-### 22.2 実装レビュー
-
-- kind 41はチャンネル作成者のpubkey、対象channel ID、root markerを満たす場合だけ詳細stateへ追加する。
-- 詳細取得Jobは再表示、dismiss、ViewModel破棄の各経路でキャンセルされる。`CancellationException` は `SafeCoroutineLauncher` から再送出されるため、通常例外として握りつぶさない。
-- 有効メタデータ選択は純粋関数へ分離し、同時刻tie-break、kind 40 fallback、不正JSON除外を単体テスト可能にした。
-- `effectiveChannelMetadataEvent` は、呼出し前に `isChannelMetadataFor` で所有者と対象チャンネルを検証済みであることを前提とする。Loop 1ではこの前提をUIローカル関数から共通metadata resolverへ統合する。
-- 今回のレビュー範囲ではBlocker / 未解消Majorはない。
-
-### 22.3 自動テスト
-
-| コマンド | 結果 | 備考 |
-| --- | --- | --- |
-| `./gradlew :composeApp:iosSimulatorArm64Test --tests 'com.nostr.torinos.ui.channel.ChannelMetadataSelectionTest'` | 成功 | 5ケース |
-| `./gradlew :composeApp:iosSimulatorArm64Test --tests 'com.nostr.torinos.ui.channel.*'` | 成功 | チャンネル関連commonTest |
-| `./gradlew :composeApp:iosSimulatorArm64Test` | 成功 | iOS Simulator Arm64の全テスト |
-| `xcodebuild -project iosApp/iosApp.xcodeproj -scheme iosApp -configuration Debug -destination 'platform=iOS Simulator,id=D5D20B75-99E2-45AF-A1E7-848C6E1E6E76' -derivedDataPath /private/tmp/ToriNosDerivedData build` | 成功 | ICUのdeployment target警告のみ |
-| `git diff --check` | 成功 | whitespace errorなし |
-
-### 22.4 Simulatorテスト
-
-実施環境:
-
-- 実行日時: 2026-09-23 18:40-18:56 JST
-- macOS: 26.5 (25F71)
-- Xcode: 26.6 (17F113)
-- Simulator: iPhone 17 / iOS 26.5
-- build: Debug
-- アカウント: 既存の署名可能アカウント
-- 選択リレー: `wss://yabu.me/` から `wss://r.kojira.io/` へ切替
-- 対象チャンネル: `さびれたスナック`
-- ネットワーク条件: 通常接続
-
-| シナリオ | 結果 | 証跡・備考 |
-| --- | --- | --- |
-| L0-S01 | 成功 | 一覧、選択リレー、お気に入り操作、未読badgeを表示 |
-| L0-S02 | 成功 | 接続状態付きメニューを表示し、`r.kojira.io` への切替後に一覧を更新 |
-| L0-S03 | 成功 | 詳細にkind 40、最新kind 41、現在メタデータを表示 |
-| L0-S04 | 成功 | `wss://yabu.me/` と `wss://relay-jp.nostr.wirednet.jp/` の推奨リレー2件を表示 |
-| L0-S05 | 成功 | 詳細を取得中に閉じて再表示しても、閉じたダイアログの再出現やクラッシュなし |
-| L0-S06 | 成功 | 同じチャンネルを開閉し、表示順の乱れと目視できる重複なし |
-| L0-S07 | 成功 | process終了・再起動後、チャンネル画面で `r.kojira.io`、一覧、未読件数、キャッシュを復元。アプリ全体の開始画面はホーム |
-| L0-S08 | 未実施 | 実リレーへのkind 5送信と実チャンネル削除を伴うため、明示確認なしでは実行しない。コード上は `e` と `k=40` を確認 |
-| L0-S09 | 成功 | Homeへ移動後に復帰し、同一チャンネル・表示内容を維持。クラッシュと目視できる重複なし |
-| L0-S10 | 未実施 | 登録済み5リレーがすべて接続済み。設定変更またはネットワーク障害注入が必要 |
-
-### 22.5 設計書へのフィードバック
-
-- 確定した仕様:
-  - kind 41の有効性は所有者、対象channel ID、root marker、JSON解釈可能性で判定する。
-  - 最新判定は `(createdAt, eventId)` で決定的に行う。
-  - 詳細取得はダイアログのライフサイクルに束縛する。
-- 変更した仕様:
-  - L0-S08の対象をkind 42メッセージからkind 40チャンネル削除へ訂正した。
-- 次ループへ送る課題:
-  - Loop 1でUIローカルのmetadata選択関数を共通resolverへ移し、全経路で同じ検証規則を使う。
-  - L0-S08はテスト専用チャンネルまたはpublish fakeを用意して、副作用を隔離して確認する。
-  - L0-S10はテスト専用の接続不能リレー、またはネットワーク障害注入手順を用意して確認する。
-
-Loop 0は実装と通常接続下の回帰確認を完了したが、L0-S08とL0-S10が未実施のため、第20.2節の定義に従い状態を `保留` とする。未解消のBlocker / Majorはなく、外部副作用を伴わないLoop 1の純粋ロジック設計・実装は並行して開始できる。
-
-## 23. Loop 1 実施記録: モデルと純粋ロジック
-
-- 状態: 完了
-- 対象: URL正規化(FR-01)、`ChannelMeta.relays`、`ChannelMetadataResolver`(FR-02)、`ChannelRelayContextBuilder`(FR-05/FR-06)、`ChannelEventTags`(FR-03/FR-07)の各純粋ロジックと単体テスト
-- 対象外: ネットワーク層・UI層への配線(PR2以降)、DB v7、kind 43/44/10005
-- 開始時commit: `46d796b`(未コミット差分としてLoop 1対象ファイルが既に作業ツリーに存在していたため、そのレビューと不具合修正を本ループの実施内容とした)
-- 対象ファイル:
-  - `composeApp/src/commonMain/kotlin/com/nostr/torinos/model/ChannelMeta.kt`
-  - `composeApp/src/commonMain/kotlin/com/nostr/torinos/model/ChannelRelayContext.kt`
-  - `composeApp/src/commonMain/kotlin/com/nostr/torinos/model/ChannelEventTags.kt`
-  - `composeApp/src/commonMain/kotlin/com/nostr/torinos/network/RelayStore.kt`
-  - `composeApp/src/commonTest/kotlin/com/nostr/torinos/model/ChannelMetadataResolverTest.kt`
-  - `composeApp/src/commonTest/kotlin/com/nostr/torinos/model/ChannelRelayContextTest.kt`
-  - `composeApp/src/commonTest/kotlin/com/nostr/torinos/model/ChannelEventTagsTest.kt`
-  - `composeApp/src/commonTest/kotlin/com/nostr/torinos/network/RelayUrlNormalizationTest.kt`
-
-### 設計レビュー
-
-| 重大度 | 指摘 | 対応 |
-| --- | --- | --- |
-| Major | `normalizeRelayUrl`がFR-01「query、fragmentを含むURLは採用しない」に反し、`?`以降をpathの一部として取り込んでいた(例: `wss://relay.example/path?foo=bar`が正規化・採用されていた) | 正規表現マッチ後に`suffix`へ`'?'`が含まれる場合`null`を返すよう修正し、回帰テストを追加した |
-| Minor | 第16.3節の規則6「既定ポート`ws:80`/`wss:443`は省略する」が未実装で、既存テストは逆に既定ポートを保持する値を期待していた | `normalizeRelayAuthority`にscheme別の既定ポート省略処理を追加し、既存テストの期待値を訂正、専用テストを追加した |
-| Note | `ChannelMetadataResolver`のmarker検証・tie-break(`(createdAt, id)`降順、同時刻はid最小勝ち)は設計どおりで、既存テストが受信順不定性・不正JSON・非rootマーカーの各ケースを網羅している | 対応不要。第16.4節の設計との差異なし |
-
-### 実装レビュー
-
-- `normalizeRelayUrl`/`normalizeRelayUrls`のシグネチャは維持し、内部の`normalizeRelayAuthority`にのみ`scheme`引数を追加した。呼び出し元は1箇所のみで影響範囲は限定的。
-- `ChannelRelayContextBuilder`のwrite集合は「ブロック対象(NIP-65 write=false)がrecommended上限枠を消費しない」設計どおりに、正規化→ブロック除外→上限適用の順で処理されている。
-- `ChannelEventTags`のrelay hint省略時は`""`を第3要素に置きmarkerの位置を保つ実装で、FR-07の例と一致する。
-- `CancellationException`を握りつぶす変更は行っていない(対象が純粋関数のみのため該当なし)。
-- Blocker / 未解消Majorはなし。
-
-### 自動テスト
-
-| コマンド | 結果 | 備考 |
-| --- | --- | --- |
-| `./gradlew :composeApp:iosSimulatorArm64Test --tests 'com.nostr.torinos.network.RelayUrlNormalizationTest' --tests 'com.nostr.torinos.model.ChannelMetadataResolverTest' --tests 'com.nostr.torinos.model.ChannelRelayContextTest' --tests 'com.nostr.torinos.model.ChannelEventTagsTest' --tests 'com.nostr.torinos.network.RelayInformationRepositoryTest'` | 成功 | 22ケース(修正で2ケース追加) |
-| `./gradlew :composeApp:iosSimulatorArm64Test` | 成功 | commonTest全体で回帰なし |
-| `xcodebuild -project iosApp/iosApp.xcodeproj -scheme iosApp -configuration Debug -destination 'platform=iOS Simulator,id=D5D20B75-99E2-45AF-A1E7-848C6E1E6E76' -derivedDataPath /private/tmp/ToriNosDerivedData build`(DerivedData削除後のクリーンビルド) | 成功 | `ComposeApp.framework`のビルド時刻がRelayStore.kt編集後であることを確認し、Kotlin変更の反映を検証 |
-
-### Simulatorテスト
-
-本ループはネットワーク・UIへ配線しない純粋ロジック層のみが対象(PR1相当)のため、第21章のような機能シナリオは定義しない。起動可否とリレー関連コードパスの回帰有無のみをスモーク確認した。
-
-実施環境:
-
-- 実行日時: 2026-09-23 21:38-21:40 JST
-- macOS: 26.5 (25F71)
-- Xcode: 26.6 (17F113)
-- Simulator: iPhone 17 / iOS 26.5
-- build: Debug
-- アカウント: 既存の署名可能アカウント
-
-| シナリオ | 結果 | 証跡・備考 |
-| --- | --- | --- |
-| アプリ起動、フォロー/グローバルフィード表示 | 成功 | クラッシュなし、`normalizeRelayUrl`経由のリレー接続・フィード取得に回帰なし(スクリーンショットで確認) |
-
-実データ環境([[ios-sim-cliclick-real-relay-risk]]参照)でのリアクション誤爆を避けるため、フィード内投稿へのcliclickタップ操作は行わず、起動確認とプロセス生存確認に留めた。チャンネル画面固有のUIシナリオはLoop 5(UI連携)まで対象外。
-
-### 設計書へのフィードバック
-
-- 確定した仕様:
-  - FR-01の既定ポート省略規則(`ws:80`/`wss:443`)をコードへ反映し、テストで固定した。
-  - FR-01のquery/fragment拒否規則の欠落を修正し、テストで固定した。
-- 変更した仕様: なし(第16.3/16.4/16.5/16.8節の記載どおりに実装を訂正したのみ)
-- 次ループへ送る課題:
-  - Loop 2で`RelayTarget.Explicit`の意味変更とDB v7 migrationに着手する際、本ループで確定した`normalizeRelayUrl`(既定ポート省略込み)を保存済み設定の読み込み経路でも一貫利用できているか再確認する。
-  - Loop 0のL0-S08(kind 40削除の実リレー送信確認)とL0-S10(接続不能リレーでのUI確認)は引き続き未実施であり、保留のまま。
-
-## 24. Loop 2 実施記録: 明示購読とDB v7
-
-- 状態: 完了
-- 対象: `RelayTarget.Explicit`の意味修正(FR-05基盤)、DB migration 6→7(`channel_recommended_relays`、`channels`への`metadataEventId`/`metadataKind`/`metadataCreatedAt`追加)、`ChannelCacheStore`の`getChannelMetadata`/`upsertChannelMetadata` API(第16.6節・第16.12節)
-- 対象外: `ChannelController`のsession化・resolver接続、既存3箇所の`ChannelCacheStore.upsertChannel`呼び出し元の付け替え(Loop 3で resolver 出力に合わせて置換)、kind 42購読・投稿への反映(Loop 3/4)
-- 開始時commit: `25156a9`
-- 対象ファイル:
-  - `composeApp/src/commonMain/kotlin/com/nostr/torinos/network/NostrRepository.kt`
-  - `composeApp/src/commonMain/kotlin/com/nostr/torinos/network/ChannelCacheStore.kt`
-  - `composeApp/src/mobileMain/kotlin/com/nostr/torinos/network/ChannelCacheStore.mobile.kt`
-  - `composeApp/src/mobileMain/kotlin/com/nostr/torinos/network/cache/ChannelCacheDatabase.kt`
-  - `composeApp/src/mobileMain/kotlin/com/nostr/torinos/network/cache/ChannelCacheDatabaseBuilder.kt`
-  - `composeApp/src/commonTest/kotlin/com/nostr/torinos/network/RelayTargetUrlsTest.kt`
-
-### 設計レビュー
-
-| 重大度 | 指摘 | 対応 |
-| --- | --- | --- |
-| Note | 第16.6節は「`Explicit`の既存呼び出し箇所は意味変更の影響を監査する」ことを要求している | `FeedController`(engagement history再取得)と`ProfileRepository`(primary relay投稿)の既存呼び出しを確認した。いずれも渡す`relayUrls`が事前に`NostrRepository.targetRelayUrls(RelayTarget.AllEnabled)`由来のenabled relay部分集合であり、意味変更後も返り値は変わらない。追加の積集合処理は不要と判断した |
-| Note | `desiredActiveRelayUrlsLocked()`/`reconcileActiveRelaysLocked()`が`activeSubscriptions`全体のtarget集合の和で接続要否を決めるため、`Explicit`が未登録URLを含められるようになるだけで、FR-05の「一時接続」「画面終了時の専用購読解放」「他機能が使用中の接続を切断しない」は既存の参照カウント相当の仕組みでそのまま満たされる(第16.6節の設計どおり) | 対応不要。新規セッション管理クラスは追加しなかった |
-| Minor | 第16.12節のMigration規則で`updatedAt`は「互換のため残し、`metadataCreatedAt`と同じ値へ更新する」とあるが、既存`createdAt`(チャンネル作成時刻)の扱いが未記載だった | `upsertChannelMetadata`では`createdAt`を`channelCreateEvent.createdAt`(kind 40由来、event idに対して不変)に固定し、`updatedAt`のみ`metadataCreatedAt`と同期させる設計とした |
-
-### 実装レビュー
-
-- `RelayTarget.urls()`の可視性を`private`から`internal`へ変更したのみで、シグネチャ・呼び出し箇所(8箇所、すべて`NostrRepository.kt`内)は変更していない。プロジェクトはexplicit API modeを使用していないため、可視性変更によるビルド設定への影響はない。
-- `RelayTarget.Explicit`の正規化は`normalizeRelayUrls(urls, limit = Int.MAX_VALUE)`とし、チャンネル推奨リレーの上限10件(第11章)は`ChannelRelayContextBuilder`側で既に適用済みのため、ここでは二重に切り詰めない。
-- `upsertChannelMetadata`のDB書き込みは`@Transaction`で「channels行更新→recommended relays全削除→再挿入→(任意)観測元リレー更新」を1トランザクションにまとめ、第16.12節の順序と一致する。
-- 既存3箇所の`ChannelCacheStore.upsertChannel`呼び出し(`ChannelListViewModel.kt`×2、`ChannelController.kt`×1)は変更していない。新APIは追加のみで、既存の観測ベースのチャンネル保存経路と並存する。
-- Blocker / 未解消Majorはなし。
-
-### 自動テスト
-
-| コマンド | 結果 | 備考 |
-| --- | --- | --- |
-| `./gradlew :composeApp:iosSimulatorArm64Test --tests 'com.nostr.torinos.network.RelayTargetUrlsTest'` | 成功 | 4ケース(AllEnabled/Single/Explicit未登録URL許可/Explicit正規化重複排除) |
-| `./gradlew :composeApp:iosSimulatorArm64Test` | 成功 | commonTest全体、failures/errorsなし |
-| Room schema export確認 | 成功 | `composeApp/schemas/.../ChannelCacheDatabase/7.json`が生成され、`channels`への3列追加と`channel_recommended_relays`テーブルを確認 |
-
-Room DAOレベルの`getChannelMetadata`/`upsertChannelMetadata`往復テストは、本プロジェクトにRoom migration用のテスト基盤(instrumented test、`MigrationTestHelper`等)が存在しないため追加していない。代わりに次のSimulatorテストで実データに対するmigrationとAPI経路の健全性を確認した。
-
-### Simulatorテスト
-
-実施環境:
-
-- 実行日時: 2026-09-23 21:55-22:05 JST
-- macOS: 26.5 (25F71)
-- Xcode: 26.6 (17F113)
-- Simulator: iPhone 17 / iOS 26.5
-- build: Debug
-- アカウント: 既存の署名可能アカウント
-- 対象DB: Loop 0/1のSimulatorテストで蓄積された実データ(DB v6、channels=83、channel_messages=2317、channel_relays=134)
-
-| シナリオ | 結果 | 証跡・備考 |
-| --- | --- | --- |
-| DerivedData削除後のクリーンビルドとインストール | 成功 | Kotlin変更(migration追加)がフレームワークに反映されたことをビルド時刻で確認 |
-| 既存v6 DBを保持したまま新ビルドを起動し、migration 6→7を実行させる | 成功 | 起動後`PRAGMA user_version`が7になり、`channel_recommended_relays`テーブルが作成された |
-| migration前後でのデータ保全確認 | 成功 | `channels`=83件、`channel_messages`=2317件、`channel_relays`=134件が移行後も同数のまま維持 |
-| 既存行への`metadataEventId`/`metadataKind`/`metadataCreatedAt`バックフィル確認 | 成功 | サンプル行で`metadataEventId = channelId`、`metadataKind = 40`、`metadataCreatedAt = updatedAt = createdAt`を確認(第16.12節の規則どおり) |
-| migration後のアプリ起動・フィード表示 | 成功 | クラッシュなし、フォロー/グローバルフィードとも表示継続(スクリーンショットで確認) |
-
-実データ環境([[ios-sim-cliclick-real-relay-risk]]参照)のため、フィード内投稿へのcliclickタップは行わず、DBレベルの検証とプロセス生存確認・スクリーンショットに留めた。チャンネル一覧・詳細画面でのUI確認はLoop 3以降、resolverベースの表示経路が配線されてから改めて行う。
-
-### 設計書へのフィードバック
-
-- 確定した仕様:
-  - `RelayTarget.Explicit`は第16.6節の設計どおり、`enabledRelayUrls`によるフィルタを行わず正規化のみを行う。既存呼び出し箇所への追加対応は不要と確認済み。
-  - DB v7 migrationは実データに対して検証済み。既存行のバックフィル規則(`metadataEventId = channelId`、`metadataKind = 40`、`metadataCreatedAt = updatedAt`)が実際に機能することを確認した。
-- 変更した仕様: なし
-- 次ループへ送る課題:
-  - Loop 3で`ChannelController`をsession化する際、既存3箇所の`ChannelCacheStore.upsertChannel`呼び出しを`ChannelMetadataResolver`の出力(`ChannelMetadataResolution`)経由の`upsertChannelMetadata`へ置き換える。
-  - Room migrationの自動テストが恒久的に手動Simulator確認に依存しないよう、instrumented testまたはKMP対応のRoom in-memoryテスト基盤の導入を検討する(現状は本ループのように実データでの起動確認で代替)。
-
-## 25. Loop 3a 実施記録: ChannelMetadataResolverの接続
-
-Loop 3(チャンネル購読)はフルスコープで一括実装すると`ChannelController.kt`(860行超、エンゲージメント集計等と密結合)への変更が大きくなりレビュー粒度が粗くなるため、ユーザーの判断でスコープを分割した。3aは「resolver接続」のみを対象とし、3b(session化・kind 41二段階再購読・観測元リレーキャッシュの本格配線)は別ループとして残す。
-
-- 状態: 完了
-- 対象: `ChannelController`のkind 40/41ライブ購読ハンドラを、UIローカルの逐次判定から`ChannelMetadataResolver`(Loop 1で導入済み)へ置き換える。あわせて`ChannelCacheStore.upsertChannel`から`upsertChannelMetadata`(Loop 2で追加済み)への切り替えをこの経路に限り実施する
-- 対象外: `SubscriptionSession`ベースへの購読方式そのものの移行、`ChannelRelayContext`に基づく推奨リレーへの動的購読・投稿切り替え、kind 41受信時の二段階再購読(FR-08、第16.7節)、観測元リレー集合の複数保持。これらは3bへ送る。`ChannelListViewModel.kt`の2箇所の`upsertChannel`呼び出しも本ループでは変更しない(Phase 2 UI改修時に合わせる)
-- 開始時commit: `55a6018`
-- 対象ファイル:
-  - `composeApp/src/commonMain/kotlin/com/nostr/torinos/ui/channel/ChannelController.kt`
-
-### 設計レビュー
-
-| 重大度 | 指摘 | 対応 |
-| --- | --- | --- |
-| Major(既存不具合、本ループで解消) | 旧実装は`event.createdAt <= latestMetaUpdateCreatedAt`のみで判定しており、Loop 0の設計レビュー(第22.1節)で`ChannelDetailsDialog`側に指摘したのと同種の「同一`created_at`のkind 41で受信順により表示が変わる」不具定が、実際のチャンネル画面(`ChannelController`)側には未反映のまま残っていた | 候補をevent ID単位で保持し`ChannelMetadataResolver.resolve()`を再実行する方式に置き換え、`(createdAt, id)`降順の決定的なtie-breakとroot marker検証をLoop 1のテスト済みロジックに委譲した |
-| Note(副次的な改善) | 旧実装はkind 40のcontent JSONが不正な場合、`currentChannelOwnerPubkey`が設定されないままとなり、kind 41購読(`metaUpdateSubId`)自体が開始されず、後から有効なkind 41が届いても永久に回復できなかった | 新実装は`channelCreateEvent`の設定とkind 41購読開始をresolver結果の成否から独立させたため、kind 40のJSONが不正でも有効なkind 41受信時に回復できるようになった(第10章のエラー処理方針と整合) |
-| Note | `saveThreadMeta()`(kind 41編集の自己発行)は本ループの対象外のため、発行直後に`currentChannelMeta`を直接更新する既存の楽観的更新ロジックのままとした。候補プールに登録されないため、直後に別の(自分より古い)kind 41がネットワークから届いた場合に上書きされうる潜在的なギャップは温存されている | 対応不要(Phase 2のkind 41編集強化、第16.10節で解消予定)。次ループへの既知課題として記録 |
-
-### 実装レビュー
-
-- `channelCreateEvent`/`metadataUpdateCandidates`/`effectiveMetadataSourceEventId`は、既存の`currentChannelMeta`等と同様に複数の`launch`ブロックから同期プリミティブなしで読み書きされる。これは本ファイル全体で既に採用されている一貫したスタイル(単一スコープのシーケンシャル実行前提)であり、新たなリスクを追加するものではない。
-- `applyMetadataResolution()`内の`ChannelCacheStore.upsertChannelMetadata`呼び出しは`CancellationException`を再送出し、その他の例外は`logException`でログのみに留める既存方針を踏襲した。
-- kind 40購読(`metaSubId`)は`event.id != channelId`のガードを追加した(フィルタ`NostrFilter(ids = listOf(channelId))`により実際にはid不一致は発生しない防御的チェック)。
-- `channelCreateEvent != null`ガードにより、複数リレーから同一kind 40を重複受信しても`ChannelMetadataResolver.resolve()`の再実行やキャッシュ書き込みが不要に繰り返されない。
-- 未使用となった`import com.nostr.torinos.model.toChannelMeta`を削除した。
-- Blocker / 未解消Majorはなし。
-
-### 自動テスト
-
-| コマンド | 結果 | 備考 |
-| --- | --- | --- |
-| `./gradlew :composeApp:iosSimulatorArm64Test` | 成功 | commonTest全体、failures/errorsなし。`ChannelController`自体はNostrRepository/ChannelCacheStoreの実シングルトンに密結合しており(既存コードと同様)、単体テストの基盤が現状ない |
-
-### Simulatorテスト
-
-実施環境:
-
-- 実行日時: 2026-09-23 22:18-22:25 JST
-- macOS: 26.5 (25F71)
-- Xcode: 26.6 (17F113)
-- Simulator: iPhone 17 / iOS 26.5
-- build: Debug
-
-| シナリオ | 結果 | 証跡・備考 |
-| --- | --- | --- |
-| DerivedData削除後のクリーンビルド・インストール・起動 | 成功 | ビルド成功、フィード表示正常、クラッシュなし |
-| チャンネル画面を開いてkind 40/41メタデータ解決の実動作を確認 | 保留 | Mac側の画面ロック等によりSimulator GUIウィンドウが取得できず([[ios-sim-cliclick-coordinate-mapping]]記載の既知事象)、cliclickでの画面遷移ができなかった。パスワード入力はユーザーへの依頼が必要なため、本ループでは実施を見送った |
-
-プロセスは実リレーからのフィード購読・表示を継続しクラッシュしていないことをスクリーンショットと`launchctl list`で確認済みだが、チャンネル画面固有の表示確認は次回Simulatorアクセス時に持ち越す。
-
-### 設計書へのフィードバック
-
-- 確定した仕様: なし(第16.4節の設計をそのまま実装し、仕様の変更はない)
-- 変更した仕様: なし
-- 次ループへ送る課題:
-  - L3a-S01(仮称): チャンネル画面を開き、kind 40のみ/kind 40+41/同時刻複数kind 41のケースで表示メタデータが正しいことをSimulatorで確認する。Mac画面のロック解除後に実施する。
-  - Loop 3bで`ChannelRelayContext`・`SubscriptionSession`・kind 41二段階再購読(FR-08)を`ChannelController`へ接続する。
-  - `saveThreadMeta()`の楽観的更新を候補プール(`metadataUpdateCandidates`)経由に統合し、自己発行イベントも同じresolver経路で扱う(Phase 2 kind 41編集強化と合わせて検討)。
-  - `ChannelController`向けのテスト基盤(NostrRepository/ChannelCacheStoreのfake化)導入を検討する。
-
-## 26. アーキテクチャ変更: ローカル永続化の簡素化（2026-09-23）
-
-### 26.1 経緯
+### 22.1 経緯
 
 Loop 3a完了後のレビューで、チャンネルメッセージのローカルDBキャッシュ機構(Room/SQLite、DB v1〜v7)についてユーザーから次の指摘があった。
 
@@ -2074,9 +1782,9 @@ Loop 3a完了後のレビューで、チャンネルメッセージのローカ�
 - 最新メッセージプレビューは全履歴ではなく、チャンネルごと直近1件のみ保持する。
 - 永続化先はRoom/SQLiteをやめ、`RelayStore`が既に使っている`LocalSettingsStorage`ベースのJSON保存に統一する。
 
-この決定にともない、Loop 0(DB v6, schema/migration/prune整備)とLoop 2(DB v7, `channel_recommended_relays`と`upsertChannelMetadata`のRoom実装)で実装したRoom関連コードは、実装としては置き換え対象になる。両ループの実施記録(第22章・第24章)自体は、その時点での設計判断・レビュー内容の正確な記録として変更しない。Loop 1(`ChannelMeta`/`ChannelMetadataResolver`/`ChannelRelayContextBuilder`/`ChannelEventTags`などの純粋ロジック)とLoop 3a(`ChannelMetadataResolver`の接続)は、ローカル永続化の実装方式に依存しないため影響を受けない。
+この決定にともない、Loop 0(DB v6, schema/migration/prune整備)とLoop 2(DB v7, `channel_recommended_relays`と`upsertChannelMetadata`のRoom実装)で実装したRoom関連コードは、実装としては置き換え対象になる。両ループの設計判断・レビュー内容自体は第21.1節の要約とgit commit historyに残しており、変更しない。Loop 1(`ChannelMeta`/`ChannelMetadataResolver`/`ChannelRelayContextBuilder`/`ChannelEventTags`などの純粋ロジック)とLoop 3a(`ChannelMetadataResolver`の接続)は、ローカル永続化の実装方式に依存しないため影響を受けない。
 
-### 26.2 新しいローカル永続化設計
+### 22.2 新しいローカル永続化設計
 
 第16.12節に詳細設計を記載した。要点は次のとおり。
 
@@ -2085,7 +1793,7 @@ Loop 3a完了後のレビューで、チャンネルメッセージのローカ�
 - 未読件数は永続化しない。起動時に「対象全channelIdを`e`タグに列挙した単一フィルターでの一括問い合わせ」でキャッチアップし、以後はライブ受信のたびにメモリ上で加算する(第16.12.1〜16.12.4節)。
 - 保存先はRoom/SQLiteではなく`LocalSettingsStorage`のJSON保存。migration・DAO・schema export・pruneはすべて不要になる。
 
-### 26.3 影響範囲
+### 22.3 影響範囲
 
 | 領域 | 変更内容 |
 | --- | --- |
@@ -2097,13 +1805,13 @@ Loop 3a完了後のレビューで、チャンネルメッセージのローカ�
 | `ui/channel/ChannelListViewModel.kt` | `observeChannels`(Room Flow)を`ChannelLocalState`ベースの状態管理へ置き換え。`updateActivity()`の全件`upsertMessage`書き込みを撤去し、直近1件プレビュー更新とメモリ上未読加算に変更。起動時キャッチアップ購読を新設 |
 | `ui/channel/ChannelHistory.kt` | キャッシュ初期値をローカルDBからではなく空(または直近プレビュー1件)から開始し、常にリレー取得へフォールバックする形へ調整 |
 
-### 26.4 未決事項
+### 22.4 未決事項
 
 1. `ChannelLocalState`の書込debounce間隔(本文では既存の400msパターンを流用と仮置きしたが、実測して調整する)。
 2. チャンネル数が将来大きく増えた場合の単一JSONキー保存のスケーラビリティ(第16.12節に記載のとおり、数千件規模になったら分割保存を再検討)。
 3. 起動時キャッチアップの一括フィルターが対象リレー・接続タイミングにより一部リレーへ未到達となるケースの扱い(タイムアウト時は「不明」表示にとどめるか、キャッシュ済み値を暫定表示するか)。
 
-### 26.5 Loop 3.5 計画: ローカル永続化の簡素化（実装）
+### 22.5 Loop 3.5 計画: ローカル永続化の簡素化（実装）
 
 - 状態: 計画中(未着手)
 - 対象:
