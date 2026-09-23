@@ -367,12 +367,19 @@ relay-jp.nostr.wirednet.jp   失敗
 
 現在の `ChannelDetailsDialog` を拡張し、イベント JSON の診断表示は維持する。
 
-### FR-12: キャッシュ
+### FR-12: ローカル永続化
 
-- kind 40、採用した kind 41、実効メタデータ、正規化済み推奨リレーをキャッシュする。
-- kind 41 の受信後は、古い実効メタデータを置き換える。
-- メッセージキャッシュは、同じイベントを複数リレーから受信しても event ID で重複排除する。
-- キャッシュの所属リレーは単一 URL ではなく、必要に応じて観測元リレー集合を保持できる設計を検討する。
+> [!NOTE]
+> 2026-09-23 のレビューで方針を変更した（第26章参照）。チャンネル機能は利用チャンネル数・メッセージ数とも少なく（実測: チャンネル83件、蓄積メッセージ計2317件）、リレーが一次ストアとして存在する以上、メッセージ本体の全履歴をローカルDBへ複製する設計はコストに見合わないと判断した。本節は変更後の要件を記載する。旧要件（Room DBへのメッセージ全履歴キャッシュ）は第26.1節に経緯として残す。
+
+- 次を端末に永続化する（`ChannelLocalState`、第26.2節）。
+  - 実効メタデータ（kind 40/41 由来の name/about/picture）、`sourceEventId`/`sourceKind`/`sourceCreatedAt`、正規化済み推奨リレー。
+  - お気に入りフラグ。
+  - 既読位置（`lastReadAt` と直近のスクロール位置）。
+  - 一覧プレビュー用に、チャンネルごと直近1件のメッセージ（event ID・created_at・pubkey・本文先頭の切り詰め）のみ。全履歴は保持しない。
+- メッセージ本体の全履歴はローカルへ永続化しない。チャンネルを開くたびにリレーから取得し、表示用に一時的にメモリ上へ保持する（event ID による重複排除はメモリ上のセッション内で行う）。
+- 未読件数はローカルに保持する数値ではなく、起動時にリレーへの一括問い合わせ（`kinds:42`、対象 `channelId` を `e` タグに列挙、`since` は保持済み `lastReadAt` の最小値）で取得した件数からセッション開始時に算出し、以後はライブ受信でメモリ上のみ加算する（第26.3節）。
+- 永続化先は Room/SQLite ではなく、`RelayStore` と同じ `LocalSettingsStorage` ベースの JSON 保存（`Map<channelId, ChannelLocalState>`）とする。migration・DAO・schema export・prune はいずれも不要になる。
 
 ## 7. 第2段階の要件
 
@@ -404,7 +411,7 @@ NIP-51 の kind 10005 を使い、参加中の NIP-28 チャンネルを端末�
 }
 ```
 
-ローカル DB は表示速度とオフライン利用のキャッシュとして残し、kind 10005 を同期元として統合する。
+ローカル永続化（第16.12節、`ChannelLocalState`）は参加チャンネル一覧の表示速度・オフライン利用のキャッシュとして残し、kind 10005 を同期元として統合する。
 
 ## 8. 実装構成案
 
@@ -636,7 +643,7 @@ NIP-28 完全対応を表明する場合は Phase 3 の kind 43/44 までを必�
 1. メタデータ解決、リレー選択、タグ生成を UI から分離し、単体テスト可能な純粋ロジックにする。
 2. `ChannelController` をチャンネル画面における実効メタデータと relay context の唯一の所有者にする。
 3. 通常リレーとチャンネル固有リレーを `activeSubscriptions` / `activeRelays` の同じライフサイクルで管理する。
-4. 「イベントを観測したリレー」と「メタデータで推奨されたリレー」を DB 上でも別の概念として保持する。
+4. 「イベントを観測したリレー」と「メタデータで推奨されたリレー」をローカル永続化状態の上でも別の概念として保持する（第16.12節、2026-09-23以降は DB ではなく `LocalSettingsStorage` 上の JSON）。
 5. 署名対象のイベントと送信先リレー集合を、投稿開始時点の immutable snapshot から生成する。
 6. 受信互換性は広く、ToriNos からの発行形式は NIP-28 推奨形式へ統一する。
 
@@ -650,8 +657,8 @@ NIP-28 完全対応を表明する場合は Phase 3 の kind 43/44 までを必�
 | `network/RelayStore.kt` | URL 正規化を強化し、全経路で共有 |
 | `network/NostrRepository.kt` | 未登録リレーを含む `RelayTarget.Explicit`、接続状態、明示購読を実装 |
 | `network/SubscriptionSession.kt` | 必要に応じて接続先 snapshot を公開 |
-| `network/ChannelCacheStore.kt` | 実効メタデータと推奨リレーの保存・取得 API を追加 |
-| `network/cache/ChannelCacheDatabase.kt` | DB v7 と推奨リレーテーブルを追加 |
+| `network/ChannelCacheStore.kt` | Room実装を撤去し、`ChannelLocalState`のJSON永続化（`LocalSettingsStorage`経由）へ置き換える(第16.12節) |
+| `network/cache/ChannelCacheDatabase.kt` | 撤去（メッセージ本体キャッシュとDB v1〜v7 migrationを含め全体を削除） |
 | `ui/timeline/SignedEventPublisher.kt` | 指定リレー投稿と結果伝播を追加 |
 | `ui/channel/ChannelController.kt` | メタデータ解決、動的購読、投稿結果の中心実装 |
 | `ui/channel/ChannelViewModel.kt` | relay context と UI イベントを公開 |
@@ -1046,78 +1053,103 @@ val publishState: ChannelPublishUiState = ChannelPublishUiState.Idle
 
 ローカル一覧へ追加する際、kind 40 の成功リレー集合を観測元としてキャッシュし、`content.relays` を推奨リレーとして別保存する。
 
-### 16.12 キャッシュと DB migration の設計（FR-12）
+### 16.12 ローカル永続化の設計（FR-12）
 
-#### 概念分離
+> [!NOTE]
+> 本節は 2026-09-23 の方針変更後の設計を記載する。Room/SQLite（DB v1〜v7）ベースの旧設計は Loop 0・Loop 2 で実装済みだが、本方針により置き換える。旧設計の記録は第26.1節および第22・24章の Loop 実施記録に残す。
 
-既存 `channel_relays` は「そのチャンネルを観測したリレー」を表すため、推奨リレーの保存に流用しない。次のテーブルを追加する。
+#### 概念分離（変更なし）
+
+「メッセージを観測したリレー」と「メタデータで推奨されたリレー」を別概念として扱う方針（第16.1節の原則4）は維持する。ただし両者とも、メッセージ本体の全履歴を伴わない小さな状態としてのみ保持する。
+
+#### 永続化するデータ
 
 ```kotlin
-@Entity(
-    tableName = "channel_recommended_relays",
-    primaryKeys = ["channelId", "relayUrl"],
-    indices = [Index("channelId")],
-)
-data class CachedChannelRecommendedRelayEntity(
+@Serializable
+data class ChannelLocalState(
     val channelId: String,
-    val relayUrl: String,
-    val position: Int,
+    val ownerPubkey: String,
+    val metadataEventId: String,
+    val metadataKind: Int,
+    val metadataCreatedAt: Long,
+    val meta: ChannelMeta,
+    val isFavorite: Boolean = false,
+    val lastReadAt: Long = 0,
+    val lastScrolledMessageId: String? = null,
+    val lastScrolledCreatedAt: Long? = null,
+    val lastScrolledOffset: Int = 0,
+    val latestMessage: ChannelLatestMessagePreview? = null,
+)
+
+@Serializable
+data class ChannelLatestMessagePreview(
+    val eventId: String,
+    val createdAt: Long,
+    val pubkey: String,
+    val contentPreview: String,
 )
 ```
 
-`channels` へ次の列を追加する。
-
-```text
-metadataEventId TEXT
-metadataKind INTEGER NOT NULL DEFAULT 40
-metadataCreatedAt INTEGER NOT NULL DEFAULT 0
-```
-
-`updatedAt` は互換のため残し、`metadataCreatedAt` と同じ値へ更新する。
-
-#### Migration 6 → 7
-
-1. `channels` に 3 列を追加。
-2. 既存行は `metadataEventId = channelId`、`metadataKind = 40`、`metadataCreatedAt = updatedAt` で補完。
-3. `channel_recommended_relays` を作成。
-4. 既存 DB には content.relays が保存されていないため自動推測しない。次回ネットワーク取得時に埋める。
+`unreadCount` はこの型に含めない（第16.12.3節）。`latestMessage` はチャンネルごと直近1件のみで、履歴は持たない。
 
 #### Store API
 
 ```kotlin
-data class CachedChannelMetadata(
-    val channelId: String,
-    val ownerPubkey: String,
-    val sourceEventId: String,
-    val sourceKind: Int,
-    val sourceCreatedAt: Long,
-    val metadata: ChannelMeta,
-)
-
-suspend fun getChannelMetadata(channelId: String): CachedChannelMetadata?
-
+suspend fun getChannelLocalState(channelId: String): ChannelLocalState?
+suspend fun getAllChannelLocalStates(): Map<String, ChannelLocalState>
 suspend fun upsertChannelMetadata(
     channelCreateEvent: NostrEvent,
     effectiveEvent: NostrEvent,
     metadata: ChannelMeta,
-    observedRelayUrl: String?,
 )
+suspend fun upsertLatestMessagePreview(channelId: String, preview: ChannelLatestMessagePreview)
+suspend fun markRead(channelId: String, readAt: Long)
+suspend fun saveReadingPosition(channelId: String, position: ChannelReadingPosition)
+suspend fun setFavorite(channelId: String, isFavorite: Boolean)
+suspend fun deleteChannel(channelId: String)
 ```
 
-推奨リレー置換はチャンネル行更新と同じ Room transaction 内で行う。
+kind 41 の event ID を channel ID として保存しないよう、`upsertChannelMetadata` は create event と effective event を明示的に分ける（旧設計から変更なし）。
+
+#### 永続化先
+
+`RelayStore` が使う `LocalSettingsStorage`（キー文字列 → JSON 文字列の read/write）を流用し、単一キー（例: `channel_local_state`）へ `Map<channelId, ChannelLocalState>` を JSON でまるごと保存・読込する。Room/SQLite、DAO、schema export、migration、prune はいずれも不要になる。
+
+- 読込はアプリ起動時に1回、Map全体をデコードしてメモリへ載せる。
+- 書込は `upsertChannelMetadata` / `markRead` / お気に入り変更など、発生頻度が低い操作でのみ行う。`latestMessage` の更新はライブ受信のたびに発生しうるため、`ChannelController.saveReadingPosition` と同じ debounce パターン（第9.2節、400ms）で書込頻度を抑える。
+- チャンネル数が数百件規模になっても JSON 全体のシリアライズ・デシリアライズは軽量である前提を置く。数千件規模まで増えた場合は分割保存（チャンネルIDでシャーディング等）を再検討する。
+
+#### メッセージ本体の扱い
+
+メッセージ本体はローカルへ永続化しない。`ChannelHistory`（第9.1節の処理フロー）がリレーから取得したイベントをメモリ上に保持し、event ID による重複排除もメモリ上のセッション内で行う。アプリ再起動後は毎回リレーから再取得する。
+
+#### 未読件数の算出
+
+第16.12.1節を参照。永続化された `lastReadAt` だけを起点に、起動時のリレー問い合わせとライブ受信の加算で算出し、`unreadCount` 自体はディスクへ書かない。
+
+##### 16.12.1 起動時キャッチアップ
 
 ```text
-upsert channels
-delete recommended relays for channel
-insert current normalized recommended relays with position
-optional: upsert observed channel relay
+1. 永続化済み ChannelLocalState 全件から lastReadAt の最小値 sinceFloor を求める
+2. NostrFilter(kinds = [42], eTags = 全channelId, since = sinceFloor) で一括購読
+3. 返ってきたイベントを channelId ごとに集計し、createdAt > その channel の lastReadAt であるものの件数を数える
+4. 件数をメモリ上の unreadCounts[channelId] へ設定（表示は上限キャップ、例 "99+"）
+5. 集計対象イベント本体は保持せず破棄する
 ```
 
-kind 41 の event ID を channel ID として保存しないよう、API 引数で create event と effective event を明示的に分ける。
+一括問い合わせにする理由は、チャンネルごとに個別 REQ を送ると起動時に接続中の全リレーへ数十〜数百件の購読が同時発生するため。`eTags` に全 channelId を並べた単一フィルターへまとめ、クライアント側で振り分ける。
 
-#### 観測元リレー
+##### 16.12.2 セッション中の加算
 
-`SubscriptionSignal.Event.relayUrl` を `ChannelCacheStore.upsertMessage` へ渡し、既存 `channel_message_relays` に追記する。同じ event ID を別リレーで受信した場合、本体は `IGNORE`、relay 対応だけ追加される現行構造を維持する。
+チャンネル一覧が購読している全チャンネル横断の kind:42 ライブ購読（第16.13節、既存の `liveSubId` 相当）で新着を受信するたびに、対象チャンネルが現在開いていなければ `unreadCounts[channelId] += 1`（`createdAt > lastReadAt` の場合のみ）。ディスクへは書かない。
+
+##### 16.12.3 既読化
+
+チャンネルを開いて `markRead` を呼んだ時点で `unreadCounts[channelId] = 0` とし、`lastReadAt` を永続化する。次回起動時のキャッチアップは新しい `lastReadAt` を起点にする。
+
+##### 16.12.4 オフライン・取得失敗時
+
+起動時キャッチアップが失敗・タイムアウトした場合、その回は `unreadCounts` を更新せず、UI 上は「未読件数不明」として `hasUnread`（真偽値、旧 `lastReadAt` の有無から導出可能な範囲)のみ表示するか、前回値を維持する。件数の完全性よりも機能停止しないことを優先する。
 
 ### 16.13 チャンネル画面 UI の設計（FR-09、FR-10、FR-11）
 
@@ -1682,6 +1714,7 @@ iOS Simulatorテスト
 | 1 | モデルと純粋ロジック | URL正規化、`ChannelMeta.relays`、metadata resolver、relay context、タグbuilder | 完了 |
 | 2 | 明示購読とDB v7 | 未登録推奨リレー購読、metadata cache、migration 6→7 | 完了 |
 | 3 | チャンネル購読 | 推奨リレーからkind 42取得、kind 41更新時の再購読 | 着手中(3a完了、3bは未着手) |
+| 3.5 | ローカル永続化の簡素化 | Room/SQLite撤去、`ChannelLocalState`のJSON永続化、未読件数のキャッチアップ方式への移行(第26章) | 計画中 |
 | 4 | チャンネル投稿 | kind 40/41/42の配送、relay hint、リレー別結果 | 未着手 |
 | 5 | UIと返信連携 | ヘッダー、投稿先、詳細、編集、通常返信画面 | 未着手 |
 | 6 | モデレーション | kind 43/44 | 未着手 |
@@ -2019,3 +2052,64 @@ Loop 3(チャンネル購読)はフルスコープで一括実装すると`Chann
   - Loop 3bで`ChannelRelayContext`・`SubscriptionSession`・kind 41二段階再購読(FR-08)を`ChannelController`へ接続する。
   - `saveThreadMeta()`の楽観的更新を候補プール(`metadataUpdateCandidates`)経由に統合し、自己発行イベントも同じresolver経路で扱う(Phase 2 kind 41編集強化と合わせて検討)。
   - `ChannelController`向けのテスト基盤(NostrRepository/ChannelCacheStoreのfake化)導入を検討する。
+
+## 26. アーキテクチャ変更: ローカル永続化の簡素化（2026-09-23）
+
+### 26.1 経緯
+
+Loop 3a完了後のレビューで、チャンネルメッセージのローカルDBキャッシュ機構(Room/SQLite、DB v1〜v7)についてユーザーから次の指摘があった。
+
+1. メッセージはリレー自身が既に永続化しているため、ローカルDBへの全履歴複製は本質的に冗長である。
+2. チャンネル機能はユーザー数・利用量とも少ない機能であり(実測値: チャンネル83件、蓄積メッセージ計2317件、平均約28件/チャンネル)、複製コスト(schema migration v1〜v7、prune戦略、3種類のリレー集合テーブル、cache/live間のdedup整合性)に見合わない。
+
+検討の結果、次の対抗指摘も出た。
+
+- 未読件数(`observeChannels`の`unreadCount`)は`channel_messages`を`lastReadAt`と突き合わせるCOUNTクエリで算出しており、メッセージ本体キャッシュを単純に撤去すると未読バッジと一覧の最新メッセージプレビューの両方が機能しなくなる。
+- 実際の実装を確認したところ、`ChannelListViewModel`はチャンネル一覧画面を開いている間、全チャンネル横断のkind:42ライブ購読(`liveSubId`)を維持しており、受信するたびに`updateActivity()`が`ChannelCacheStore.upsertMessage()`を呼んで**現在開いていないチャンネルの分も含め全メッセージをDBへ書き込んでいた**。未読バッジをRoomの reactive Flow で自動更新するためだけに、ネットワーク全体のchannelトラフィックをディスクへ複製していたことになる。この事実確認により「冗長」という指摘の妥当性がより強く裏付けられた。
+
+未読件数・最新メッセージプレビューを維持したまま複製コストを下げる設計として、次の方針に合意した。
+
+- メッセージ本体の全履歴永続化は撤去する。
+- 未読件数はメッセージ本体を保持せず、起動時のリレー一括問い合わせ(キャッチアップ)とライブ受信時のメモリ上加算だけで算出する(件数そのものはディスクへ書かない。`lastReadAt`だけが永続化の起点になる)。
+- 最新メッセージプレビューは全履歴ではなく、チャンネルごと直近1件のみ保持する。
+- 永続化先はRoom/SQLiteをやめ、`RelayStore`が既に使っている`LocalSettingsStorage`ベースのJSON保存に統一する。
+
+この決定にともない、Loop 0(DB v6, schema/migration/prune整備)とLoop 2(DB v7, `channel_recommended_relays`と`upsertChannelMetadata`のRoom実装)で実装したRoom関連コードは、実装としては置き換え対象になる。両ループの実施記録(第22章・第24章)自体は、その時点での設計判断・レビュー内容の正確な記録として変更しない。Loop 1(`ChannelMeta`/`ChannelMetadataResolver`/`ChannelRelayContextBuilder`/`ChannelEventTags`などの純粋ロジック)とLoop 3a(`ChannelMetadataResolver`の接続)は、ローカル永続化の実装方式に依存しないため影響を受けない。
+
+### 26.2 新しいローカル永続化設計
+
+第16.12節に詳細設計を記載した。要点は次のとおり。
+
+- `ChannelLocalState`(channelIdをキーとするJSONオブジェクト): 実効メタデータ、推奨リレー、お気に入り、既読位置、直近1件のメッセージプレビューのみを保持する。
+- メッセージ本体の全履歴はメモリ上のセッション内でのみ扱い、永続化しない。
+- 未読件数は永続化しない。起動時に「対象全channelIdを`e`タグに列挙した単一フィルターでの一括問い合わせ」でキャッチアップし、以後はライブ受信のたびにメモリ上で加算する(第16.12.1〜16.12.4節)。
+- 保存先はRoom/SQLiteではなく`LocalSettingsStorage`のJSON保存。migration・DAO・schema export・pruneはすべて不要になる。
+
+### 26.3 影響範囲
+
+| 領域 | 変更内容 |
+| --- | --- |
+| `network/cache/ChannelCacheDatabase.kt` | 撤去(Entity・DAO・Migration 1〜7をすべて削除) |
+| `network/cache/ChannelCacheDatabaseBuilder*.kt`(android/ios/mobile) | 撤去 |
+| `network/ChannelCacheStore.kt`(expect)/`ChannelCacheStore.mobile.kt`(actual) | API を全面的に置き換え(第16.12節のStore API) |
+| `composeApp/schemas/.../ChannelCacheDatabase/*.json` | 撤去(Room schema exportそのものが不要になる) |
+| `ui/channel/ChannelController.kt` | `upsertMessage`/`upsertMessages`/`getMessages`/`getMessage`/`deleteMessage`呼び出しを、メモリ上の`ChannelHistory`のみで完結する形へ置き換え。`upsertChannelMetadata`は新Store APIへ合わせて引数調整 |
+| `ui/channel/ChannelListViewModel.kt` | `observeChannels`(Room Flow)を`ChannelLocalState`ベースの状態管理へ置き換え。`updateActivity()`の全件`upsertMessage`書き込みを撤去し、直近1件プレビュー更新とメモリ上未読加算に変更。起動時キャッチアップ購読を新設 |
+| `ui/channel/ChannelHistory.kt` | キャッシュ初期値をローカルDBからではなく空(または直近プレビュー1件)から開始し、常にリレー取得へフォールバックする形へ調整 |
+
+### 26.4 未決事項
+
+1. `ChannelLocalState`の書込debounce間隔(本文では既存の400msパターンを流用と仮置きしたが、実測して調整する)。
+2. チャンネル数が将来大きく増えた場合の単一JSONキー保存のスケーラビリティ(第16.12節に記載のとおり、数千件規模になったら分割保存を再検討)。
+3. 起動時キャッチアップの一括フィルターが対象リレー・接続タイミングにより一部リレーへ未到達となるケースの扱い(タイムアウト時は「不明」表示にとどめるか、キャッシュ済み値を暫定表示するか)。
+
+### 26.5 Loop 3.5 計画: ローカル永続化の簡素化（実装）
+
+- 状態: 計画中(未着手)
+- 対象:
+  - `ChannelCacheStore`/`ChannelCacheDatabase`関連コードのRoom実装を撤去し、`ChannelLocalState`のJSON永続化へ置き換える。
+  - `ChannelController`・`ChannelListViewModel`の呼び出し元を新Store APIへ配線し直す。
+  - 起動時キャッチアップ購読とメモリ上未読加算を`ChannelListViewModel`へ実装する。
+  - 新設計の単体テスト(JSON永続化のシリアライズ/デシリアライズ、未読キャッチアップの集計ロジックなど、pure logicとして分離できる範囲)を追加する。
+- 対象外: Loop 3b(session化・kind 41二段階再購読)は引き続き別ループ。kind 43/44/10005(Phase 3)。
+- 依存関係: Loop 1〜3aの成果物(resolver、relay context builder、event tags)は流用する。Loop 2で追加したRoom DB v7のmigration・エンティティはこのLoopで削除する。
