@@ -68,10 +68,9 @@ import com.nostr.torinos.account.accountSessionViewModel
 import com.nostr.torinos.model.NostrEvent
 import com.nostr.torinos.model.NostrProfile
 import com.nostr.torinos.account.LocalAccountSession
-import com.nostr.torinos.network.NostrRepository
-import com.nostr.torinos.network.RelayConnectionState
 import com.nostr.torinos.network.RelayStore
 import com.nostr.torinos.ui.components.NoteTimeline
+import com.nostr.torinos.ui.components.RelaySelector
 import com.nostr.torinos.ui.profile.AvatarCircle
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -112,7 +111,6 @@ fun FeedScreen(
     )
     val selectedFollowingRelayUrl by RelayStore.selectedFollowingRelayUrl.collectAsState()
     val selectedGlobalRelayUrl by RelayStore.selectedGlobalRelayUrl.collectAsState()
-    val relayConnectionStates by NostrRepository.relayConnectionStates.collectAsState()
     val effectiveGlobalRelayUrl = selectedGlobalRelayUrl ?: relays.firstOrNull()
     val accountSession = LocalAccountSession.current
     val followedPubkeys = accountSession?.followRepository?.followedPubkeys?.collectAsState()?.value.orEmpty()
@@ -223,9 +221,9 @@ fun FeedScreen(
     val collapsedTopBarHeightPx = (topBarHeightPx * (1f - chromeCollapseFraction)).toInt()
     val chromeAlpha = 1f - chromeCollapseFraction
     val chromeSettleAnimation = remember { Animatable(chromeCollapseFraction) }
-    var lastChromeScrollDelta by remember { mutableStateOf(0f) }
+    var chromeBehaviorState by remember { mutableStateOf(FeedChromeBehaviorState()) }
     var chromeSettleRequest by remember { mutableIntStateOf(0) }
-    var hideChromeForCurrentGesture by remember { mutableStateOf(false) }
+    var chromeSettleDelayMillis by remember { mutableStateOf(FeedChromeSettleDelayMillis) }
     val currentChromeCollapseFraction = rememberUpdatedState(chromeCollapseFraction)
     val currentOnChromeCollapseFractionChange = rememberUpdatedState(onChromeCollapseFractionChange)
     val chromeNestedScrollConnection = remember(
@@ -239,76 +237,78 @@ fun FeedScreen(
                     return Offset.Zero
                 }
                 val delta = -available.y
-                if (delta == 0f) return Offset.Zero
-                if (delta > 0f) {
-                    hideChromeForCurrentGesture = true
-                } else if (hideChromeForCurrentGesture) {
-                    return Offset.Zero
+                val decision = reduceFeedChromeUserScroll(
+                    state = chromeBehaviorState,
+                    delta = delta,
+                    currentFraction = currentChromeCollapseFraction.value,
+                    collapseDistancePx = chromeCollapseDistancePx,
+                )
+                chromeBehaviorState = decision.state
+                if (decision.nextFraction != currentChromeCollapseFraction.value) {
+                    currentOnChromeCollapseFractionChange.value(decision.nextFraction)
                 }
-
-                val fraction = currentChromeCollapseFraction.value
-                val nextFraction = (fraction + delta / chromeCollapseDistancePx.toFloat())
-                    .coerceIn(0f, 1f)
-                if (nextFraction != fraction) {
-                    currentOnChromeCollapseFractionChange.value(nextFraction)
-                }
-                val consumedDelta = (nextFraction - fraction) * chromeCollapseDistancePx
-                if (consumedDelta != 0f) {
-                    lastChromeScrollDelta = consumedDelta
+                decision.requestSettleAfterMillis?.let { delayMillis ->
+                    chromeSettleDelayMillis = delayMillis
                     chromeSettleRequest++
                 }
-                return Offset(x = 0f, y = -consumedDelta)
+                return Offset(x = 0f, y = decision.consumedY)
             }
 
             override suspend fun onPostFling(consumed: Velocity, available: Velocity): Velocity {
-                try {
-                    val fraction = currentChromeCollapseFraction.value
-                    if (fraction <= 0f || fraction >= 1f) {
-                        return Velocity.Zero
-                    }
-                    val targetFraction = if (lastChromeScrollDelta >= 0f) 1f else 0f
-                    chromeSettleAnimation.snapTo(fraction)
-                    chromeSettleAnimation.animateTo(
-                        targetValue = targetFraction,
-                        animationSpec = tween(ChromeSettleAnimationMillis),
-                    ) {
-                        currentOnChromeCollapseFractionChange.value(value)
-                    }
-                    return Velocity.Zero
-                } finally {
-                    hideChromeForCurrentGesture = false
+                val decision = reduceFeedChromePostFling(
+                    state = chromeBehaviorState,
+                    currentFraction = currentChromeCollapseFraction.value,
+                    isAtTop = activeListState?.isAtAbsoluteTop() == true,
+                )
+                chromeBehaviorState = decision.state
+                if (decision.targetFraction != null) {
+                    chromeSettleDelayMillis = decision.delayMillis
+                    chromeSettleRequest++
                 }
+                return Velocity.Zero
             }
         }
     }
 
     LaunchedEffect(chromeSettleRequest) {
-        if (chromeSettleRequest <= 0 || chromeCollapseFraction <= 0f || chromeCollapseFraction >= 1f) {
-            return@LaunchedEffect
-        }
-        delay(ChromeSettleDelayMillis)
-        val targetFraction = if (lastChromeScrollDelta >= 0f) 1f else 0f
-        chromeSettleAnimation.snapTo(chromeCollapseFraction)
+        if (chromeSettleRequest <= 0) return@LaunchedEffect
+        delay(chromeSettleDelayMillis)
+
+        val fraction = currentChromeCollapseFraction.value
+        val targetFraction = feedChromeSettleTarget(
+            state = chromeBehaviorState,
+            isAtTop = activeListState?.isAtAbsoluteTop() == true,
+        )
+        if (fraction == targetFraction) return@LaunchedEffect
+
+        chromeSettleAnimation.snapTo(fraction)
         chromeSettleAnimation.animateTo(
             targetValue = targetFraction,
             animationSpec = tween(ChromeSettleAnimationMillis),
         ) {
-            onChromeCollapseFractionChange(value)
+            currentOnChromeCollapseFractionChange.value(value)
         }
     }
 
     LaunchedEffect(activeListState, authorPubkey) {
-        hideChromeForCurrentGesture = false
+        chromeBehaviorState = reduceFeedChromeContextChanged(chromeBehaviorState)
         if (authorPubkey != null || activeListState == null) {
             onChromeCollapseFractionChange(0f)
             return@LaunchedEffect
         }
 
         snapshotFlow {
-            activeListState.firstVisibleItemIndex == 0 && activeListState.firstVisibleItemScrollOffset == 0
+            activeListState.isAtAbsoluteTop()
         }.collect { atTop ->
-            if (atTop && !hideChromeForCurrentGesture) {
-                onChromeCollapseFractionChange(0f)
+            val decision = reduceFeedChromeAtTopChanged(
+                state = chromeBehaviorState,
+                currentFraction = currentChromeCollapseFraction.value,
+                isAtTop = atTop,
+            )
+            chromeBehaviorState = decision.state
+            if (decision.targetFraction != null) {
+                chromeSettleDelayMillis = decision.delayMillis
+                chromeSettleRequest++
             }
         }
     }
@@ -342,29 +342,29 @@ fun FeedScreen(
                 ) {
                 AppTopBar(
                     title = {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.Start,
-                        ) {
-                            Text(
-                                text = topBarTitle,
-                                modifier = Modifier.weight(1f, fill = false),
-                                color = feedContentColor,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                            )
-                            IconButton(onClick = { showRelayMenu = true }) {
-                                Icon(
-                                    Icons.Default.ArrowDropDown,
-                                    contentDescription = if (canSelectAllRelays) "フィードメニュー" else "リレー切り替え",
-                                    tint = feedContentColor,
-                                )
-                            }
-                            DropdownMenu(
-                                expanded = showRelayMenu,
-                                onDismissRequest = { showRelayMenu = false },
+                        if (canSelectAllRelays) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.Start,
                             ) {
-                                if (canSelectAllRelays) {
+                                Text(
+                                    text = topBarTitle,
+                                    modifier = Modifier.weight(1f, fill = false),
+                                    color = feedContentColor,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                                IconButton(onClick = { showRelayMenu = true }) {
+                                    Icon(
+                                        Icons.Default.ArrowDropDown,
+                                        contentDescription = "フィードメニュー",
+                                        tint = feedContentColor,
+                                    )
+                                }
+                                DropdownMenu(
+                                    expanded = showRelayMenu,
+                                    onDismissRequest = { showRelayMenu = false },
+                                ) {
                                     DropdownMenuItem(
                                         text = { Text("すべてのリレー") },
                                         onClick = {
@@ -407,45 +407,17 @@ fun FeedScreen(
                                             }
                                         } else null,
                                     )
-                                } else {
-                                    DropdownMenuItem(
-                                        text = { Text("リレー設定") },
-                                        onClick = {
-                                            showRelayMenu = false
-                                            onOpenRelaySettings()
-                                        },
-                                    )
-                                    relays.forEach { url ->
-                                        DropdownMenuItem(
-                                            text = {
-                                                Row(
-                                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                                                    verticalAlignment = Alignment.CenterVertically,
-                                                ) {
-                                                    RelayConnectionDot(
-                                                        isOnline = relayConnectionStates[url] == RelayConnectionState.Connected,
-                                                    )
-                                                    Text(url.relayDisplayName())
-                                                }
-                                            },
-                                            onClick = {
-                                                RelayStore.setSelectedGlobalRelayUrl(url)
-                                                showRelayMenu = false
-                                            },
-                                            trailingIcon = if (url == selectedFeedRelayUrl) {
-                                                {
-                                                    Icon(
-                                                        Icons.Default.Check,
-                                                        contentDescription = null,
-                                                    )
-                                                }
-                                            } else null,
-                                        )
-                                    }
                                 }
-                }
-            }
-        },
+                            }
+                        } else {
+                            RelaySelector(
+                                relays = relays,
+                                selectedRelayUrl = selectedFeedRelayUrl,
+                                onRelaySelected = RelayStore::setSelectedGlobalRelayUrl,
+                                onOpenRelaySettings = onOpenRelaySettings,
+                            )
+                        }
+                    },
                     navigationIcon = {
                         if (authorPubkey == null && ownPubkey != null) {
                             IconButton(onClick = onOpenProfile) {
@@ -610,22 +582,6 @@ fun FeedScreen(
 }
 
 @Composable
-private fun RelayConnectionDot(isOnline: Boolean) {
-    Box(
-        modifier = Modifier
-            .size(8.dp)
-            .clip(CircleShape)
-            .background(
-                if (isOnline) {
-                    Color(0xFF0B8F55)
-                } else {
-                    MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.55f)
-                },
-            ),
-    )
-}
-
-@Composable
 private fun FeedTabRow(
     tabs: List<FeedTab>,
     selectedTab: FeedTab,
@@ -762,8 +718,11 @@ private enum class FollowingFeedMode {
     Following,
     Muted,
 }
-private const val ChromeSettleDelayMillis = 60L
+
 private const val ChromeSettleAnimationMillis = 140
+
+private fun LazyListState.isAtAbsoluteTop(): Boolean =
+    firstVisibleItemIndex == 0 && firstVisibleItemScrollOffset == 0
 
 private fun String.relayDisplayName(): String =
     removePrefix("wss://").removePrefix("ws://").trimEnd('/')
