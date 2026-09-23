@@ -4,6 +4,7 @@ import com.nostr.torinos.model.ChannelMeta
 import com.nostr.torinos.model.NostrEvent
 import com.nostr.torinos.network.cache.CachedChannelMessageEntity
 import com.nostr.torinos.network.cache.CachedChannelMessageRelayEntity
+import com.nostr.torinos.network.cache.CachedChannelRecommendedRelayEntity
 import com.nostr.torinos.network.cache.ChannelMessageBundle
 import com.nostr.torinos.network.cache.createChannelCacheDatabase
 import com.nostr.torinos.util.cacheTraceLog
@@ -63,6 +64,52 @@ actual object ChannelCacheStore {
             updatedAt = event.createdAt,
         )
         dao.upsertChannelRelay(relayUrl = relayUrl, channelId = event.id, seenAt = event.createdAt)
+    }
+
+    actual suspend fun getChannelMetadata(channelId: String): CachedChannelMetadata? {
+        val row = dao.getChannelMetadataRow(channelId) ?: return null
+        val metadataEventId = row.metadataEventId ?: return null
+        return CachedChannelMetadata(
+            channelId = row.channelId,
+            ownerPubkey = row.ownerPubkey,
+            sourceEventId = metadataEventId,
+            sourceKind = row.metadataKind,
+            sourceCreatedAt = row.metadataCreatedAt,
+            metadata = ChannelMeta(
+                name = row.name,
+                about = row.about,
+                picture = row.picture,
+                relays = dao.getRecommendedRelayUrls(channelId),
+            ),
+        )
+    }
+
+    actual suspend fun upsertChannelMetadata(
+        channelCreateEvent: NostrEvent,
+        effectiveEvent: NostrEvent,
+        metadata: ChannelMeta,
+        observedRelayUrl: String?,
+    ) {
+        dao.upsertChannelMetadata(
+            channelId = channelCreateEvent.id,
+            name = metadata.name,
+            about = metadata.about,
+            picture = metadata.picture,
+            ownerPubkey = channelCreateEvent.pubkey,
+            createdAt = channelCreateEvent.createdAt,
+            metadataEventId = effectiveEvent.id,
+            metadataKind = effectiveEvent.kind,
+            metadataCreatedAt = effectiveEvent.createdAt,
+            recommendedRelays = metadata.relays.mapIndexed { index, url ->
+                CachedChannelRecommendedRelayEntity(
+                    channelId = channelCreateEvent.id,
+                    relayUrl = url,
+                    position = index,
+                )
+            },
+            observedRelayUrl = observedRelayUrl,
+            observedAt = effectiveEvent.createdAt,
+        )
     }
 
     actual suspend fun upsertMessage(relayUrl: String, event: NostrEvent, channelId: String) {

@@ -1680,7 +1680,7 @@ iOS Simulatorテスト
 | --- | --- | --- | --- |
 | 0 | 現在の未コミット差分の安定化 | チャンネル詳細、一覧UI、DB v6、キャッシュ改善のレビュー・Simulator確認 | 保留（外部送信・障害注入テスト待ち） |
 | 1 | モデルと純粋ロジック | URL正規化、`ChannelMeta.relays`、metadata resolver、relay context、タグbuilder | 完了 |
-| 2 | 明示購読とDB v7 | 未登録推奨リレー購読、metadata cache、migration 6→7 | 未着手 |
+| 2 | 明示購読とDB v7 | 未登録推奨リレー購読、metadata cache、migration 6→7 | 完了 |
 | 3 | チャンネル購読 | 推奨リレーからkind 42取得、kind 41更新時の再購読 | 未着手 |
 | 4 | チャンネル投稿 | kind 40/41/42の配送、relay hint、リレー別結果 | 未着手 |
 | 5 | UIと返信連携 | ヘッダー、投稿先、詳細、編集、通常返信画面 | 未着手 |
@@ -1886,3 +1886,75 @@ Loop 0は実装と通常接続下の回帰確認を完了したが、L0-S08とL0
 - 次ループへ送る課題:
   - Loop 2で`RelayTarget.Explicit`の意味変更とDB v7 migrationに着手する際、本ループで確定した`normalizeRelayUrl`(既定ポート省略込み)を保存済み設定の読み込み経路でも一貫利用できているか再確認する。
   - Loop 0のL0-S08(kind 40削除の実リレー送信確認)とL0-S10(接続不能リレーでのUI確認)は引き続き未実施であり、保留のまま。
+
+## 24. Loop 2 実施記録: 明示購読とDB v7
+
+- 状態: 完了
+- 対象: `RelayTarget.Explicit`の意味修正(FR-05基盤)、DB migration 6→7(`channel_recommended_relays`、`channels`への`metadataEventId`/`metadataKind`/`metadataCreatedAt`追加)、`ChannelCacheStore`の`getChannelMetadata`/`upsertChannelMetadata` API(第16.6節・第16.12節)
+- 対象外: `ChannelController`のsession化・resolver接続、既存3箇所の`ChannelCacheStore.upsertChannel`呼び出し元の付け替え(Loop 3で resolver 出力に合わせて置換)、kind 42購読・投稿への反映(Loop 3/4)
+- 開始時commit: `25156a9`
+- 対象ファイル:
+  - `composeApp/src/commonMain/kotlin/com/nostr/torinos/network/NostrRepository.kt`
+  - `composeApp/src/commonMain/kotlin/com/nostr/torinos/network/ChannelCacheStore.kt`
+  - `composeApp/src/mobileMain/kotlin/com/nostr/torinos/network/ChannelCacheStore.mobile.kt`
+  - `composeApp/src/mobileMain/kotlin/com/nostr/torinos/network/cache/ChannelCacheDatabase.kt`
+  - `composeApp/src/mobileMain/kotlin/com/nostr/torinos/network/cache/ChannelCacheDatabaseBuilder.kt`
+  - `composeApp/src/commonTest/kotlin/com/nostr/torinos/network/RelayTargetUrlsTest.kt`
+
+### 設計レビュー
+
+| 重大度 | 指摘 | 対応 |
+| --- | --- | --- |
+| Note | 第16.6節は「`Explicit`の既存呼び出し箇所は意味変更の影響を監査する」ことを要求している | `FeedController`(engagement history再取得)と`ProfileRepository`(primary relay投稿)の既存呼び出しを確認した。いずれも渡す`relayUrls`が事前に`NostrRepository.targetRelayUrls(RelayTarget.AllEnabled)`由来のenabled relay部分集合であり、意味変更後も返り値は変わらない。追加の積集合処理は不要と判断した |
+| Note | `desiredActiveRelayUrlsLocked()`/`reconcileActiveRelaysLocked()`が`activeSubscriptions`全体のtarget集合の和で接続要否を決めるため、`Explicit`が未登録URLを含められるようになるだけで、FR-05の「一時接続」「画面終了時の専用購読解放」「他機能が使用中の接続を切断しない」は既存の参照カウント相当の仕組みでそのまま満たされる(第16.6節の設計どおり) | 対応不要。新規セッション管理クラスは追加しなかった |
+| Minor | 第16.12節のMigration規則で`updatedAt`は「互換のため残し、`metadataCreatedAt`と同じ値へ更新する」とあるが、既存`createdAt`(チャンネル作成時刻)の扱いが未記載だった | `upsertChannelMetadata`では`createdAt`を`channelCreateEvent.createdAt`(kind 40由来、event idに対して不変)に固定し、`updatedAt`のみ`metadataCreatedAt`と同期させる設計とした |
+
+### 実装レビュー
+
+- `RelayTarget.urls()`の可視性を`private`から`internal`へ変更したのみで、シグネチャ・呼び出し箇所(8箇所、すべて`NostrRepository.kt`内)は変更していない。プロジェクトはexplicit API modeを使用していないため、可視性変更によるビルド設定への影響はない。
+- `RelayTarget.Explicit`の正規化は`normalizeRelayUrls(urls, limit = Int.MAX_VALUE)`とし、チャンネル推奨リレーの上限10件(第11章)は`ChannelRelayContextBuilder`側で既に適用済みのため、ここでは二重に切り詰めない。
+- `upsertChannelMetadata`のDB書き込みは`@Transaction`で「channels行更新→recommended relays全削除→再挿入→(任意)観測元リレー更新」を1トランザクションにまとめ、第16.12節の順序と一致する。
+- 既存3箇所の`ChannelCacheStore.upsertChannel`呼び出し(`ChannelListViewModel.kt`×2、`ChannelController.kt`×1)は変更していない。新APIは追加のみで、既存の観測ベースのチャンネル保存経路と並存する。
+- Blocker / 未解消Majorはなし。
+
+### 自動テスト
+
+| コマンド | 結果 | 備考 |
+| --- | --- | --- |
+| `./gradlew :composeApp:iosSimulatorArm64Test --tests 'com.nostr.torinos.network.RelayTargetUrlsTest'` | 成功 | 4ケース(AllEnabled/Single/Explicit未登録URL許可/Explicit正規化重複排除) |
+| `./gradlew :composeApp:iosSimulatorArm64Test` | 成功 | commonTest全体、failures/errorsなし |
+| Room schema export確認 | 成功 | `composeApp/schemas/.../ChannelCacheDatabase/7.json`が生成され、`channels`への3列追加と`channel_recommended_relays`テーブルを確認 |
+
+Room DAOレベルの`getChannelMetadata`/`upsertChannelMetadata`往復テストは、本プロジェクトにRoom migration用のテスト基盤(instrumented test、`MigrationTestHelper`等)が存在しないため追加していない。代わりに次のSimulatorテストで実データに対するmigrationとAPI経路の健全性を確認した。
+
+### Simulatorテスト
+
+実施環境:
+
+- 実行日時: 2026-09-23 21:55-22:05 JST
+- macOS: 26.5 (25F71)
+- Xcode: 26.6 (17F113)
+- Simulator: iPhone 17 / iOS 26.5
+- build: Debug
+- アカウント: 既存の署名可能アカウント
+- 対象DB: Loop 0/1のSimulatorテストで蓄積された実データ(DB v6、channels=83、channel_messages=2317、channel_relays=134)
+
+| シナリオ | 結果 | 証跡・備考 |
+| --- | --- | --- |
+| DerivedData削除後のクリーンビルドとインストール | 成功 | Kotlin変更(migration追加)がフレームワークに反映されたことをビルド時刻で確認 |
+| 既存v6 DBを保持したまま新ビルドを起動し、migration 6→7を実行させる | 成功 | 起動後`PRAGMA user_version`が7になり、`channel_recommended_relays`テーブルが作成された |
+| migration前後でのデータ保全確認 | 成功 | `channels`=83件、`channel_messages`=2317件、`channel_relays`=134件が移行後も同数のまま維持 |
+| 既存行への`metadataEventId`/`metadataKind`/`metadataCreatedAt`バックフィル確認 | 成功 | サンプル行で`metadataEventId = channelId`、`metadataKind = 40`、`metadataCreatedAt = updatedAt = createdAt`を確認(第16.12節の規則どおり) |
+| migration後のアプリ起動・フィード表示 | 成功 | クラッシュなし、フォロー/グローバルフィードとも表示継続(スクリーンショットで確認) |
+
+実データ環境([[ios-sim-cliclick-real-relay-risk]]参照)のため、フィード内投稿へのcliclickタップは行わず、DBレベルの検証とプロセス生存確認・スクリーンショットに留めた。チャンネル一覧・詳細画面でのUI確認はLoop 3以降、resolverベースの表示経路が配線されてから改めて行う。
+
+### 設計書へのフィードバック
+
+- 確定した仕様:
+  - `RelayTarget.Explicit`は第16.6節の設計どおり、`enabledRelayUrls`によるフィルタを行わず正規化のみを行う。既存呼び出し箇所への追加対応は不要と確認済み。
+  - DB v7 migrationは実データに対して検証済み。既存行のバックフィル規則(`metadataEventId = channelId`、`metadataKind = 40`、`metadataCreatedAt = updatedAt`)が実際に機能することを確認した。
+- 変更した仕様: なし
+- 次ループへ送る課題:
+  - Loop 3で`ChannelController`をsession化する際、既存3箇所の`ChannelCacheStore.upsertChannel`呼び出しを`ChannelMetadataResolver`の出力(`ChannelMetadataResolution`)経由の`upsertChannelMetadata`へ置き換える。
+  - Room migrationの自動テストが恒久的に手動Simulator確認に依存しないよう、instrumented testまたはKMP対応のRoom in-memoryテスト基盤の導入を検討する(現状は本ループのように実データでの起動確認で代替)。

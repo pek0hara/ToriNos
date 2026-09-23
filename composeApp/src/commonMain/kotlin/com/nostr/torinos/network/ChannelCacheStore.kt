@@ -29,11 +29,32 @@ data class ChannelReadingPosition(
     val scrollOffset: Int = 0,
 )
 
+/** チャンネルの実効メタデータの取得元(第16.12節)。観測元リレー(channel_relays)とは別概念。 */
+data class CachedChannelMetadata(
+    val channelId: String,
+    val ownerPubkey: String,
+    val sourceEventId: String,
+    val sourceKind: Int,
+    val sourceCreatedAt: Long,
+    val metadata: ChannelMeta,
+)
+
 expect object ChannelCacheStore {
     fun observeChannels(relayUrl: String): Flow<List<CachedChannelSummary>>
     suspend fun getLastReadAt(relayUrl: String, channelId: String): Long?
     suspend fun getMessages(relayUrl: String, channelId: String, limit: Int = 200): List<NostrEvent>
     suspend fun upsertChannel(relayUrl: String, event: NostrEvent, meta: ChannelMeta)
+    suspend fun getChannelMetadata(channelId: String): CachedChannelMetadata?
+    /**
+     * 実効メタデータ、推奨リレー(全置換)、任意の観測元リレーを1トランザクションで更新する。
+     * kind 41のevent IDをchannelIdとして保存しないよう、[channelCreateEvent]と[effectiveEvent]を分けて渡す。
+     */
+    suspend fun upsertChannelMetadata(
+        channelCreateEvent: NostrEvent,
+        effectiveEvent: NostrEvent,
+        metadata: ChannelMeta,
+        observedRelayUrl: String? = null,
+    )
     suspend fun upsertMessage(relayUrl: String, event: NostrEvent, channelId: String)
     /** ページ単位の履歴取得で、複数イベントを1トランザクションで保存する。 */
     suspend fun upsertMessages(relayUrl: String, events: List<NostrEvent>, channelId: String)

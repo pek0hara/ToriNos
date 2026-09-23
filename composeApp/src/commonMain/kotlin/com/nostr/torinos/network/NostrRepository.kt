@@ -54,10 +54,17 @@ data class RelayPublishResult(
     val totalCount: Int get() = successCount + failureCount
 }
 
-private fun RelayTarget.urls(enabledRelayUrls: List<String>): List<String> = when (this) {
+/**
+ * - [RelayTarget.AllEnabled]: ユーザー設定のread有効リレー。
+ * - [RelayTarget.Single]: 一覧UIで選択された設定済みリレーのみ(未登録なら除外)。
+ * - [RelayTarget.Explicit]: 呼び出し側が明示した集合そのもの。enabledRelayUrlsに存在しない
+ *   URL(チャンネル推奨リレーなど)も対象にでき、正規化のみ行う。設定済みリレーだけに限定したい
+ *   呼び出し側は、渡す前に自分でenabledRelayUrlsとの積集合を取ること。
+ */
+internal fun RelayTarget.urls(enabledRelayUrls: List<String>): List<String> = when (this) {
     RelayTarget.AllEnabled -> enabledRelayUrls
     is RelayTarget.Single -> listOf(url).filter { it in enabledRelayUrls }
-    is RelayTarget.Explicit -> urls.filter { it in enabledRelayUrls }
+    is RelayTarget.Explicit -> normalizeRelayUrls(urls, limit = Int.MAX_VALUE)
 }
 
 object NostrRepository {

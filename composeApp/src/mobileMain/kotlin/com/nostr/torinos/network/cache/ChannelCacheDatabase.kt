@@ -38,6 +38,37 @@ val MIGRATION_5_6 = object : Migration(5, 6) {
     }
 }
 
+/**
+ * 実効メタデータの取得元(kind 40/41)と推奨リレー(content.relays)を、
+ * 観測元リレー(channel_relays)とは別概念で保持する(NIP-28仕様書 第16.12節)。
+ * 既存DBにはcontent.relaysが保存されていないため、推奨リレーは空で始まり、
+ * 次回のネットワーク取得時にupsertChannelMetadata()で埋まる。
+ */
+val MIGRATION_6_7 = object : Migration(6, 7) {
+    override fun migrate(connection: SQLiteConnection) {
+        connection.execSQL("ALTER TABLE channels ADD COLUMN metadataEventId TEXT")
+        connection.execSQL("ALTER TABLE channels ADD COLUMN metadataKind INTEGER NOT NULL DEFAULT 40")
+        connection.execSQL("ALTER TABLE channels ADD COLUMN metadataCreatedAt INTEGER NOT NULL DEFAULT 0")
+        connection.execSQL(
+            "UPDATE channels SET metadataEventId = channelId, metadataKind = 40, metadataCreatedAt = updatedAt"
+        )
+        connection.execSQL(
+            """
+            CREATE TABLE IF NOT EXISTS channel_recommended_relays (
+                channelId TEXT NOT NULL,
+                relayUrl TEXT NOT NULL,
+                position INTEGER NOT NULL,
+                PRIMARY KEY(channelId, relayUrl)
+            )
+            """.trimIndent()
+        )
+        connection.execSQL(
+            "CREATE INDEX IF NOT EXISTS index_channel_recommended_relays_channelId " +
+                "ON channel_recommended_relays(channelId)"
+        )
+    }
+}
+
 val MIGRATION_1_2 = object : Migration(1, 2) {
     override fun migrate(connection: SQLiteConnection) {
         connection.execSQL("ALTER TABLE channel_read_states ADD COLUMN lastScrolledMessageId TEXT")
@@ -184,6 +215,24 @@ data class CachedChannelEntity(
     val createdAt: Long,
     val updatedAt: Long,
     val isFavorite: Boolean = false,
+    val metadataEventId: String? = null,
+    @ColumnInfo(defaultValue = "40") val metadataKind: Int = 40,
+    @ColumnInfo(defaultValue = "0") val metadataCreatedAt: Long = 0,
+)
+
+/**
+ * kind 40/41のcontent.relaysを正規化・順序付きで保持する。`channel_relays`(観測元リレー)とは
+ * 別概念であり、推奨リレー置換はchannels行更新と同じRoom transaction内で行う(第16.12節)。
+ */
+@Entity(
+    tableName = "channel_recommended_relays",
+    primaryKeys = ["channelId", "relayUrl"],
+    indices = [Index("channelId")],
+)
+data class CachedChannelRecommendedRelayEntity(
+    val channelId: String,
+    val relayUrl: String,
+    val position: Int,
 )
 
 @Entity(
@@ -232,6 +281,17 @@ data class ChannelReadStateEntity(
     val lastScrolledMessageId: String? = null,
     val lastScrolledCreatedAt: Long? = null,
     @ColumnInfo(defaultValue = "0") val lastScrolledOffset: Int = 0,
+)
+
+data class ChannelMetadataRow(
+    val channelId: String,
+    val ownerPubkey: String,
+    val metadataEventId: String?,
+    val metadataKind: Int,
+    val metadataCreatedAt: Long,
+    val name: String,
+    val about: String,
+    val picture: String,
 )
 
 /** 1メッセージ分の3書き込み(本体・relay対応・channel relay更新)を1トランザクションへまとめるための入力。 */
@@ -371,6 +431,92 @@ interface ChannelCacheDao {
         """
     )
     suspend fun upsertChannelRelay(relayUrl: String, channelId: String, seenAt: Long)
+
+    @Query(
+        """
+        SELECT channelId, ownerPubkey, metadataEventId, metadataKind, metadataCreatedAt, name, about, picture
+        FROM channels
+        WHERE channelId = :channelId
+        LIMIT 1
+        """
+    )
+    suspend fun getChannelMetadataRow(channelId: String): ChannelMetadataRow?
+
+    @Query("SELECT relayUrl FROM channel_recommended_relays WHERE channelId = :channelId ORDER BY position ASC")
+    suspend fun getRecommendedRelayUrls(channelId: String): List<String>
+
+    @Query(
+        """
+        INSERT INTO channels
+            (channelId, name, about, picture, ownerPubkey, createdAt, updatedAt, isFavorite, metadataEventId, metadataKind, metadataCreatedAt)
+        VALUES (:channelId, :name, :about, :picture, :ownerPubkey, :createdAt, :updatedAt, 0, :metadataEventId, :metadataKind, :metadataCreatedAt)
+        ON CONFLICT(channelId) DO UPDATE SET
+            name = excluded.name,
+            about = excluded.about,
+            picture = excluded.picture,
+            ownerPubkey = excluded.ownerPubkey,
+            createdAt = excluded.createdAt,
+            updatedAt = excluded.updatedAt,
+            metadataEventId = excluded.metadataEventId,
+            metadataKind = excluded.metadataKind,
+            metadataCreatedAt = excluded.metadataCreatedAt
+        """
+    )
+    suspend fun upsertChannelMetadataRow(
+        channelId: String,
+        name: String,
+        about: String,
+        picture: String,
+        ownerPubkey: String,
+        createdAt: Long,
+        updatedAt: Long,
+        metadataEventId: String,
+        metadataKind: Int,
+        metadataCreatedAt: Long,
+    )
+
+    @Query("DELETE FROM channel_recommended_relays WHERE channelId = :channelId")
+    suspend fun deleteRecommendedRelays(channelId: String)
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertRecommendedRelays(relays: List<CachedChannelRecommendedRelayEntity>)
+
+    /**
+     * channels行の実効メタデータ更新・推奨リレーの全置換・観測元リレー更新を1トランザクションにまとめる
+     * (第16.12節)。kind 41のevent IDをchannelIdとして保存しないよう、呼び出し側でchannelCreateEvent由来の
+     * channelId/ownerPubkey/createdAtと、effectiveEvent由来のmetadataEventId/metadataKind/metadataCreatedAtを分けて渡す。
+     */
+    @Transaction
+    suspend fun upsertChannelMetadata(
+        channelId: String,
+        name: String,
+        about: String,
+        picture: String,
+        ownerPubkey: String,
+        createdAt: Long,
+        metadataEventId: String,
+        metadataKind: Int,
+        metadataCreatedAt: Long,
+        recommendedRelays: List<CachedChannelRecommendedRelayEntity>,
+        observedRelayUrl: String?,
+        observedAt: Long,
+    ) {
+        upsertChannelMetadataRow(
+            channelId = channelId,
+            name = name,
+            about = about,
+            picture = picture,
+            ownerPubkey = ownerPubkey,
+            createdAt = createdAt,
+            updatedAt = metadataCreatedAt,
+            metadataEventId = metadataEventId,
+            metadataKind = metadataKind,
+            metadataCreatedAt = metadataCreatedAt,
+        )
+        deleteRecommendedRelays(channelId)
+        if (recommendedRelays.isNotEmpty()) insertRecommendedRelays(recommendedRelays)
+        if (observedRelayUrl != null) upsertChannelRelay(observedRelayUrl, channelId, observedAt)
+    }
 
     @Insert(onConflict = OnConflictStrategy.IGNORE)
     suspend fun insertMessage(message: CachedChannelMessageEntity)
@@ -543,8 +689,9 @@ interface ChannelCacheDao {
         CachedChannelMessageEntity::class,
         CachedChannelMessageRelayEntity::class,
         ChannelReadStateEntity::class,
+        CachedChannelRecommendedRelayEntity::class,
     ],
-    version = 6,
+    version = 7,
 )
 @ConstructedBy(ChannelCacheDatabaseConstructor::class)
 abstract class ChannelCacheDatabase : RoomDatabase() {
