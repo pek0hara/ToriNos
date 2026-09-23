@@ -1,5 +1,6 @@
 rootProject.name = "ToriNos"
 include(":composeApp")
+include(":androidApp")
 
 pluginManagement {
     repositories {
