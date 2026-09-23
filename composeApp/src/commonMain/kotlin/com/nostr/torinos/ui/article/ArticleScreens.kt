@@ -24,15 +24,12 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.ArrowDropDown
-import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -87,6 +84,7 @@ import com.nostr.torinos.ui.components.LinkedText
 import com.nostr.torinos.ui.components.NetworkImage
 import com.nostr.torinos.ui.components.extractImageUrls
 import com.nostr.torinos.ui.components.ProfileNameText
+import com.nostr.torinos.ui.components.RelaySelector
 import com.nostr.torinos.ui.components.stripImageUrls
 import com.nostr.torinos.ui.components.formatTimestamp
 import com.nostr.torinos.ui.profile.AvatarCircle
@@ -113,7 +111,6 @@ fun ArticleHubScreen(
     val selectedRelayUrl by RelayStore.selectedArticleRelayUrl.collectAsState()
     val isRelayStoreLoaded by RelayStore.isLoaded.collectAsState()
     val accountSession = LocalAccountSession.current
-    var showRelayMenu by remember { mutableStateOf(false) }
 
     val activeRelayUrl = selectedRelayUrl
     if (!isRelayStoreLoaded || activeRelayUrl == null) {
@@ -181,54 +178,12 @@ fun ArticleHubScreen(
                         }
                     },
                     title = {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.Start,
-                        ) {
-                            Text(
-                                text = selectedRelayUrl?.relayDisplayName() ?: "—",
-                                modifier = Modifier.weight(1f, fill = false),
-                                color = headerContentColor,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                            )
-                            IconButton(onClick = { showRelayMenu = true }) {
-                                Icon(
-                                    Icons.Default.ArrowDropDown,
-                                    contentDescription = "リレー切り替え",
-                                    tint = headerContentColor,
-                                )
-                            }
-                            DropdownMenu(
-                                expanded = showRelayMenu,
-                                onDismissRequest = { showRelayMenu = false },
-                            ) {
-                                DropdownMenuItem(
-                                    text = { Text("リレー設定") },
-                                    onClick = {
-                                        showRelayMenu = false
-                                        onOpenRelaySettings()
-                                    },
-                                )
-                                relays.forEach { url ->
-                                    DropdownMenuItem(
-                                        text = { Text(url.relayDisplayName()) },
-                                        onClick = {
-                                            RelayStore.setSelectedArticleRelayUrl(url)
-                                            showRelayMenu = false
-                                        },
-                                        trailingIcon = if (url == selectedRelayUrl) {
-                                            {
-                                                Icon(
-                                                    Icons.Default.Check,
-                                                    contentDescription = null,
-                                                )
-                                            }
-                                        } else null,
-                                    )
-                                }
-                            }
-                        }
+                        RelaySelector(
+                            relays = relays,
+                            selectedRelayUrl = selectedRelayUrl,
+                            onRelaySelected = RelayStore::setSelectedArticleRelayUrl,
+                            onOpenRelaySettings = onOpenRelaySettings,
+                        )
                     },
                     actions = {
                         IconButton(onClick = onOpenSettings) {
@@ -1028,9 +983,6 @@ private fun ArticleDetailContent(
         }
     }
 }
-
-private fun String.relayDisplayName(): String =
-    removePrefix("wss://").removePrefix("ws://").trimEnd('/')
 
 private fun Modifier.articleHubSwipe(
     selectedArticleTab: ArticleHubTab,

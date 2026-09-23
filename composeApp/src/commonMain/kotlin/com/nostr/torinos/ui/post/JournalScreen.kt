@@ -25,8 +25,6 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.ArrowForward
 import androidx.compose.material.icons.automirrored.filled.Article
 import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.ArrowDropDown
-import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.NorthEast
 import androidx.compose.material.icons.filled.SouthWest
@@ -35,8 +33,6 @@ import androidx.compose.material.icons.filled.MailOutline
 import androidx.compose.material.icons.filled.PostAdd
 import androidx.compose.material.icons.filled.Repeat
 import androidx.compose.material.icons.filled.Today
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
@@ -96,6 +92,7 @@ import com.nostr.torinos.ui.components.NetworkImage
 import com.nostr.torinos.ui.components.NoteCard
 import com.nostr.torinos.ui.components.ProfileNameText
 import com.nostr.torinos.ui.components.QuotedEvent
+import com.nostr.torinos.ui.components.RelaySelector
 import com.nostr.torinos.ui.components.formatTimestamp
 import com.nostr.torinos.ui.components.stripImageUrls
 import com.nostr.torinos.ui.profile.AvatarCircle
@@ -131,7 +128,6 @@ fun JournalScreen(
     val snackbarHostState = remember { SnackbarHostState() }
     val relays by RelayStore.relays.collectAsState(initial = emptyList())
     val selectedRelayUrl by RelayStore.selectedMemoRelayUrl.collectAsState()
-    var showRelayMenu by remember { mutableStateOf(false) }
     var showFilterHeader by rememberSaveable(accountKey, targetPubkey) { mutableStateOf(true) }
     var selectedFilterNames by rememberSaveable(accountKey, targetPubkey) {
         mutableStateOf(emptyList<String>())
@@ -233,49 +229,12 @@ fun JournalScreen(
         topBar = {
             AppTopBar(
                 title = {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.Start,
-                    ) {
-                        Text(
-                            text = selectedRelayUrl?.relayDisplayName() ?: "—",
-                            modifier = Modifier.weight(1f, fill = false),
-                            color = headerContentColor,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                        IconButton(onClick = { showRelayMenu = true }) {
-                            Icon(
-                                Icons.Default.ArrowDropDown,
-                                contentDescription = "リレー切り替え",
-                                tint = headerContentColor,
-                            )
-                        }
-                        DropdownMenu(
-                            expanded = showRelayMenu,
-                            onDismissRequest = { showRelayMenu = false },
-                        ) {
-                            DropdownMenuItem(
-                                text = { Text("リレー設定") },
-                                onClick = {
-                                    showRelayMenu = false
-                                    onOpenRelaySettings()
-                                },
-                            )
-                            relays.forEach { url ->
-                                DropdownMenuItem(
-                                    text = { Text(url.relayDisplayName()) },
-                                    onClick = {
-                                        RelayStore.setSelectedMemoRelayUrl(url)
-                                        showRelayMenu = false
-                                    },
-                                    trailingIcon = if (url == selectedRelayUrl) {
-                                        { Icon(Icons.Default.Check, contentDescription = null) }
-                                    } else null,
-                                )
-                            }
-                        }
-                    }
+                    RelaySelector(
+                        relays = relays,
+                        selectedRelayUrl = selectedRelayUrl,
+                        onRelaySelected = RelayStore::setSelectedMemoRelayUrl,
+                        onOpenRelaySettings = onOpenRelaySettings,
+                    )
                 },
                 navigationIcon = {
                     if (isUserJournal) {
@@ -1092,9 +1051,6 @@ private fun String.previewText(): String =
         .filter { it.isNotEmpty() }
         .joinToString(" ")
         .take(140)
-
-private fun String.relayDisplayName(): String =
-    removePrefix("wss://").removePrefix("ws://").trimEnd('/')
 
 private fun daysInMonth(year: Int, month: Int): Int =
     when (month) {

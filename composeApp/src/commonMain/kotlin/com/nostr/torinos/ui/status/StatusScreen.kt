@@ -15,13 +15,9 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.ArrowDropDown
-import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
@@ -53,6 +49,7 @@ import com.nostr.torinos.ui.components.LinkedText
 import com.nostr.torinos.ui.components.ProfileNameText
 import com.nostr.torinos.ui.components.formatTimestamp
 import com.nostr.torinos.ui.profile.AvatarCircle
+import com.nostr.torinos.ui.components.RelaySelector
 import com.nostr.torinos.ui.service.ServiceTab
 import com.nostr.torinos.ui.service.ServiceTabRow
 import com.nostr.torinos.ui.service.serviceTabSwipe
@@ -75,7 +72,6 @@ fun StatusScreen(
     val relays by RelayStore.relays.collectAsState(initial = emptyList())
     val selectedRelayUrl by RelayStore.selectedStatusRelayUrl.collectAsState()
     val isRelayStoreLoaded by RelayStore.isLoaded.collectAsState()
-    var showRelayMenu by remember { mutableStateOf(false) }
 
     LaunchedEffect(relays, selectedRelayUrl) {
         if (selectedRelayUrl == null || selectedRelayUrl !in relays) {
@@ -133,54 +129,12 @@ fun StatusScreen(
                         }
                     },
                     title = {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.Start,
-                        ) {
-                            Text(
-                                text = selectedRelayUrl?.relayDisplayName() ?: "—",
-                                modifier = Modifier.weight(1f, fill = false),
-                                color = headerContentColor,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                            )
-                            IconButton(onClick = { showRelayMenu = !showRelayMenu }) {
-                                Icon(
-                                    Icons.Default.ArrowDropDown,
-                                    contentDescription = "リレー切り替え",
-                                    tint = headerContentColor,
-                                )
-                            }
-                            DropdownMenu(
-                                expanded = showRelayMenu,
-                                onDismissRequest = { showRelayMenu = false },
-                            ) {
-                                DropdownMenuItem(
-                                    text = { Text("リレー設定") },
-                                    onClick = {
-                                        showRelayMenu = false
-                                        onOpenRelaySettings()
-                                    },
-                                )
-                                relays.forEach { url ->
-                                    DropdownMenuItem(
-                                        text = { Text(url.relayDisplayName()) },
-                                        onClick = {
-                                            RelayStore.setSelectedStatusRelayUrl(url)
-                                            showRelayMenu = false
-                                        },
-                                        trailingIcon = if (url == selectedRelayUrl) {
-                                            {
-                                                Icon(
-                                                    Icons.Default.Check,
-                                                    contentDescription = null,
-                                                )
-                                            }
-                                        } else null,
-                                    )
-                                }
-                            }
-                        }
+                        RelaySelector(
+                            relays = relays,
+                            selectedRelayUrl = selectedRelayUrl,
+                            onRelaySelected = RelayStore::setSelectedStatusRelayUrl,
+                            onOpenRelaySettings = onOpenRelaySettings,
+                        )
                     },
                     actions = {
                         IconButton(onClick = onOpenSettings) {
@@ -428,9 +382,3 @@ private fun String.statusTagDisplayLabel(): String =
 
 private fun String.isDefaultStatusTag(): Boolean =
     equals("general", ignoreCase = true) || equals("music", ignoreCase = true)
-
-
-private fun String.relayDisplayName(): String =
-    removePrefix("wss://")
-        .removePrefix("ws://")
-        .removeSuffix("/")
