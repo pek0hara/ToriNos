@@ -1681,7 +1681,7 @@ iOS Simulatorテスト
 | 0 | 現在の未コミット差分の安定化 | チャンネル詳細、一覧UI、DB v6、キャッシュ改善のレビュー・Simulator確認 | 保留（外部送信・障害注入テスト待ち） |
 | 1 | モデルと純粋ロジック | URL正規化、`ChannelMeta.relays`、metadata resolver、relay context、タグbuilder | 完了 |
 | 2 | 明示購読とDB v7 | 未登録推奨リレー購読、metadata cache、migration 6→7 | 完了 |
-| 3 | チャンネル購読 | 推奨リレーからkind 42取得、kind 41更新時の再購読 | 未着手 |
+| 3 | チャンネル購読 | 推奨リレーからkind 42取得、kind 41更新時の再購読 | 着手中(3a完了、3bは未着手) |
 | 4 | チャンネル投稿 | kind 40/41/42の配送、relay hint、リレー別結果 | 未着手 |
 | 5 | UIと返信連携 | ヘッダー、投稿先、詳細、編集、通常返信画面 | 未着手 |
 | 6 | モデレーション | kind 43/44 | 未着手 |
@@ -1958,3 +1958,64 @@ Room DAOレベルの`getChannelMetadata`/`upsertChannelMetadata`往復テスト�
 - 次ループへ送る課題:
   - Loop 3で`ChannelController`をsession化する際、既存3箇所の`ChannelCacheStore.upsertChannel`呼び出しを`ChannelMetadataResolver`の出力(`ChannelMetadataResolution`)経由の`upsertChannelMetadata`へ置き換える。
   - Room migrationの自動テストが恒久的に手動Simulator確認に依存しないよう、instrumented testまたはKMP対応のRoom in-memoryテスト基盤の導入を検討する(現状は本ループのように実データでの起動確認で代替)。
+
+## 25. Loop 3a 実施記録: ChannelMetadataResolverの接続
+
+Loop 3(チャンネル購読)はフルスコープで一括実装すると`ChannelController.kt`(860行超、エンゲージメント集計等と密結合)への変更が大きくなりレビュー粒度が粗くなるため、ユーザーの判断でスコープを分割した。3aは「resolver接続」のみを対象とし、3b(session化・kind 41二段階再購読・観測元リレーキャッシュの本格配線)は別ループとして残す。
+
+- 状態: 完了
+- 対象: `ChannelController`のkind 40/41ライブ購読ハンドラを、UIローカルの逐次判定から`ChannelMetadataResolver`(Loop 1で導入済み)へ置き換える。あわせて`ChannelCacheStore.upsertChannel`から`upsertChannelMetadata`(Loop 2で追加済み)への切り替えをこの経路に限り実施する
+- 対象外: `SubscriptionSession`ベースへの購読方式そのものの移行、`ChannelRelayContext`に基づく推奨リレーへの動的購読・投稿切り替え、kind 41受信時の二段階再購読(FR-08、第16.7節)、観測元リレー集合の複数保持。これらは3bへ送る。`ChannelListViewModel.kt`の2箇所の`upsertChannel`呼び出しも本ループでは変更しない(Phase 2 UI改修時に合わせる)
+- 開始時commit: `55a6018`
+- 対象ファイル:
+  - `composeApp/src/commonMain/kotlin/com/nostr/torinos/ui/channel/ChannelController.kt`
+
+### 設計レビュー
+
+| 重大度 | 指摘 | 対応 |
+| --- | --- | --- |
+| Major(既存不具合、本ループで解消) | 旧実装は`event.createdAt <= latestMetaUpdateCreatedAt`のみで判定しており、Loop 0の設計レビュー(第22.1節)で`ChannelDetailsDialog`側に指摘したのと同種の「同一`created_at`のkind 41で受信順により表示が変わる」不具定が、実際のチャンネル画面(`ChannelController`)側には未反映のまま残っていた | 候補をevent ID単位で保持し`ChannelMetadataResolver.resolve()`を再実行する方式に置き換え、`(createdAt, id)`降順の決定的なtie-breakとroot marker検証をLoop 1のテスト済みロジックに委譲した |
+| Note(副次的な改善) | 旧実装はkind 40のcontent JSONが不正な場合、`currentChannelOwnerPubkey`が設定されないままとなり、kind 41購読(`metaUpdateSubId`)自体が開始されず、後から有効なkind 41が届いても永久に回復できなかった | 新実装は`channelCreateEvent`の設定とkind 41購読開始をresolver結果の成否から独立させたため、kind 40のJSONが不正でも有効なkind 41受信時に回復できるようになった(第10章のエラー処理方針と整合) |
+| Note | `saveThreadMeta()`(kind 41編集の自己発行)は本ループの対象外のため、発行直後に`currentChannelMeta`を直接更新する既存の楽観的更新ロジックのままとした。候補プールに登録されないため、直後に別の(自分より古い)kind 41がネットワークから届いた場合に上書きされうる潜在的なギャップは温存されている | 対応不要(Phase 2のkind 41編集強化、第16.10節で解消予定)。次ループへの既知課題として記録 |
+
+### 実装レビュー
+
+- `channelCreateEvent`/`metadataUpdateCandidates`/`effectiveMetadataSourceEventId`は、既存の`currentChannelMeta`等と同様に複数の`launch`ブロックから同期プリミティブなしで読み書きされる。これは本ファイル全体で既に採用されている一貫したスタイル(単一スコープのシーケンシャル実行前提)であり、新たなリスクを追加するものではない。
+- `applyMetadataResolution()`内の`ChannelCacheStore.upsertChannelMetadata`呼び出しは`CancellationException`を再送出し、その他の例外は`logException`でログのみに留める既存方針を踏襲した。
+- kind 40購読(`metaSubId`)は`event.id != channelId`のガードを追加した(フィルタ`NostrFilter(ids = listOf(channelId))`により実際にはid不一致は発生しない防御的チェック)。
+- `channelCreateEvent != null`ガードにより、複数リレーから同一kind 40を重複受信しても`ChannelMetadataResolver.resolve()`の再実行やキャッシュ書き込みが不要に繰り返されない。
+- 未使用となった`import com.nostr.torinos.model.toChannelMeta`を削除した。
+- Blocker / 未解消Majorはなし。
+
+### 自動テスト
+
+| コマンド | 結果 | 備考 |
+| --- | --- | --- |
+| `./gradlew :composeApp:iosSimulatorArm64Test` | 成功 | commonTest全体、failures/errorsなし。`ChannelController`自体はNostrRepository/ChannelCacheStoreの実シングルトンに密結合しており(既存コードと同様)、単体テストの基盤が現状ない |
+
+### Simulatorテスト
+
+実施環境:
+
+- 実行日時: 2026-09-23 22:18-22:25 JST
+- macOS: 26.5 (25F71)
+- Xcode: 26.6 (17F113)
+- Simulator: iPhone 17 / iOS 26.5
+- build: Debug
+
+| シナリオ | 結果 | 証跡・備考 |
+| --- | --- | --- |
+| DerivedData削除後のクリーンビルド・インストール・起動 | 成功 | ビルド成功、フィード表示正常、クラッシュなし |
+| チャンネル画面を開いてkind 40/41メタデータ解決の実動作を確認 | 保留 | Mac側の画面ロック等によりSimulator GUIウィンドウが取得できず([[ios-sim-cliclick-coordinate-mapping]]記載の既知事象)、cliclickでの画面遷移ができなかった。パスワード入力はユーザーへの依頼が必要なため、本ループでは実施を見送った |
+
+プロセスは実リレーからのフィード購読・表示を継続しクラッシュしていないことをスクリーンショットと`launchctl list`で確認済みだが、チャンネル画面固有の表示確認は次回Simulatorアクセス時に持ち越す。
+
+### 設計書へのフィードバック
+
+- 確定した仕様: なし(第16.4節の設計をそのまま実装し、仕様の変更はない)
+- 変更した仕様: なし
+- 次ループへ送る課題:
+  - L3a-S01(仮称): チャンネル画面を開き、kind 40のみ/kind 40+41/同時刻複数kind 41のケースで表示メタデータが正しいことをSimulatorで確認する。Mac画面のロック解除後に実施する。
+  - Loop 3bで`ChannelRelayContext`・`SubscriptionSession`・kind 41二段階再購読(FR-08)を`ChannelController`へ接続する。
+  - `saveThreadMeta()`の楽観的更新を候補プール(`metadataUpdateCandidates`)経由に統合し、自己発行イベントも同じresolver経路で扱う(Phase 2 kind 41編集強化と合わせて検討)。
+  - `ChannelController`向けのテスト基盤(NostrRepository/ChannelCacheStoreのfake化)導入を検討する。

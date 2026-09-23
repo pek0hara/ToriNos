@@ -15,6 +15,7 @@ import com.nostr.torinos.engagement.PendingEngagementOperation
 import com.nostr.torinos.engagement.displayOwnEmojiReactionEventIds
 import com.nostr.torinos.engagement.isRepostedByMe
 import com.nostr.torinos.model.ChannelMeta
+import com.nostr.torinos.model.ChannelMetadataResolver
 import com.nostr.torinos.model.CustomReaction
 import com.nostr.torinos.model.ReactionOption
 import com.nostr.torinos.model.UnicodeReaction
@@ -25,7 +26,6 @@ import com.nostr.torinos.model.NostrProfile
 import com.nostr.torinos.model.extractNpubReferences
 import com.nostr.torinos.model.incrementedWith
 import com.nostr.torinos.model.incrementedWithUnicodeReaction
-import com.nostr.torinos.model.toChannelMeta
 import com.nostr.torinos.model.toCustomReaction
 import com.nostr.torinos.model.toUnicodeReaction
 import com.nostr.torinos.model.toReactionOption
@@ -104,7 +104,10 @@ internal class ChannelController(
     private var savedReadingPosition: ChannelReadingPosition? = null
     private var currentChannelMeta = ChannelMeta()
     private var currentChannelOwnerPubkey: String? = null
-    private var latestMetaUpdateCreatedAt = -1L
+    // kind 40/41の候補をevent ID単位で保持し、到着順に依存せずChannelMetadataResolverを再実行する(第16.4節)。
+    private var channelCreateEvent: NostrEvent? = null
+    private val metadataUpdateCandidates = linkedMapOf<String, NostrEvent>()
+    private var effectiveMetadataSourceEventId: String? = null
     private var currentMessages = emptyList<NostrEvent>()
     private var currentProfiles = emptyMap<String, NostrProfile>()
     private var currentReplyCounts = emptyMap<String, Int>()
@@ -470,6 +473,36 @@ internal class ChannelController(
         savedReadingPosition = position
     }
 
+    /**
+     * 保持済みのkind 40/41候補からChannelMetadataResolverを再実行し、実効メタデータが変わった場合だけ
+     * 状態とキャッシュを更新する。到着順・受信リレー順に依存しない決定的な選択にする(第16.4節)。
+     */
+    private suspend fun applyMetadataResolution() {
+        val create = channelCreateEvent ?: return
+        val resolution = ChannelMetadataResolver.resolve(
+            channelId = channelId,
+            createCandidates = listOf(create),
+            updateCandidates = metadataUpdateCandidates.values,
+        ) ?: return
+        if (resolution.effectiveEvent.id == effectiveMetadataSourceEventId) return
+        effectiveMetadataSourceEventId = resolution.effectiveEvent.id
+        currentChannelMeta = resolution.metadata
+        currentChannelOwnerPubkey = resolution.channelCreateEvent.pubkey
+        try {
+            ChannelCacheStore.upsertChannelMetadata(
+                channelCreateEvent = resolution.channelCreateEvent,
+                effectiveEvent = resolution.effectiveEvent,
+                metadata = resolution.metadata,
+                observedRelayUrl = relayUrl,
+            )
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (error: Exception) {
+            logException("ChannelController", error, "Could not cache channel metadata")
+        }
+        syncReadyState()
+    }
+
     private fun start() {
         jobs += launch {
             history.state.collect { snapshot ->
@@ -481,32 +514,24 @@ internal class ChannelController(
         // kind:40 でチャンネルメタ取得
         jobs += launch {
             NostrRepository.events(metaSubId).collect { event ->
-                if (event.kind != 40) return@collect
-                val meta = event.toChannelMeta() ?: return@collect
-                currentChannelMeta = meta
-                currentChannelOwnerPubkey = event.pubkey
-                relayUrl?.let { ChannelCacheStore.upsertChannel(it, event, meta) }
+                if (event.kind != 40 || event.id != channelId || channelCreateEvent != null) return@collect
+                channelCreateEvent = event
+                applyMetadataResolution()
                 scheduleProfileFetch(event.pubkey)
                 NostrRepository.subscribe(
                     metaUpdateSubId,
                     NostrFilter(kinds = listOf(41), eTags = listOf(channelId)),
                     relayUrl = relayUrl,
                 )
-                syncReadyState()
             }
         }
 
-        // kind:41 チャンネルメタ更新
+        // kind:41 チャンネルメタ更新。所有者・root marker・JSON妥当性の検証はChannelMetadataResolverへ委譲する。
         jobs += launch {
             NostrRepository.events(metaUpdateSubId).collect { event ->
-                if (event.kind != 41 || event.createdAt <= latestMetaUpdateCreatedAt) return@collect
-                if (event.tags.none { it.firstOrNull() == "e" && it.getOrNull(1) == channelId }) return@collect
-                val owner = currentChannelOwnerPubkey
-                if (owner != null && event.pubkey != owner) return@collect
-                val meta = event.toChannelMeta() ?: return@collect
-                latestMetaUpdateCreatedAt = event.createdAt
-                currentChannelMeta = meta
-                syncReadyState()
+                if (event.kind != 41) return@collect
+                metadataUpdateCandidates[event.id] = event
+                applyMetadataResolution()
             }
         }
 
