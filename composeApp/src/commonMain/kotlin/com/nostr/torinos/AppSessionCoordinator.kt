@@ -594,6 +594,7 @@ internal fun AppSessionCoordinator(
                                             initialTab = drawerDestination.initialTab,
                                             channelId = channelId,
                                             onBack = drawerCoordinator::navigateBackOrCloseProfile,
+                                            enableSwipeBack = true,
                                             onUserClick = ::openProfileDrawer,
                                             onReply = { event, preview, chId ->
                                                 closeProfileDrawerAndThen {

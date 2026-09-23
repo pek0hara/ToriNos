@@ -166,6 +166,51 @@ internal class ThreadController(
         }
     }
 
+    /** ルート以外の返信（チャンネルの kind:42 を含む）を削除する。ルート削除と違い画面は閉じない。 */
+    fun deleteReply(eventId: String) {
+        val reply = _state.value.replies.firstOrNull { it.id == eventId } ?: run {
+            _state.value = _state.value.copy(deleteError = "投稿が読み込まれていません")
+            return
+        }
+        val rootId = _state.value.root?.id ?: return
+        if (_state.value.isDeleting) return
+
+        _state.value = _state.value.copy(isDeleting = true, deleteError = null)
+        launch {
+            when (val result = noteDeletionService.delete(reply)) {
+                NoteDeletionResult.Deleted -> {
+                    val tree = ThreadTreeReducer.reduce(
+                        _state.value.threadTreeState(),
+                        ThreadTreeAction.ReplyRemoved(rootId, eventId),
+                    )
+                    _state.value = _state.value.withThreadTree(tree).copy(
+                        isDeleting = false,
+                        deleteError = null,
+                        replyDeleteCompletedCount = _state.value.replyDeleteCompletedCount + 1,
+                    )
+                }
+                NoteDeletionResult.MissingSigner -> {
+                    _state.value = _state.value.copy(
+                        isDeleting = false,
+                        deleteError = "秘密鍵が設定されていません",
+                    )
+                }
+                NoteDeletionResult.NotOwner -> {
+                    _state.value = _state.value.copy(
+                        isDeleting = false,
+                        deleteError = "自分の投稿だけ削除できます",
+                    )
+                }
+                is NoteDeletionResult.Failed -> {
+                    _state.value = _state.value.copy(
+                        isDeleting = false,
+                        deleteError = result.cause.message ?: "投稿の削除要求を送信できませんでした",
+                    )
+                }
+            }
+        }
+    }
+
     fun submitReply() {
         val root = _state.value.root ?: return
         val text = _state.value.replyText.trim()

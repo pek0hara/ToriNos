@@ -21,6 +21,11 @@ internal sealed interface ThreadTreeAction {
         val rootId: String,
         val event: NostrEvent,
     ) : ThreadTreeAction
+
+    data class ReplyRemoved(
+        val rootId: String,
+        val eventId: String,
+    ) : ThreadTreeAction
 }
 
 internal object ThreadTreeReducer {
@@ -59,6 +64,20 @@ internal object ThreadTreeReducer {
                     replies = (state.replies + action.event).sortedByEventOrder(),
                     replyCounts = state.replyCounts +
                         (action.rootId to (state.replyCounts[action.rootId] ?: state.replies.size) + 1),
+                )
+            }
+        }
+
+        is ThreadTreeAction.ReplyRemoved -> {
+            if (state.replies.none { it.id == action.eventId }) {
+                state
+            } else {
+                state.copy(
+                    replies = state.replies.filterNot { it.id == action.eventId },
+                    repliesByEventId = state.repliesByEventId - action.eventId,
+                    replyCounts = state.replyCounts[action.rootId]?.let { count ->
+                        state.replyCounts + (action.rootId to (count - 1).coerceAtLeast(0))
+                    } ?: state.replyCounts,
                 )
             }
         }

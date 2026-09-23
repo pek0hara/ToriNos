@@ -1,7 +1,10 @@
 package com.nostr.torinos.ui.thread
 
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitHorizontalTouchSlopOrCancellation
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.horizontalDrag
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -41,6 +44,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.positionChange
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -69,6 +73,7 @@ fun ThreadScreen(
     initialTab: String = "auto",
     channelId: String? = null,
     onBack: () -> Unit = {},
+    enableSwipeBack: Boolean = false,
     onUserClick: (pubkey: String) -> Unit = {},
     onReply: ((event: NostrEvent, preview: String, channelId: String?) -> Unit)? = null,
     onOpenThread: (eventId: String) -> Unit = {},
@@ -93,7 +98,7 @@ fun ThreadScreen(
     val listState = rememberSaveable(eventId, saver = LazyListState.Saver) { LazyListState() }
     var didApplyInitialBottomScroll by remember(eventId) { mutableStateOf(false) }
     var previousRepliesBottomIndex by remember(eventId) { mutableStateOf<Int?>(null) }
-    var showDeleteDialog by rememberSaveable(eventId) { mutableStateOf(false) }
+    var deleteTargetId by rememberSaveable(eventId) { mutableStateOf<String?>(null) }
     DisposableEffect(viewModel) {
         viewModel.startSubscriptions()
         onDispose { viewModel.stopSubscriptions() }
@@ -107,8 +112,14 @@ fun ThreadScreen(
 
     LaunchedEffect(state.deleteCompletedCount) {
         if (state.deleteCompletedCount > 0) {
-            showDeleteDialog = false
+            deleteTargetId = null
             onBack()
+        }
+    }
+
+    LaunchedEffect(state.replyDeleteCompletedCount) {
+        if (state.replyDeleteCompletedCount > 0) {
+            deleteTargetId = null
         }
     }
 
@@ -179,7 +190,8 @@ fun ThreadScreen(
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(padding),
+                .padding(padding)
+                .then(if (enableSwipeBack) Modifier.drawerThreadSwipeBack(onBack) else Modifier),
         ) {
             when {
                 state.isLoading && state.root == null -> {
@@ -213,14 +225,7 @@ fun ThreadScreen(
                     LazyColumn(
                         state = listState,
                         modifier = Modifier
-                            .fillMaxSize()
-                            .threadTabSwipe(
-                                currentTab = selectedTab,
-                                onTabChange = {
-                                    didSelectTabManually = true
-                                    selectedTab = it
-                                },
-                            ),
+                            .fillMaxSize(),
                     ) {
                         item {
                             val root = state.root ?: return@item
@@ -304,7 +309,7 @@ fun ThreadScreen(
                                 onReplyParentClick = onOpenThread,
                                 ownPubkey = ownPubkey,
                                 onDelete = if (root.pubkey == ownPubkey) {
-                                    { showDeleteDialog = true }
+                                    { deleteTargetId = root.id }
                                 } else null,
                             )
                             HorizontalDivider()
@@ -387,6 +392,10 @@ fun ThreadScreen(
                                             onOpenReposts = { onOpenReposts(reply.id) },
                                             onRefreshReactions = { viewModel.refreshReactions(reply.id) },
                                             onNoteClick = onOpenThread,
+                                            ownPubkey = ownPubkey,
+                                            onDelete = if (reply.pubkey == ownPubkey) {
+                                                { deleteTargetId = reply.id }
+                                            } else null,
                                         )
                                         HorizontalDivider()
                                     }
@@ -500,14 +509,16 @@ fun ThreadScreen(
     }
 
 
-    if (showDeleteDialog) {
+    deleteTargetId?.let { targetId ->
         DeleteNoteDialog(
             isDeleting = state.isDeleting,
             error = state.deleteError,
             onDismiss = {
-                if (!state.isDeleting) showDeleteDialog = false
+                if (!state.isDeleting) deleteTargetId = null
             },
-            onConfirm = viewModel::deleteRoot,
+            onConfirm = {
+                if (targetId == state.root?.id) viewModel.deleteRoot() else viewModel.deleteReply(targetId)
+            },
         )
     }
 }
@@ -534,32 +545,25 @@ private fun preferredThreadTab(
     else -> ThreadTab.Replies
 }
 
-private fun Modifier.threadTabSwipe(
-    currentTab: ThreadTab,
-    onTabChange: (ThreadTab) -> Unit,
-): Modifier = pointerInput(currentTab) {
-    var dragAmount = 0f
-    detectHorizontalDragGestures(
-        onDragStart = { dragAmount = 0f },
-        onHorizontalDrag = { change, amount ->
-            dragAmount += amount
-            change.consume()
-        },
-        onDragEnd = {
-            when {
-                dragAmount < -SwipeThresholdPx -> currentTab.next()?.let(onTabChange)
-                dragAmount > SwipeThresholdPx -> currentTab.previous()?.let(onTabChange)
+private fun Modifier.drawerThreadSwipeBack(onBack: () -> Unit): Modifier = pointerInput(onBack) {
+    awaitEachGesture {
+        val down = awaitFirstDown(requireUnconsumed = false)
+        var dragAmount = 0f
+        val dragStart = awaitHorizontalTouchSlopOrCancellation(down.id) { change, overSlop ->
+            if (overSlop > 0f) {
+                dragAmount = overSlop
+                change.consume()
             }
-        },
-        onDragCancel = { dragAmount = 0f },
-    )
+        }
+        if (dragStart != null) {
+            val completed = horizontalDrag(dragStart.id) { change ->
+                dragAmount += change.positionChange().x
+                change.consume()
+            }
+            if (completed && dragAmount > SwipeBackThresholdPx) onBack()
+        }
+    }
 }
-
-private fun ThreadTab.next(): ThreadTab? =
-    ThreadTab.entries.getOrNull(ordinal + 1)
-
-private fun ThreadTab.previous(): ThreadTab? =
-    ThreadTab.entries.getOrNull(ordinal - 1)
 
 private fun String.replyPreviewText(): String =
     stripImageUrls(stripNostrEventUris(this))
@@ -569,7 +573,7 @@ private fun String.replyPreviewText(): String =
         .joinToString(" ")
         .take(160)
 
-private const val SwipeThresholdPx = 80f
+private const val SwipeBackThresholdPx = 80f
 private const val AutoTabRouteValue = "auto"
 private const val RootItemCount = 1
 private const val TabRowItemCount = 1
