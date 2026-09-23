@@ -78,6 +78,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.isSpecified
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.FilterQuality
 import androidx.compose.ui.graphics.graphicsLayer
@@ -1908,8 +1909,7 @@ private fun QuotePreview(
                     ),
             )
             Row(
-                modifier = Modifier.weight(1f),
-                horizontalArrangement = Arrangement.SpaceBetween,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 ProfileNameText(
@@ -1921,7 +1921,6 @@ private fun QuotePreview(
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                     modifier = Modifier
-                        .weight(1f)
                         .then(
                             if (onNoteClick != null) Modifier.clickable { onNoteClick(event.id) }
                             else Modifier
@@ -1931,7 +1930,6 @@ private fun QuotePreview(
                     text = formatTimestamp(event.createdAt, todayTimeOnly = true),
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(start = 8.dp),
                 )
             }
         }
@@ -2068,12 +2066,17 @@ private fun ImagePreviewGrid(
     if (imageUrls.size == 1) {
         BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
             val media = images.first()
-            val aspectRatio = if (media.width != null && media.height != null) {
+            val declaredAspectRatio = if (media.width != null && media.height != null) {
                 media.width.toFloat() / media.height.toFloat()
             } else {
-                16f / 9f
+                null
             }
+            // メタデータの縦横比は欠落・不正確なことがあるため、実際にデコードされた画像の
+            // 縦横比が分かればそちらで当たり判定を測り直す。ずれたままだと空白部分までタップ可能になる。
+            var measuredAspectRatio by remember(media.url) { mutableStateOf<Float?>(null) }
+            val aspectRatio = measuredAspectRatio ?: declaredAspectRatio ?: (16f / 9f)
             val imageHeight = minOf(maxWidth / aspectRatio, singleImageMaxHeight)
+            val imageWidth = minOf(imageHeight * aspectRatio, maxWidth)
             NetworkImage(
                 url = previewUrls.first(),
                 contentDescription = images.first().alt,
@@ -2083,9 +2086,14 @@ private fun ImagePreviewGrid(
                 maxDecodeSizePx = TimelineImageMaxDecodeSizePx,
                 filterQuality = FilterQuality.Low,
                 animate = false,
+                onSuccessSize = { size ->
+                    if (size.isSpecified && size.width > 0f && size.height > 0f) {
+                        measuredAspectRatio = size.width / size.height
+                    }
+                },
                 modifier = Modifier
                     .height(imageHeight)
-                    .widthIn(max = maxWidth)
+                    .width(imageWidth)
                     .clickable { onImageClick(imageUrls, 0) },
             )
         }
