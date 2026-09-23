@@ -36,7 +36,10 @@ object RelayListEventCache {
         events.update { current ->
             val cached = current[event.pubkey]
             if (cached == null || event.isNewerThan(cached)) {
-                current + (event.pubkey to event)
+                (current + (event.pubkey to event)).trimToNewestEvents(
+                    maximumSize = MaximumMemoryEntries,
+                    protectedKey = event.pubkey,
+                )
             } else {
                 current
             }
@@ -61,4 +64,18 @@ object RelayListEventCache {
 
     private const val RELAY_LIST_KIND = 10002
     private const val CACHE_KEY_PREFIX = "relay_list_event_cache_"
+    private const val MaximumMemoryEntries = 500
+}
+
+private fun Map<String, NostrEvent>.trimToNewestEvents(
+    maximumSize: Int,
+    protectedKey: String,
+): Map<String, NostrEvent> {
+    if (size <= maximumSize) return this
+    val keysToRemove = entries
+        .filter { it.key != protectedKey }
+        .sortedWith(compareBy({ it.value.createdAt }, { it.key }))
+        .take(size - maximumSize)
+        .mapTo(hashSetOf()) { it.key }
+    return filterKeys { it !in keysToRemove }
 }

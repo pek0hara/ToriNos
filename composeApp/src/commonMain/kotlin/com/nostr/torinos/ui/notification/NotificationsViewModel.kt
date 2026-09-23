@@ -118,8 +118,12 @@ class NotificationsViewModel(
             }
         }
         collectorJobs += launch {
-            ProfileRepository.observeAll().collect { cachedProfiles ->
-                val profiles = cachedProfiles.filterKeys { it in pendingPubkeys || it in _state.value.profiles }
+            ProfileRepository.observeChanges().collect { changedPubkeys ->
+                val currentProfiles = _state.value.profiles
+                val targets = pendingPubkeys + currentProfiles.keys
+                val affected = if (changedPubkeys.isEmpty()) targets else changedPubkeys.intersect(targets)
+                if (affected.isEmpty()) return@collect
+                val profiles = currentProfiles - affected + ProfileRepository.getCached(affected)
                 if (profiles != _state.value.profiles) _state.update { it.copy(profiles = profiles) }
             }
         }

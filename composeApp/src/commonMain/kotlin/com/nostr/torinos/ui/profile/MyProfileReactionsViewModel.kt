@@ -76,8 +76,14 @@ class MyProfileReactionsViewModel(private val ownPubkey: String) : SafeViewModel
             }
         }
         collectorJobs += launch {
-            ProfileRepository.observeAll().collect { cachedProfiles ->
-                val profiles = cachedProfiles.filterKeys { it in requestedProfilePubkeys }
+            ProfileRepository.observeChanges().collect { changedPubkeys ->
+                val affected = if (changedPubkeys.isEmpty()) {
+                    requestedProfilePubkeys
+                } else {
+                    changedPubkeys.intersect(requestedProfilePubkeys)
+                }
+                if (affected.isEmpty()) return@collect
+                val profiles = _state.value.profiles - affected + ProfileRepository.getCached(affected)
                 if (profiles != _state.value.profiles) {
                     _state.update { it.copy(profiles = profiles) }
                 }

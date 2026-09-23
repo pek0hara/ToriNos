@@ -17,6 +17,7 @@ import com.nostr.torinos.network.ProfileFetchPolicy
 import com.nostr.torinos.network.ProfileRepository
 import com.nostr.torinos.network.RelayStore
 import com.nostr.torinos.ui.SafeViewModel
+import com.nostr.torinos.util.BoundedLruCache
 import kotlin.random.Random
 import kotlin.time.Clock
 import kotlinx.coroutines.CancellationException
@@ -52,8 +53,10 @@ data class ArticleListState(
 )
 
 internal object ArticleMemoryCache {
-    private val articlesByRelayAndAddress = mutableMapOf<String, ArticleItem>()
-    private val eventsByRelayAndId = mutableMapOf<String, NostrEvent>()
+    private val articlesByRelayAndAddress =
+        BoundedLruCache<String, ArticleItem>(MaximumArticleEntries)
+    private val eventsByRelayAndId =
+        BoundedLruCache<String, NostrEvent>(MaximumEventEntries)
     private val localArticleEvents = MutableSharedFlow<LocalArticleEvent>(extraBufferCapacity = 16)
     private val localArticleDeletions = MutableSharedFlow<LocalArticleDeletion>(extraBufferCapacity = 16)
 
@@ -111,6 +114,9 @@ internal object ArticleMemoryCache {
 
     private fun eventKey(relayUrl: String?, eventId: String): String =
         "${relayUrl.orEmpty()}|$eventId"
+
+    private const val MaximumArticleEntries = 500
+    private const val MaximumEventEntries = 1_000
 }
 
 internal data class LocalArticleEvent(
@@ -128,6 +134,51 @@ internal data class LocalArticleDeletion(
 ) {
     fun matches(relayUrl: String?): Boolean =
         relayUrl == null || relayUrl in relayUrls
+}
+
+internal val articleDisplayOrder: Comparator<ArticleItem> =
+    compareByDescending<ArticleItem> { it.sortTime }.thenByDescending { it.event.createdAt }
+
+internal val authorDisplayOrder: Comparator<ArticleAuthorItem> =
+    compareByDescending<ArticleAuthorItem> { it.latestArticle.sortTime }.thenByDescending { it.latestArticle.event.createdAt }
+
+/**
+ * 対象addressだけを比較して追加/置換する(9.1: 新規イベントで全件のlatestArticleVersions()を
+ * 再実行しない)。既存より古いバージョンなら変化なしとして同じリスト参照を返す。
+ */
+internal fun List<ArticleItem>.withUpsertedArticle(candidate: ArticleItem): List<ArticleItem> {
+    val existingIndex = indexOfFirst { it.address == candidate.address }
+    if (existingIndex >= 0 && this[existingIndex].event.createdAt >= candidate.event.createdAt) {
+        return this
+    }
+    val result = ArrayList<ArticleItem>(size + 1)
+    for (i in indices) {
+        if (i != existingIndex) result += this[i]
+    }
+    val insertAt = result.indexOfFirst { articleDisplayOrder.compare(candidate, it) < 0 }
+        .let { if (it < 0) result.size else it }
+    result.add(insertAt, candidate)
+    return result
+}
+
+/** 指定pubkeyの著者表示モデルだけを、更新後のarticlesから再計算して差し替える。 */
+internal fun List<ArticleAuthorItem>.withUpdatedAuthor(pubkey: String, articles: List<ArticleItem>): List<ArticleAuthorItem> {
+    val itemsForAuthor = articles.filter { it.event.pubkey == pubkey }
+    val withoutExisting = filterNot { it.pubkey == pubkey }
+    if (itemsForAuthor.isEmpty()) return withoutExisting
+    val latest = itemsForAuthor.maxWith(compareBy<ArticleItem> { it.sortTime }.thenBy { it.event.createdAt })
+    val authorItem = ArticleAuthorItem(
+        pubkey = pubkey,
+        profile = latest.authorProfile,
+        articleCount = itemsForAuthor.size,
+        latestArticle = latest,
+    )
+    val insertAt = withoutExisting.indexOfFirst { authorDisplayOrder.compare(authorItem, it) < 0 }
+        .let { if (it < 0) withoutExisting.size else it }
+    val result = ArrayList<ArticleAuthorItem>(withoutExisting.size + 1)
+    result.addAll(withoutExisting)
+    result.add(insertAt, authorItem)
+    return result
 }
 
 class ArticleHubViewModel(
@@ -150,7 +201,7 @@ class ArticleHubViewModel(
             ArticleMemoryCache.articleEvents.collect { localEvent ->
                 if (!localEvent.matches(relayUrl)) return@collect
                 rawEvents[localEvent.event.id] = localEvent.event
-                updateStateFromEvents()
+                applyLocalArticleEvent(localEvent.event)
                 fetchMissingProfiles()
             }
         }
@@ -158,7 +209,7 @@ class ArticleHubViewModel(
             ArticleMemoryCache.articleDeletions.collect { deletion ->
                 if (!deletion.matches(relayUrl)) return@collect
                 removeRawArticle(deletion.address)
-                updateStateFromEvents()
+                applyLocalArticleDeletion(deletion.address, deletion.pubkey)
             }
         }
         refresh()
@@ -200,6 +251,7 @@ class ArticleHubViewModel(
                 rawEvents[event.id] = event
                 oldestCreatedAt = minOf(oldestCreatedAt ?: event.createdAt, event.createdAt)
             }
+            trimRawEventWindow()
             updateStateFromEvents()
             fetchMissingProfiles()
         } catch (e: CancellationException) {
@@ -233,11 +285,71 @@ class ArticleHubViewModel(
         )
     }
 
+    /** 9.1: 単一のローカル公開イベントだけを比較し、既存のarticles/authorsに差分反映する。 */
+    private fun applyLocalArticleEvent(event: NostrEvent) {
+        val meta = event.toArticleMeta() ?: return
+        if (accountSession?.muteStore?.isMuted(event.pubkey) == true) return
+        val candidate = ArticleItem(event = event, meta = meta, authorProfile = _state.value.profiles[event.pubkey])
+        val articles = _state.value.articles.withUpsertedArticle(candidate)
+        if (articles === _state.value.articles) return
+        ArticleMemoryCache.putArticles(relayUrl, listOf(candidate))
+        _state.value = _state.value.copy(
+            articles = articles,
+            authors = _state.value.authors.withUpdatedAuthor(event.pubkey, articles),
+        )
+    }
+
+    /** 9.1: 削除対象のaddressだけをarticles/authorsから取り除く。 */
+    private fun applyLocalArticleDeletion(address: String, pubkey: String) {
+        val articles = _state.value.articles
+        if (articles.none { it.address == address }) return
+        val updatedArticles = articles.filterNot { it.address == address }
+        _state.value = _state.value.copy(
+            articles = updatedArticles,
+            authors = _state.value.authors.withUpdatedAuthor(pubkey, updatedArticles),
+        )
+    }
+
+    /**
+     * 9.2: ページ追加のたびに増え続けるrawEventsを、直近ARTICLE_RAW_EVENT_WINDOW(1,000)件へ収める。
+     * loadMore()は現在のスクロール位置付近(末尾)へ追記する形でしか呼ばれないため、末尾側は常に
+     * 現在の閲覧アンカーを含む。先頭側(挿入が最も古い = 時系列で最も新しい = 既にスクロールし
+     * 終えた記事)から間引くことで、表示中の窓を飛ばさずに上限を維持する。
+     */
+    private fun trimRawEventWindow() {
+        while (rawEvents.size > ARTICLE_RAW_EVENT_WINDOW) {
+            val eldestKey = rawEvents.keys.firstOrNull() ?: break
+            rawEvents.remove(eldestKey)
+        }
+    }
+
     private fun removeRawArticle(address: String) {
         rawEvents.entries.removeAll { (_, event) ->
             val meta = event.toArticleMeta() ?: return@removeAll false
             articleAddress(event.pubkey, meta.identifier) == address
         }
+    }
+
+    /** 9.1: プロフィール変更では記事本文を再解析せず、著者表示モデルだけを差し替える。 */
+    private fun applyProfileUpdates(newProfiles: Map<String, NostrProfile>) {
+        if (newProfiles.isEmpty()) return
+        _state.value = _state.value.copy(profiles = _state.value.profiles + newProfiles)
+        val changedArticles = mutableListOf<ArticleItem>()
+        val articles = _state.value.articles.map { article ->
+            val profile = newProfiles[article.event.pubkey]
+            if (profile != null && article.authorProfile != profile) {
+                article.copy(authorProfile = profile).also { changedArticles += it }
+            } else {
+                article
+            }
+        }
+        if (changedArticles.isEmpty()) return
+        ArticleMemoryCache.putArticles(relayUrl, changedArticles)
+        var authors = _state.value.authors
+        changedArticles.map { it.event.pubkey }.distinct().forEach { pubkey ->
+            authors = authors.withUpdatedAuthor(pubkey, articles)
+        }
+        _state.value = _state.value.copy(articles = articles, authors = authors)
     }
 
     private suspend fun fetchMissingProfiles() {
@@ -247,15 +359,13 @@ class ArticleHubViewModel(
             .filterNot { it in _state.value.profiles }
         val cachedProfiles = ProfileRepository.getCached(missing)
         if (cachedProfiles.isNotEmpty()) {
-            _state.value = _state.value.copy(profiles = _state.value.profiles + cachedProfiles)
-            updateStateFromEvents()
+            applyProfileUpdates(cachedProfiles)
         }
         val uncached = missing.filterNot { it in cachedProfiles }
         if (uncached.isEmpty()) return
         val profiles = fetchProfiles(uncached, relayUrl)
         if (profiles.isEmpty()) return
-        _state.value = _state.value.copy(profiles = _state.value.profiles + profiles)
-        updateStateFromEvents()
+        applyProfileUpdates(profiles)
     }
 }
 
@@ -280,7 +390,7 @@ class UserArticleListViewModel(
             ArticleMemoryCache.articleEvents.collect { localEvent ->
                 if (!localEvent.matches(relayUrl) || localEvent.event.pubkey != pubkey) return@collect
                 rawEvents[localEvent.event.id] = localEvent.event
-                updateStateFromEvents()
+                applyLocalArticleEvent(localEvent.event)
                 fetchProfile()
             }
         }
@@ -288,7 +398,7 @@ class UserArticleListViewModel(
             ArticleMemoryCache.articleDeletions.collect { deletion ->
                 if (!deletion.matches(relayUrl) || deletion.pubkey != pubkey) return@collect
                 removeRawArticle(deletion.address)
-                updateStateFromEvents()
+                applyLocalArticleDeletion(deletion.address, deletion.pubkey)
             }
         }
         refresh()
@@ -331,6 +441,7 @@ class UserArticleListViewModel(
                 rawEvents[event.id] = event
                 oldestCreatedAt = minOf(oldestCreatedAt ?: event.createdAt, event.createdAt)
             }
+            trimRawEventWindow()
             updateStateFromEvents()
             fetchProfile()
         } catch (e: CancellationException) {
@@ -364,6 +475,44 @@ class UserArticleListViewModel(
         )
     }
 
+    /** 9.1: 単一のローカル公開イベントだけを比較し、既存のarticles/authorsに差分反映する。 */
+    private fun applyLocalArticleEvent(event: NostrEvent) {
+        val meta = event.toArticleMeta() ?: return
+        if (accountSession?.muteStore?.isMuted(event.pubkey) == true) return
+        val candidate = ArticleItem(event = event, meta = meta, authorProfile = _state.value.profiles[event.pubkey])
+        val articles = _state.value.articles.withUpsertedArticle(candidate)
+        if (articles === _state.value.articles) return
+        ArticleMemoryCache.putArticles(relayUrl, listOf(candidate))
+        _state.value = _state.value.copy(
+            articles = articles,
+            authors = _state.value.authors.withUpdatedAuthor(event.pubkey, articles),
+        )
+    }
+
+    /** 9.1: 削除対象のaddressだけをarticles/authorsから取り除く。 */
+    private fun applyLocalArticleDeletion(address: String, pubkey: String) {
+        val articles = _state.value.articles
+        if (articles.none { it.address == address }) return
+        val updatedArticles = articles.filterNot { it.address == address }
+        _state.value = _state.value.copy(
+            articles = updatedArticles,
+            authors = _state.value.authors.withUpdatedAuthor(pubkey, updatedArticles),
+        )
+    }
+
+    /**
+     * 9.2: ページ追加のたびに増え続けるrawEventsを、直近ARTICLE_RAW_EVENT_WINDOW(1,000)件へ収める。
+     * loadMore()は現在のスクロール位置付近(末尾)へ追記する形でしか呼ばれないため、末尾側は常に
+     * 現在の閲覧アンカーを含む。先頭側(挿入が最も古い = 時系列で最も新しい = 既にスクロールし
+     * 終えた記事)から間引くことで、表示中の窓を飛ばさずに上限を維持する。
+     */
+    private fun trimRawEventWindow() {
+        while (rawEvents.size > ARTICLE_RAW_EVENT_WINDOW) {
+            val eldestKey = rawEvents.keys.firstOrNull() ?: break
+            rawEvents.remove(eldestKey)
+        }
+    }
+
     private fun removeRawArticle(address: String) {
         rawEvents.entries.removeAll { (_, event) ->
             val meta = event.toArticleMeta() ?: return@removeAll false
@@ -371,17 +520,37 @@ class UserArticleListViewModel(
         }
     }
 
+    /** 9.1: プロフィール変更では記事本文を再解析せず、著者表示モデルだけを差し替える。 */
+    private fun applyProfileUpdates(newProfiles: Map<String, NostrProfile>) {
+        if (newProfiles.isEmpty()) return
+        _state.value = _state.value.copy(profiles = _state.value.profiles + newProfiles)
+        val changedArticles = mutableListOf<ArticleItem>()
+        val articles = _state.value.articles.map { article ->
+            val profile = newProfiles[article.event.pubkey]
+            if (profile != null && article.authorProfile != profile) {
+                article.copy(authorProfile = profile).also { changedArticles += it }
+            } else {
+                article
+            }
+        }
+        if (changedArticles.isEmpty()) return
+        ArticleMemoryCache.putArticles(relayUrl, changedArticles)
+        var authors = _state.value.authors
+        changedArticles.map { it.event.pubkey }.distinct().forEach { pubkey ->
+            authors = authors.withUpdatedAuthor(pubkey, articles)
+        }
+        _state.value = _state.value.copy(articles = articles, authors = authors)
+    }
+
     private suspend fun fetchProfile() {
         if (pubkey in _state.value.profiles) return
         ProfileRepository.getCached(pubkey)?.let { cachedProfile ->
-            _state.value = _state.value.copy(profiles = _state.value.profiles + (pubkey to cachedProfile))
-            updateStateFromEvents()
+            applyProfileUpdates(mapOf(pubkey to cachedProfile))
             return
         }
         val profile = fetchProfiles(listOf(pubkey), relayUrl)
         if (profile.isEmpty()) return
-        _state.value = _state.value.copy(profiles = _state.value.profiles + profile)
-        updateStateFromEvents()
+        applyProfileUpdates(profile)
     }
 }
 
@@ -666,6 +835,7 @@ private suspend fun fetchProfiles(
 }
 
 private const val ARTICLE_PAGE_SIZE = 50
+private const val ARTICLE_RAW_EVENT_WINDOW = 1_000
 private const val ARTICLE_DETAIL_AUTHOR_FALLBACK_LIMIT = 100
 private const val ARTICLE_FETCH_TIMEOUT_MS = 8_000L
 private const val PROFILE_FETCH_TIMEOUT_MS = 5_000L

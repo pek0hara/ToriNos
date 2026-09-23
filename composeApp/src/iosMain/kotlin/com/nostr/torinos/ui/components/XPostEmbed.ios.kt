@@ -23,6 +23,7 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.unit.dp
+import com.nostr.torinos.util.cacheTraceLog
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.addressOf
 import kotlinx.cinterop.convert
@@ -81,9 +82,13 @@ internal actual fun XPostEmbed(
         delay(SnapshotLayoutDelayMillis)
         val webView = webViewRef.value ?: return@LaunchedEffect
         webView.layoutIfNeeded()
-        webView.captureSnapshot()?.let { capturedImage ->
+        cacheTraceLog { "[XPostEmbed] capturing snapshot postId=${cacheKey.postId} widthPx=${cacheKey.widthPx}" }
+        val capturedImage = webView.captureSnapshot()
+        if (capturedImage != null) {
             XPostSnapshotCache[cacheKey] = capturedImage
             snapshot = capturedImage
+        } else {
+            cacheTraceLog { "[XPostEmbed] captureSnapshot returned null postId=${cacheKey.postId}" }
         }
     }
 

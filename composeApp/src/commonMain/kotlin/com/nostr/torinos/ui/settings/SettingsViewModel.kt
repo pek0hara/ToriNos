@@ -44,9 +44,11 @@ class SettingsViewModel : SafeViewModel() {
 
     init {
         launch {
-            ProfileRepository.observeAll().collect { cachedProfiles ->
+            ProfileRepository.observeChanges().collect { changedPubkeys ->
                 val accountPubkeys = _state.value.accounts.mapTo(hashSetOf()) { it.pubkeyHex }
-                val profiles = cachedProfiles.filterKeys { it in accountPubkeys }
+                val affected = if (changedPubkeys.isEmpty()) accountPubkeys else changedPubkeys.intersect(accountPubkeys)
+                if (affected.isEmpty()) return@collect
+                val profiles = _state.value.profiles - affected + ProfileRepository.getCached(affected)
                 if (profiles != _state.value.profiles) _state.update { it.copy(profiles = profiles) }
             }
         }

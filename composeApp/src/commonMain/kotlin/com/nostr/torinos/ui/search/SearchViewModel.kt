@@ -192,8 +192,11 @@ class SearchViewModel : SafeViewModel() {
 
         // 共通プロフィールキャッシュ
         subscriptionJobs += launch {
-            ProfileRepository.observeAll().collect { cachedProfiles ->
-                val profiles = cachedProfiles.filterKeys { it in pendingPubkeys || it in currentProfiles }
+            ProfileRepository.observeChanges().collect { changedPubkeys ->
+                val targets = pendingPubkeys + currentProfiles.keys
+                val affected = if (changedPubkeys.isEmpty()) targets else changedPubkeys.intersect(targets)
+                if (affected.isEmpty()) return@collect
+                val profiles = currentProfiles - affected + ProfileRepository.getCached(affected)
                 if (profiles != currentProfiles) {
                     currentProfiles = profiles
                     syncReadyState()

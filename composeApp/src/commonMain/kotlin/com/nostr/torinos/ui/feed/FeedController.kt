@@ -121,6 +121,7 @@ internal class FeedController(
 ) {
     private val safeCoroutineLauncher = SafeCoroutineLauncher(scope, "FeedController")
     private val feedItemMapper = FeedItemMapper()
+    private val mentionedPubkeysCache = MentionedPubkeysCache()
     /** UI から「先頭にいるか」の境界値だけを受け取る。高頻度なスクロール位置そのものは渡さない。 */
     private var isAtTop = true
 
@@ -225,11 +226,16 @@ internal class FeedController(
             }
         }
         lifecycleJobs += launch {
-            ProfileRepository.observeAll().collect { cachedProfiles ->
+            ProfileRepository.observeChanges().collect { changedPubkeys ->
                 val currentProfiles = currentFeedState().profiles
                 val relevantPubkeys = currentProfiles.keys + requestedProfilePubkeys
                 if (relevantPubkeys.isEmpty()) return@collect
-                val updatedProfiles = cachedProfiles.filterKeys { it in relevantPubkeys }
+                val changedRelevant = if (changedPubkeys.isEmpty()) {
+                    relevantPubkeys
+                } else {
+                    changedPubkeys.filterTo(linkedSetOf()) { it in relevantPubkeys }
+                }
+                val updatedProfiles = ProfileRepository.getCached(changedRelevant)
                 if (updatedProfiles.all { (pubkey, profile) -> currentProfiles[pubkey] == profile }) {
                     return@collect
                 }
@@ -1438,6 +1444,8 @@ internal class FeedController(
     }
 
     // FeedControllerの可変フィールドを読み書きしない純粋関数。Dispatchers.Default上から呼ばれる。
+    // ただしfeedItemMapper/mentionedPubkeysCacheはevent ID単位の結果キャッシュであり、
+    // 常にupdateEventsMutex配下で直列に呼ばれるため例外として直接参照する。
     private fun computeUpdatedFeedState(
         events: List<NostrEvent>,
         oldestVisibleAt: Long?,
@@ -1462,15 +1470,15 @@ internal class FeedController(
         val retainedPubkeys = buildSet {
             visibleEvents.forEach { event ->
                 add(event.pubkey)
-                extractNpubReferences(event.content).forEach { add(it.pubkey) }
+                addAll(mentionedPubkeysCache.mentionedPubkeys(event))
             }
             quotedEvents.values.forEach { event ->
                 add(event.pubkey)
-                extractNpubReferences(event.content).forEach { add(it.pubkey) }
+                addAll(mentionedPubkeysCache.mentionedPubkeys(event))
             }
             replies.values.flatten().forEach { event ->
                 add(event.pubkey)
-                extractNpubReferences(event.content).forEach { add(it.pubkey) }
+                addAll(mentionedPubkeysCache.mentionedPubkeys(event))
             }
             current.reactionEvents
                 .filterKeys { it in retainedEventIds }

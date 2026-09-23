@@ -22,8 +22,9 @@ internal class ProfileHydrator(
     private val mutableUpdates = MutableSharedFlow<ProfilePatch>(extraBufferCapacity = 16)
     val updates: Flow<ProfilePatch> = mutableUpdates.asSharedFlow()
     private val observation: Job = scope.launch {
-        ProfileRepository.observeAll().collect { cached ->
-            val relevant = cached.filterKeys { it in requested }
+        ProfileRepository.observeChanges().collect { changed ->
+            val targets = if (changed.isEmpty()) requested else changed.filterTo(linkedSetOf()) { it in requested }
+            val relevant = ProfileRepository.getCached(targets)
             if (relevant.isNotEmpty()) mutableUpdates.emit(ProfilePatch(relevant))
         }
     }

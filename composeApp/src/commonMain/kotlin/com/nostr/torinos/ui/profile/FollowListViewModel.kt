@@ -50,9 +50,11 @@ class FollowListViewModel(
 
     init {
         collectorJobs += launch {
-            ProfileRepository.observeAll().collect { cachedProfiles ->
+            ProfileRepository.observeChanges().collect { changedPubkeys ->
                 var changed = false
-                knownPubkeys.forEach { pubkey ->
+                val affected = if (changedPubkeys.isEmpty()) knownPubkeys else changedPubkeys.intersect(knownPubkeys)
+                val cachedProfiles = ProfileRepository.getCached(affected)
+                affected.forEach { pubkey ->
                     val profile = cachedProfiles[pubkey]
                     if (profile != null && profileMap[pubkey] != profile) {
                         profileMap[pubkey] = profile

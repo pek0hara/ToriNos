@@ -5,6 +5,7 @@ import com.nostr.torinos.model.NostrFilter
 import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 class ReactionEventStoreTest {
@@ -140,6 +141,35 @@ class ReactionEventStoreTest {
                 listOf(NostrFilter(kinds = listOf(7), eTags = listOf("note"))),
             ),
         )
+    }
+
+    @Test
+    fun repeatedTargetAuthorUpdatesStayBounded() {
+        repeat(10_100) { index ->
+            ReactionEventStore.observe(note(id = "note-$index", pubkey = "author-$index"))
+        }
+
+        val (_, targetAuthorCount) = ReactionEventStore.cacheSizesForTest()
+        assertEquals(10_000, targetAuthorCount)
+    }
+
+    @Test
+    fun deletingReactionReleasesItsTargetReference() {
+        val reaction = reaction(id = "reaction", targetId = "note", pTag = null)
+        ReactionEventStore.observe(note(id = "note", pubkey = "author"))
+        ReactionEventStore.observe(reaction)
+        ReactionEventStore.observe(deletion(id = "deletion", author = "reactor", targetId = reaction.id))
+
+        repeat(10_000) { index ->
+            ReactionEventStore.observe(note(id = "new-note-$index", pubkey = "new-author-$index"))
+        }
+
+        assertTrue(
+            ReactionEventStore.matching(
+                listOf(NostrFilter(kinds = listOf(7), eTags = listOf("note"))),
+            ).isEmpty(),
+        )
+        assertFalse(ReactionEventStore.isAddressedTo(reaction, "author"))
     }
 
     private fun note(id: String, pubkey: String) = NostrEvent(

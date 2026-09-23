@@ -13,6 +13,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.LinkAnnotation
 import androidx.compose.ui.text.Placeholder
 import androidx.compose.ui.text.PlaceholderVerticalAlign
@@ -28,6 +29,7 @@ import androidx.compose.ui.unit.em
 import com.nostr.torinos.model.NostrProfile
 import com.nostr.torinos.model.extractNpubReferences
 import com.nostr.torinos.network.CustomEmojiStore
+import kotlin.math.roundToInt
 
 private val hashtagTextRegex = Regex("""(?<![\p{L}\p{N}_])#[\p{L}\p{N}_]+""")
 private val emojiCodeRegex = Regex(""":([a-zA-Z0-9_-]+):""")
@@ -52,6 +54,11 @@ fun LinkedText(
     val emojis by CustomEmojiStore.emojis.collectAsState()
     val emojiMap = remember(emojis, customEmojis) {
         emojis.associate { it.shortcode to it.imageUrl } + customEmojis
+    }
+    val density = LocalDensity.current
+    // インライン絵文字はテキストに合わせて1.2emで表示するため、デコード要求も同じ大きさに絞る。
+    val emojiDecodeSizePx = remember(density, style.fontSize) {
+        with(density) { (style.fontSize * 1.2f).toPx() }.roundToInt()
     }
 
     val linkColor = MaterialTheme.colorScheme.primary
@@ -178,6 +185,7 @@ fun LinkedText(
         linkColor,
         style,
         enableCustomEmojiLinks,
+        emojiDecodeSizePx,
     ) {
         buildMap {
             emojiSegments.distinctBy { it.shortcode }.forEach { emoji ->
@@ -194,6 +202,7 @@ fun LinkedText(
                             url = emoji.imageUrl,
                             contentDescription = ":${emoji.shortcode}:",
                             contentScale = ContentScale.Fit,
+                            maxDecodeSizePx = emojiDecodeSizePx,
                             modifier = Modifier
                                 .fillMaxSize()
                                 .clipToBounds()

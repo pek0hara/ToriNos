@@ -34,6 +34,7 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
+import com.nostr.torinos.util.cacheTraceLog
 import kotlinx.coroutines.delay
 
 @SuppressLint("SetJavaScriptEnabled")
@@ -71,9 +72,16 @@ internal actual fun XPostEmbed(
             if (webViewRef.value !== webView) return@LaunchedEffect
             val isLastAttempt = attempt == MaxSnapshotLayoutAttempts - 1
             if (webView.height >= targetHeightPx || isLastAttempt) {
-                webView.captureSnapshotBitmap()?.let { capturedImage ->
+                cacheTraceLog {
+                    "[XPostEmbed] capturing snapshot postId=${cacheKey.postId} widthPx=${cacheKey.widthPx} " +
+                        "attempt=$attempt isLastAttempt=$isLastAttempt"
+                }
+                val capturedImage = webView.captureSnapshotBitmap()
+                if (capturedImage != null) {
                     XPostSnapshotCache[cacheKey] = capturedImage
                     snapshot = capturedImage
+                } else {
+                    cacheTraceLog { "[XPostEmbed] captureSnapshotBitmap returned null postId=${cacheKey.postId}" }
                 }
                 return@LaunchedEffect
             }

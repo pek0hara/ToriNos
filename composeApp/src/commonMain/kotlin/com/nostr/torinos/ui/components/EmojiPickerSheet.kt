@@ -48,6 +48,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.input.ImeAction
@@ -352,6 +353,8 @@ private fun EmojiPickerGridTile(
     option: ReactionOption,
     onSelect: (ReactionOption) -> Unit,
 ) {
+    val density = LocalDensity.current
+    val decodeSizePx = remember(density) { with(density) { 30.dp.roundToPx() } }
     Box(
         modifier = Modifier
             .size(42.dp)
@@ -371,6 +374,7 @@ private fun EmojiPickerGridTile(
                 url = option.imageUrl,
                 contentDescription = null,
                 contentScale = ContentScale.Fit,
+                maxDecodeSizePx = decodeSizePx,
                 modifier = Modifier.size(30.dp),
             )
         }
@@ -386,6 +390,8 @@ private fun EmojiCategoryButton(
     selected: Boolean,
     onClick: () -> Unit,
 ) {
+    val density = LocalDensity.current
+    val decodeSizePx = remember(density) { with(density) { 24.dp.roundToPx() } }
     Box(
         modifier = Modifier
             .size(38.dp)
@@ -409,6 +415,7 @@ private fun EmojiCategoryButton(
                 url = customImageUrl,
                 contentDescription = null,
                 contentScale = ContentScale.Fit,
+                maxDecodeSizePx = decodeSizePx,
                 modifier = Modifier.size(24.dp),
             )
         } else {

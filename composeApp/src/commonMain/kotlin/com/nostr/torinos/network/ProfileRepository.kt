@@ -1,6 +1,7 @@
 package com.nostr.torinos.network
 
 import com.nostr.torinos.model.NostrFilter
+import com.nostr.torinos.model.NostrEvent
 import com.nostr.torinos.model.NostrProfile
 import com.nostr.torinos.util.appLog
 import com.nostr.torinos.util.loggingExceptionHandler
@@ -15,9 +16,7 @@ import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
-import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -42,18 +41,9 @@ object ProfileRepository {
     fun observe(pubkey: String): Flow<NostrProfile?> = ProfileCache.observe(pubkey)
 
     fun observe(pubkeys: Set<String>): Flow<Map<String, NostrProfile>> =
-        ProfileCache.entries
-            .map { entries ->
-                pubkeys.mapNotNull { pubkey ->
-                    entries[pubkey]?.profile?.let { pubkey to it }
-                }.toMap()
-            }
-            .distinctUntilChanged()
+        ProfileCache.observe(pubkeys)
 
-    fun observeAll(): Flow<Map<String, NostrProfile>> =
-        ProfileCache.entries
-            .map { entries -> entries.mapValues { it.value.profile } }
-            .distinctUntilChanged()
+    internal fun observeChanges(): Flow<Set<String>> = ProfileCache.observeChanges()
 
     fun getCached(pubkey: String): NostrProfile? = ProfileCache.get(pubkey)
 
@@ -67,7 +57,7 @@ object ProfileRepository {
         val now = Clock.System.now().toEpochMilliseconds()
         val requested = selectPubkeysToFetch(
             pubkeys = pubkeys,
-            entries = ProfileCache.entries.value,
+            entries = ProfileCache.snapshotEntries(),
             policy = policy,
             now = now,
         )
@@ -239,8 +229,14 @@ private object ProfileFetchCoordinator {
     private suspend fun fetch(batch: Batch) {
         var completedSuccessfully = false
         val receivedPubkeys = linkedSetOf<String>()
+        val pendingEvents = mutableListOf<NostrEvent>()
         var session: SubscriptionSession? = null
         var progressive = false
+        fun applyPendingEvents() {
+            if (pendingEvents.isEmpty()) return
+            receivedPubkeys.addAll(ProfileCache.putEvents(pendingEvents).keys)
+            pendingEvents.clear()
+        }
         try {
             // リレー指定がなければ、まず先頭の少数リレーだけに聞く。全リレーに同じ kind:0 を聞くと
             // 同一イベントが台数分返る。取れなかった分は finishBatch で全リレーへ広げる。
@@ -279,12 +275,11 @@ private object ProfileFetchCoordinator {
                     is SubscriptionSignal.Event -> {
                         val event = signal.event
                         if (event.kind == PROFILE_KIND && event.pubkey in batch.pubkeys) {
-                            if (ProfileCache.putEvent(event) != null) {
-                                receivedPubkeys.add(event.pubkey)
-                            }
+                            pendingEvents.add(event)
                         }
                     }
                     is SubscriptionSignal.FetchCompleted -> {
+                        applyPendingEvents()
                         completedSuccessfully = signal.outcomes.isNotEmpty() &&
                             !signal.timedOut &&
                             signal.outcomes.values.all { it is RelayOutcome.Eose }
@@ -297,6 +292,7 @@ private object ProfileFetchCoordinator {
         } catch (e: Throwable) {
             appLog("[ProfileFetchCoordinator] fetch failed: ${e::class.simpleName}: ${e.message}")
         } finally {
+            applyPendingEvents()
             runCatching { session?.close() }
             finishBatch(batch, receivedPubkeys, completedSuccessfully, progressive)
         }

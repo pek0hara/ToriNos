@@ -7,6 +7,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.Dp
 import com.nostr.torinos.model.CustomReaction
 import com.nostr.torinos.network.CustomEmojiStore
@@ -19,6 +20,8 @@ internal fun CustomReactionLink(
     imageSize: Dp = containerSize,
     modifier: Modifier = Modifier,
 ) {
+    val density = LocalDensity.current
+    val decodeSizePx = with(density) { imageSize.roundToPx() }
     Box(
         modifier = modifier
             .size(containerSize)
@@ -34,6 +37,7 @@ internal fun CustomReactionLink(
             url = reaction.imageUrl,
             contentDescription = ":${reaction.shortcode}:",
             contentScale = ContentScale.Fit,
+            maxDecodeSizePx = decodeSizePx,
             modifier = Modifier.size(imageSize),
         )
     }

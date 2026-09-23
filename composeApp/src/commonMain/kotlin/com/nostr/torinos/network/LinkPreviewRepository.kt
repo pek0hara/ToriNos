@@ -1,6 +1,7 @@
 package com.nostr.torinos.network
 
 import com.nostr.torinos.createHttpClient
+import com.nostr.torinos.util.TtlFetchCache
 import io.ktor.client.request.get
 import io.ktor.client.request.header
 import io.ktor.client.statement.HttpResponse
@@ -10,12 +11,8 @@ import io.ktor.http.HttpHeaders
 import io.ktor.http.Url
 import io.ktor.http.isSuccess
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.async
-import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeout
 
 data class LinkPreview(
@@ -29,39 +26,30 @@ data class LinkPreview(
 object LinkPreviewRepository {
     private val httpClient = createHttpClient()
     private val fetchScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
-    private val cacheMutex = Mutex()
-    private val cache = linkedMapOf<String, LinkPreview?>()
-    // 同じ URL への並行フェッチを1本に束ねる
-    private val inFlight = mutableMapOf<String, Deferred<LinkPreview?>>()
+    private val cache = TtlFetchCache<String, LinkPreview>(
+        scope = fetchScope,
+        maximumSize = MaxCacheEntries,
+        successTtlMillis = SuccessTtlMillis,
+        failureTtlMillis = FailureTtlMillis,
+        name = "LinkPreviewRepository",
+    )
 
     suspend fun fetch(url: String): LinkPreview? {
         if (!isSafeLinkPreviewUrl(url)) return null
-        val deferred: Deferred<LinkPreview?> = cacheMutex.withLock {
-            if (cache.containsKey(url)) return cache[url]
-            inFlight.getOrPut(url) { fetchScope.async { doFetch(url) } }
-        }
-        return deferred.await()
+        return cache.get(url) { doFetch(url) }
     }
 
-    private suspend fun doFetch(url: String): LinkPreview? {
-        val preview = runCatching {
-            withTimeout(5_000) {
-                val response: HttpResponse = httpClient.get(url) {
-                    header(HttpHeaders.Accept, "text/html,application/xhtml+xml")
-                    header(HttpHeaders.UserAgent, "ToriNos/1.0 LinkPreview")
-                }
-                if (!response.status.isSuccess()) return@withTimeout null
-                if (!isSafeLinkPreviewUrl(response.request.url.toString())) return@withTimeout null
-                parsePreview(url, response.bodyAsText().take(MaxHtmlChars))
+    private suspend fun doFetch(url: String): LinkPreview? = runCatching {
+        withTimeout(5_000) {
+            val response: HttpResponse = httpClient.get(url) {
+                header(HttpHeaders.Accept, "text/html,application/xhtml+xml")
+                header(HttpHeaders.UserAgent, "ToriNos/1.0 LinkPreview")
             }
-        }.getOrNull()
-        cacheMutex.withLock {
-            if (cache.size >= MaxCacheEntries) cache.remove(cache.keys.first())
-            cache[url] = preview
-            inFlight.remove(url)
+            if (!response.status.isSuccess()) return@withTimeout null
+            if (!isSafeLinkPreviewUrl(response.request.url.toString())) return@withTimeout null
+            parsePreview(url, response.bodyAsText().take(MaxHtmlChars))
         }
-        return preview
-    }
+    }.getOrNull()
 
     private fun parsePreview(url: String, html: String): LinkPreview? {
         val title = metaContent(html, "property", "og:title")
@@ -138,6 +126,8 @@ object LinkPreviewRepository {
 
     private const val MaxHtmlChars = 200_000
     private const val MaxCacheEntries = 200
+    private const val SuccessTtlMillis = 60 * 60 * 1_000L
+    private const val FailureTtlMillis = 2 * 60 * 1_000L
 }
 
 internal fun isSafeLinkPreviewUrl(value: String): Boolean {

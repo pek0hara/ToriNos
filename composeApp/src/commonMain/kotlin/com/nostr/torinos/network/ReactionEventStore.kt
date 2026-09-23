@@ -2,10 +2,9 @@ package com.nostr.torinos.network
 
 import com.nostr.torinos.model.NostrEvent
 import com.nostr.torinos.model.NostrFilter
-import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.update
+import com.nostr.torinos.util.SynchronousLock
+import com.nostr.torinos.util.cacheTraceLog
+import com.nostr.torinos.util.withLock
 
 /**
  * 画面をまたいで再利用する、セッション内のリアクションイベントキャッシュ。
@@ -14,49 +13,17 @@ import kotlinx.coroutines.flow.update
  * 初期表示に利用しつつ、必要なリレー購読を継続する。
  */
 object ReactionEventStore {
-    private val cache = MutableStateFlow<Map<String, CachedReaction>>(emptyMap())
-    private val _events = MutableStateFlow<Map<String, NostrEvent>>(emptyMap())
-    val events: StateFlow<Map<String, NostrEvent>> = _events.asStateFlow()
-
-    private val _targetAuthors = MutableStateFlow<Map<String, String>>(emptyMap())
+    private val lock = SynchronousLock()
+    private val reactionsById = LinkedHashMap<String, CachedReaction>()
+    private val targetAuthorsByEventId = LinkedHashMap<String, String>()
+    private val referencedTargetCounts = mutableMapOf<String, Int>()
 
     fun observe(event: NostrEvent, sourceRelayUrls: Set<String> = emptySet()) {
-        when (event.kind) {
-            REACTION_KIND -> {
-                if (event.reactionTargetId() == null) return
-                cache.update { current ->
-                    val existingSources = current[event.id]?.sourceRelayUrls.orEmpty()
-                    (current + (event.id to CachedReaction(event, existingSources + sourceRelayUrls)))
-                        .trimOldest()
-                }
-                publishEvents()
-            }
-            DELETION_KIND -> {
-                val deletedIds = event.tags
-                    .asSequence()
-                    .filter { it.firstOrNull() == "e" }
-                    .mapNotNull { it.getOrNull(1) }
-                    .toSet()
-                if (deletedIds.isEmpty()) return
-                cache.update { current ->
-                    buildMap {
-                        current.forEach { (id, cached) ->
-                            if (id !in deletedIds || cached.event.pubkey != event.pubkey) {
-                                put(id, cached)
-                            } else if (sourceRelayUrls.isNotEmpty()) {
-                                val remainingSources = cached.sourceRelayUrls - sourceRelayUrls
-                                if (remainingSources.isNotEmpty()) {
-                                    put(id, cached.copy(sourceRelayUrls = remainingSources))
-                                }
-                            }
-                        }
-                    }
-                }
-                publishEvents()
-            }
-            else -> _targetAuthors.update { current ->
-                if (current[event.id] == event.pubkey) current
-                else (current + (event.id to event.pubkey)).trimOldestKeys(cache.value)
+        lock.withLock {
+            when (event.kind) {
+                REACTION_KIND -> observeReactionLocked(event, sourceRelayUrls)
+                DELETION_KIND -> observeDeletionLocked(event, sourceRelayUrls)
+                else -> rememberTargetAuthorLocked(event.id, event.pubkey)
             }
         }
     }
@@ -64,19 +31,18 @@ object ReactionEventStore {
     internal fun matching(
         filters: List<NostrFilter>,
         allowedRelayUrls: Set<String>? = null,
-    ): List<NostrEvent> {
-        val targetAuthors = _targetAuthors.value
-        return filters
+    ): List<NostrEvent> = lock.withLock {
+        filters
             .asSequence()
             .filter { it.kinds?.contains(REACTION_KIND) == true }
             .flatMap { filter ->
-                cache.value.values
+                reactionsById.values
                     .asSequence()
                     .filter { cached ->
                         allowedRelayUrls == null || cached.sourceRelayUrls.any { it in allowedRelayUrls }
                     }
                     .map { it.event }
-                    .filter { event -> event.matchesReactionFilter(filter, targetAuthors) }
+                    .filter { event -> event.matchesReactionFilter(filter, targetAuthorsByEventId) }
                     .sortedByDescending { it.createdAt }
                     .let { events -> filter.limit?.let(events::take) ?: events }
             }
@@ -84,8 +50,12 @@ object ReactionEventStore {
             .toList()
     }
 
-    internal fun isAddressedTo(event: NostrEvent, pubkey: String): Boolean {
-        val knownTargetAuthor = event.reactionTargetId()?.let(_targetAuthors.value::get)
+    internal fun isAddressedTo(event: NostrEvent, pubkey: String): Boolean = lock.withLock {
+        isAddressedToLocked(event, pubkey)
+    }
+
+    private fun isAddressedToLocked(event: NostrEvent, pubkey: String): Boolean {
+        val knownTargetAuthor = event.reactionTargetId()?.let(targetAuthorsByEventId::get)
         if (knownTargetAuthor != null) return knownTargetAuthor == pubkey
         return event.tags.any { tag -> tag.firstOrNull() == "p" && tag.getOrNull(1) == pubkey }
     }
@@ -94,25 +64,100 @@ object ReactionEventStore {
         pubkey: String,
         since: Long,
         until: Long,
-    ): List<NostrEvent> = cache.value.values
-        .asSequence()
-        .map { it.event }
-        .filter { event ->
-            event.createdAt in since..until &&
-                event.content.trim() != "-" &&
-                isAddressedTo(event, pubkey)
-        }
-        .sortedByDescending { it.createdAt }
-        .toList()
-
-    internal fun clearForTest() {
-        cache.value = emptyMap()
-        _events.value = emptyMap()
-        _targetAuthors.value = emptyMap()
+    ): List<NostrEvent> = lock.withLock {
+        reactionsById.values
+            .asSequence()
+            .map { it.event }
+            .filter { event ->
+                event.createdAt in since..until &&
+                    event.content.trim() != "-" &&
+                    isAddressedToLocked(event, pubkey)
+            }
+            .sortedByDescending { it.createdAt }
+            .toList()
     }
 
-    private fun publishEvents() {
-        _events.value = cache.value.mapValues { it.value.event }
+    internal fun clearForTest() {
+        lock.withLock {
+            reactionsById.clear()
+            targetAuthorsByEventId.clear()
+            referencedTargetCounts.clear()
+        }
+    }
+
+    internal fun cacheSizesForTest(): Pair<Int, Int> = lock.withLock {
+        reactionsById.size to targetAuthorsByEventId.size
+    }
+
+    private fun observeReactionLocked(event: NostrEvent, sourceRelayUrls: Set<String>) {
+        val targetId = event.reactionTargetId() ?: return
+        val existing = reactionsById[event.id]
+        val updated = CachedReaction(
+            event = event,
+            sourceRelayUrls = existing?.sourceRelayUrls.orEmpty() + sourceRelayUrls,
+        )
+        if (existing?.event?.reactionTargetId() != targetId) {
+            existing?.event?.reactionTargetId()?.let(::decrementTargetReferenceLocked)
+            referencedTargetCounts[targetId] = (referencedTargetCounts[targetId] ?: 0) + 1
+        }
+        reactionsById[event.id] = updated
+        trimReactionsLocked()
+    }
+
+    private fun observeDeletionLocked(event: NostrEvent, sourceRelayUrls: Set<String>) {
+        event.tags
+            .asSequence()
+            .filter { it.firstOrNull() == "e" }
+            .mapNotNull { it.getOrNull(1) }
+            .distinct()
+            .forEach { id ->
+                val cached = reactionsById[id] ?: return@forEach
+                if (cached.event.pubkey != event.pubkey) return@forEach
+                if (sourceRelayUrls.isEmpty()) {
+                    removeReactionLocked(id)
+                } else {
+                    val remainingSources = cached.sourceRelayUrls - sourceRelayUrls
+                    if (remainingSources.isEmpty()) {
+                        removeReactionLocked(id)
+                    } else {
+                        reactionsById[id] = cached.copy(sourceRelayUrls = remainingSources)
+                    }
+                }
+            }
+    }
+
+    private fun rememberTargetAuthorLocked(eventId: String, pubkey: String) {
+        if (targetAuthorsByEventId[eventId] == pubkey) return
+        targetAuthorsByEventId.remove(eventId)
+        targetAuthorsByEventId[eventId] = pubkey
+        while (targetAuthorsByEventId.size > MAX_CACHED_TARGET_AUTHORS) {
+            val removableId = targetAuthorsByEventId.keys
+                .firstOrNull { (referencedTargetCounts[it] ?: 0) == 0 }
+                ?: targetAuthorsByEventId.keys.first()
+            targetAuthorsByEventId.remove(removableId)
+            cacheTraceLog {
+                "[ReactionEventStore] evicted targetAuthor eventId=$removableId size=${targetAuthorsByEventId.size}"
+            }
+        }
+    }
+
+    private fun trimReactionsLocked() {
+        while (reactionsById.size > MAX_CACHED_REACTIONS) {
+            val oldestId = reactionsById.minByOrNull { it.value.event.createdAt }?.key ?: return
+            removeReactionLocked(oldestId)
+            cacheTraceLog { "[ReactionEventStore] evicted reaction id=$oldestId size=${reactionsById.size}" }
+        }
+    }
+
+    private fun removeReactionLocked(eventId: String) {
+        val removed = reactionsById.remove(eventId) ?: return
+        removed.event.reactionTargetId()?.let(::decrementTargetReferenceLocked)
+    }
+
+    private fun decrementTargetReferenceLocked(targetId: String) {
+        val count = referencedTargetCounts[targetId] ?: return
+        if (count <= 1) referencedTargetCounts.remove(targetId)
+        else referencedTargetCounts[targetId] = count - 1
     }
 }
 
@@ -152,21 +197,6 @@ private fun NostrEvent.matchesReactionFilter(
         if (!matchesTarget) return false
     }
     return true
-}
-
-private fun Map<String, CachedReaction>.trimOldest(): Map<String, CachedReaction> {
-    if (size <= MAX_CACHED_REACTIONS) return this
-    val oldestId = minByOrNull { it.value.event.createdAt }?.key ?: return this
-    return this - oldestId
-}
-
-private fun Map<String, String>.trimOldestKeys(
-    reactions: Map<String, CachedReaction>,
-): Map<String, String> {
-    if (size <= MAX_CACHED_TARGET_AUTHORS) return this
-    val referencedTargetIds = reactions.values.mapNotNullTo(hashSetOf()) { it.event.reactionTargetId() }
-    val removableId = keys.firstOrNull { it !in referencedTargetIds } ?: keys.firstOrNull() ?: return this
-    return this - removableId
 }
 
 private const val REACTION_KIND = 7

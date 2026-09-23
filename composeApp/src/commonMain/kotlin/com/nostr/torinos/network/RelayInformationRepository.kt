@@ -8,6 +8,9 @@ import io.ktor.client.statement.bodyAsText
 import io.ktor.http.HttpHeaders
 import io.ktor.http.Url
 import io.ktor.http.isSuccess
+import com.nostr.torinos.util.BoundedLruCache
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
@@ -65,12 +68,13 @@ data class RelayLimitation(
 object RelayInformationRepository {
     private val httpClient = createHttpClient()
     private val json = Json { ignoreUnknownKeys = true }
-    private val cache = mutableMapOf<String, Result<RelayInformation>>()
+    private val cacheMutex = Mutex()
+    private val cache = BoundedLruCache<String, Result<RelayInformation>>(MaximumCacheEntries)
 
     suspend fun fetch(relayUrl: String, forceRefresh: Boolean = false): Result<RelayInformation> {
         val normalizedUrl = relayUrl.trim()
         if (!forceRefresh) {
-            cache[normalizedUrl]?.let { return it }
+            cacheMutex.withLock { cache[normalizedUrl] }?.let { return it }
         }
 
         val result = runCatching {
@@ -86,9 +90,11 @@ object RelayInformationRepository {
                 json.decodeFromString(RelayInformation.serializer(), response.bodyAsText())
             }
         }
-        cache[normalizedUrl] = result
+        cacheMutex.withLock { cache[normalizedUrl] = result }
         return result
     }
+
+    private const val MaximumCacheEntries = 200
 }
 
 private fun String.toRelayInformationUrl(): String {

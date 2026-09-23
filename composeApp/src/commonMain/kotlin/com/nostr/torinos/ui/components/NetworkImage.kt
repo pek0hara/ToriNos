@@ -14,10 +14,12 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.FilterQuality
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.Dp
 import coil3.Bitmap
 import coil3.PlatformContext
 import coil3.compose.AsyncImage
+import coil3.compose.AsyncImagePainter
 import coil3.compose.LocalPlatformContext
 import coil3.request.ImageRequest
 import coil3.request.crossfade
@@ -63,15 +65,20 @@ fun NetworkImage(
     filterQuality: FilterQuality = FilterQuality.Medium,
     animate: Boolean = true,
     blurHash: String? = null,
+    onSuccessSize: ((androidx.compose.ui.geometry.Size) -> Unit)? = null,
 ) {
     val context = LocalPlatformContext.current
     val model = remember(context, url, contentScale, maxDecodeSizePx, animate) {
         buildNetworkImageRequest(context, url, contentScale, maxDecodeSizePx, animate)
     }
+    val onSuccess: ((AsyncImagePainter.State.Success) -> Unit)? = onSuccessSize?.let { report ->
+        { state -> report(state.painter.intrinsicSize) }
+    }
     if (blurHash == null) {
         AsyncImage(
             model = model,
             contentDescription = contentDescription,
+            onSuccess = onSuccess,
             contentScale = contentScale,
             alignment = alignment,
             filterQuality = filterQuality,
@@ -89,7 +96,10 @@ fun NetworkImage(
             AsyncImage(
                 model = model,
                 contentDescription = contentDescription,
-                onSuccess = { showBlurHash = false },
+                onSuccess = { state ->
+                    showBlurHash = false
+                    onSuccess?.invoke(state)
+                },
                 contentScale = contentScale,
                 alignment = alignment,
                 filterQuality = filterQuality,
@@ -136,11 +146,16 @@ fun AvatarImage(
     modifier: Modifier = Modifier,
 ) {
     val context = LocalPlatformContext.current
-    val model = remember(context, url) {
-        ImageRequest.Builder(context)
-            .data(url)
-            .crossfade(false)
-            .build()
+    val density = LocalDensity.current
+    // 表示サイズに合わせてデコードさせ、大きな元画像をそのままフル解像度で保持しないようにする。
+    val decodeSizePx = with(density) { size.roundToPx() }
+    val model = remember(context, url, decodeSizePx) {
+        buildNetworkImageRequest(
+            context = context,
+            url = url,
+            contentScale = ContentScale.Crop,
+            maxDecodeSizePx = decodeSizePx,
+        )
     }
     AsyncImage(
         model = model,
