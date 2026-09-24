@@ -5,21 +5,24 @@
 検索画面でユーザー検索を行った後に、フィードのスクロールが重くなる問題を解消する。
 
 本修正では、検索種別と無関係なNostr購読を開始しないこと、検索画面を離れた後に購読と集計処理を
-残さないこと、検索で受信するイベント数とUI状態更新頻度を予測可能にすることを保証する。
+残さないこと、検索で受信するイベント数とUI状態更新頻度を予測可能にすることを目指す。
+厳密な受信上限と実機での性能確認は未完了であり、9〜11章で区別する。
 
-## 2. 現状の問題
+## 2. 修正前の問題
+
+この章は修正前の実装を記録したものである。現在の導入状況は9章を参照する。
 
 ### 2.1 ユーザータブでもポスト検索が同時に走る
 
 `SearchScreen`の`selectedTab`は表示の切り替えにだけ使われ、`SearchViewModel.search()`には渡されて
 いない。そのため、ユーザータブで検索しても次の処理がすべて開始される。
 
-- NIP-50のプロフィール検索（kind 0、最大20件）
+- NIP-50のプロフィール検索（kind 0、`limit = 20`を要求）
 - NIP-50のポスト検索（kind 1、最大30件）
 - 検索ポストの投稿者と本文中の参照プロフィール取得
 - 検索ポストに対するリアクション、返信、リポスト、引用リポスト取得
 
-プロフィール検索単体の取得量は最大20件に制限されている。主な負荷源は、ユーザー検索には不要な
+プロフィール検索はリレーへ`limit = 20`を要求していた。主な負荷源は、ユーザー検索には不要な
 ポスト検索と、それに連鎖して開始されるエンゲージメント取得である。
 
 ### 2.2 エンゲージメント取得が無期限・無制限
@@ -65,7 +68,7 @@
 5. ネットワークイベントの受信頻度とUI状態の発行頻度を分離する。
 6. 古い検索世代の結果を現在の検索状態へ混ぜない。
 
-## 4. 目標状態モデル
+## 4. 状態モデル
 
 ポストとユーザーでロード状態、結果、エラー、ページング状態を分離する。
 
@@ -75,27 +78,40 @@ enum class SearchTab {
     Users,
 }
 
-sealed interface SearchLoadState {
-    data object NotRequested : SearchLoadState
-    data object Loading : SearchLoadState
-    data object Ready : SearchLoadState
-    data class Failed(val message: String) : SearchLoadState
+enum class SearchLoadState {
+    NotRequested,
+    Loading,
+    Interrupted,
+    Ready,
+    Failed,
 }
 
-data class SearchUiState(
+data class UiState(
     val query: String = "",
     val selectedTab: SearchTab = SearchTab.Posts,
     val postsLoadState: SearchLoadState = SearchLoadState.NotRequested,
     val usersLoadState: SearchLoadState = SearchLoadState.NotRequested,
-    val posts: List<NostrEvent> = emptyList(),
+    val events: List<NostrEvent> = emptyList(),
     val users: List<Pair<String, NostrProfile>> = emptyList(),
-    val canLoadMorePosts: Boolean = false,
-    // profiles、engagement等は現行フィールドを当面維持する。
+    val canLoadMore: Boolean = false,
+    // プロフィール、リアクション、返信、リポストの表示用フィールドも保持する。
 )
 ```
 
-`SearchScreen`が独自に`selectedTab`を持つ構造はやめ、選択タブをViewModelの状態に含める。これにより、
-ViewModelが必要な検索だけを判断でき、画面再生成後も取得済みタブを識別できる。
+`SearchScreen`の選択タブは`SearchViewModel.UiState`で管理する。ポストとユーザーのロード状態は独立し、
+未取得タブへの初回切り替えだけがそのタブの検索を開始する。`Failed`は現時点ではメッセージを保持せず、
+画面には共通の再検索案内を表示する。
+
+### 4.1 画面離脱による中断（Loop 5a-R4）
+
+`Loading` 中に画面が非表示になった場合、受信済み結果を残したまま `Interrupted` へ遷移する。
+実行中ページの `until` 境界を保持し、復帰時または該当タブの再選択時に同じ境界を再取得する。
+イベントIDで結果を重複排除する一方、ページの満杯判定はその再取得で受信した一意ID数を使う。
+次ページの `until` も完了したページで受信した最古時刻から決め、停止前にたまたま受信した古いイベントへ飛ばない。
+これにより部分ページの途中から古い境界へ飛ばず、完了したページだけを `Ready` としてページ送り可能にする。
+新しい検索語の入力時は中断境界を破棄する。ユーザー検索も中断後の復帰で再実行する。
+
+Loop 5a-R4 の実装レビューでは `SearchPageProgress` に境界とページ内ID集合を集約し、1件受信後の中断・同じ境界での再開・重複除外・新検索時の破棄を単体テストで確認した。iPhone 17 Simulatorでは検索画面の表示を確認したが、実通信中断のタイミングを伴うGUI操作は未実施であり、隔離テスト環境での回帰項目として残す。
 
 ## 5. 取得フロー
 
@@ -105,7 +121,7 @@ ViewModelが必要な検索だけを判断でき、画面再生成後も取得�
 検索ボタン
    |
    v
-submit(query, selectedTab)
+search(query, selectedTab)
    |
    +-- Users --> kind 0検索だけ開始
    |
@@ -119,7 +135,7 @@ submit(query, selectedTab)
 
 ### 5.2 タブ切り替え
 
-- 切り替え先が`NotRequested`なら、現在のクエリでそのタブを1回だけ取得する。
+- 切り替え先が`NotRequested`なら現在のクエリを初回取得し、`Interrupted`なら中断した取得を再開する。
 - `Loading`または`Ready`なら重複取得しない。
 - ユーザーからポストへ切り替えた時点で初めて、ポストとその付随情報を取得する。
 - ポストからユーザーへ切り替えても、ポストの有限取得は完了させてよい。ただしライブ購読は残さない。
@@ -129,31 +145,38 @@ submit(query, selectedTab)
 ユーザー検索は現在の`ProfileRepository.searchProfiles()`を基本形として維持する。
 
 - kind 0のみ
-- 最大20件
+- リレーへの要求は`limit = 20`。受信側での20件切り詰めは未実装であり、非準拠リレーからの超過受信は防げない
 - EOSEまたは8秒のタイムアウトで終了
 - 終了時は成功・タイムアウトにかかわらず一時購読を閉じる
 - 取得したプロフィールは`ProfileCache`へ保存する
 - ポスト、エンゲージメント、検索ポスト由来のプロフィール取得は開始しない
 
+受信したkind 0は解析済みの`NostrProfile`とイベントID・作成時刻・取得時刻として共通の
+`ProfileCache`へ保存する（メモリ最大2,000 pubkey）。検索結果のユーザー一覧と検索語は検索ViewModelの
+メモリ状態に保持し、新しい検索またはViewModel破棄まで利用する。検索語・検索結果・kind 0イベント全文を
+検索専用DBへ永続保存する処理はない。同じ検索語の明示的な再検索はリレーへ再問い合わせする。
+表示されたアバター画像はプロフィールとは別の共通画像キャッシュを利用する（メモリ最大64 MiB、
+ディスク最大128 MiB）。
+
 ### 5.4 ポスト検索
 
-- kind 1を1ページ最大30件取得する。
+- kind 1を1ページ`limit = 30`で要求する。受信側での30件切り詰めは未実装。
 - 各ページのEOSEまたはタイムアウト時に、そのページの一時購読を必ず閉じる。
-- 30件取得できた場合は`canLoadMorePosts = true`だけを保持する。
+- 30件以上の新規イベントを受信した場合は`canLoadMore = true`を保持する。
 - 「さらに読み込む」が押された時は、新しい有限購読IDで次ページを取得する。
 - ページごとに購読IDを変え、遅れて届いた前ページのイベントを現在のページ件数へ加算しない。
 
-可能であれば、互換APIの`subscribeTemporaryRelay()`ではなく、有限取得を表現する
-`SubscriptionBehavior.Fetch`ベースのセッションへ寄せる。EOSE、タイムアウト、closeの責務を
-セッションに集約し、画面側の終了漏れを防ぐ。
+現行実装は`subscribeTemporaryRelay()`でページごとに別の購読IDを使い、`EOSE`または10秒の
+タイムアウトで明示的に閉じる。`SubscriptionBehavior.Fetch`への統一は未実装。
 
 ## 6. エンゲージメント取得
 
 ### 6.1 第1段階
 
-まず、エンゲージメント取得をポストタブだけに限定し、無期限のライブ購読から有限取得へ変更する。
+エンゲージメント取得はポスト検索で受信した投稿だけに限定し、
+`SubscriptionBehavior.Fetch`による有限取得へ変更した。
 
-- 対象は現在の検索結果30件まで
+- 対象はポスト検索で取得済みの投稿ID。追跡集合は最大100件
 - EOSEまたは短いタイムアウトで終了
 - 取得完了後に購読を残さない
 - 検索画面が非表示になったら途中でもキャンセルする
@@ -164,13 +187,19 @@ submit(query, selectedTab)
 各フィルターへ`limit`を設定し、必要に応じて`since`も設定する。初期値は計測可能な定数へ集約する。
 
 ```kotlin
-private const val SEARCH_POST_PAGE_SIZE = 30
-private const val SEARCH_ENGAGEMENT_LIMIT_PER_FILTER = 200
-private const val SEARCH_ENGAGEMENT_LOOKBACK_DAYS = 90
+private const val PAGE_SIZE = 30
+private const val ENGAGEMENT_FILTER_LIMIT = 200
+private const val ENGAGEMENT_TOTAL_LIMIT = 800
+private const val ENGAGEMENT_LOOKBACK_SECONDS = 90L * 24L * 60L * 60L
+private const val ENGAGEMENT_TIMEOUT_MS = 5_000L
 ```
 
 Nostrの`limit`はリレー単位で適用されるため、アプリ側にも購読全体の受信上限を設ける。有効リレー数が
-増えても無制限にならないよう、上限到達時はセッションを終了する。
+増えても無制限にならないよう、1回の有限取得で800イベントを受信した時点でセッションを閉じる。
+ただし、セッション内にすでにキューイングされたイベントを集計前に切り捨てる処理はまだないため、
+800件は現時点で厳密な集計上限ではない。
+検索結果の投稿ID集合が増えると、前の有限取得をキャンセルして新しい取得を開始するため、800件は
+検索操作全体ではなく**各取得セッション**の上限である。
 
 検索画面の反応数は、接続リレーと取得上限の範囲で得た値であり、元から全Nostrネットワークに対する
 厳密値ではない。上限導入後も表示仕様は「取得できた範囲の件数」とする。
@@ -188,16 +217,18 @@ Nostrの`limit`はリレー単位で適用されるため、アプリ側にも�
 
 ## 7. 状態更新のバッチ化
 
-受信イベントごとの`currentMap = currentMap + entry`と`syncReadyState()`を廃止する。
+現行実装では、受信イベントごとの`syncReadyState()`をやめ、UI状態の発行を100msの時間窓でまとめた。
+ただし、集計Map/Listには受信ごとの`currentMap = currentMap + entry`が残っている。
 
-- ViewModel内部では所有権を限定した可変Map/Setへ集計する。
-- 最大50件または100msの早い方でUI用スナップショットを発行する。
+- ViewModel内部のMap/Listを可変コレクションへ移すことは未実装。
+- UI用スナップショットは100ms後に発行する。50件到達時の早期発行は未実装。
 - EOSE、タイムアウト、画面終了時は保留中バッチをflushまたは破棄する責務を明示する。
 - 同値の状態は発行しない。
 - プロフィール変更は、現在の検索結果が参照するpubkeyと交差する場合だけ反映する。
 
-UI状態のバッチ化と`ReactionEventStore`への保存は別責務とする。共有キャッシュへ保存するイベントも、
-検索の受信上限を超えて処理しない。
+UI状態のバッチ化と`ReactionEventStore`への保存は別責務である。リレー受信イベントは
+`NostrRepository`で共有キャッシュにも渡る。ユーザー検索のkind 0はリアクション本体としては保存されず、
+イベントIDとpubkeyの対応だけが`ReactionEventStore`へ記録される。
 
 ## 8. ライフサイクルとキャンセル
 
@@ -205,29 +236,34 @@ UI状態のバッチ化と`ReactionEventStore`への保存は別責務とする�
 
 - 画面がSTARTEDになったら、必要な検索処理を再開可能な状態にする。
 - STOP時にポスト、プロフィール、エンゲージメントの全購読とタイムアウトJobを停止する。
-- STOP時に`Loading`のまま残さない。表示可能な途中結果があれば`Ready`、なければ
-  `NotRequested`へ戻し、再表示後にローディング表示が永久に残ることを防ぐ。
+- STOP時に`Loading`のまま残さず`Interrupted`にする。途中結果と実行中ページの境界を保持し、
+  再表示後に同じページを再取得してから`Ready`にする。
 - `onCleared()`でも同じ停止処理を呼び、安全弁とする。
 - 停止処理は冪等にする。
-- 結果表示用の`SearchUiState`は保持し、画面へ戻っただけでは自動再検索しない。
-- ユーザーが明示的に再検索した時だけ、新しい検索世代で取得し直す。
+- 結果表示用の`SearchUiState`は保持する。中断済み取得のみ画面復帰時に自動再開する。
+- ユーザーが明示的に新しい検索をした時は、新しい検索世代で取得し直す。
 
 停止対象は、メイン検索、ページ検索、ユーザー検索、リアクション、返信、リポスト、引用リポスト、
 プロフィールバッチ、状態発行バッチ、ページタイムアウトのすべてとする。
 
-## 9. 実装手順
+検索用の一時購読を閉じる処理は`NostrRepository`内のコルーチンで非同期に実行される。同じ検索リレーを
+使う**最後の一時購読**がなくなった時に、その一時WebSocketを切断する。他の一時購読が同じ接続を
+使用している間は接続を維持する。フィードなどが使う通常のリレー接続は検索画面の停止対象ではない。
 
-### Phase 1: 不要な同時検索を止める
+## 9. 導入状況（2026-09-24）
+
+### Phase 1: 不要な同時検索を止める — 実装済み
 
 1. `SearchTab`とタブ別ロード状態を追加する。
 2. `SearchScreen`のタブ選択をViewModelへ移す。
-3. `submit(query, tab)`で選択中タブだけを検索する。
+3. `search(query, tab)`で選択中タブだけを検索する。
 4. 未取得タブは初回選択時に遅延取得する。
-5. ユーザー検索でkind 1・エンゲージメント購読が開始されないテストを追加する。
+5. ユーザー検索でkind 1・エンゲージメント購読が開始されないことはコード上で分離した。購読呼び出しを
+   記録するViewModelテストは未実装。
 
-このPhaseだけで、報告されているユーザー検索後の負荷の大部分を除去できる見込みである。
+ユーザータブで検索した場合、`ProfileRepository.searchProfiles()`だけを起動する。
 
-### Phase 2: 購読を有限化する
+### Phase 2: 購読を有限化する — 実装済み（一部残課題あり）
 
 1. ポスト検索をページ単位の有限購読へ変更する。
 2. EOSE受信後は`canLoadMore`に関係なく購読を閉じる。
@@ -235,18 +271,66 @@ UI状態のバッチ化と`ReactionEventStore`への保存は別責務とする�
 4. エンゲージメントを有限取得へ変更する。
 5. 画面STOP時の一括キャンセルを追加する。
 
-### Phase 3: 集計と状態発行を軽量化する
+ポスト検索のページは一時購読を明示的に閉じる方式で、有限取得セッションへの統一は未実装。
+プロフィール検索も既存の一時購読方式を維持している。
 
-1. イベント受信時の不変Map/List連続コピーを内部可変コレクションへ置き換える。
-2. UI状態更新を件数・時間窓でバッチ化する。
-3. プロフィール取得対象と変更通知を検索結果の参照pubkeyへ限定する。
-4. 検索経由の`ReactionEventStore`増加量と照合時間を計測する。
+### Phase 3: 集計と状態発行を軽量化する — 一部実装
+
+1. 不変Map/Listの受信ごとのコピーは残っている。
+2. UI状態更新は100msでバッチ化済み。件数到達による早期発行は未実装。
+3. プロフィール変更通知は、検索結果で参照するpubkeyとの積集合だけを反映する。
+4. 検索経由の`ReactionEventStore`増加量と照合時間は、下記「検索後のスクロール低下の原因切り分け」で計測済み。
 
 ### Phase 4: 必要な場合だけ可視範囲取得へ進む
 
 Phase 1〜3後の実機計測でポスト検索中のフレーム落ちが残る場合のみ、6.3の可視範囲取得を導入する。
 
+### 検索後のスクロール低下の原因切り分け（2026-09-24）
+
+Phase 1〜3の実装後も「投稿・ユーザーのどちらを検索しても、戻った後のフィードが露骨に重い」症状が
+残った。iOS Simulator上で、GUIを操作しない一時的な計測フックにより次の順で切り分けた。
+
+1. **共有キャッシュ**: 本物の`SearchViewModel.search("nostr")`を30秒実行して停止すると、
+   `ReactionEventStore`はリアクション165→170件・投稿者対応219→274件、`ProfileCache`は90→111件の
+   増加にとどまった。検索停止後にフィード側の照合時間が悪化する様子もなかった。原因ではない。
+2. **画面遷移と通信**: `NavController`から設定・検索(クエリ指定で自動検索)へ遷移して戻り、
+   同じ量のプログラムスクロール中のフレーム間隔を`withFrameNanos`で計測した。ベースライン・設定後・
+   検索後のいずれも8秒あたり約468フレーム、50ms超0回で差がなかった。原因ではない。
+3. **検索欄のフォーカス**: 検索欄に`requestFocus()`してから戻ると、8秒あたり317フレーム、
+   p95 68ms、50ms超51回に悪化し、15秒後も回復しなかった。**原因はこれ。**
+
+`doSearch()`は`keyboardController.hide()`でキーボードを隠すだけで、フォーカスは外していなかった。
+フォーカスを保持したまま画面を離れると、iOSのテキスト入力セッションが終了せず、フィードに戻った後も
+毎フレームの処理が重くなる。修正内容は次のとおり。
+
+- `SearchScreen`の`doSearch()`で`rememberDismissKeyboard()`(`clearFocus(force = true)`、キーボード
+  非表示、`UIWindow.endEditing`)を呼ぶ。
+- `ui/components/Keyboard.kt`に`DismissKeyboardOnLeave()`を追加した。呼び出し元がコンポジションから
+  外れる時(`DisposableEffect`の`onDispose`)に上記の解除を行う。アプリのバックグラウンド遷移では
+  フォーカスを外さないよう、ライフサイクルのSTOPでは解除しない。
+- テキスト入力を持つ18個のComposable(検索、NGワード、カスタム絵文字、リレー設定、フォロー一覧、
+  鍵設定、記事編集、投稿シート、ステータス投稿、プロフィール編集とその各ダイアログ、チャンネル作成・
+  スレッド編集ダイアログ、チャンネル/スレッドのメッセージ入力、通報ダイアログ、絵文字ピッカー)で
+  `DismissKeyboardOnLeave()`を呼ぶ。未使用の`AllReactionPickerDialog`・`InitialProfileDialog`は対象外。
+
+修正後は「フォーカス→検索実行→戻る」「フォーカス→検索せずに戻る(破棄時の解除だけが効く経路)」の
+どちらも460〜470フレーム、50ms超0〜1回となり、ベースラインと同等に戻った。検索画面以外の画面は
+同じ仕組みの修正を適用したもので、画面ごとのフレーム計測は行っていない。
+
+副次的な所見として、`ReactionEventStore.matching()`はフィードの購読更新・履歴取得のたびに
+メインスレッドで全件を走査する。キャッシュ件数に比例して1,000件で約1.8ms、10,000件で約18ms
+(シミュレータのデバッグビルド)かかり、上限到達後はリアクション受信1件ごとの退避選定にも約2ms
+かかる。検索とは独立した、長時間利用時の潜在的な負荷として
+[`cache-performance-refactor-design.md`](./cache-performance-refactor-design.md)側で扱う。
+
+実装は`ui/search/SearchScreen.kt`、`ui/search/SearchViewModel.kt`、
+`ui/search/SearchScreenTest.kt`に限定され、`ProfileRepository`と`NostrRepository`は変更していない。
+
 ## 10. テスト方針
+
+現時点で追加済みのテストは、検索エンゲージメントの6フィルターすべてに`since`と`limit`が
+設定されることの確認である。iOS Simulatorの共通テストとAndroidコンパイルは通過した。
+以下は今後追加する回帰テストであり、実装・実機計測済みを意味しない。
 
 ### 10.1 ViewModel単体テスト
 
@@ -280,16 +364,19 @@ Phase 1〜3後の実機計測でポスト検索中のフレーム落ちが残る
 
 ## 11. 計測と受け入れ条件
 
-デバッグビルドのネットワークトレースと実機のフレーム計測で確認する。
+以下は受け入れ基準である。デバッグビルドのネットワークトレースと実機のフレーム計測による
+定量確認は未実施。
 
 ### 11.1 通信・購読
 
 - ユーザー検索時のkind 1、kind 7、kind 6、kind 1111、`#q`の新規購読数が0。
-- ユーザー検索のkind 0受信数が20件以下。
+- ユーザー検索のkind 0受信数が20件以下。現行コードはリレーへ`limit = 20`を要求するが、
+  受信側の件数上限はまだ設けていない。
 - EOSEまたは8秒タイムアウト後にプロフィール検索購読が0。
 - 検索画面STOP後に、その画面が作成した有効購読が0。
 - ポスト検索の各ページが完了後に閉じ、次ページ操作までライブ受信しない。
-- エンゲージメント受信数が設定した購読全体上限以下。
+- 1回のエンゲージメント有限取得で集計する受信数が800件以下。現行コードは800件到達時に
+  セッションを閉じるが、キュー済みイベントまで含めた厳密な上限は未実装。
 
 ### 11.2 UIとメモリ
 
@@ -304,13 +391,15 @@ Macrobenchmark/JankStats、iOSはInstrumentsのCore AnimationとTime Profilerを
 
 ## 12. 対象ファイル
 
-主な変更対象は次のとおり。
+今回変更したファイルは次のとおり。
 
 - `ui/search/SearchScreen.kt`
 - `ui/search/SearchViewModel.kt`
-- `network/ProfileRepository.kt`
-- `network/NostrRepository.kt`または有限購読Coordinator
-- 検索ViewModel、プロフィール検索、購読終了に対応するテスト
+- `ui/search/SearchScreenTest.kt`
+
+今後、受信件数の厳密な上限、検索ごとの購読終了を検証するテスト、プロフィール検索やページ検索の
+有限セッションへの統一が必要になった場合は、`network/ProfileRepository.kt`、
+`network/NostrRepository.kt`または有限購読Coordinatorも変更対象になる。
 
 `ReactionEventStore`自体の大規模な再設計は本修正の必須範囲に含めない。Phase 1〜3で検索からの不要な
 流入を止めた後も共有キャッシュの照合が基準を超える場合は、
