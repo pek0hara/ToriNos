@@ -1,22 +1,18 @@
 package com.nostr.torinos.ui.channel
 
-import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
@@ -24,7 +20,6 @@ import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.CleaningServices
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.MoreVert
@@ -41,8 +36,9 @@ import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import com.nostr.torinos.ui.components.AppTopBar
@@ -56,7 +52,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.runtime.collectAsState
@@ -150,8 +145,23 @@ fun ChannelListScreen(
     val headerBackgroundColor = MaterialTheme.colorScheme.background
     val headerContentColor = MaterialTheme.colorScheme.onBackground
 
+    val snackbarHostState = remember { SnackbarHostState() }
+    val createNotices by ChannelCreateNoticeStore.pending.collectAsState()
+    val notice = (state as? ChannelListViewModel.UiState.Ready)?.notice
+    LaunchedEffect(notice) {
+        val message = notice ?: return@LaunchedEffect
+        viewModel.consumeNotice()
+        snackbarHostState.showSnackbar(message)
+    }
+    LaunchedEffect(createNotices, ownPubkey) {
+        val next = createNotices.firstOrNull { it.pubkey == ownPubkey } ?: return@LaunchedEffect
+        snackbarHostState.showSnackbar(next.message)
+        ChannelCreateNoticeStore.consume(next.eventId)
+    }
+
     Scaffold(
         contentWindowInsets = WindowInsets(0),
+        snackbarHost = { SnackbarHost(snackbarHostState) },
         topBar = {
             Column(modifier = Modifier.background(headerBackgroundColor)) {
                 AppTopBar(
@@ -176,15 +186,6 @@ fun ChannelListScreen(
                         )
                     },
                     actions = {
-                        if (state is ChannelListViewModel.UiState.Ready) {
-                            IconButton(onClick = viewModel::showBulkDeleteDialog) {
-                                Icon(
-                                    Icons.Default.CleaningServices,
-                                    contentDescription = "お気に入り以外のキャッシュを削除",
-                                    tint = headerContentColor,
-                                )
-                            }
-                        }
                         IconButton(onClick = onOpenSettings) {
                             Icon(
                                 Icons.Default.Settings,
@@ -266,13 +267,22 @@ fun ChannelListScreen(
                                     item = item,
                                     onClick = { onChannelClick(item.event.id) },
                                     onDetailClick = { viewModel.showDetailDialog(item.event.id) },
-                                    onLongClick = {
+                                    onCacheDeleteClick = {
                                         viewModel.showDeleteDialog(
                                             channelId = item.event.id,
                                             channelName = item.meta.name.ifBlank { "（名前なし）" },
-                                            deleteFromRelays = ownPubkey != null && item.event.pubkey == ownPubkey,
+                                            deleteFromRelays = false,
                                         )
                                     },
+                                    onChannelDeleteClick = if (ownPubkey != null && item.event.pubkey == ownPubkey) {
+                                        {
+                                            viewModel.showDeleteDialog(
+                                                channelId = item.event.id,
+                                                channelName = item.meta.name.ifBlank { "（名前なし）" },
+                                                deleteFromRelays = true,
+                                            )
+                                        }
+                                    } else null,
                                     onFavoriteClick = { viewModel.toggleFavorite(item.event.id) },
                                 )
                                 HorizontalDivider()
@@ -304,7 +314,7 @@ fun ChannelListScreen(
         }
     }
 
-    // キャッシュ削除ダイアログ
+    // メニューで選んだキャッシュ削除／リレーへの削除要求の確認ダイアログ
     val deleteDialog = (state as? ChannelListViewModel.UiState.Ready)?.deleteDialog
     if (deleteDialog != null) {
         AlertDialog(
@@ -359,48 +369,19 @@ fun ChannelListScreen(
         )
     }
 
-    // お気に入り以外のキャッシュ一括削除ダイアログ
-    val bulkDeleteDialog = (state as? ChannelListViewModel.UiState.Ready)?.bulkDeleteDialog
-    if (bulkDeleteDialog != null) {
-        AlertDialog(
-            onDismissRequest = { if (!bulkDeleteDialog.isDeleting) viewModel.dismissBulkDeleteDialog() },
-            title = { Text("キャッシュを一括削除") },
-            text = {
-                Text("お気に入り以外のすべてのチャンネルキャッシュを削除します。既読情報も消えます。")
-            },
-            confirmButton = {
-                Button(
-                    onClick = viewModel::confirmBulkDelete,
-                    enabled = !bulkDeleteDialog.isDeleting,
-                ) {
-                    if (bulkDeleteDialog.isDeleting) {
-                        CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
-                    } else {
-                        Text("削除")
-                    }
-                }
-            },
-            dismissButton = {
-                TextButton(
-                    onClick = viewModel::dismissBulkDeleteDialog,
-                    enabled = !bulkDeleteDialog.isDeleting,
-                ) {
-                    Text("キャンセル")
-                }
-            },
-        )
-    }
-
-    // 新規チャンネル作成ダイアログ
+    // 新規チャンネル作成シート(FR-13)
     val dialog = (state as? ChannelListViewModel.UiState.Ready)?.createDialog
     if (dialog != null) {
-        CreateChannelDialog(
+        ChannelCreateSheet(
             dialog = dialog,
             onDismiss = viewModel::dismissCreateDialog,
             onNameChange = viewModel::onCreateNameChange,
             onAboutChange = viewModel::onCreateAboutChange,
-            onBodyChange = viewModel::onCreateBodyChange,
-            onCreate = viewModel::createChannel,
+            onRelaySelectionChange = viewModel::onCreateRelaySelectionChange,
+            onAddCustomRelay = viewModel::addCreateCustomRelay,
+            onPictureSelected = viewModel::onCreatePictureSelected,
+            onPictureRemoved = viewModel::onCreatePictureRemoved,
+            onSubmit = viewModel::createChannel,
         )
     }
 }
@@ -426,96 +407,11 @@ private fun ChannelRelayPendingContent(
 }
 
 @Composable
-private fun CreateChannelDialog(
-    dialog: ChannelListViewModel.CreateDialogState,
-    onDismiss: () -> Unit,
-    onNameChange: (String) -> Unit,
-    onAboutChange: (String) -> Unit,
-    onBodyChange: (String) -> Unit,
-    onCreate: () -> Unit,
-) {
-    var nameValue by remember { mutableStateOf(TextFieldValue(dialog.name)) }
-    var aboutValue by remember { mutableStateOf(TextFieldValue(dialog.about)) }
-    var bodyValue by remember { mutableStateOf(TextFieldValue(dialog.body)) }
-
-    AlertDialog(
-        onDismissRequest = { if (!dialog.isCreating) onDismiss() },
-        title = { Text("新規チャンネル") },
-        text = {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedTextField(
-                    value = nameValue,
-                    onValueChange = {
-                        nameValue = it
-                        onNameChange(it.text)
-                    },
-                    label = { Text("チャンネル名 *") },
-                    singleLine = true,
-                    enabled = !dialog.isCreating && !dialog.isRetryingFirstPost,
-                    modifier = Modifier.fillMaxWidth(),
-                )
-                OutlinedTextField(
-                    value = aboutValue,
-                    onValueChange = {
-                        aboutValue = it
-                        onAboutChange(it.text)
-                    },
-                    label = { Text("説明") },
-                    maxLines = 3,
-                    enabled = !dialog.isCreating && !dialog.isRetryingFirstPost,
-                    modifier = Modifier.fillMaxWidth(),
-                )
-                OutlinedTextField(
-                    value = bodyValue,
-                    onValueChange = {
-                        bodyValue = it
-                        onBodyChange(it.text)
-                    },
-                    label = { Text("本文") },
-                    maxLines = 6,
-                    enabled = !dialog.isCreating,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .defaultMinSize(minHeight = 120.dp),
-                )
-                if (dialog.error != null) {
-                    Text(
-                        text = dialog.error,
-                        color = MaterialTheme.colorScheme.error,
-                        style = MaterialTheme.typography.labelSmall,
-                    )
-                }
-            }
-        },
-        confirmButton = {
-            Button(
-                onClick = onCreate,
-                enabled = nameValue.text.isNotBlank() && !dialog.isCreating,
-            ) {
-                if (dialog.isCreating) {
-                    CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
-                } else {
-                    Text(if (dialog.isRetryingFirstPost) "投稿を再送信" else "作成")
-                }
-            }
-        },
-        dismissButton = {
-            TextButton(
-                onClick = onDismiss,
-                enabled = !dialog.isCreating,
-            ) {
-                Text("キャンセル")
-            }
-        },
-    )
-}
-
-@OptIn(ExperimentalFoundationApi::class)
-@Composable
 private fun ChannelRow(
     item: ChannelItem,
     onClick: () -> Unit,
-    onLongClick: () -> Unit = {},
+    onCacheDeleteClick: () -> Unit,
+    onChannelDeleteClick: (() -> Unit)?,
     onFavoriteClick: () -> Unit = {},
     onDetailClick: () -> Unit = {},
 ) {
@@ -527,7 +423,7 @@ private fun ChannelRow(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .combinedClickable(onClick = onClick, onLongClick = onLongClick)
+            .clickable(onClick = onClick)
             .height(IntrinsicSize.Min),
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -623,6 +519,22 @@ private fun ChannelRow(
                             onDetailClick()
                         },
                     )
+                    DropdownMenuItem(
+                        text = { Text("キャッシュを削除") },
+                        onClick = {
+                            menuExpanded = false
+                            onCacheDeleteClick()
+                        },
+                    )
+                    if (onChannelDeleteClick != null) {
+                        DropdownMenuItem(
+                            text = { Text("チャンネルを削除") },
+                            onClick = {
+                                menuExpanded = false
+                                onChannelDeleteClick()
+                            },
+                        )
+                    }
                 }
             }
             BadgedBox(

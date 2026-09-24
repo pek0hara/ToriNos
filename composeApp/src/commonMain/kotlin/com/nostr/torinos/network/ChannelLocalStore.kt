@@ -210,32 +210,6 @@ internal open class ChannelLocalStateStore(
 
     suspend fun deleteChannel(channelId: String) = update { all -> all - channelId }
 
-    /** 指定リレーで観測した非お気に入りチャンネルを一覧から外す。他リレーでも観測済みなら既読状態だけ消す。 */
-    suspend fun deleteNonFavorites(relayUrl: String) = update { all ->
-        val normalized = normalizeRelayUrl(relayUrl) ?: relayUrl
-        buildMap {
-            all.forEach { (channelId, state) ->
-                if (state.isFavorite || normalized !in state.observedRelays) {
-                    put(channelId, state)
-                    return@forEach
-                }
-                val remaining = state.observedRelays - normalized
-                if (remaining.isNotEmpty()) {
-                    put(
-                        channelId,
-                        state.copy(
-                            observedRelays = remaining,
-                            lastReadAt = null,
-                            lastScrolledMessageId = null,
-                            lastScrolledCreatedAt = null,
-                            lastScrolledOffset = 0,
-                        ),
-                    )
-                }
-            }
-        }
-    }
-
     /** debounce 中の書込を即座に完了させる。 */
     suspend fun flush() {
         debouncedPersistJob?.cancel()

@@ -58,6 +58,7 @@ internal class SignedEventPublisher(
         kind: Int,
         tags: List<List<String>>,
         relayUrls: Collection<String>? = null,
+        onEventRelayResult: suspend (NostrEvent, RelayPublishResult) -> Unit = { _, _ -> },
         onRelayResult: suspend (RelayPublishResult) -> Unit = {},
     ): SignedPublishResult {
         val activeSigner = signer ?: return SignedPublishResult.MissingSigner
@@ -85,6 +86,7 @@ internal class SignedEventPublisher(
                     ReactionEventStore.observe(event, relayResult.succeededRelays)
                 }
                 onRelayResult(relayResult)
+                onEventRelayResult(event, relayResult)
             }
             if (result.succeededRelays.isEmpty()) {
                 SignedPublishResult.Failed(IllegalStateException("すべてのリレーへの送信に失敗しました"), result)

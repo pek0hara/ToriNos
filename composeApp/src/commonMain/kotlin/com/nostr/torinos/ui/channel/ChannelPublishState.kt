@@ -1,8 +1,30 @@
 package com.nostr.torinos.ui.channel
 
 import com.nostr.torinos.model.ChannelRelayContext
+import com.nostr.torinos.network.RelayEntry
 import com.nostr.torinos.network.RelayPublishResult
 import com.nostr.torinos.ui.timeline.SignedPublishResult
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
+
+/** 作成後に詳細画面へ遷移しても失われない、アカウント別の部分失敗通知。 */
+internal object ChannelCreateNoticeStore {
+    data class Notice(val eventId: String, val pubkey: String, val message: String)
+
+    private val _pending = MutableStateFlow<List<Notice>>(emptyList())
+    val pending = _pending.asStateFlow()
+
+    fun enqueue(notice: Notice) {
+        _pending.update { existing ->
+            if (existing.any { it.eventId == notice.eventId }) existing else existing + notice
+        }
+    }
+
+    fun consume(eventId: String) {
+        _pending.update { existing -> existing.filterNot { it.eventId == eventId } }
+    }
+}
 
 /** 投稿のリレー別進行状態(第16.9節)。送信先は投稿開始時点の snapshot。 */
 data class ChannelPublishUiState(
@@ -71,5 +93,29 @@ internal data class ChannelPublishContext(
             relayUrls = context.writeRelays.toList().ifEmpty { null },
             primaryHint = context.primaryHint,
         )
+    }
+}
+
+/**
+ * チャンネル作成(kind 40 と最初の kind 42)の送信計画(FR-04、FR-13)。
+ * `content.relays` は選択した推奨リレー、送信先は推奨リレー + ユーザーの書き込みリレー
+ * (チャンネル画面の [ChannelRelayContext] と同じ規則)。
+ */
+internal data class ChannelCreatePlan(
+    val recommendedRelays: List<String>,
+    val relayUrls: List<String>?,
+    val primaryHint: String?,
+) {
+    val targets: List<String> get() = relayUrls.orEmpty()
+
+    companion object {
+        fun from(recommendedRelays: List<String>, relayEntries: List<RelayEntry>): ChannelCreatePlan {
+            val context = ChannelRelayPlanner.context(recommendedRelays, null, relayEntries)
+            return ChannelCreatePlan(
+                recommendedRelays = context.recommendedRelays,
+                relayUrls = context.writeRelays.toList().ifEmpty { null },
+                primaryHint = context.primaryHint,
+            )
+        }
     }
 }

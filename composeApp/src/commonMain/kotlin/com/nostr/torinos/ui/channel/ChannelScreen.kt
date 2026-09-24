@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.padding
@@ -71,9 +72,12 @@ import com.nostr.torinos.ui.components.LinkedText
 import com.nostr.torinos.ui.components.NoteCard
 import com.nostr.torinos.ui.components.ProfileNameText
 import com.nostr.torinos.ui.components.rememberSyncedTextFieldValue
+import com.nostr.torinos.ui.components.rememberOptimizedImagePickerLauncher
+import com.nostr.torinos.ui.components.RelayMultiSelectDialog
 import com.nostr.torinos.model.stripNostrEventUris
 import com.nostr.torinos.ui.components.stripImageUrls
 import com.nostr.torinos.ui.profile.AvatarCircle
+import com.nostr.torinos.ui.components.DismissKeyboardOnLeave
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -500,6 +504,11 @@ fun ChannelScreen(
             state = editDialog,
             onTitleChange = viewModel::onEditTitleChange,
             onDescriptionChange = viewModel::onEditDescriptionChange,
+            onPictureUrlChange = viewModel::onEditPictureUrlChange,
+            onPictureSelected = viewModel::onEditPictureSelected,
+            onPictureRemoved = viewModel::onEditPictureRemoved,
+            onRelaySelectionChange = viewModel::onEditRelaySelectionChange,
+            onAddCustomRelay = viewModel::addEditCustomRelay,
             onSave = viewModel::saveThreadMeta,
             onDismiss = viewModel::dismissEditThreadDialog,
         )
@@ -511,24 +520,44 @@ private fun EditThreadDialog(
     state: ChannelViewModel.EditThreadDialogState,
     onTitleChange: (String) -> Unit,
     onDescriptionChange: (String) -> Unit,
+    onPictureUrlChange: (String) -> Unit,
+    onPictureSelected: (ByteArray, String) -> Unit,
+    onPictureRemoved: () -> Unit,
+    onRelaySelectionChange: (Set<String>) -> Unit,
+    onAddCustomRelay: (String) -> String?,
     onSave: () -> Unit,
     onDismiss: () -> Unit,
 ) {
+    DismissKeyboardOnLeave()
     var titleValue by rememberSyncedTextFieldValue(state.title)
     var descriptionValue by rememberSyncedTextFieldValue(state.description)
+    var showRelayDialog by remember(state.sessionId) { mutableStateOf(false) }
+    val pickPicture = rememberOptimizedImagePickerLauncher { image ->
+        if (image != null) onPictureSelected(image.uploadBytes, image.mimeType)
+    }
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("スレッドを編集") },
+        title = { Text("チャンネルを編集") },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Column(
+                modifier = Modifier.heightIn(max = 520.dp).verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                ChannelIconPicker(
+                    picture = state.picture,
+                    isUploading = state.isUploadingPicture,
+                    enabled = !state.isSaving,
+                    onPick = pickPicture,
+                    onRemove = onPictureRemoved,
+                )
                 OutlinedTextField(
                     value = titleValue,
                     onValueChange = {
                         titleValue = it
                         onTitleChange(it.text)
                     },
-                    label = { Text("スレッドタイトル") },
+                    label = { Text("チャンネル名") },
                     singleLine = true,
                     enabled = !state.isSaving,
                     modifier = Modifier.fillMaxWidth(),
@@ -539,11 +568,41 @@ private fun EditThreadDialog(
                         descriptionValue = it
                         onDescriptionChange(it.text)
                     },
-                    label = { Text("スレッド説明") },
+                    label = { Text("説明") },
                     maxLines = 4,
                     enabled = !state.isSaving,
                     modifier = Modifier.fillMaxWidth(),
                 )
+                OutlinedTextField(
+                    value = state.picture,
+                    onValueChange = onPictureUrlChange,
+                    label = { Text("画像URL（任意）") },
+                    singleLine = true,
+                    enabled = !state.isSaving && !state.isUploadingPicture,
+                    isError = !state.pictureIsValid,
+                    supportingText = if (!state.pictureIsValid) {{ Text("https:// の画像URLを入力してください") }} else null,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("推奨リレー: ${state.recommendedRelays.size}件", modifier = Modifier.weight(1f))
+                    TextButton(onClick = { showRelayDialog = true }, enabled = !state.isSaving) {
+                        Text("変更")
+                    }
+                }
+                if (state.recommendedRelays.isEmpty()) {
+                    Text(
+                        "推奨リレーが未選択です。他のクライアントから見えにくくなります。",
+                        color = MaterialTheme.colorScheme.error,
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                } else {
+                    Text(
+                        state.recommendedRelays.joinToString("・"),
+                        style = MaterialTheme.typography.bodySmall,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
                 state.error?.let {
                     Text(
                         text = it,
@@ -556,7 +615,7 @@ private fun EditThreadDialog(
         confirmButton = {
             Button(
                 onClick = onSave,
-                enabled = titleValue.text.isNotBlank() && !state.isSaving,
+                enabled = state.canSave,
             ) {
                 if (state.isSaving) {
                     CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
@@ -574,6 +633,18 @@ private fun EditThreadDialog(
             }
         },
     )
+
+    if (showRelayDialog) {
+        RelayMultiSelectDialog(
+            title = "推奨リレー",
+            candidates = state.candidateRelays,
+            selected = state.selectedRelays,
+            onSelectionChange = onRelaySelectionChange,
+            onDismiss = { showRelayDialog = false },
+            note = "チャンネル情報に保存され、参加者がメッセージを読み書きするリレーになります。",
+            onAddCustomRelay = onAddCustomRelay,
+        )
+    }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)

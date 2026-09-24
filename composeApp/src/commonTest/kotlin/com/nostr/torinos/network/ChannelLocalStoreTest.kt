@@ -141,26 +141,6 @@ class ChannelLocalStoreTest {
     }
 
     @Test
-    fun deleteNonFavoritesRemovesOnlyTargetRelayScope() = runTest {
-        val store = store(MemoryStorage(), backgroundScope)
-        store.recordChannelCreate(create("fav", 1, "f"), ChannelMeta(name = "f"), "wss://r1")
-        store.setFavorite("fav", true)
-        store.recordChannelCreate(create("only", 2, "o"), ChannelMeta(name = "o"), "wss://r1")
-        store.recordChannelCreate(create("both", 3, "b"), ChannelMeta(name = "b"), "wss://r1")
-        store.recordChannelCreate(create("both", 3, "b"), ChannelMeta(name = "b"), "wss://r2")
-        store.markRead("both", 9)
-        store.recordChannelCreate(create("other", 4, "x"), ChannelMeta(name = "x"), "wss://r2")
-
-        store.deleteNonFavorites("wss://r1/")
-
-        assertNotNull(store.get("fav"))
-        assertNull(store.get("only"))
-        assertEquals(listOf("wss://r2"), store.get("both")!!.observedRelays)
-        assertNull(store.get("both")!!.lastReadAt)
-        assertNotNull(store.get("other"))
-    }
-
-    @Test
     fun overflowEvictsUnopenedNonFavoritesFirst() = runTest {
         val store = store(MemoryStorage(), backgroundScope, maxStates = 2)
         store.recordChannelCreate(create("fav", 1, "f"), ChannelMeta(name = "f"), "wss://r1")

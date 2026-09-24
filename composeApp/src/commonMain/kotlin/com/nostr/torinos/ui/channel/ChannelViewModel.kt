@@ -67,9 +67,20 @@ class ChannelViewModel(
     data class EditThreadDialogState(
         val title: String = "",
         val description: String = "",
+        val picture: String = "",
+        val candidateRelays: List<String> = emptyList(),
+        val selectedRelays: Set<String> = emptySet(),
+        val sourceEventId: String? = null,
+        val sessionId: Long = 0,
+        val isUploadingPicture: Boolean = false,
         val isSaving: Boolean = false,
         val error: String? = null,
-    )
+    ) {
+        val recommendedRelays: List<String> get() = candidateRelays.filter { it in selectedRelays }
+        val pictureIsValid: Boolean get() = isValidChannelPictureUrl(picture)
+        val canSave: Boolean get() = title.isNotBlank() && pictureIsValid &&
+            selectedRelays.size <= 10 && !isUploadingPicture && !isSaving
+    }
 
     private val controller = ChannelController(channelId, relayUrl, accountSession, viewModelScope)
     val state: StateFlow<UiState> = controller.state
@@ -90,6 +101,11 @@ class ChannelViewModel(
     fun dismissEditThreadDialog() = controller.dismissEditThreadDialog()
     fun onEditTitleChange(title: String) = controller.onEditTitleChange(title)
     fun onEditDescriptionChange(description: String) = controller.onEditDescriptionChange(description)
+    fun onEditPictureUrlChange(picture: String) = controller.onEditPictureUrlChange(picture)
+    fun onEditPictureSelected(bytes: ByteArray, mimeType: String) = controller.onEditPictureSelected(bytes, mimeType)
+    fun onEditPictureRemoved() = controller.onEditPictureRemoved()
+    fun onEditRelaySelectionChange(selected: Set<String>) = controller.onEditRelaySelectionChange(selected)
+    fun addEditCustomRelay(raw: String): String? = controller.addEditCustomRelay(raw)
     fun saveThreadMeta() = controller.saveThreadMeta()
     fun loadMore() = controller.loadMore()
 
@@ -108,4 +124,12 @@ class ChannelViewModel(
         controller.close()
         super.onCleared()
     }
+}
+
+internal fun isValidChannelPictureUrl(raw: String): Boolean {
+    val value = raw.trim()
+    if (value.isEmpty()) return true
+    if (!value.startsWith("https://", ignoreCase = true)) return false
+    val authority = value.substring(8).substringBefore('/').substringBefore('?').substringBefore('#')
+    return authority.isNotBlank() && authority.none(Char::isWhitespace) && '@' !in authority
 }

@@ -9,6 +9,15 @@ import kotlinx.serialization.encodeToString
 
 class PostViewModelTest {
     @Test
+    fun failedImageOnlyDraftCannotSilentlyBecomeAnEmptyFirstPost() {
+        val failed = PostState(images = listOf(ImageAttachment(1, null, null, false)))
+        assertTrue(failed.hasFailedUpload)
+        assertFalse(failed.canPost)
+        assertFalse(failed.isUploadingAny)
+        assertFalse(PostState().hasFailedUpload)
+    }
+
+    @Test
     fun draftContentRequiresNonBlankTextOrUploadedImage() {
         assertFalse(PostState().hasDraftContent)
         assertFalse(PostState(text = " \n ").hasDraftContent)

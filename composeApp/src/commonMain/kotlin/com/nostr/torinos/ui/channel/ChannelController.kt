@@ -36,6 +36,9 @@ import com.nostr.torinos.model.ChannelRelayContext
 import com.nostr.torinos.network.RelayConnectionState
 import com.nostr.torinos.network.RelayPublishResult
 import com.nostr.torinos.network.RelayStore
+import com.nostr.torinos.network.ImageUploader
+import com.nostr.torinos.network.normalizeRelayUrl
+import com.nostr.torinos.network.normalizeRelayUrls
 import com.nostr.torinos.network.RelayTarget
 import com.nostr.torinos.network.SubscriptionBehavior
 import com.nostr.torinos.network.SubscriptionSpec
@@ -62,6 +65,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.Dispatchers
 
 internal class ChannelController(
     private val channelId: String,
@@ -107,6 +111,10 @@ internal class ChannelController(
     private var requestSequence = 0L
     private var lastMarkedReadAt = -1L
     private var positionSaveJob: Job? = null
+    private var editPictureUploadJob: Job? = null
+    private var editSessionSequence = 0L
+    private val editPublishStates = mutableMapOf<String, ChannelPublishUiState>()
+    private val reportedEditPartialEvents = mutableSetOf<String>()
     private var pendingReadingPosition: ChannelReadingPosition? = null
     private var savedReadingPosition: ChannelReadingPosition? = null
     private var currentChannelMeta = ChannelMeta()
@@ -423,10 +431,19 @@ internal class ChannelController(
 
     fun showEditThreadDialog() {
         val current = _state.value as? UiState.Ready ?: return
+        editPictureUploadJob?.cancel()
+        editPictureUploadJob = null
+        val recommended = normalizeRelayUrls(current.channelMeta.relays, limit = Int.MAX_VALUE)
+        val candidates = editRelayCandidates(recommended, RelayStore.writableRelayUrlsSnapshot())
         _state.value = current.copy(
             editDialog = EditThreadDialogState(
                 title = current.channelMeta.name,
                 description = current.channelMeta.about,
+                picture = current.channelMeta.picture,
+                candidateRelays = candidates,
+                selectedRelays = recommended.toSet(),
+                sourceEventId = effectiveMetadataSourceEventId,
+                sessionId = ++editSessionSequence,
             ),
         )
     }
@@ -434,6 +451,8 @@ internal class ChannelController(
     fun dismissEditThreadDialog() {
         val current = _state.value as? UiState.Ready ?: return
         if (current.editDialog?.isSaving == true) return
+        editPictureUploadJob?.cancel()
+        editPictureUploadJob = null
         _state.value = current.copy(editDialog = null)
     }
 
@@ -447,26 +466,115 @@ internal class ChannelController(
         _state.value = current.copy(editDialog = current.editDialog?.copy(description = description, error = null))
     }
 
+    fun onEditPictureUrlChange(picture: String) {
+        val current = _state.value as? UiState.Ready ?: return
+        val dialog = current.editDialog ?: return
+        if (dialog.isUploadingPicture || dialog.isSaving) return
+        _state.value = current.copy(editDialog = dialog.copy(picture = picture, error = null))
+    }
+
+    fun onEditPictureSelected(bytes: ByteArray, mimeType: String) {
+        val current = _state.value as? UiState.Ready ?: return
+        val dialog = current.editDialog ?: return
+        if (dialog.isUploadingPicture || dialog.isSaving) return
+        val sessionId = dialog.sessionId
+        _state.value = current.copy(editDialog = dialog.copy(isUploadingPicture = true, error = null))
+        editPictureUploadJob = launch {
+            withContext(Dispatchers.Default) {
+                ImageUploader.uploadMedia(bytes, mimeType, accountSession?.signer)
+            }.onSuccess { metadata ->
+                updateEditDialogForSession(sessionId) {
+                    it.copy(picture = metadata.url, isUploadingPicture = false)
+                }
+            }.onFailure { error ->
+                updateEditDialogForSession(sessionId) {
+                    it.copy(isUploadingPicture = false, error = "画像のアップロードに失敗しました: ${error.message}")
+                }
+            }
+        }
+    }
+
+    fun onEditPictureRemoved() = onEditPictureUrlChange("")
+
+    fun onEditRelaySelectionChange(selected: Set<String>) {
+        val current = _state.value as? UiState.Ready ?: return
+        val dialog = current.editDialog ?: return
+        if (dialog.isSaving) return
+        _state.value = current.copy(editDialog = if (selected.size > MAX_EDIT_RECOMMENDED_RELAYS) {
+            dialog.copy(error = "推奨リレーは${MAX_EDIT_RECOMMENDED_RELAYS}件までです")
+        } else {
+            dialog.copy(selectedRelays = selected.intersect(dialog.candidateRelays.toSet()), error = null)
+        })
+    }
+
+    fun addEditCustomRelay(raw: String): String? {
+        val current = _state.value as? UiState.Ready ?: return null
+        val dialog = current.editDialog ?: return null
+        if (dialog.isSaving) return "保存中です"
+        val url = normalizeRelayUrl(raw) ?: return "wss:// または ws:// で始まるリレーURLを入力してください"
+        if (url !in dialog.selectedRelays && dialog.selectedRelays.size >= MAX_EDIT_RECOMMENDED_RELAYS) {
+            return "推奨リレーは${MAX_EDIT_RECOMMENDED_RELAYS}件までです"
+        }
+        _state.value = current.copy(editDialog = dialog.copy(
+            candidateRelays = if (url in dialog.candidateRelays) dialog.candidateRelays else dialog.candidateRelays + url,
+            selectedRelays = dialog.selectedRelays + url,
+            error = null,
+        ))
+        return null
+    }
+
+    private fun updateEditDialogForSession(sessionId: Long, transform: (EditThreadDialogState) -> EditThreadDialogState) {
+        val current = _state.value as? UiState.Ready ?: return
+        _state.value = current.withEditDialogSession(sessionId, transform)
+    }
+
+    private suspend fun recordEditRelayResult(event: NostrEvent, targets: List<String>, result: RelayPublishResult) {
+        withContext(Dispatchers.Main) {
+            val next = (editPublishStates[event.id] ?: ChannelPublishUiState.sending(targets))
+                .withRelayResult(result)
+            editPublishStates[event.id] = next
+            reportEditPartial(event.id, next)
+        }
+    }
+
+    private fun reportEditPartial(eventId: String, state: ChannelPublishUiState) {
+        val ready = _state.value as? UiState.Ready ?: return
+        if (state.phase != ChannelPublishUiState.Phase.PartialSuccess ||
+            !reportedEditPartialEvents.add(eventId)) return
+        _state.value = ready.copy(engagementError = "チャンネル情報を保存しました（${state.summary}）")
+    }
+
     fun saveThreadMeta() {
         val current = _state.value as? UiState.Ready ?: return
         val dialog = current.editDialog ?: return
-        if (dialog.title.isBlank() || dialog.isSaving) return
+        if (dialog.isSaving) return
+        if (!dialog.canSave) {
+            _state.value = current.copy(editDialog = dialog.copy(error = "名前・画像URL・推奨リレーを確認してください"))
+            return
+        }
         // UI の表示条件だけに頼らず、署名前に所有者であることを再検証する(第16.10節)。
         if (ownPubkey == null || ownPubkey != currentChannelOwnerPubkey) {
             _state.value = current.copy(editDialog = dialog.copy(error = "チャンネルの作成者だけが編集できます"))
+            return
+        }
+        if (dialog.sourceEventId != effectiveMetadataSourceEventId) {
+            _state.value = current.copy(editDialog = dialog.copy(error = "別の端末でチャンネル情報が更新されました。閉じて開き直してください"))
             return
         }
         _state.value = current.copy(editDialog = dialog.copy(isSaving = true, error = null))
         val publishContext = ChannelPublishContext.from(relayContext)
         launch {
             // 現在の実効メタデータから完全な内容を作る。relays・picture を落とすと推奨リレーが消える。
-            val meta = currentChannelMeta.copy(name = dialog.title.trim(), about = dialog.description.trim())
+            val meta = editedChannelMeta(currentChannelMeta, dialog)
             val result = signedEventPublisher.publish(
                 content = meta.toChannelContent(),
                 kind = 41,
                 tags = ChannelEventTags.metadata(channelId, publishContext.primaryHint, categories = emptyList()) +
                     listOf(listOf("client", "ToriNos")),
                 relayUrls = publishContext.relayUrls,
+                onEventRelayResult = { event, relayResult ->
+                    recordEditRelayResult(event, publishContext.targetsForDisplay, relayResult)
+                },
             )
             when (result) {
                 is SignedPublishResult.Published -> {
@@ -478,11 +586,15 @@ internal class ChannelController(
                         currentChannelMeta = meta
                     }
                     val ready = _state.value as? UiState.Ready ?: return@launch
-                    val partial = ChannelPublishUiState.from(publishContext.targetsForDisplay, result).summary
+                    reportEditPartial(
+                        result.event.id,
+                        editPublishStates[result.event.id]
+                            ?: ChannelPublishUiState.from(publishContext.targetsForDisplay, result),
+                    )
                     _state.value = ready.copy(
                         channelMeta = currentChannelMeta,
                         editDialog = null,
-                        engagementError = partial?.let { "チャンネル情報を保存しました（$it）" },
+                        engagementError = (_state.value as? UiState.Ready)?.engagementError,
                     )
                 }
                 SignedPublishResult.MissingSigner -> (_state.value as? UiState.Ready)?.let { ready ->
@@ -992,6 +1104,7 @@ internal class ChannelController(
 
     fun close() {
         relayTransitionJob?.cancel()
+        editPictureUploadJob?.cancel()
         flushReadingPosition()
         jobs.forEach { it.cancel() }
         jobs.clear()
@@ -1038,6 +1151,7 @@ internal class ChannelController(
     }
 
     companion object {
+        private const val MAX_EDIT_RECOMMENDED_RELAYS = 10
         private const val MAX_SEEN_IDS = 1000
         private const val MAX_WATCHED_EVENTS = 100
         private const val PROFILE_MAX_AGE_MS = 15 * 60 * 1_000L
@@ -1045,6 +1159,24 @@ internal class ChannelController(
         private const val RELAY_TRANSITION_TIMEOUT_MS = 3_000L
         private const val HISTORY_SETTLE_MS = 1_500L
     }
+}
+
+internal fun editRelayCandidates(recommended: List<String>, writable: List<String>): List<String> =
+    normalizeRelayUrls(recommended + writable, limit = Int.MAX_VALUE)
+
+internal fun editedChannelMeta(base: ChannelMeta, draft: EditThreadDialogState): ChannelMeta = base.copy(
+    name = draft.title.trim(),
+    about = draft.description.trim(),
+    picture = draft.picture.trim(),
+    relays = draft.recommendedRelays,
+)
+
+internal fun UiState.Ready.withEditDialogSession(
+    sessionId: Long,
+    transform: (EditThreadDialogState) -> EditThreadDialogState,
+): UiState.Ready {
+    val dialog = editDialog?.takeIf { it.sessionId == sessionId } ?: return this
+    return copy(editDialog = transform(dialog))
 }
 
 internal fun ChannelViewModel.UiState.Ready.noteEngagement(eventId: String): NoteEngagementState = NoteEngagementState(

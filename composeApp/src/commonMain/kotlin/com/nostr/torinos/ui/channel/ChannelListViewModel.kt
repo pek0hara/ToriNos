@@ -10,7 +10,6 @@ import com.nostr.torinos.model.NostrEvent
 import com.nostr.torinos.model.NostrFilter
 import com.nostr.torinos.model.NostrProfile
 import com.nostr.torinos.model.toChannelMeta
-import com.nostr.torinos.model.toProfile
 import com.nostr.torinos.network.ChannelLocalState
 import com.nostr.torinos.network.ChannelLocalStore
 import com.nostr.torinos.network.NostrRepository
@@ -19,6 +18,11 @@ import com.nostr.torinos.network.ProfileRepository
 import com.nostr.torinos.network.RelayInformationRepository
 import com.nostr.torinos.network.RelayStore
 import com.nostr.torinos.network.normalizeRelayUrls
+import com.nostr.torinos.network.normalizeRelayUrl
+import com.nostr.torinos.network.ImageUploader
+import com.nostr.torinos.ui.post.ComposedNote
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import com.nostr.torinos.model.ChannelEventTags
 import com.nostr.torinos.model.toChannelContent
 import com.nostr.torinos.ui.timeline.SignedEventPublisher
@@ -30,6 +34,7 @@ import kotlin.time.Clock
 import com.nostr.torinos.network.RelayTarget
 import com.nostr.torinos.network.SubscriptionBehavior
 import com.nostr.torinos.network.SubscriptionSpec
+import com.nostr.torinos.network.RelayPublishResult
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.yield
@@ -73,6 +78,7 @@ class ChannelListViewModel(
         private const val MAX_SEEN_MSG_IDS = 5_000
         private const val PROFILE_MAX_AGE_MS = 15 * 60 * 1_000L
         private const val RELAY_INFO_TIMEOUT_MS = 3_000L
+        private const val MAX_RECOMMENDED_RELAYS = 10
 
         val Factory: ViewModelProvider.Factory = object : ViewModelProvider.Factory {
             @Suppress("UNCHECKED_CAST")
@@ -84,7 +90,12 @@ class ChannelListViewModel(
     data class CreateDialogState(
         val name: String = "",
         val about: String = "",
-        val body: String = "",
+        /** アップロード済みのアイコン画像 URL(FR-13)。 */
+        val picture: String = "",
+        val isUploadingPicture: Boolean = false,
+        /** 推奨リレーの候補。ユーザーの書き込みリレー + 手入力で追加したリレー(正規化済み)。 */
+        val candidateRelays: List<String> = emptyList(),
+        val selectedRelays: Set<String> = emptySet(),
         val isCreating: Boolean = false,
         val error: String? = null,
         /**
@@ -92,8 +103,19 @@ class ChannelListViewModel(
          * チャンネルを二重に作らない(第16.11節 手順5)。
          */
         val createdChannel: NostrEvent? = null,
+        /** 直近の送信(kind 40 または最初の kind 42)のリレー別結果。 */
+        val publishState: ChannelPublishUiState = ChannelPublishUiState.Idle,
+        val sessionId: Long = 0,
+        val activePublishKind: Int = 40,
     ) {
         val isRetryingFirstPost: Boolean get() = createdChannel != null
+
+        /** `content.relays` に入れる推奨リレー。候補の並び順を保つ。 */
+        val recommendedRelays: List<String> get() = candidateRelays.filter { it in selectedRelays }
+
+        val canSubmit: Boolean get() = name.isNotBlank() && !isCreating && !isUploadingPicture
+
+        val hasInput: Boolean get() = name.isNotBlank() || about.isNotBlank() || picture.isNotBlank()
     }
 
     data class DeleteDialogState(
@@ -102,10 +124,6 @@ class ChannelListViewModel(
         val deleteFromRelays: Boolean = false,
         val isDeleting: Boolean = false,
         val error: String? = null,
-    )
-
-    data class BulkDeleteDialogState(
-        val isDeleting: Boolean = false,
     )
 
     data class DetailDialogState(
@@ -122,9 +140,10 @@ class ChannelListViewModel(
             val channels: List<ChannelItem> = emptyList(),
             val createDialog: CreateDialogState? = null,
             val deleteDialog: DeleteDialogState? = null,
-            val bulkDeleteDialog: BulkDeleteDialogState? = null,
             val detailDialog: DetailDialogState? = null,
             val createdChannelIdToOpen: String? = null,
+            /** 作成は成功したが一部のリレーへ送れなかったときなどの案内(snackbar)。 */
+            val notice: String? = null,
             val canLoadMore: Boolean = false,
             val isLoadingMore: Boolean = false,
         ) : UiState
@@ -161,6 +180,7 @@ class ChannelListViewModel(
     private var newMetaJob: Job? = null
     private var authorSubscriptionJob: Job? = null
     private var detailDialogJob: Job? = null
+    private var createPictureUploadJob: Job? = null
     private val pendingNewMetaIds = linkedSetOf<String>()
     private val requestedNewMetaIds = mutableSetOf<String>()
     private var subscribedAuthorPubkeys: Set<String> = emptySet()
@@ -169,6 +189,9 @@ class ChannelListViewModel(
     private var oldestBootstrapCreatedAt: Long? = null
     private var hasMoreChannels = true
     private var requestSequence = 0L
+    private var createSessionSequence = 0L
+    private val createPublishStates = mutableMapOf<String, ChannelPublishUiState>()
+    private val reportedPartialCreateEvents = mutableSetOf<String>()
 
     init {
         start()
@@ -447,37 +470,26 @@ class ChannelListViewModel(
         )
     }
 
-    fun showBulkDeleteDialog() {
-        val current = _state.value as? UiState.Ready ?: return
-        _state.value = current.copy(bulkDeleteDialog = BulkDeleteDialogState())
-    }
-
-    fun dismissBulkDeleteDialog() {
-        val current = _state.value as? UiState.Ready ?: return
-        if (current.bulkDeleteDialog?.isDeleting == true) return
-        _state.value = current.copy(bulkDeleteDialog = null)
-    }
-
-    fun confirmBulkDelete() {
-        val current = _state.value as? UiState.Ready ?: return
-        val dialog = current.bulkDeleteDialog ?: return
-        if (dialog.isDeleting) return
-        val cacheRelayUrl = relayUrl ?: return
-        _state.value = current.copy(bulkDeleteDialog = dialog.copy(isDeleting = true))
-        launch {
-            ChannelLocalStore.deleteNonFavorites(cacheRelayUrl)
-            val s = _state.value as? UiState.Ready ?: return@launch
-            _state.value = s.copy(bulkDeleteDialog = null)
-        }
-    }
-
     fun showCreateDialog() {
         val current = _state.value as? UiState.Ready ?: return
-        _state.value = current.copy(createDialog = CreateDialogState())
+        createPictureUploadJob?.cancel()
+        createPictureUploadJob = null
+        // 推奨リレーの初期選択はユーザーの書き込みリレー(FR-04)。
+        val writable = normalizeRelayUrls(RelayStore.writableRelayUrlsSnapshot(), limit = Int.MAX_VALUE)
+        _state.value = current.copy(
+            createDialog = CreateDialogState(
+                sessionId = ++createSessionSequence,
+                candidateRelays = writable,
+                selectedRelays = writable.take(MAX_RECOMMENDED_RELAYS).toSet(),
+            ),
+        )
     }
 
     fun dismissCreateDialog() {
         val current = _state.value as? UiState.Ready ?: return
+        if (current.createDialog?.isCreating == true) return
+        createPictureUploadJob?.cancel()
+        createPictureUploadJob = null
         _state.value = current.copy(createDialog = null)
     }
 
@@ -486,68 +498,173 @@ class ChannelListViewModel(
         _state.value = current.copy(createdChannelIdToOpen = null)
     }
 
-    fun onCreateNameChange(name: String) {
+    fun consumeNotice() {
         val current = _state.value as? UiState.Ready ?: return
-        _state.value = current.copy(createDialog = current.createDialog?.copy(name = name, error = null))
+        _state.value = current.copy(notice = null)
     }
 
-    fun onCreateAboutChange(about: String) {
-        val current = _state.value as? UiState.Ready ?: return
-        _state.value = current.copy(createDialog = current.createDialog?.copy(about = about, error = null))
+    fun onCreateNameChange(name: String) = updateCreateDialog { it.copy(name = name, error = null) }
+
+    fun onCreateAboutChange(about: String) = updateCreateDialog { it.copy(about = about, error = null) }
+
+    fun onCreateRelaySelectionChange(selected: Set<String>) = updateCreateDialog { dialog ->
+        if (selected.size > MAX_RECOMMENDED_RELAYS) {
+            dialog.copy(error = "推奨リレーは${MAX_RECOMMENDED_RELAYS}件までです")
+        } else {
+            dialog.copy(selectedRelays = selected, error = null)
+        }
     }
 
-    fun onCreateBodyChange(body: String) {
-        val current = _state.value as? UiState.Ready ?: return
-        _state.value = current.copy(createDialog = current.createDialog?.copy(body = body, error = null))
+    /** 手入力の推奨リレーを追加して選択する。戻り値はエラー文言(FR-01 の検証)。 */
+    fun addCreateCustomRelay(raw: String): String? {
+        val dialog = (_state.value as? UiState.Ready)?.createDialog ?: return null
+        val url = normalizeRelayUrl(raw) ?: return "wss:// または ws:// で始まるリレーURLを入力してください"
+        if (url !in dialog.selectedRelays && dialog.selectedRelays.size >= MAX_RECOMMENDED_RELAYS) {
+            return "推奨リレーは${MAX_RECOMMENDED_RELAYS}件までです"
+        }
+        updateCreateDialog {
+            it.copy(
+                candidateRelays = if (url in it.candidateRelays) it.candidateRelays else it.candidateRelays + url,
+                selectedRelays = it.selectedRelays + url,
+                error = null,
+            )
+        }
+        return null
     }
 
-    fun createChannel() {
+    fun onCreatePictureSelected(bytes: ByteArray, mimeType: String) {
+        val dialog = (_state.value as? UiState.Ready)?.createDialog ?: return
+        if (dialog.isUploadingPicture || dialog.isRetryingFirstPost) return
+        val sessionId = dialog.sessionId
+        updateCreateDialog { it.copy(isUploadingPicture = true, error = null) }
+        createPictureUploadJob = launch {
+            withContext(Dispatchers.Default) {
+                ImageUploader.uploadMedia(bytes, mimeType, accountSession?.signer)
+            }.onSuccess { metadata ->
+                updateCreateDialogForSession(sessionId) { it.copy(picture = metadata.url, isUploadingPicture = false) }
+            }.onFailure { error ->
+                updateCreateDialogForSession(sessionId) {
+                    it.copy(isUploadingPicture = false, error = "アイコン画像のアップロードに失敗しました: ${error.message}")
+                }
+            }
+        }
+    }
+
+    fun onCreatePictureRemoved() = updateCreateDialog { it.copy(picture = "") }
+
+    private fun updateCreateDialog(transform: (CreateDialogState) -> CreateDialogState) {
         val current = _state.value as? UiState.Ready ?: return
         val dialog = current.createDialog ?: return
-        if (dialog.name.isBlank() || dialog.isCreating) return
-        _state.value = current.copy(createDialog = dialog.copy(isCreating = true, error = null))
+        _state.value = current.copy(createDialog = transform(dialog))
+    }
+
+    private fun updateCreateDialogForSession(
+        sessionId: Long,
+        transform: (CreateDialogState) -> CreateDialogState,
+    ) {
+        val current = _state.value as? UiState.Ready ?: return
+        _state.value = current.withCreateDialogSession(sessionId, transform)
+    }
+
+    private suspend fun recordCreateRelayResult(
+        event: NostrEvent,
+        meta: ChannelMeta?,
+        sessionId: Long,
+        kind: Int,
+        targets: List<String>,
+        result: RelayPublishResult,
+    ) {
+        if (meta != null) {
+            result.succeededRelays.forEach { url -> ChannelLocalStore.recordChannelCreate(event, meta, url) }
+        }
+        withContext(Dispatchers.Main) {
+            val next = (createPublishStates[event.id] ?: ChannelPublishUiState.sending(targets))
+                .withRelayResult(result)
+            createPublishStates[event.id] = next
+            val ready = _state.value as? UiState.Ready ?: return@withContext
+            val dialog = ready.createDialog
+            if (dialog?.sessionId == sessionId && dialog.activePublishKind == kind) {
+                _state.value = ready.copy(createDialog = dialog.copy(publishState = next))
+            } else if (next.phase == ChannelPublishUiState.Phase.PartialSuccess) {
+                reportPartialCreate(event, kind, next)
+            }
+        }
+    }
+
+    private fun reportPartialCreate(event: NostrEvent, kind: Int, state: ChannelPublishUiState) {
+        if (state.phase != ChannelPublishUiState.Phase.PartialSuccess ||
+            !reportedPartialCreateEvents.add(event.id)) return
+        ChannelCreateNoticeStore.enqueue(ChannelCreateNoticeStore.Notice(
+            eventId = event.id,
+            pubkey = event.pubkey,
+            message = if (kind == 40) "チャンネル作成: ${state.summary}" else "最初の投稿: ${state.summary}",
+        ))
+    }
+
+    /**
+     * kind 40 を作成し、[firstPost] があれば最初の kind 42 を送る(FR-13、第16.11節)。
+     * 送信先は推奨リレー + ユーザーの書き込みリレー、kind 42 の relay hint は推奨リレーの先頭。
+     */
+    internal fun createChannel(firstPost: ComposedNote? = null) {
+        val current = _state.value as? UiState.Ready ?: return
+        val dialog = current.createDialog ?: return
+        if (!dialog.canSubmit) return
+        val plan = ChannelCreatePlan.from(dialog.recommendedRelays, RelayStore.entries.value)
+        updateCreateDialog {
+            it.copy(isCreating = true, error = null, activePublishKind = if (dialog.isRetryingFirstPost) 42 else 40,
+                publishState = ChannelPublishUiState.sending(plan.targets))
+        }
         launch {
             val publisher = SignedEventPublisher(accountSession?.signer)
-            // 推奨リレーの初期値はユーザーの書き込みリレー(FR-04)。選択 UI は Loop 5 で追加する。
-            val recommendedRelays = normalizeRelayUrls(RelayStore.writableRelayUrlsSnapshot())
-            val relayUrls = recommendedRelays.ifEmpty { null }
             val channelEvent = dialog.createdChannel ?: run {
                 val meta = ChannelMeta(
                     name = dialog.name.trim(),
                     about = dialog.about.trim(),
-                    picture = "",
-                    relays = recommendedRelays,
+                    picture = dialog.picture,
+                    relays = plan.recommendedRelays,
                 )
-                when (val result = publisher.publish(
+                val result = publisher.publish(
                     content = meta.toChannelContent(),
                     kind = 40,
                     tags = listOf(listOf("client", "ToriNos")),
-                    relayUrls = relayUrls,
-                )) {
+                    relayUrls = plan.relayUrls,
+                    onEventRelayResult = { event, relayResult ->
+                        recordCreateRelayResult(event, meta, dialog.sessionId, 40, plan.targets, relayResult)
+                    },
+                )
+                val publishState = ChannelPublishUiState.from(plan.targets, result)
+                when (result) {
                     is SignedPublishResult.Published -> {
                         acceptCreatedChannel(result.event, meta, result.relayResult.succeededRelays)
+                        reportPartialCreate(result.event, 40, createPublishStates[result.event.id] ?: publishState)
                         result.event
                     }
-                    SignedPublishResult.MissingSigner -> return@launch failCreate("秘密鍵が設定されていません")
+                    SignedPublishResult.MissingSigner -> return@launch failCreate("秘密鍵が設定されていません", publishState)
                     is SignedPublishResult.Failed -> return@launch failCreate(
-                        ChannelPublishUiState.from(recommendedRelays, result).summary
-                            ?: result.cause.message ?: "作成に失敗しました",
+                        publishState.summary ?: result.cause.message ?: "作成に失敗しました",
+                        publishState,
                     )
                 }
             }
-            val body = dialog.body.trim()
-            if (body.isNotBlank()) {
+            if (firstPost != null) {
+                updateCreateDialogForSession(dialog.sessionId) {
+                    it.copy(activePublishKind = 42, publishState = ChannelPublishUiState.sending(plan.targets))
+                }
                 // 初回投稿は kind 40 と同じ送信先と relay hint を使う(第16.11節 手順4)。
                 val postResult = publisher.publish(
-                    content = body,
+                    content = firstPost.content,
                     kind = 42,
-                    tags = ChannelEventTags.rootMessage(channelEvent.id, recommendedRelays.firstOrNull()) +
-                        listOf(listOf("client", "ToriNos")),
-                    relayUrls = relayUrls,
+                    tags = ChannelEventTags.rootMessage(channelEvent.id, plan.primaryHint) +
+                        firstPost.tags + listOf(listOf("client", "ToriNos")),
+                    relayUrls = plan.relayUrls,
+                    onEventRelayResult = { event, relayResult ->
+                        recordCreateRelayResult(event, null, dialog.sessionId, 42, plan.targets, relayResult)
+                    },
                 )
+                val publishState = ChannelPublishUiState.from(plan.targets, postResult)
                 if (postResult !is SignedPublishResult.Published) {
                     val reason = (postResult as? SignedPublishResult.Failed)?.let {
-                        ChannelPublishUiState.from(recommendedRelays, it).summary ?: it.cause.message
+                        publishState.summary ?: it.cause.message
                     } ?: "秘密鍵が設定されていません"
                     val s = _state.value as? UiState.Ready ?: return@launch
                     _state.value = s.copy(
@@ -555,6 +672,7 @@ class ChannelListViewModel(
                         createDialog = s.createDialog?.copy(
                             isCreating = false,
                             createdChannel = channelEvent,
+                            publishState = publishState,
                             error = "チャンネルは作成しました。最初の投稿を送信できませんでした（$reason）",
                         ),
                     )
@@ -562,6 +680,7 @@ class ChannelListViewModel(
                 }
                 seenMessageIds.add(postResult.event.id)
                 updateActivity(postResult.event, channelEvent.id)
+                reportPartialCreate(postResult.event, 42, createPublishStates[postResult.event.id] ?: publishState)
             }
             val s = _state.value as? UiState.Ready ?: return@launch
             _state.value = s.copy(
@@ -582,9 +701,11 @@ class ChannelListViewModel(
         scheduleAuthorSubscription()
     }
 
-    private fun failCreate(message: String) {
+    private fun failCreate(message: String, publishState: ChannelPublishUiState) {
         val s = _state.value as? UiState.Ready ?: return
-        _state.value = s.copy(createDialog = s.createDialog?.copy(isCreating = false, error = message))
+        _state.value = s.copy(
+            createDialog = s.createDialog?.copy(isCreating = false, error = message, publishState = publishState),
+        )
     }
 
     private fun updateActivity(event: NostrEvent, channelId: String) {
@@ -680,7 +801,7 @@ class ChannelListViewModel(
             channels = buildChannelList(),
             createDialog = current?.createDialog,
             deleteDialog = current?.deleteDialog,
-            bulkDeleteDialog = current?.bulkDeleteDialog,
+            notice = current?.notice,
             detailDialog = current?.detailDialog,
             createdChannelIdToOpen = current?.createdChannelIdToOpen,
             canLoadMore = hasMoreChannels,
@@ -843,6 +964,7 @@ class ChannelListViewModel(
 
     override fun onCleared() {
         activityQueue.stop()
+        createPictureUploadJob?.cancel()
         jobs.forEach { it.cancel() }
         newMetaJob?.cancel()
         authorSubscriptionJob?.cancel()
@@ -850,4 +972,12 @@ class ChannelListViewModel(
         NostrRepository.close(liveSubId)
         super.onCleared()
     }
+}
+
+internal fun ChannelListViewModel.UiState.Ready.withCreateDialogSession(
+    sessionId: Long,
+    transform: (ChannelListViewModel.CreateDialogState) -> ChannelListViewModel.CreateDialogState,
+): ChannelListViewModel.UiState.Ready {
+    val dialog = createDialog?.takeIf { it.sessionId == sessionId } ?: return this
+    return copy(createDialog = transform(dialog))
 }

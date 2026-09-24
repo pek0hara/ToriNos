@@ -50,6 +50,7 @@ data class PostState(
     val draftDeleted: Boolean = false,
 ) {
     val isUploadingAny: Boolean get() = images.any { it.isUploading }
+    val hasFailedUpload: Boolean get() = images.any { !it.isUploading && it.uploadedUrl == null }
     val hasDraftContent: Boolean get() =
         text.isNotBlank() || images.any { it.uploadedUrl != null }
     val canPost: Boolean get() =
@@ -177,17 +178,18 @@ class PostViewModel(
     private val _state = MutableStateFlow(PostState())
     val state: StateFlow<PostState> = _state.asStateFlow()
     private var nextImageId = 0
+    private var draftGeneration = 0
     private var editingMemoIdentifier: String? = null
     private var editingMemoUpdatedAt: Long? = null
     private var editingMemoEventId: String? = null
     private var editingMemoPubkey: String? = null
 
     fun reset() {
+        draftGeneration++
         editingMemoIdentifier = null
         editingMemoUpdatedAt = null
         editingMemoEventId = null
         editingMemoPubkey = null
-        nextImageId = 0
         _state.value = PostState()
     }
 
@@ -220,6 +222,7 @@ class PostViewModel(
     ) {
         if (_state.value.images.size >= MAX_IMAGES) return
         val id = nextImageId++
+        val generation = draftGeneration
         _state.update { s ->
             s.copy(
                 images = s.images + ImageAttachment(
@@ -236,6 +239,7 @@ class PostViewModel(
                 ImageUploader.uploadMedia(bytes, mimeType, accountSession?.signer)
             }
                 .onSuccess { metadata ->
+                    if (generation != draftGeneration) return@onSuccess
                     _state.update { s ->
                         s.copy(
                             images = s.images.map {
@@ -253,8 +257,9 @@ class PostViewModel(
                     }
                 }
                 .onFailure { e ->
+                    if (generation != draftGeneration) return@onFailure
                     _state.update { s ->
-                        s.copy(
+                        if (s.images.none { it.id == id }) s else s.copy(
                             images = s.images.map { if (it.id == id) it.copy(isUploading = false) else it },
                             error = "画像のアップロードに失敗しました: ${e.message}",
                         )
@@ -272,6 +277,7 @@ class PostViewModel(
     }
 
     fun restoreMemo(memo: PostMemoData, message: String? = null) {
+        draftGeneration++
         val metadataByUrl = memo.imageMetadata.associateBy { it.url }
         val restoredImages = memo.imageUrls
             .filter { it.isNotBlank() }
@@ -416,9 +422,9 @@ class PostViewModel(
         relayUrls: Collection<String>? = null,
     ) {
         val current = _state.value
-        val uploadedUrls = current.images.mapNotNull { it.uploadedUrl }
-        val text = buildPostContent(current.text, uploadedUrls, quoteReference)
-        if (text.isBlank()) return
+        val composed = composeNoteContent(current.text, current.images, current.customEmojis, quoteReference)
+            ?: return
+        val text = composed.content
         val targetRelayUrls = relayUrls
             ?.map { it.trim() }
             ?.filter { it.isNotBlank() }
@@ -437,18 +443,7 @@ class PostViewModel(
 
             val tags = buildList {
                 addAll(replyTarget?.tags().orEmpty())
-                addAll(customEmojiTagsForContent(text, current.customEmojis))
-                extractNostrEventReferences(text).forEach { reference ->
-                    add(
-                        buildList {
-                            add("q")
-                            add(reference.eventId)
-                            reference.relayUrls.firstOrNull()?.let { add(it) }
-                        },
-                    )
-                    reference.authorPubkey?.let { add(listOf("p", it)) }
-                }
-                addAll(imetaTagsForAttachments(text, current.images))
+                addAll(composed.tags)
                 add(listOf("client", "ToriNos"))
             }
 
@@ -516,21 +511,6 @@ class PostViewModel(
         }
     }
 
-    private fun buildPostContent(
-        text: String,
-        imageUrls: List<String>,
-        quoteReference: String? = null,
-    ): String {
-        val body = text.trim()
-        val attachments = buildList {
-            addAll(imageUrls.filter { it.isNotBlank() })
-            quoteReference?.takeIf { it.isNotBlank() }?.let(::add)
-        }
-        if (attachments.isEmpty()) return body
-        val attachmentBlock = attachments.joinToString("\n")
-        return if (body.isBlank()) attachmentBlock else "$body\n$attachmentBlock"
-    }
-
     private fun memoIdentifier(replyToId: String?): String =
         replyToId?.let { "torinos-reply-memo-$it" } ?: MEMO_IDENTIFIER_POST
 
@@ -571,3 +551,44 @@ internal fun imetaTagsForAttachments(
             ?.takeIf { it.size > 2 }
     }
     .distinctBy { tag -> tag.firstOrNull { it.startsWith("url ") } }
+
+/** 本文と、本文から導かれるタグ(カスタム絵文字・引用・imeta)。返信タグと client タグは呼び出し側が付ける。 */
+internal data class ComposedNote(val content: String, val tags: List<List<String>>)
+
+/**
+ * 投稿画面の入力から kind 1 / kind 42 共通の本文とタグを組み立てる。フィード投稿とチャンネル作成の
+ * 最初の投稿(FR-13)で同じ規則を使うため、ViewModel から切り出している。本文が空なら null。
+ */
+internal fun composeNoteContent(
+    text: String,
+    images: List<ImageAttachment>,
+    customEmojis: List<CustomEmoji>,
+    quoteReference: String? = null,
+): ComposedNote? {
+    val body = text.trim()
+    val attachments = buildList {
+        addAll(images.mapNotNull { it.uploadedUrl }.filter { it.isNotBlank() })
+        quoteReference?.takeIf { it.isNotBlank() }?.let(::add)
+    }
+    val content = when {
+        attachments.isEmpty() -> body
+        body.isBlank() -> attachments.joinToString("\n")
+        else -> "$body\n${attachments.joinToString("\n")}"
+    }
+    if (content.isBlank()) return null
+    val tags = buildList {
+        addAll(customEmojiTagsForContent(content, customEmojis))
+        extractNostrEventReferences(content).forEach { reference ->
+            add(
+                buildList {
+                    add("q")
+                    add(reference.eventId)
+                    reference.relayUrls.firstOrNull()?.let { add(it) }
+                },
+            )
+            reference.authorPubkey?.let { add(listOf("p", it)) }
+        }
+        addAll(imetaTagsForAttachments(content, images))
+    }
+    return ComposedNote(content, tags)
+}

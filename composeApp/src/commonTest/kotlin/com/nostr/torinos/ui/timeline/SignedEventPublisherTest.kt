@@ -54,6 +54,28 @@ class SignedEventPublisherTest {
         assertEquals(mapOf("wss://a" to "timeout"), failed.relayResult?.failedRelays)
     }
 
+    @Test
+    fun eventAwareCallbackKeepsLateRelayResultsBoundToSignedEvent(): Unit = runBlocking {
+        var deliverLate: (suspend (RelayPublishResult) -> Unit)? = null
+        val observed = mutableListOf<Pair<String, RelayPublishResult>>()
+        val publisher = SignedEventPublisher(
+            FakeSigner(),
+            relayPublisher = { _, _, callback ->
+                deliverLate = callback
+                callback(RelayPublishResult(setOf("wss://a"), emptyMap()))
+                RelayPublishResult(setOf("wss://a"), emptyMap())
+            },
+        )
+        val result = publisher.publish(
+            "channel", 40, emptyList(), relayUrls = listOf("wss://a", "wss://b"),
+            onEventRelayResult = { event, relayResult -> observed += event.id to relayResult },
+        )
+        assertIs<SignedPublishResult.Published>(result)
+        deliverLate?.invoke(RelayPublishResult(emptySet(), mapOf("wss://b" to "timeout")))
+        assertEquals(listOf("id", "id"), observed.map { it.first })
+        assertEquals("timeout", observed.last().second.failedRelays["wss://b"])
+    }
+
     private class FakeSigner : AccountSigner {
         override val pubkey = "pubkey"
         override fun encryptToSelf(plaintext: String) = plaintext
