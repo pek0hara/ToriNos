@@ -42,6 +42,7 @@ import com.nostr.torinos.ui.components.NetworkImage
 import com.nostr.torinos.ui.components.rememberDismissKeyboard
 import com.nostr.torinos.ui.components.rememberImagePickerLauncher
 import com.nostr.torinos.ui.components.rememberSyncedTextFieldValue
+import com.nostr.torinos.ui.components.DismissKeyboardOnLeave
 
 @Composable
 fun EditProfileSheet(
@@ -90,6 +91,7 @@ private fun EditProfileSheetContent(
     onPickBanner: () -> Unit,
     viewModel: EditProfileViewModel,
 ) {
+    DismissKeyboardOnLeave()
     var nameValue by rememberSyncedTextFieldValue(state.name)
     var displayNameValue by rememberSyncedTextFieldValue(state.displayName)
     var aboutValue by rememberSyncedTextFieldValue(state.about)
@@ -248,6 +250,7 @@ fun BannerEditDialog(
     onDismiss: () -> Unit,
     onSaved: (NostrProfile) -> Unit,
 ) {
+    DismissKeyboardOnLeave()
     val state by viewModel.state.collectAsState()
     var url by remember { mutableStateOf(currentProfile?.banner ?: "") }
     val dismissKeyboard = rememberDismissKeyboard()
@@ -349,6 +352,7 @@ fun AvatarEditDialog(
     onDismiss: () -> Unit,
     onSaved: (NostrProfile) -> Unit,
 ) {
+    DismissKeyboardOnLeave()
     val state by viewModel.state.collectAsState()
     var url by remember { mutableStateOf(currentProfile?.picture ?: "") }
     val dismissKeyboard = rememberDismissKeyboard()
@@ -443,6 +447,7 @@ fun NameEditDialog(
     onDismiss: () -> Unit,
     onSaved: (NostrProfile) -> Unit,
 ) {
+    DismissKeyboardOnLeave()
     val state by viewModel.state.collectAsState()
     var name by remember { mutableStateOf(currentProfile?.name ?: "") }
     var displayName by remember { mutableStateOf(currentProfile?.displayName ?: "") }
@@ -507,6 +512,7 @@ fun AboutEditDialog(
     onDismiss: () -> Unit,
     onSaved: (NostrProfile) -> Unit,
 ) {
+    DismissKeyboardOnLeave()
     val state by viewModel.state.collectAsState()
     var about by remember { mutableStateOf(currentProfile?.about ?: "") }
 

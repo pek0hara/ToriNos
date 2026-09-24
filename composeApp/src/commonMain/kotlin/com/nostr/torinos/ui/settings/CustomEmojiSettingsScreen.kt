@@ -70,6 +70,7 @@ import com.nostr.torinos.ui.components.NetworkImage
 import com.nostr.torinos.ui.components.ProfileNameText
 import com.nostr.torinos.ui.profile.AvatarCircle
 import kotlinx.coroutines.launch
+import com.nostr.torinos.ui.components.DismissKeyboardOnLeave
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -392,6 +393,7 @@ private fun EmojiSearchField(
     onValueChange: (String) -> Unit,
     placeholder: String,
 ) {
+    DismissKeyboardOnLeave()
     OutlinedTextField(
         value = value,
         onValueChange = onValueChange,

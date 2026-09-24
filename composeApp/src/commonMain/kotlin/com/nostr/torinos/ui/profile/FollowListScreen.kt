@@ -37,6 +37,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.nostr.torinos.crypto.hexToNpub
 import com.nostr.torinos.model.NostrProfile
 import com.nostr.torinos.ui.components.ProfileNameText
+import com.nostr.torinos.ui.components.DismissKeyboardOnLeave
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -49,6 +50,7 @@ fun FollowListScreen(
         key = "${mode.name}-$ownPubkey",
     ) { FollowListViewModel(mode, ownPubkey) },
 ) {
+    DismissKeyboardOnLeave()
     val state by viewModel.state.collectAsState()
     val title = if (mode == FollowListMode.FOLLOWING) "フォロー" else "フォロワー"
     var query by remember(mode, ownPubkey) { mutableStateOf("") }

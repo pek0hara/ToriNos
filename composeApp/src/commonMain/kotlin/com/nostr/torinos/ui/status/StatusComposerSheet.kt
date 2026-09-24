@@ -66,6 +66,7 @@ import kotlinx.datetime.LocalDateTime
 import kotlinx.datetime.TimeZone
 import kotlinx.datetime.toInstant
 import kotlinx.datetime.toLocalDateTime
+import com.nostr.torinos.ui.components.DismissKeyboardOnLeave
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -82,6 +83,7 @@ internal fun StatusComposerSheet(
     initialReferenceUrl: String = "",
     onDelete: (() -> Unit)? = null,
 ) {
+    DismissKeyboardOnLeave()
     val initialCategoryOption = StatusCategoryOption.forTag(initialStatusTag)
     var selectedCategoryOption by remember(initialStatusTag) { mutableStateOf(initialCategoryOption) }
     var customStatusTag by remember(initialStatusTag) {

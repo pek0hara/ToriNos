@@ -33,10 +33,12 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.compose.runtime.collectAsState
 import com.nostr.torinos.account.LocalAccountSession
+import com.nostr.torinos.ui.components.DismissKeyboardOnLeave
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun NgWordScreen(onBack: () -> Unit = {}) {
+    DismissKeyboardOnLeave()
     val ngWordStore = LocalAccountSession.current?.ngWordStore
     val ngWords = ngWordStore?.ngWords?.collectAsState()?.value.orEmpty()
     var input by remember { mutableStateOf("") }

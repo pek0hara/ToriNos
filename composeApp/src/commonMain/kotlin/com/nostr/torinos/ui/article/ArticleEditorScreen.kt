@@ -61,6 +61,7 @@ import com.nostr.torinos.ui.components.rememberImagePickerLauncher
 import com.nostr.torinos.ui.relay.RelaySettingsViewModel
 import com.nostr.torinos.util.logException
 import kotlinx.coroutines.CancellationException
+import com.nostr.torinos.ui.components.DismissKeyboardOnLeave
 
 private enum class ArticleEditorTab(val label: String) {
     Edit("編集"),
@@ -300,6 +301,7 @@ private fun ArticleEditContent(
     onPickBodyImage: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    DismissKeyboardOnLeave()
     LazyColumn(
         modifier = modifier,
         contentPadding = PaddingValues(16.dp),

@@ -76,6 +76,7 @@ internal fun StandardEmojiPickerSheet(
         CustomEmojiSettingsViewModel()
     },
 ) {
+    DismissKeyboardOnLeave()
     val savedCustomEmojis by CustomEmojiStore.emojis.collectAsState()
     val recentReactions by CustomEmojiStore.recentReactions.collectAsState()
     val favoriteEmojis by CustomEmojiStore.favoriteEmojis.collectAsState()

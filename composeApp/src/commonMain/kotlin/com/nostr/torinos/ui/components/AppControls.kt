@@ -54,6 +54,7 @@ fun AppMessageComposer(
     isSending: Boolean = false,
     error: String? = null,
 ) {
+    DismissKeyboardOnLeave()
     Surface(
         modifier = modifier
             .fillMaxWidth()

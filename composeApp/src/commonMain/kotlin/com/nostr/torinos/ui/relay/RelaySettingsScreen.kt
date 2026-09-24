@@ -61,6 +61,7 @@ import com.nostr.torinos.network.RelayInformation
 import com.nostr.torinos.network.RelayLimitation
 import com.nostr.torinos.ui.components.NetworkImage
 import io.ktor.http.Url
+import com.nostr.torinos.ui.components.DismissKeyboardOnLeave
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -70,6 +71,7 @@ fun RelaySettingsScreen(
         RelaySettingsViewModel(accountSession)
     },
 ) {
+    DismissKeyboardOnLeave()
     val entries by viewModel.entries.collectAsState()
     val informationState by viewModel.informationState.collectAsState()
     val relayInformation by viewModel.relayInformation.collectAsState()
