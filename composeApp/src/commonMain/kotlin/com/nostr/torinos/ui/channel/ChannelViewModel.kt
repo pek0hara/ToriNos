@@ -9,6 +9,7 @@ import com.nostr.torinos.engagement.displayOwnEmojiReactionEventIds
 import com.nostr.torinos.engagement.isRepostedByMe
 import com.nostr.torinos.model.ChannelMeta
 import com.nostr.torinos.model.ChannelRelayContext
+import com.nostr.torinos.network.RelayConnectionState
 import com.nostr.torinos.model.CustomReaction
 import com.nostr.torinos.model.NostrEvent
 import com.nostr.torinos.model.NostrProfile
@@ -55,6 +56,8 @@ class ChannelViewModel(
             val isRelayTransitioning: Boolean = false,
             /** 直近の投稿のリレー別結果(第16.9節)。 */
             val publishState: ChannelPublishUiState = ChannelPublishUiState.Idle,
+            /** 閲覧先リレーの接続状態。現在の relay context の readRelays に絞ったもの。 */
+            val relayStates: Map<String, RelayConnectionState> = emptyMap(),
         ) : UiState {
             fun isLiked(eventId: String): Boolean = likedReactions.containsKey(eventId) ||
                 pendingEngagementOperations[eventId]?.get(EngagementSlot.Reaction)?.request is EngagementRequest.AddLike

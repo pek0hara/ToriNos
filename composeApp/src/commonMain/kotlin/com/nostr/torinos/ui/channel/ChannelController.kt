@@ -155,6 +155,7 @@ internal class ChannelController(
     private var relayContextGeneration = 0L
     private var relayTransitionJob: Job? = null
     private var isRelayTransitioning = false
+    private var currentRelayStates = emptyMap<String, RelayConnectionState>()
     // relay context 変更時に張り直すライブ購読。subId -> filter。
     private val liveFilters = linkedMapOf<String, NostrFilter>()
 
@@ -838,6 +839,17 @@ internal class ChannelController(
             }
         }
 
+        // Composable が repository を直接購読しないよう、現在の context に関係する接続状態だけを載せる(第16.13節)。
+        jobs += launch {
+            NostrRepository.relayConnectionStates.collect { states ->
+                currentRelayStates = states
+                // 他画面のリレーの状態変化では再構築しない。context 変更時は syncReadyState 側で絞り直す。
+                val relevant = states.filterKeys { it in relayContext.readRelays }
+                val shown = (_state.value as? UiState.Ready)?.relayStates
+                if (relevant != shown) syncReadyState()
+            }
+        }
+
         // 共通プロフィールキャッシュを監視
         jobs += launch {
             ProfileRepository.observeChanges().collect { changedPubkeys ->
@@ -943,6 +955,7 @@ internal class ChannelController(
             history = history.state.value,
             relayContext = relayContext,
             isRelayTransitioning = isRelayTransitioning,
+            relayStates = currentRelayStates.filterKeys { it in relayContext.readRelays },
         )
 
     private fun syncReadyState() {
@@ -968,6 +981,7 @@ internal class ChannelController(
             pendingEngagementOperations = currentPendingEngagementOperations,
             relayContext = relayContext,
             isRelayTransitioning = isRelayTransitioning,
+            relayStates = currentRelayStates.filterKeys { it in relayContext.readRelays },
         )
     }
 

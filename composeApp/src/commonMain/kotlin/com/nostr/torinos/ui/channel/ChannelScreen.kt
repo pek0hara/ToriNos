@@ -128,6 +128,7 @@ fun ChannelScreen(
         ?.collectAsState()?.value.orEmpty()
     val listState = remember(channelId, selectedRelayUrl) { LazyListState() }
     var showThreadInfoDialog by remember(channelId, selectedRelayUrl) { mutableStateOf(false) }
+    var showRelayDetails by remember(channelId, selectedRelayUrl) { mutableStateOf(false) }
 
     LaunchedEffect((state as? ChannelViewModel.UiState.Ready)?.engagementError) {
         val error = (state as? ChannelViewModel.UiState.Ready)?.engagementError ?: return@LaunchedEffect
@@ -272,13 +273,34 @@ fun ChannelScreen(
         topBar = {
             AppTopBar(
                 title = {
-                    val title = (state as? ChannelViewModel.UiState.Ready)
-                        ?.channelMeta?.name?.ifBlank { "チャンネル" } ?: "チャンネル"
-                    Text(
-                        text = title,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
+                    val ready = state as? ChannelViewModel.UiState.Ready
+                    val title = ready?.channelMeta?.name?.ifBlank { "チャンネル" } ?: "チャンネル"
+                    Column {
+                        Text(
+                            text = title,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                        // 2行目に閲覧先リレーの概要。タップで詳細(FR-09)。
+                        if (ready != null) {
+                            Row(
+                                modifier = Modifier.clickable { showRelayDetails = true },
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                            ) {
+                                if (ready.isRelayTransitioning) {
+                                    CircularProgressIndicator(Modifier.size(10.dp), strokeWidth = 1.5.dp)
+                                }
+                                Text(
+                                    text = ChannelRelayPresentation.headerSummary(ready.relayContext),
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                            }
+                        }
+                    }
                 },
                 navigationIcon = {
                     IconButton(onClick = onBack) {
@@ -307,6 +329,7 @@ fun ChannelScreen(
                 ready = ready,
                 onDraftChange = viewModel::onDraftChange,
                 onSend = viewModel::sendMessage,
+                onOpenRelayDetails = { showRelayDetails = true },
             )
         },
     ) { padding ->
@@ -483,6 +506,10 @@ fun ChannelScreen(
     }
 
     val readyState = state as? ChannelViewModel.UiState.Ready
+    if (showRelayDetails && readyState != null) {
+        ChannelRelayDetailsSheet(ready = readyState, onDismiss = { showRelayDetails = false })
+    }
+
     if (showThreadInfoDialog && readyState != null) {
         ThreadInfoDialog(
             meta = readyState.channelMeta,
@@ -689,16 +716,42 @@ private fun ChannelMessageInputBar(
     ready: ChannelViewModel.UiState.Ready?,
     onDraftChange: (String) -> Unit,
     onSend: () -> Unit,
+    onOpenRelayDetails: () -> Unit,
 ) {
-    AppMessageComposer(
-        text = ready?.draftText.orEmpty(),
-        onTextChange = onDraftChange,
-        onSend = onSend,
-        placeholder = "メッセージを入力…",
-        enabled = ready != null,
-        isSending = ready?.isPosting == true,
-        error = ready?.postError,
-    )
+    Column {
+        // 投稿先の概要と一部失敗の案内(FR-10)。AppMessageComposer 自体にはチャンネル固有の表示を入れない。
+        if (ready != null) {
+            val partial = ready.publishState.phase == ChannelPublishUiState.Phase.PartialSuccess
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(MaterialTheme.colorScheme.surface)
+                    .padding(start = 16.dp, end = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    text = ChannelRelayPresentation.composerSummary(ready.relayContext, ready.publishState),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = if (partial) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.weight(1f),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                TextButton(onClick = onOpenRelayDetails) {
+                    Text("詳細", style = MaterialTheme.typography.labelSmall)
+                }
+            }
+        }
+        AppMessageComposer(
+            text = ready?.draftText.orEmpty(),
+            onTextChange = onDraftChange,
+            onSend = onSend,
+            placeholder = "メッセージを入力…",
+            enabled = ready != null,
+            isSending = ready?.isPosting == true,
+            error = ready?.postError,
+        )
+    }
 }
 
 @Composable
