@@ -49,6 +49,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import com.nostr.torinos.model.NoteContext
+import com.nostr.torinos.ui.channel.ComposerRelayContext
 import com.nostr.torinos.model.ReplyTarget
 import com.nostr.torinos.account.accountSessionViewModel
 import com.nostr.torinos.model.encodeNevent
@@ -75,6 +76,8 @@ fun PostSheet(
     quoteToPubkey: String? = null,
     quoteToPreview: String? = null,
     noteContext: NoteContext = NoteContext.Timeline,
+    /** チャンネル返信の送信先の初期選択と推奨リレー(第16.14節)。 */
+    relayContext: ComposerRelayContext? = null,
     initialMemo: PostMemoData? = null,
     initialMemoRestoreMessage: String? = null,
     autoFocus: Boolean = false,
@@ -103,7 +106,7 @@ fun PostSheet(
     var showSaveDraftDialog by remember { mutableStateOf(false) }
     var isWaitingToShowSaveDraftDialog by remember { mutableStateOf(false) }
     var selectedDraft by remember { mutableStateOf<PostMemoData?>(null) }
-    var postRelayUrls by remember { mutableStateOf<Set<String>?>(null) }
+    var postRelayUrls by remember { mutableStateOf<Set<String>?>(relayContext?.initialRelayUrls) }
     val activeMemo = selectedDraft ?: initialMemo
     val activeNoteContext = selectedDraft?.let { memo ->
         memo.channelId?.takeIf { it.isNotBlank() }?.let(NoteContext::Channel)
@@ -294,6 +297,7 @@ fun PostSheet(
 
     if (showRelaySettingsDialog) {
         PostRelaySettingsDialog(
+            recommendedRelayUrls = relayContext?.recommendedRelayUrls.orEmpty(),
             selectedRelayUrls = postRelayUrls ?: RelayStore.writableRelayUrlsSnapshot().toSet(),
             onSelectionChange = { postRelayUrls = it },
             onDismiss = { showRelaySettingsDialog = false },
@@ -556,16 +560,26 @@ private fun PostSheetContent(
 
 @Composable
 private fun PostRelaySettingsDialog(
+    recommendedRelayUrls: List<String>,
     selectedRelayUrls: Set<String>,
     onSelectionChange: (Set<String>) -> Unit,
     onDismiss: () -> Unit,
 ) {
     val relayEntries by RelayStore.entries.collectAsState()
+    val writable = relayEntries.filter { it.enabled && it.write }.map { it.url }
+    // チャンネル返信ではユーザー設定に無い推奨リレーも候補に出す。
+    val candidates = (recommendedRelayUrls + writable + selectedRelayUrls).distinct()
+    val allRecommendedRemoved = recommendedRelayUrls.isNotEmpty() && recommendedRelayUrls.none { it in selectedRelayUrls }
     RelayMultiSelectDialog(
         title = "この投稿のリレー",
-        candidates = relayEntries.filter { it.enabled && it.write }.map { it.url },
+        candidates = candidates,
         selected = selectedRelayUrls,
         onSelectionChange = onSelectionChange,
         onDismiss = onDismiss,
+        note = when {
+            allRecommendedRemoved -> "チャンネルの推奨リレーがすべて外れています。他のクライアントから見えにくくなります。"
+            recommendedRelayUrls.isNotEmpty() -> "チャンネルの推奨リレー: ${recommendedRelayUrls.size}件"
+            else -> null
+        },
     )
 }

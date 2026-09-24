@@ -49,4 +49,37 @@ class ChannelEventTagsTest {
             ),
         )
     }
+
+    @Test
+    fun replyFallsBackToChannelHintForParentAndPubkey() {
+        assertEquals(
+            listOf(
+                listOf("e", "channel", "wss://channel.example", "root"),
+                listOf("e", "parent", "wss://channel.example", "reply"),
+                listOf("p", "author", "wss://channel.example"),
+            ),
+            ChannelEventTags.replyMessage(
+                channelId = "channel",
+                channelRelayHint = "wss://channel.example",
+                parent = ReplyEventReference(id = "parent", kind = 42, pubkey = "author"),
+            ),
+        )
+    }
+
+    @Test
+    fun channelReplyTargetUsesTheSameTagBuilder() {
+        val target = ReplyTarget.Channel(
+            channelId = "channel",
+            parent = ReplyEventReference(id = "parent", kind = 42, pubkey = "author", relayUrl = "wss://seen"),
+            channelRelayUrl = "wss://rec",
+        )
+        assertEquals(
+            listOf(
+                listOf("e", "channel", "wss://rec", "root"),
+                listOf("e", "parent", "wss://seen", "reply"),
+                listOf("p", "author", "wss://seen"),
+            ),
+            target.tags(),
+        )
+    }
 }

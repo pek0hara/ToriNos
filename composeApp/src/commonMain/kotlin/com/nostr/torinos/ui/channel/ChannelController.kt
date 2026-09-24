@@ -156,6 +156,7 @@ internal class ChannelController(
     private var relayTransitionJob: Job? = null
     private var isRelayTransitioning = false
     private var currentRelayStates = emptyMap<String, RelayConnectionState>()
+    private val messageSourceRelays = linkedMapOf<String, String>()
     // relay context 変更時に張り直すライブ購読。subId -> filter。
     private val liveFilters = linkedMapOf<String, NostrFilter>()
 
@@ -180,6 +181,7 @@ internal class ChannelController(
             ),
             // 応答しない推奨リレーが1件あってもページ全体を未完了にしない。
             settleAfterFirstEoseMillis = HISTORY_SETTLE_MS,
+            onRelayEvent = { relayUrl, event -> rememberMessageSource(event.id, relayUrl) },
         ) { event -> if (noteContext.matches(event)) events.add(event) }
         // メッセージ本体は端末へ保存しない(第16.12節)。一覧プレビュー用に最新1件だけ記録する。
         val retainedEvents = events.filterNot { it.id in locallyDeletedMessageIds }.distinctBy { it.id }
@@ -1098,6 +1100,16 @@ internal class ChannelController(
         ) { event -> if (noteContext.matches(event) && event.id !in locallyDeletedMessageIds) events += event }
         history.supplement(events)
     }
+
+    /** 最初に観測したリレーだけを返信の hint 用に覚える。ライブ受信分は観測元が分からないため記録されない。 */
+    private fun rememberMessageSource(eventId: String, relayUrl: String) {
+        if (messageSourceRelays.containsKey(eventId)) return
+        messageSourceRelays[eventId] = relayUrl
+        while (messageSourceRelays.size > MAX_SEEN_IDS) messageSourceRelays.remove(messageSourceRelays.keys.first())
+    }
+
+    /** 返信先メッセージの relay hint(第16.8節)。観測元が不明なら null で、呼び出し側がチャンネルの hint を使う。 */
+    fun replyRelayHint(eventId: String): String? = messageSourceRelays[eventId]
 
     /** 接続失敗しても古いリレーを残し続けないよう、timeout 後は完了扱いにする。 */
     private suspend fun awaitRelaysConnected(urls: Set<String>) {

@@ -621,7 +621,7 @@ UIを更新
 - [x] チャンネル推奨リレーがユーザー設定外でも kind 42 を購読できる。（Loop 3b、L3b-S01）
 - [x] kind 42 がすべての選択済み推奨リレーへ送信される。（Loop 4、L4-S02）
 - [x] kind 42 の `e` タグに root marker と relay hint が入る。（Loop 4、L4-S01/S02）
-- [ ] 返信時に root/reply/p タグが正しく生成される。
+- [x] 返信時に root/reply/p タグが正しく生成される。（Loop 5d、単体テスト。実リレーへの返信送信は未実施）
 - [x] 閲覧先と投稿先を UI から確認できる。（Loop 5c）
 - [x] リレー別の送信成功・失敗を確認できる。（Loop 5c。一部失敗の実リレー確認は未実施）
 - [x] 一部成功時は投稿済み、全失敗時は未投稿として扱われる。（Loop 4、単体テスト。全失敗・一部失敗の実リレー確認は未実施）
@@ -1827,8 +1827,8 @@ iOS Simulatorテスト
 | 5 | UIと返信連携 | ヘッダー、投稿先、詳細、編集、通常返信画面 | 分割実施中 |
 | 5a | チャンネル作成シート・一覧ヘッダー整理（2026-09-24 追加） | FR-13 のシート（推奨リレー選択・アイコン画像・最初の投稿）、FR-14 のキャッシュ一括削除ボタン撤去 | 完了（実リレー検証はユーザー判断で省略、第25章） |
 | 5b | kind 41 編集 UI | 画像・推奨リレー編集、競合検出、保存結果 | 完了（実リレー検証はユーザー判断で省略、第26章） |
-| 5c | 閲覧先・投稿先の表示 | ヘッダー2行目の閲覧先（FR-09）、投稿欄の投稿先・送信結果（FR-10）、リレー詳細シート | 完了（第28章） |
-| 5d | 通常投稿画面からのチャンネル返信 | `ComposerRelayContext`、返信の reply/p hint（第16.14節） | 未着手 |
+| 5c | 閲覧先・投稿先の表示 | ヘッダー2行目の閲覧先（FR-09）、投稿欄の投稿先・送信結果（FR-10）、リレー詳細シート | 完了（`dddd0a3`、第28章） |
+| 5d | 通常投稿画面からのチャンネル返信 | `ComposerRelayContext`、返信の reply/p hint（第16.14節） | 完了（第29章） |
 | 5e | チャンネル情報の共通化・推奨リレー追加時の複製配送 | FR-11 の `ChannelInfoContent`、kind 41 で追加した推奨リレーへの kind 40/41 配送の判断 | 未着手 |
 | 6 | モデレーション | kind 43/44 | 未着手 |
 | 7 | 参加同期 | kind 10005 | 未着手 |
@@ -2226,7 +2226,7 @@ Loop 5a の初回実装（作成シート、`ComposerBodyEditor`・`RelayMultiSe
 
 ## 28. Loop 5c: 閲覧先・投稿先の表示（FR-09、FR-10、2026-09-24）
 
-- 状態: 完了（未コミット）
+- 状態: 完了（`dddd0a3`）
 - 対象: チャンネル画面ヘッダーの2行目に閲覧先の概要、投稿欄の上に投稿先の概要と送信結果、両方から開くリレー詳細シート（第16.13節）。
 - 対象外: チャンネル情報の共通化（FR-11、Loop 5e）、通常投稿画面からの返信（Loop 5d）、購読拒否（`auth-required` など）の理由表示。
 - 開始時commit: `0b656ab`
@@ -2270,3 +2270,48 @@ Simulator 操作は、ウィンドウが他のウィンドウに覆われてい�
 
 - 確定した仕様: 第16.13節のヘッダー・投稿欄・詳細シートの表示規則（28.1節）。
 - 次ループへ送る課題: 購読拒否理由の表示（L5c-R2）、一部失敗の実リレー確認（L5c-S05）、Loop 5d・5e。
+
+## 29. Loop 5d: 通常投稿画面からのチャンネル返信（第16.14節、2026-09-24）
+
+- 状態: 完了（未コミット）
+- 対象: チャンネルのメッセージへの返信を開いた時の送信先の初期選択と、root/reply/p タグの relay hint（FR-07）。チャンネル画面からもスレッド画面からも同じ経路。
+- 対象外: 返信の下書きから復元した場合の送信先（従来どおりユーザーの書き込みリレー）、チャンネル内のリアクション・リポストの送信先。
+- 開始時commit: `dddd0a3`
+- 対象ファイル: 新規 `ui/channel/ChannelReplyContext.kt`（`ComposerRelayContext`・`ChannelReplyContextBuilder`）、テスト `ChannelReplyContextTest.kt`。変更 `model/ReplyTarget.kt`・`model/ChannelEventTags.kt`・`ComposerCoordinator.kt`・`ComposerHost.kt`・`AppSessionCoordinator.kt`・`ui/post/PostSheet.kt`・`ui/post/PostViewModel.kt`（下書きの hint 保存）・`ChannelController.kt`/`ChannelViewModel.kt`/`ChannelScreen.kt`（観測元リレー）・`ChannelListFetch.kt`・テスト `ChannelEventTagsTest.kt`。
+
+### 29.1 設計レビュー
+
+| ID | 重大度 | 指摘 | 対応 |
+| --- | --- | --- | --- |
+| L5d-D1 | Major | `ReplyTarget.Channel.tags()` は root の hint を空文字、reply の hint を未設定のまま出しており、FR-07 と `ChannelEventTags.replyMessage` の2実装が並存していた | `ReplyTarget.Channel` に `channelRelayUrl` を持たせ、タグ生成を `ChannelEventTags.replyMessage` へ一本化 |
+| L5d-D2 | Major | チャンネル返信の送信先がユーザーの書き込みリレーだけで、推奨リレーへ届かない | 投稿画面の送信先の初期選択を relay context の `writeRelays`（推奨 + ユーザーの書き込みリレー）にする。リレー選択の候補にもユーザー設定外の推奨リレーを出す |
+| L5d-D3 | Note | 返信を開く経路は複数（チャンネル画面、チャンネル由来のスレッド画面）で、画面の ViewModel が無い場合もある | 保存済みの実効メタデータ（`ChannelLocalStore`、チャンネル画面が更新）とリレー設定から context を作る（第16.14節の「メモリ上にない場合は保存値から復元」を全経路の既定にした）。チャンネル画面の選択リレー（navigation hint）は含めない |
+| L5d-D4 | Minor | 返信先の観測元リレーを保持していなかった（`ReactionEventStore` は kind 7/5 だけ） | 履歴取得のイベントに付く `relayUrl` を Controller が最初の1件だけ保持し、返信時に渡す。互換 API のライブ受信は観測元が分からないため、チャンネルの primary hint へフォールバックする |
+| L5d-D5 | Note | p タグの hint | 返信先の観測元 → チャンネルの hint の順に付ける（`pubkeyRelayUrl` があればそれを優先） |
+
+### 29.2 実装レビュー
+
+| ID | 重大度 | 指摘 | 対応 |
+| --- | --- | --- | --- |
+| L5d-R1 | Minor | 投稿画面を先に開いてから context を設定すると、送信先の初期値が古いまま残る（`remember` の初期値） | context を作り終えてから投稿画面を開く。連続操作は既存の `ReplyResolutionTracker` で古い要求を捨てる |
+| L5d-R2 | Note | チャンネル返信の下書きを復元すると hint が失われる | 下書きの `replyRootRelayUrl` にチャンネルの hint を保存・復元する（タイムライン返信の root と同じ欄を流用） |
+| L5d-R3 | Note | 推奨リレーをすべて外しても送信はできる（第16.14節「完全には禁止しない」） | リレー選択ダイアログに警告を出す |
+
+### 29.3 テスト
+
+| 検証 | 結果 |
+| --- | --- |
+| `./gradlew :composeApp:iosSimulatorArm64Test :composeApp:compileAndroidMain check` | 成功（iOS 単体テスト 594 件、失敗0。新規 `ChannelReplyContextTest` 4件、`ChannelEventTagsTest` +2件） |
+| iPhone 17 Simulator（iOS 26.5）Debug、選択リレー yabu.me、2026-09-24 19:11〜19:13、投稿なし | 次の表のとおり |
+
+| ID | シナリオ | 結果 | 証跡・備考 |
+| --- | --- | --- | --- |
+| L5d-S01 | しおたぬの住処のメッセージに返信を開き、リレー選択を開く | 成功 | 「チャンネルの推奨リレー: 6件」と表示され、ユーザー設定に無い4件を含む推奨6件が選択済み |
+| L5d-S02 | 推奨リレーをすべて外す | 成功 | 「チャンネルの推奨リレーがすべて外れています。他のクライアントから見えにくくなります。」 |
+| L5d-S03 | 実際に返信を送信し、タグと配送先を確認する | 未実施 | 実リレーへの公開になるため。タグは単体テストで確認 |
+
+### 29.4 設計書へのフィードバック
+
+- 確定した仕様: 第16.14節の `ComposerRelayContext`（`initialRelayUrls`・`recommendedRelayUrls`・`primaryHint`）と、返信タグの hint の優先順（29.1節）。
+- 変更した仕様: 第16.14節の「チャンネル画面から開く場合は現在の `ChannelRelayContext` を渡す」を、全経路で保存済みメタデータから作る方式に変更した（L5d-D3）。
+- 次ループへ送る課題: ライブ受信メッセージの観測元リレー（セッション API 移行時）、L5d-S03、Loop 5e。

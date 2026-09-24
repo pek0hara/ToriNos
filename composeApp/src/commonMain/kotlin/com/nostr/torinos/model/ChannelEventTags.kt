@@ -26,7 +26,9 @@ internal object ChannelEventTags {
             buildList {
                 add("p")
                 add(parent.pubkey)
-                parent.pubkeyRelayUrl?.takeIf(String::isNotBlank)?.let(::add)
+                // FR-07: 返信先を観測したリレー、無ければチャンネルの hint を p タグにも付ける。
+                (parent.pubkeyRelayUrl ?: parent.relayUrl ?: channelRelayHint)
+                    ?.takeIf(String::isNotBlank)?.let(::add)
             },
         )
     }

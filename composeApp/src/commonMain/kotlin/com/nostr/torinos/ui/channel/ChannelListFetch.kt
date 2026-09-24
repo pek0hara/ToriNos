@@ -28,6 +28,8 @@ internal suspend fun fetchChannelEvents(
     spec: SubscriptionSpec,
     open: suspend (SubscriptionSpec) -> SubscriptionSession = NostrRepository::openSubscription,
     settleAfterFirstEoseMillis: Long? = null,
+    /** 観測元リレーが必要な呼び出し側向け(返信の relay hint、第16.8節)。 */
+    onRelayEvent: (suspend (relayUrl: String, event: NostrEvent) -> Unit)? = null,
     onEvent: suspend (NostrEvent) -> Unit,
 ): Boolean {
     val timeout = (spec.behavior as SubscriptionBehavior.Fetch).timeoutMillis
@@ -43,7 +45,10 @@ internal suspend fun fetchChannelEvents(
                 val collector = launch {
                     opened.signals.collect { signal ->
                         when (signal) {
-                            is SubscriptionSignal.Event -> onEvent(signal.event)
+                            is SubscriptionSignal.Event -> {
+                                onRelayEvent?.invoke(signal.relayUrl, signal.event)
+                                onEvent(signal.event)
+                            }
                             is SubscriptionSignal.Eose -> if (settleAfterFirstEoseMillis != null && settleJob == null) {
                                 settleJob = launch {
                                     delay(settleAfterFirstEoseMillis)

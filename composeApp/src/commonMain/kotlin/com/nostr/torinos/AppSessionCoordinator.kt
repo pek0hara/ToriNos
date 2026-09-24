@@ -78,6 +78,8 @@ import com.nostr.torinos.model.NostrEvent
 import com.nostr.torinos.model.NostrProfile
 import com.nostr.torinos.model.noteContextForChannel
 import com.nostr.torinos.network.deleteLegacyChannelCacheDatabase
+import com.nostr.torinos.ui.channel.ChannelReplyContextBuilder
+import com.nostr.torinos.ui.channel.channelComposerRelayContext
 import com.nostr.torinos.network.CustomEmojiStore
 import com.nostr.torinos.network.RelayPublishResult
 import com.nostr.torinos.network.RelayStore
@@ -333,8 +335,34 @@ internal fun AppSessionCoordinator(
             replyResolutionJob = null
         }
 
-        fun openReplyComposer(event: NostrEvent, preview: String?, noteContext: NoteContext) {
+        fun openReplyComposer(
+            event: NostrEvent,
+            preview: String?,
+            noteContext: NoteContext,
+            parentRelayHint: String? = null,
+        ) {
             cancelPendingReplyResolution()
+            if (noteContext is NoteContext.Channel) {
+                // 送信先の初期選択が最初から正しいよう、relay context を作ってから投稿画面を開く(第16.14節)。
+                val request = replyResolutionTracker.begin()
+                replyResolutionJob = scope.launch {
+                    val relayContext = channelComposerRelayContext(noteContext.channelId)
+                    if (!replyResolutionTracker.isCurrent(request)) return@launch
+                    val target = ChannelReplyContextBuilder.replyTarget(
+                        event, noteContext.channelId, parentRelayHint, relayContext,
+                    )
+                    replyResolutionJob = null
+                    if (target == null) {
+                        snackbarHostState.showSnackbar("返信元のスレッド情報を取得できませんでした")
+                        return@launch
+                    }
+                    composer.prepareReply(target, preview, noteContext, relayContext)
+                    runWithPrivateKey(PendingKeyAction.Reply) {
+                        composer.showPostSheet = true
+                    }
+                }
+                return
+            }
             val requiresRootResolution = noteContext == NoteContext.Timeline &&
                 (event.kind == COMMENT_EVENT_KIND ||
                     (event.kind == 1 && event.tags.any { it.firstOrNull() == "e" }))
@@ -1004,8 +1032,8 @@ internal fun AppSessionCoordinator(
                             channelId = route.channelId,
                             onBack = { nav.popBackStack() },
                             onUserClick = ::openProfileDrawer,
-                            onReply = { event, preview, chId ->
-                                openReplyComposer(event, preview, noteContextForChannel(chId))
+                            onReply = { event, preview, chId, parentRelayHint ->
+                                openReplyComposer(event, preview, noteContextForChannel(chId), parentRelayHint)
                             },
                             onOpenThread = { eventId ->
                                 nav.navigate(ThreadRoute(eventId, source = ThreadSourceChannel, channelId = route.channelId))

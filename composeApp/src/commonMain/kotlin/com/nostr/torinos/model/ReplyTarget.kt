@@ -32,14 +32,13 @@ sealed interface ReplyTarget {
     data class Channel(
         val channelId: String,
         override val parent: ReplyEventReference,
+        /** チャンネル(kind 40)の relay hint。通常は relay context の primaryHint(第16.8節)。 */
+        val channelRelayUrl: String? = null,
     ) : ReplyTarget {
         override val eventKind: Int = 42
 
-        override fun tags(): List<List<String>> = buildList {
-            add(listOf("e", channelId, "", "root"))
-            add(listOf("e", parent.id, parent.relayUrl.orEmpty(), "reply"))
-            add(pubkeyTag("p", parent))
-        }
+        override fun tags(): List<List<String>> =
+            ChannelEventTags.replyMessage(channelId, channelRelayUrl, parent)
     }
 }
 

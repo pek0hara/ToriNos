@@ -24,6 +24,7 @@ internal fun ComposerHost(
             quoteToPubkey = coordinator.quoteToPubkey,
             quoteToPreview = coordinator.quoteToPreview,
             noteContext = coordinator.replyNoteContext,
+            relayContext = coordinator.replyRelayContext,
             initialMemo = coordinator.localDraft,
             initialMemoRestoreMessage = if (coordinator.localDraft != null) {
                 "下書きを復元しました"

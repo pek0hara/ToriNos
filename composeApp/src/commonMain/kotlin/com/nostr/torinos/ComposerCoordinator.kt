@@ -7,6 +7,7 @@ import com.nostr.torinos.model.NoteContext
 import com.nostr.torinos.model.NostrEvent
 import com.nostr.torinos.model.ReplyTarget
 import com.nostr.torinos.model.toReplyTarget
+import com.nostr.torinos.ui.channel.ComposerRelayContext
 import com.nostr.torinos.ui.post.PostMemoData
 
 /** 投稿、返信、引用にまたがる一時状態の唯一の所有者。 */
@@ -19,6 +20,8 @@ internal class ComposerCoordinator {
     var quoteToPubkey by mutableStateOf<String?>(null)
     var quoteToPreview by mutableStateOf<String?>(null)
     var replyNoteContext by mutableStateOf<NoteContext>(NoteContext.Timeline)
+    /** チャンネル返信の送信先と relay hint(第16.14節)。通常投稿・タイムライン返信では null。 */
+    var replyRelayContext by mutableStateOf<ComposerRelayContext?>(null)
     var localDraft by mutableStateOf<PostMemoData?>(null)
     var journalToggleCalendarRequest by mutableStateOf(0)
     var journalShowCalendarRequest by mutableStateOf(0)
@@ -46,7 +49,9 @@ internal class ComposerCoordinator {
         target: ReplyTarget,
         preview: String?,
         noteContext: NoteContext,
+        relayContext: ComposerRelayContext? = null,
     ) {
+        replyRelayContext = relayContext
         quoteToId = null
         quoteToPubkey = null
         quoteToPreview = null
@@ -74,6 +79,7 @@ internal class ComposerCoordinator {
         quoteToPubkey = null
         quoteToPreview = null
         replyNoteContext = NoteContext.Timeline
+        replyRelayContext = null
     }
 }
 

@@ -123,6 +123,8 @@ class ChannelViewModel(
     fun onViewport(ids: Set<String>, anchorId: String?, offset: Int, savePosition: Boolean) =
         controller.onViewport(ids, anchorId, offset, savePosition)
 
+    fun replyRelayHint(eventId: String): String? = controller.replyRelayHint(eventId)
+
     override fun onCleared() {
         controller.close()
         super.onCleared()

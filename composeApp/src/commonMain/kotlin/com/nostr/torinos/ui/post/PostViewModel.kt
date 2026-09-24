@@ -153,7 +153,8 @@ internal fun PostMemoData.restoreReplyTarget(noteContext: NoteContext): ReplyTar
         pubkeyRelayUrl = replyParentPubkeyRelayUrl,
     )
     return when (noteContext) {
-        is NoteContext.Channel -> ReplyTarget.Channel(noteContext.channelId, parent.copy(kind = 42))
+        // チャンネル返信では replyRootRelayUrl にチャンネルの relay hint を保存している。
+        is NoteContext.Channel -> ReplyTarget.Channel(noteContext.channelId, parent.copy(kind = 42), replyRootRelayUrl)
         NoteContext.Timeline -> {
             val root = if (replyRootId != null && replyRootKind != null && replyRootPubkey != null) {
                 ReplyEventReference(
@@ -327,7 +328,8 @@ class PostViewModel(
             replyRootKind = (replyTarget as? ReplyTarget.Timeline)?.root?.kind,
             replyRootPubkey = (replyTarget as? ReplyTarget.Timeline)?.root?.pubkey,
             replyParentKind = replyTarget?.parent?.kind,
-            replyRootRelayUrl = (replyTarget as? ReplyTarget.Timeline)?.root?.relayUrl,
+            replyRootRelayUrl = (replyTarget as? ReplyTarget.Timeline)?.root?.relayUrl
+                ?: (replyTarget as? ReplyTarget.Channel)?.channelRelayUrl,
             replyRootPubkeyRelayUrl = (replyTarget as? ReplyTarget.Timeline)?.root?.pubkeyRelayUrl,
             replyParentRelayUrl = replyTarget?.parent?.relayUrl,
             replyParentPubkeyRelayUrl = replyTarget?.parent?.pubkeyRelayUrl,
@@ -375,7 +377,8 @@ class PostViewModel(
                 replyRootKind = (replyTarget as? ReplyTarget.Timeline)?.root?.kind,
                 replyRootPubkey = (replyTarget as? ReplyTarget.Timeline)?.root?.pubkey,
                 replyParentKind = replyTarget?.parent?.kind,
-                replyRootRelayUrl = (replyTarget as? ReplyTarget.Timeline)?.root?.relayUrl,
+                replyRootRelayUrl = (replyTarget as? ReplyTarget.Timeline)?.root?.relayUrl
+                ?: (replyTarget as? ReplyTarget.Channel)?.channelRelayUrl,
                 replyRootPubkeyRelayUrl = (replyTarget as? ReplyTarget.Timeline)?.root?.pubkeyRelayUrl,
                 replyParentRelayUrl = replyTarget?.parent?.relayUrl,
                 replyParentPubkeyRelayUrl = replyTarget?.parent?.pubkeyRelayUrl,
