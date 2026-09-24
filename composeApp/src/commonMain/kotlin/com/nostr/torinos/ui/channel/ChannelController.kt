@@ -30,9 +30,13 @@ import com.nostr.torinos.model.toCustomReaction
 import com.nostr.torinos.model.toUnicodeReaction
 import com.nostr.torinos.model.toReactionOption
 import com.nostr.torinos.network.ChannelReadingPosition
+import com.nostr.torinos.model.ChannelRelayContext
+import com.nostr.torinos.network.RelayConnectionState
+import com.nostr.torinos.network.RelayStore
 import com.nostr.torinos.network.RelayTarget
 import com.nostr.torinos.network.SubscriptionBehavior
 import com.nostr.torinos.network.SubscriptionSpec
+import com.nostr.torinos.network.ChannelLocalStateStore
 import com.nostr.torinos.network.ChannelLocalStore
 import com.nostr.torinos.network.NostrRepository
 import com.nostr.torinos.network.ProfileFetchPolicy
@@ -44,6 +48,7 @@ import com.nostr.torinos.ui.timeline.SignedEventPublisher
 import com.nostr.torinos.ui.timeline.SignedPublishResult
 import kotlin.time.Clock
 import com.nostr.torinos.util.logException
+import com.nostr.torinos.util.networkTraceLog
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.CancellationException
@@ -52,6 +57,7 @@ import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
@@ -108,6 +114,8 @@ internal class ChannelController(
     private var channelCreateEvent: NostrEvent? = null
     private val metadataUpdateCandidates = linkedMapOf<String, NostrEvent>()
     private var effectiveMetadataSourceEventId: String? = null
+    // 端末に保存済みの実効メタデータの取得元。kind 40 が kind 41 より先に届いても巻き戻さないために使う。
+    private var cachedMetadataSource: CachedMetadataSource? = null
     private var currentMessages = emptyList<NostrEvent>()
     private var currentProfiles = emptyMap<String, NostrProfile>()
     private var currentReplyCounts = emptyMap<String, Int>()
@@ -130,6 +138,16 @@ internal class ChannelController(
     private val noteContext = NoteContext.Channel(channelId)
     private val openedAt = Clock.System.now().epochSeconds
 
+    // チャンネル固有の relay context(第16.5節)。表示・購読は常にこの値から決める。
+    private val navigationRelayHint = ChannelRelayPlanner.normalizeHint(relayUrl)
+    private var relayContext = ChannelRelayContext.EMPTY
+    private var readTarget: RelayTarget = ChannelRelayPlanner.readTarget(emptySet(), navigationRelayHint)
+    private var relayContextGeneration = 0L
+    private var relayTransitionJob: Job? = null
+    private var isRelayTransitioning = false
+    // relay context 変更時に張り直すライブ購読。subId -> filter。
+    private val liveFilters = linkedMapOf<String, NostrFilter>()
+
     private val history = ChannelHistory(
         scope = scope,
         channelId = channelId,
@@ -146,9 +164,11 @@ internal class ChannelController(
             SubscriptionSpec(
                 id = "$histSubId-${requestSequence++}",
                 filters = listOf(filter),
-                target = relayUrl?.let(RelayTarget::Single) ?: RelayTarget.AllEnabled,
+                target = readTarget,
                 behavior = SubscriptionBehavior.Fetch(10_000),
             ),
+            // 応答しない推奨リレーが1件あってもページ全体を未完了にしない。
+            settleAfterFirstEoseMillis = HISTORY_SETTLE_MS,
         ) { event -> if (noteContext.matches(event)) events.add(event) }
         // メッセージ本体は端末へ保存しない(第16.12節)。一覧プレビュー用に最新1件だけ記録する。
         val retainedEvents = events.filterNot { it.id in locallyDeletedMessageIds }.distinctBy { it.id }
@@ -482,9 +502,16 @@ internal class ChannelController(
             updateCandidates = metadataUpdateCandidates.values,
         ) ?: return
         if (resolution.effectiveEvent.id == effectiveMetadataSourceEventId) return
+        if (shouldKeepCachedMetadata(cachedMetadataSource, create.pubkey, resolution.effectiveEvent)) {
+            // 保存済みの kind 41 の方が新しい。同じか新しい kind 41 が届くまで表示・購読先を戻さない。
+            currentChannelOwnerPubkey = create.pubkey
+            syncReadyState()
+            return
+        }
         effectiveMetadataSourceEventId = resolution.effectiveEvent.id
         currentChannelMeta = resolution.metadata
         currentChannelOwnerPubkey = resolution.channelCreateEvent.pubkey
+        updateRelayContext(resolution.metadata.relays)
         try {
             ChannelLocalStore.upsertChannelMetadata(
                 channelCreateEvent = resolution.channelCreateEvent,
@@ -515,11 +542,7 @@ internal class ChannelController(
                 channelCreateEvent = event
                 applyMetadataResolution()
                 scheduleProfileFetch(event.pubkey)
-                NostrRepository.subscribe(
-                    metaUpdateSubId,
-                    NostrFilter(kinds = listOf(41), eTags = listOf(channelId)),
-                    relayUrl = relayUrl,
-                )
+                subscribeLive(metaUpdateSubId, NostrFilter(kinds = listOf(41), eTags = listOf(channelId)))
             }
         }
 
@@ -677,16 +700,21 @@ internal class ChannelController(
             if (localState != null && localState.hasMetadata && effectiveMetadataSourceEventId == null) {
                 currentChannelMeta = localState.meta
                 currentChannelOwnerPubkey = localState.ownerPubkey
-                syncReadyState()
+                cachedMetadataSource = CachedMetadataSource(
+                    ownerPubkey = localState.ownerPubkey,
+                    eventId = localState.metadataEventId,
+                    createdAt = localState.metadataCreatedAt,
+                )
             }
+            // 保存済みの推奨リレーで暫定 context を作り、最初の購読からその集合を使う(第16.6節 初期化順1)。
+            relayContext = planRelayContext(currentChannelMeta.relays)
+            readTarget = ChannelRelayPlanner.readTarget(relayContext.readRelays, navigationRelayHint)
+            logRelayContext("initial")
+            syncReadyState()
             // メッセージ本体はローカルに持たないため、履歴は常にリレー取得から始める。
             history.initialize(emptyList(), localState?.readingPosition)
-            NostrRepository.subscribe(metaSubId, NostrFilter(ids = listOf(channelId)), relayUrl = relayUrl)
-            NostrRepository.subscribe(
-                msgSubId,
-                NostrFilter(kinds = listOf(42), eTags = listOf(channelId), since = openedAt),
-                relayUrl = relayUrl,
-            )
+            subscribeLive(metaSubId, NostrFilter(ids = listOf(channelId)))
+            subscribeLive(msgSubId, NostrFilter(kinds = listOf(42), eTags = listOf(channelId), since = openedAt))
         }
     }
 
@@ -740,6 +768,8 @@ internal class ChannelController(
             pendingEngagementOperations = currentPendingEngagementOperations,
             canLoadMore = canLoadMore,
             history = history.state.value,
+            relayContext = relayContext,
+            isRelayTransitioning = isRelayTransitioning,
         )
 
     private fun syncReadyState() {
@@ -763,6 +793,8 @@ internal class ChannelController(
             ownEmojiReactionEventIds = currentOwnEmojiReactionEventIds,
             repostedEvents = currentRepostedEvents,
             pendingEngagementOperations = currentPendingEngagementOperations,
+            relayContext = relayContext,
+            isRelayTransitioning = isRelayTransitioning,
         )
     }
 
@@ -807,30 +839,98 @@ internal class ChannelController(
         engagementBatchJob = launch {
             delay(300)
             val ids = watchedEventIds.toList()
-            NostrRepository.subscribe(
-                replyCountSubId,
-                NostrFilter(kinds = listOf(noteContext.eventKind), eTags = ids, limit = 500),
-                relayUrl = relayUrl,
-            )
-            NostrRepository.subscribe(
-                reactionSubId,
-                NostrFilter(kinds = listOf(7), eTags = ids, limit = 500),
-                relayUrl = relayUrl,
-            )
-            NostrRepository.subscribe(
-                repostSubId,
-                NostrFilter(kinds = listOf(6), eTags = ids, limit = 500),
-                relayUrl = relayUrl,
-            )
-            NostrRepository.subscribe(
-                quoteRepostSubId,
-                NostrFilter(kinds = listOf(noteContext.eventKind), qTags = ids, limit = 500),
-                relayUrl = relayUrl,
-            )
+            // 返信・リアクション集計もメッセージと同じ read relay context を使う(FR-05)。
+            subscribeLive(replyCountSubId, NostrFilter(kinds = listOf(noteContext.eventKind), eTags = ids, limit = 500))
+            subscribeLive(reactionSubId, NostrFilter(kinds = listOf(7), eTags = ids, limit = 500))
+            subscribeLive(repostSubId, NostrFilter(kinds = listOf(6), eTags = ids, limit = 500))
+            subscribeLive(quoteRepostSubId, NostrFilter(kinds = listOf(noteContext.eventKind), qTags = ids, limit = 500))
+        }
+    }
+
+    private suspend fun subscribeLive(subscriptionId: String, filter: NostrFilter) {
+        liveFilters[subscriptionId] = filter
+        NostrRepository.subscribe(subscriptionId, filter, readTarget)
+    }
+
+    private suspend fun applyReadTarget(urls: Set<String>) {
+        readTarget = ChannelRelayPlanner.readTarget(urls, navigationRelayHint)
+        // 同じフィルターのまま target だけ変えるため、既存リレーへの REQ は再送されない。
+        liveFilters.toList().forEach { (subscriptionId, filter) ->
+            NostrRepository.subscribe(subscriptionId, filter, readTarget)
+        }
+    }
+
+    private fun planRelayContext(recommendedRelays: List<String>): ChannelRelayContext =
+        ChannelRelayPlanner.context(recommendedRelays, navigationRelayHint, RelayStore.entries.value)
+
+    /**
+     * 実効メタデータの推奨リレーが変わったら、購読先を二段階で切り替える(FR-08、第16.7節)。
+     * 新旧両方を購読し、追加リレーの接続または timeout 後に新しい集合へ縮める。
+     * 連続更新時は generation が一致しない古い切り替えを中止する。
+     */
+    private fun updateRelayContext(recommendedRelays: List<String>) {
+        val next = planRelayContext(recommendedRelays)
+        if (next == relayContext) return
+        val previous = relayContext
+        relayContext = next
+        val generation = ++relayContextGeneration
+        val transition = ChannelRelayPlanner.transition(previous, next)
+        logRelayContext("transition gen=$generation added=${transition.addedRelays.size}")
+        relayTransitionJob?.cancel()
+        isRelayTransitioning = transition.needsWarmUp
+        syncReadyState()
+        relayTransitionJob = launch {
+            if (transition.needsWarmUp) {
+                applyReadTarget(transition.transitionTargets)
+                awaitRelaysConnected(transition.addedRelays)
+                if (generation != relayContextGeneration) return@launch
+                // 履歴は切り替え前の集合で取得済みのため、追加リレーにだけある最新ページを補う。
+                supplementHistoryFrom(transition.addedRelays)
+                if (generation != relayContextGeneration) return@launch
+            }
+            applyReadTarget(transition.finalTargets)
+            if (generation == relayContextGeneration) {
+                isRelayTransitioning = false
+                syncReadyState()
+            }
+        }
+    }
+
+    private suspend fun supplementHistoryFrom(relayUrls: Set<String>) {
+        val events = mutableListOf<NostrEvent>()
+        fetchChannelEvents(
+            SubscriptionSpec(
+                id = "$histSubId-${requestSequence++}",
+                filters = listOf(
+                    NostrFilter(kinds = listOf(42), eTags = listOf(channelId), limit = ChannelHistory.PAGE_SIZE),
+                ),
+                target = RelayTarget.Explicit(relayUrls),
+                behavior = SubscriptionBehavior.Fetch(10_000),
+            ),
+            settleAfterFirstEoseMillis = HISTORY_SETTLE_MS,
+        ) { event -> if (noteContext.matches(event) && event.id !in locallyDeletedMessageIds) events += event }
+        history.supplement(events)
+    }
+
+    /** 接続失敗しても古いリレーを残し続けないよう、timeout 後は完了扱いにする。 */
+    private suspend fun awaitRelaysConnected(urls: Set<String>) {
+        withTimeoutOrNull(RELAY_TRANSITION_TIMEOUT_MS) {
+            NostrRepository.relayConnectionStates.first { states ->
+                urls.all { states[it] == RelayConnectionState.Connected }
+            }
+        }
+    }
+
+    private fun logRelayContext(reason: String) {
+        networkTraceLog {
+            "[ChannelController] relayContext $reason channel=${channelId.take(8)} " +
+                "recommended=${relayContext.recommendedRelays.size} read=${relayContext.readRelays.size} " +
+                "write=${relayContext.writeRelays.size}"
         }
     }
 
     fun close() {
+        relayTransitionJob?.cancel()
         flushReadingPosition()
         jobs.forEach { it.cancel() }
         jobs.clear()
@@ -881,6 +981,8 @@ internal class ChannelController(
         private const val MAX_WATCHED_EVENTS = 100
         private const val PROFILE_MAX_AGE_MS = 15 * 60 * 1_000L
         private const val POSITION_SAVE_DEBOUNCE_MS = 400L
+        private const val RELAY_TRANSITION_TIMEOUT_MS = 3_000L
+        private const val HISTORY_SETTLE_MS = 1_500L
     }
 }
 
@@ -906,3 +1008,16 @@ private fun <K, K2, V2> Map<K, Map<K2, V2>>.putMapOrRemove(
     key: K,
     value: Map<K2, V2>,
 ): Map<K, Map<K2, V2>> = if (value.isEmpty()) this - key else this + (key to value)
+
+internal data class CachedMetadataSource(val ownerPubkey: String, val eventId: String, val createdAt: Long)
+
+/**
+ * ネットワークで解決した実効メタデータより、端末に保存済みのものが `(createdAt, id)` で新しいか。
+ * 所有者が一致しない保存値は信用しない。
+ */
+internal fun shouldKeepCachedMetadata(
+    cached: CachedMetadataSource?,
+    ownerPubkey: String,
+    resolved: NostrEvent,
+): Boolean = cached != null && cached.ownerPubkey == ownerPubkey &&
+    ChannelLocalStateStore.isNewer(cached.createdAt, cached.eventId, resolved.createdAt, resolved.id)

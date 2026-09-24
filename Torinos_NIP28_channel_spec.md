@@ -588,7 +588,7 @@ UIを更新
 - [ ] 最新の有効な kind 41 の `name`、`about`、`picture`、`relays` が画面に反映される。
 - [ ] 所有者以外が発行した kind 41 は反映されない。
 - [ ] `wss://example.com` と `wss://example.com/` が同一リレーとして扱われる。
-- [ ] チャンネル推奨リレーがユーザー設定外でも kind 42 を購読できる。
+- [x] チャンネル推奨リレーがユーザー設定外でも kind 42 を購読できる。（Loop 3b、L3b-S01）
 - [ ] kind 42 がすべての選択済み推奨リレーへ送信される。
 - [ ] kind 42 の `e` タグに root marker と relay hint が入る。
 - [ ] 返信時に root/reply/p タグが正しく生成される。
@@ -866,6 +866,16 @@ private fun RelayTarget.urls(enabledRelayUrls: List<String>): List<String> = whe
 
 キャッシュがなくても metadata 取得完了まで画面全体をブロックせず、チャンネル ID と bootstrap relay を使った暫定状態を表示する。
 
+#### Loop 3b の実装で確定した事項
+
+- セッション API（`openSubscription`）への全面移行はせず、既存の互換 API `NostrRepository.subscribe(subId, filter, RelayTarget)` を使う（L3b-D1）。同じ購読 ID へ target だけ変えて呼び直すと、フィルターが同じリレーには REQ を再送せず、追加リレーにだけ REQ、外れたリレーにだけ CLOSE が送られるため、第16.7節の二段階更新をそのまま実現できる。`ChannelController` は購読 ID → フィルターの表（`liveFilters`）を持ち、context 変更時に全ライブ購読の target を張り替える。
+- metadata 購読と message 購読は別 ID だが、target は同じ `readRelays`（推奨 + bootstrap）とする。bootstrap は常に `readRelays` に含まれるため、第2〜3手順の「metadata 購読の target に推奨リレーを加える」は context 更新と同じ操作になる。
+- 返信数・リアクション・リポスト・引用の関連購読も同じ `readRelays` を使う。
+- 初期化順の第1手順は、`ChannelLocalState` に保存済みの推奨リレーで暫定 context を作り、最初の購読からその集合を使う。保存済みの実効メタデータが kind 41 由来で、受信した kind 40 より新しい場合は、同じか新しい kind 41 が届くまで表示・購読先を kind 40 へ戻さない（L3b-R2）。
+- 推奨リレーもユーザーリレーも無い場合だけ `RelayTarget.Single(navigationRelayHint)`、それも無ければ `AllEnabled` へ戻す。
+- 複数リレーの履歴取得は、どれか1つが EOSE を返してから 1.5 秒で打ち切り、1件以上 EOSE があれば完了扱いにする（L3b-D2）。`NostrRepository` は `RelayOutcome.Unavailable` を出さないため、従来の「全リレーの EOSE」を条件にすると応答しない推奨リレーが1件あるだけで各ページが 10 秒待ちの未完了になる。
+- ユーザーのリレー設定をチャンネル画面の表示中に変更しても context は再計算しない（次に開いたときに反映）。
+
 ### 16.7 購読切り替えの設計（FR-08）
 
 kind 41 により read relay が `old` から `next` に変わる場合、次の二段階更新を行う。
@@ -886,6 +896,13 @@ messageSession.update(filters, RelayTarget.Explicit(next.readRelays))
 切り替え中も event ID による既存の deduplicate を有効にする。generation が一致しない場合は最後の縮退更新を中止する。
 
 接続失敗しても古い推奨リレーを永久に残さない。タイムアウト後は `next.readRelays + bootstrapRelays` へ収束させ、失敗は UI 状態へ残す。
+
+Loop 3b の実装で確定した事項:
+
+- 待機条件は「追加リレーがすべて `Connected`」または 3 秒経過とした（第19章 未決5 を確定）。EOSE / EVENT は `Connected` の後にしか届かないため、接続状態だけで判定しても結果は変わらない。
+- 追加が無い変更（推奨リレーを減らしただけ）は一段階で next へ移る。
+- 追加リレーの接続後、その追加リレーだけへ最新ページ（30件）を問い合わせ、`ChannelHistory.supplement()` で統合する（L3b-R1）。履歴は切り替え前の集合で取得済みのため、これが無いと推奨リレーにしか無い最新メッセージが表示されない。読み込み済み範囲より古い投稿はページング境界を崩さないよう捨て、次の過去ページ取得（切り替え後の集合で行う）に任せる。スクロール位置は動かさず、既存の最新より新しい投稿はライブ受信と同じく新着数として扱う。
+- 切り替え中は `UiState.Ready.isRelayTransitioning = true` とする（ヘッダー表示は Loop 5）。
 
 ### 16.8 タグ生成の設計（FR-03、FR-07）
 
@@ -1598,7 +1615,7 @@ primary hint と実際の write 対象は一致しない場合がある。read-o
 2. kind 44 の解除をローカルだけにするか、kind 5 による削除要求まで行うか。
 3. kind 43/44 をチャンネル一覧の selected relay だけへ送るか、channel write context 全体へ送るか。本仕様の初期値は全体。
 4. 推奨リレー最大件数 10 を固定値とするか設定可能にするか。
-5. relay transition の待機条件を Connected のみとするか、EOSE / EVENT も成功扱いにするか。本仕様はすべてを成功シグナルとする。
+5. ~~relay transition の待機条件を Connected のみとするか、EOSE / EVENT も成功扱いにするか。~~ Loop 3b で「Connected または 3 秒」に確定（第16.7節）。
 6. チャンネル作成時に推奨リレーを 0 件で許可するか。本仕様は警告付きで許可。
 
 ## 20. 反復実装プロセス
@@ -1762,8 +1779,8 @@ iOS Simulatorテスト
 | 0 | 現在の未コミット差分の安定化 | チャンネル詳細、一覧UI、DB v6、キャッシュ改善のレビュー・Simulator確認 | 保留（外部送信・障害注入テスト待ち） |
 | 1 | モデルと純粋ロジック | URL正規化、`ChannelMeta.relays`、metadata resolver、relay context、タグbuilder | 完了 |
 | 2 | 明示購読とDB v7 | 未登録推奨リレー購読、metadata cache、migration 6→7 | 完了 |
-| 3 | チャンネル購読 | 推奨リレーからkind 42取得、kind 41更新時の再購読 | 着手中(3a完了、3bは未着手) |
-| 3.5 | ローカル永続化の簡素化 | Room/SQLite撤去、`ChannelLocalState`のJSON永続化、未読件数のキャッチアップ方式への移行(第22章) | 完了（未コミット、第22.5節） |
+| 3 | チャンネル購読 | 推奨リレーからkind 42取得、kind 41更新時の再購読 | 完了（3a `3e3464f`、3b 未コミット、第23章） |
+| 3.5 | ローカル永続化の簡素化 | Room/SQLite撤去、`ChannelLocalState`のJSON永続化、未読件数のキャッチアップ方式への移行(第22章) | 完了（`f42dca2`、第22.5節） |
 | 4 | チャンネル投稿 | kind 40/41/42の配送、relay hint、リレー別結果 | 未着手 |
 | 5 | UIと返信連携 | ヘッダー、投稿先、詳細、編集、通常返信画面 | 未着手 |
 | 6 | モデレーション | kind 43/44 | 未着手 |
@@ -1781,7 +1798,8 @@ iOS Simulatorテスト
 | 1: モデルと純粋ロジック | 完了 | URL正規化、`ChannelMeta.relays`、`ChannelMetadataResolver`、`ChannelRelayContextBuilder`、`ChannelEventTags` | `normalizeRelayUrl`がFR-01のquery/fragment拒否に違反。既定ポート省略も未実装。両方修正・回帰テスト追加 | `25156a9` |
 | 2: 明示購読とDB v7 | 完了（Room実装はLoop 3.5で置換予定、第22章） | `RelayTarget.Explicit`の意味修正、DB migration 6→7、`ChannelCacheStore`のmetadata API | なし | `55a6018` |
 | 3a: resolver接続 | 完了 | `ChannelController`のkind 40/41ライブ判定を`ChannelMetadataResolver`へ移行 | 同時刻kind 41の受信順依存が実チャンネル画面側に残存。resolver移行で解消 | `3e3464f` |
-| 3.5: ローカル永続化の簡素化 | 完了 | Room/SQLite(DB v1〜v7)撤去、`ChannelLocalState`のJSON永続化、未読キャッチアップ | 一覧のリレー別絞り込み欠落(D1)／kind 40再取得でkind 41上書き(R1)／リレー上限で下限判定不能(R4)／キャッチアップが1チャンクで飽和(R6)／初訪問リレーでキャッチアップ未実行(R7)／スクロールしないと既読化されない既存不具合(R8)。すべて解消 | 未コミット |
+| 3.5: ローカル永続化の簡素化 | 完了 | Room/SQLite(DB v1〜v7)撤去、`ChannelLocalState`のJSON永続化、未読キャッチアップ | 一覧のリレー別絞り込み欠落(D1)／kind 40再取得でkind 41上書き(R1)／リレー上限で下限判定不能(R4)／キャッチアップが1チャンクで飽和(R6)／初訪問リレーでキャッチアップ未実行(R7)／スクロールしないと既読化されない既存不具合(R8)。すべて解消 | `f42dca2` |
+| 3b: チャンネル購読の relay context 対応 | 完了 | 推奨リレーを含む `Explicit` 購読、kind 41 変更時の二段階再購読、複数リレー履歴取得 | 新規チャンネルで推奨リレーの最新履歴が欠落(R1)／kind 40 先着で保存済みkind 41から巻き戻り・購読先がばたつく(R2)／応答しないリレー1件で履歴ページが10秒待ち・未完了(D2)。すべて解消 | 未コミット |
 
 設計レビュー・実装レビューの詳細、自動テストコマンド、Simulator実施環境（macOS/Xcode/Simulatorバージョン等）は各コミットメッセージ（`git log`）に記載している。
 
@@ -1789,14 +1807,17 @@ iOS Simulatorテスト
 
 1. L0-S08（自分のkind 40削除要求の実リレー送信確認）、L0-S10（接続不能リレーでのUI確認）は副作用・障害注入が必要なため未実施のまま。
 2. L3a-S01（仮称）: チャンネル画面を開き、kind 40のみ／kind 40+41／同時刻複数kind 41の各ケースで表示メタデータが正しいことをSimulatorで確認する。Mac画面のロックでSimulator GUIが操作できず保留、ロック解除後に再試行する。
-3. Loop 3b: `ChannelRelayContext`・`SubscriptionSession`・kind 41受信時の二段階再購読（FR-08、第16.7節）を`ChannelController`へ接続する。
+3. ~~Loop 3b: `ChannelRelayContext`・kind 41受信時の二段階再購読を`ChannelController`へ接続する。~~ Loop 3bで完了（第23章）。
 4. `saveThreadMeta()`（kind 41自己編集）の楽観的更新を候補プール（`metadataUpdateCandidates`）経由に統合し、自己発行イベントも同じresolver経路で扱う（Phase 2 kind 41編集強化、第16.10節と合わせて検討）。
 5. `ChannelController`向けのテスト基盤（NostrRepository/ChannelCacheStoreのfake化）導入を検討する。
 6. ~~第22章の方針により、Loop 2で実装したRoom関連コードはLoop 3.5で置換する。~~ Loop 3.5で完了。
 7. L3a-S01はLoop 3.5のSimulator確認で一部確認済み（kind 40+41のチャンネルで一覧・画面ともkind 41のaboutが反映される）。kind 40のみ／同時刻複数kind 41のケースは未確認のまま。
 8. Loop 3.5の未確認シナリオ: L35-S12（ライブ受信による未読加算・未開封チャンネルの「新着あり」表示。新着待ち）、通信断・キャッチアップ失敗時の前回値維持（第16.12.5節、障害注入が必要）、自分の最新投稿の削除によるプレビュー除去（kind 5 送信が必要）、チャンネル新規作成（kind 40 送信が必要）。
 9. 起動直後に `NostrRelay.disconnect` が一時リレー解放時の `JobCancellationException` をスタックトレース付きでログ出力している。Loop 3.5以前からの挙動で機能影響はないが、ログのノイズとして別途整理する（Note）。
-10. 未読件数の対象は選択中の単一リレーのまま（第22.4節4）。Loop 3b着手時に推奨リレーまで広げるか再検討する。
+10. 未読件数の対象は選択中の単一リレーのまま（第22.4節4）。Loop 3bで再検討し、現状維持とした（一覧は数十〜数百チャンネルを扱うため、チャンネルごとの推奨リレーへ問い合わせると外部接続数が膨らむ。第11章の接続数上限の方針と両立しない）。
+11. Loop 3bで判明した `NostrRepository` の既存挙動（Note）: 接続待ち中に `subscribe()` した購読は、接続直後の再同期で同じ REQ がもう一度送られ、一部リレーが `Duplicate subscription` の NOTICE を返す。`auth-required` で CLOSED を返すリレー（NIP-42 未対応）では購読ごとに CLOSED が2回届く。いずれも無限ループにはならない（計30件で止まることを確認）。チャンネル固有の問題ではないため別途整理する。
+12. Loop 3bの未確認シナリオ: 開いている画面で実際に kind 41 を受信して推奨リレーが変わるケース（他者のチャンネル編集が必要）。同等の経路（保存済み kind 40 → 受信 kind 41 で推奨リレーが 0→6 件）は L3b-S02 で確認済み。
+13. `ChannelController` の結合テストは引き続き無い（第21.2節5）。Loop 3bでは判定ロジックを `ChannelRelayPlanner`・`shouldKeepCachedMetadata`・`ChannelHistory.supplement` の純粋関数へ切り出して単体テストした。
 
 ### 21.3 Simulator定義済みシナリオ（再利用可能）
 
@@ -1868,7 +1889,7 @@ Loop 3a完了後のレビューで、チャンネルメッセージのローカ�
 
 ### 22.5 Loop 3.5: ローカル永続化の簡素化（実装）
 
-- 状態: 完了（L35-S12 のみ保留。未コミット。作業ツリーには本ループと無関係な検索・キーボード関連の未コミット変更も含まれるため、コミット範囲はユーザー確認後に決める）
+- 状態: 完了（L35-S12 のみ保留。`f42dca2`、ブランチ `nip28-loop3.5-local-state`）
 - 対象:
   - `ChannelCacheStore`/`ChannelCacheDatabase`関連コードのRoom実装を撤去し、`ChannelLocalState`のJSON永続化へ置き換える。
   - `ChannelController`・`ChannelListViewModel`の呼び出し元を新Store APIへ配線し直す。
@@ -1941,3 +1962,58 @@ Loop 3a完了後のレビューで、チャンネルメッセージのローカ�
 - 確定した仕様: 第16.12節の `ChannelLocalState`（`observedRelays`・`channelCreatedAt`・nullable の `lastReadAt`）、Store API、メタデータ保存規則、1,000件上限、旧DB削除。第16.12.1節のチャンク単位 since、NIP-11 による limit、飽和時の分割再問い合わせ、開始タイミング。第16.12.3節の件数算出方式。
 - 変更した仕様: 第16.12.4節の「新着あり」判定から `latestMessage` 条件を削除（L35-D3）。第6章 FR-12 の since 記述をチャンク単位へ更新。
 - 次ループへ送る課題: 第21.2節の 7〜10。未読キャッチアップの `CHUNK_SIZE`（200）は、実利用でチャンネル数が 200 を超えたときのリレーのフィルターサイズ上限を未確認（第22.4節3）。
+
+## 23. Loop 3b: チャンネル購読の relay context 対応
+
+- 状態: 完了（未コミット）
+- 対象: `ChannelController` の全ライブ購読・履歴取得を `ChannelRelayContext.readRelays` 由来の `RelayTarget.Explicit` へ切り替える。kind 41 による推奨リレー変更時の二段階再購読（FR-05、FR-08、第16.6〜16.7節）。
+- 対象外: 投稿先（`writeRelays`）への配送と relay hint（Loop 4）。ヘッダー・投稿欄・詳細の表示（Loop 5）。チャンネル一覧の未読キャッチアップ（選択中リレーのまま、第21.2節10）。
+- 開始時commit: `f42dca2`
+- 対象ファイル:
+  - 新規: `ui/channel/ChannelRelayPlanner.kt`、テスト `ChannelRelayPlannerTest.kt`・`ChannelCachedMetadataTest.kt`
+  - 変更: `ChannelController.kt`、`ChannelViewModel.kt`（`relayContext`・`isRelayTransitioning`）、`ChannelHistory.kt`（`supplement`）、`ChannelListFetch.kt`（settle モード）、テスト `ChannelListFetchTest.kt`・`ChannelHistoryTest.kt`
+
+### 23.1 設計レビュー
+
+| ID | 重大度 | 指摘 | 対応 |
+| --- | --- | --- | --- |
+| L3b-D1 | Note | 第16.6節はセッション API への移行を想定していたが、互換 API が `Explicit` と同一 ID での target 更新（差分 REQ/CLOSE）にすでに対応している | 互換 API のまま target を張り替える方式にした。観測元リレー（`SubscriptionSignal.Event.relayUrl`）が必要になる Loop 5 の返信 hint で改めてセッション API を検討する |
+| L3b-D2 | Major | `NostrRepository` は `RelayOutcome.Unavailable` を出さない。複数リレーの履歴取得で全リレーの EOSE を待つと、応答しない推奨リレー1件で各ページが 10 秒待ちの未完了になる | `fetchChannelEvents` に「最初の EOSE から 1.5 秒で打ち切る」settle モードを追加し、チャンネル画面の履歴取得で使う |
+| L3b-D3 | Note | 第19章 未決5（切り替えの待機条件） | `Connected` または 3 秒に確定 |
+
+### 23.2 実装レビュー
+
+| ID | 重大度 | 指摘 | 対応 |
+| --- | --- | --- | --- |
+| L3b-R1 | Major | 履歴は kind 40 受信前の bootstrap リレーで取得するため、保存済みメタデータが無いチャンネルでは推奨リレーにしか無い最新メッセージが表示されない（ライブ受信だけが新リレーから届く） | 切り替え時に追加リレーへだけ最新ページを問い合わせ、`ChannelHistory.supplement()` で統合する |
+| L3b-R2 | Major | （Simulator で発見）kind 40 が kind 41 より先に届くと、resolver は一時的に kind 40 を選ぶ。保存済みの kind 41 から表示が巻き戻り、所有者が kind 41 で外したリレー（`r.ydg.works`）へ一時接続して、kind 41 到着後に外す（gen=1 → gen=2 のばたつき）。表示の巻き戻りは Loop 3.5 から潜在していた | 保存済みの実効メタデータが `(createdAt, id)` で新しく所有者も一致する間は、解決結果を適用しない（`shouldKeepCachedMetadata`） |
+| L3b-R3 | Note | 連続した kind 41 更新 | generation で古い切り替えの縮退更新を中止する。途中で中止された切り替えの新旧和集合は、次の切り替え開始時に次の和集合で置き換わる |
+| L3b-R4 | Note | 画面終了時の解放 | 既存の `close()` が全購読 ID を閉じ、`reconcileActiveRelaysLocked` が他で使われていない一時リレー接続を切る。切り替えジョブも取り消す |
+
+### 23.3 自動テスト
+
+| コマンド | 結果 | 備考 |
+| --- | --- | --- |
+| `./gradlew :composeApp:iosSimulatorArm64Test` | 成功（560件、失敗0） | 新規: `ChannelRelayPlannerTest` 6件、`ChannelCachedMetadataTest` 3件、`ChannelListFetchTest` +3件（計7件）、`ChannelHistoryTest` +1件（計19件） |
+| `./gradlew :composeApp:compileAndroidMain` | 成功 | |
+| `./gradlew check` | 成功 | |
+| `xcodebuild … -configuration Debug`（DerivedData 再作成） | 成功 | Simulator 確認用に `ENABLE_NETWORK_TRACE_LOGS` を一時的に `true` にしてビルドし、確認後に `false` へ戻した |
+
+### 23.4 Simulatorテスト
+
+環境: macOS 26.5 / Xcode 26.6 / iPhone 17 Simulator（iOS 26.5）/ Debug（ネットワークトレースログ有効）/ ログイン済みテストアカウント / 選択リレー `wss://yabu.me` / 実リレー接続 / 2026-09-24 13:25〜13:32。証跡はコンソールログの `[ChannelController] relayContext` と `[Repo] subscribe()` / REQ / CLOSE。
+
+| ID | シナリオ | 結果 | 証跡・備考 |
+| --- | --- | --- | --- |
+| L3b-S01 | ユーザー設定に無い推奨リレーを持つチャンネル（しおたぬの住処、kind 41 に6件）を開く | 成功 | `ch-msg` の target が `Explicit([yabu.me, r.kojira.io, nostream.ocha.one, nrelay.c-stellar.net, nostr-relay.moctane.net, nostr-relay-jp.moctane.net])`。未登録の4件へ新規接続し REQ を送信。関連購読（返信数・リアクション等）も同じ集合 |
+| L3b-S02 | 保存済みメタデータを kind 40 のみ（推奨リレー0件）に戻して開く | 成功 | `initial read=1` → kind 41 解決後 `transition gen=1 added=5 read=6`。追加リレーへだけ `ch-hist-…-1` を送り60件受信（読み込み済み範囲より古いため統合対象外で、過去ページ取得に委ねられることを確認）。応答しない `nrelay.c-stellar.net` があっても画面は取得未完了エラーにならない |
+| L3b-S03 | 上記チャンネルを閉じる | 成功 | 全購読の CLOSE を送信。未登録4リレーの WebSocket ループが取り消され、以後その4リレーとの通信0件 |
+| L3b-S04 | 保存済み kind 41 と同じ推奨リレーを持つチャンネル（さびれたスナック）を開く | 修正後成功 | 修正前は kind 40 先着で `gen=1 added=1`（`r.ydg.works`）→ `gen=2` のばたつき（L3b-R2）。修正後は `initial read=2` のみで切り替え0回、表示も kind 41 のまま |
+| L3b-S05 | 推奨リレーを持たないチャンネル（3001）を開く | 成功 | `read=1`（選択中の yabu.me のみ）で従来どおり表示。relays を持たない既存チャンネルの閲覧互換 |
+
+### 23.5 設計書へのフィードバック
+
+- 確定した仕様: 第16.6節「Loop 3b の実装で確定した事項」、第16.7節の待機条件・追加リレーの最新ページ補完、第19章 未決5。受け入れ条件「推奨リレーがユーザー設定外でも kind 42 を購読できる」を達成。
+- 変更した仕様: 第16.6節のセッション API 前提を、互換 API での target 張り替えに変更（L3b-D1）。
+- 次ループへ送る課題: 第21.2節の 11〜13。受け入れ条件「kind 41 のリレー変更を画面を開き直さずに購読と UI へ反映」は購読側のみ達成で、UI 側は Loop 5。Loop 4（投稿先・relay hint）では `relayContext.writeRelays` と `primaryHint` がすでに `UiState` と Controller にあるため、それを投稿 snapshot に使う。
+

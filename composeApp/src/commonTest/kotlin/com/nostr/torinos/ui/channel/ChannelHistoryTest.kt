@@ -371,5 +371,24 @@ class ChannelHistoryTest {
 
     private fun event(time: Long) = NostrEvent(time.toString(), "author", time, 42,
         listOf(listOf("e", "channel", "", "root")), "message", "sig")
+    @Test
+    fun supplementMergesOnlyLoadedRangeWithoutMovingScroll() = runTest {
+        val history = ChannelHistory(backgroundScope, "channel", { ChannelHistoryPage(events(100, 71), true) }, { null })
+        history.initialize(emptyList(), null)
+        runCurrent()
+        history.setAtLatest(false)
+        history.consumeNavigation(history.state.value.navigation!!.sequence)
+        // 75 は読み込み済み範囲内、60 は範囲外(古すぎる)、105 は新着。
+        history.supplement(listOf(event(75, "extra75"), event(60, "old60"), event(105, "new105"), event(100)))
+        val ids = history.state.value.messages.map { it.id }
+        assertTrue("extra75" in ids)
+        assertFalse("old60" in ids)
+        assertEquals("new105", ids.first())
+        assertEquals(1, history.state.value.newMessageCount)
+        assertNull(history.state.value.navigation)
+        history.close()
+    }
+
+    private fun event(time: Long, id: String) = event(time).copy(id = id)
     private fun events(from: Int, to: Int) = (from downTo to).map { event(it.toLong()) }
 }

@@ -59,6 +59,41 @@ class ChannelListFetchTest {
         assertTrue(session.closed)
     }
 
+    @Test
+    fun settleModeFinishesShortlyAfterFirstEoseWhenAnotherRelayHangs() = runTest {
+        val event = NostrEvent("id", "author", 10, 40, emptyList(), "{}", "")
+        val session = FakeSession(flow {
+            emit(SubscriptionSignal.Event("alive", event, false))
+            emit(SubscriptionSignal.Eose("alive"))
+            awaitCancellation() // dead relay never answers
+        })
+        val longSpec = spec.copy(behavior = SubscriptionBehavior.Fetch(10_000))
+        val received = mutableListOf<NostrEvent>()
+        assertTrue(fetchChannelEvents(longSpec, { session }, settleAfterFirstEoseMillis = 1_500) { received += it })
+        assertEquals(1_500, testScheduler.currentTime)
+        assertEquals(listOf(event), received)
+        assertTrue(session.closed)
+    }
+
+    @Test
+    fun settleModeAcceptsPartialCompletionButNotTotalFailure() = runTest {
+        val partial = FakeSession(flowOf(SubscriptionSignal.FetchCompleted(
+            mapOf("a" to RelayOutcome.Eose, "b" to RelayOutcome.Closed("restricted")), false,
+        )))
+        assertTrue(fetchChannelEvents(spec, { partial }, settleAfterFirstEoseMillis = 50) {})
+        val none = FakeSession(flowOf(SubscriptionSignal.FetchCompleted(
+            mapOf("a" to RelayOutcome.TimedOut, "b" to RelayOutcome.Closed("restricted")), true,
+        )))
+        assertFalse(fetchChannelEvents(spec, { none }, settleAfterFirstEoseMillis = 50) {})
+    }
+
+    @Test
+    fun settleModeWithNoEoseStillTimesOut() = runTest {
+        val session = FakeSession(flow { awaitCancellation() })
+        assertFalse(fetchChannelEvents(spec, { session }, settleAfterFirstEoseMillis = 50) {})
+        assertEquals(100, testScheduler.currentTime)
+    }
+
     private class FakeSession(override val signals: Flow<SubscriptionSignal>) : SubscriptionSession {
         override val id = "test"
         var closed = false

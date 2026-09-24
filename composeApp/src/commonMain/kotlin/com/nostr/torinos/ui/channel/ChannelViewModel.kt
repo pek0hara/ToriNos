@@ -8,6 +8,7 @@ import com.nostr.torinos.engagement.PendingEngagementOperation
 import com.nostr.torinos.engagement.displayOwnEmojiReactionEventIds
 import com.nostr.torinos.engagement.isRepostedByMe
 import com.nostr.torinos.model.ChannelMeta
+import com.nostr.torinos.model.ChannelRelayContext
 import com.nostr.torinos.model.CustomReaction
 import com.nostr.torinos.model.NostrEvent
 import com.nostr.torinos.model.NostrProfile
@@ -48,6 +49,10 @@ class ChannelViewModel(
             val isPosting: Boolean = false,
             val postError: String? = null,
             val editDialog: EditThreadDialogState? = null,
+            /** 閲覧・投稿先の決定に使っているチャンネル固有の relay context(第16.13節)。 */
+            val relayContext: ChannelRelayContext = ChannelRelayContext.EMPTY,
+            /** kind 41 による推奨リレー変更で、購読先を切り替えている最中。 */
+            val isRelayTransitioning: Boolean = false,
         ) : UiState {
             fun isLiked(eventId: String): Boolean = likedReactions.containsKey(eventId) ||
                 pendingEngagementOperations[eventId]?.get(EngagementSlot.Reaction)?.request is EngagementRequest.AddLike

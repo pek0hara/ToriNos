@@ -210,6 +210,40 @@ internal class ChannelHistory(
         else mutableState.value = state.value.copy(newMessageCount = state.value.newMessageCount + 1)
     }
 
+    /**
+     * 購読先に追加されたリレーから取り直した最新ページを統合する(第16.7節)。
+     * 読み込み済み範囲より古い投稿は、ページング境界を崩さないよう捨てて次の過去取得に任せる。
+     * スクロール位置は動かさず、既存の最新より新しい投稿はライブ受信と同じ扱いにする。
+     */
+    fun supplement(events: List<NostrEvent>) {
+        if (stopped || events.isEmpty()) return
+        val current = state.value
+        val knownIds = current.messages.mapTo(mutableSetOf()) { it.id } + pendingLive.keys
+        val oldestLoaded = current.messages.lastOrNull()
+        val incoming = events.distinctBy { it.id }.filter { event ->
+            event.id !in knownIds && (
+                oldestLoaded == null || event.createdAt > oldestLoaded.createdAt ||
+                    (event.createdAt == oldestLoaded.createdAt && event.id > oldestLoaded.id)
+                )
+        }
+        if (incoming.isEmpty()) return
+        if (current.isLoading) {
+            incoming.forEach { pendingLive[it.id] = it }
+            return
+        }
+        val newest = current.messages.firstOrNull()
+        val newerCount = incoming.count { event ->
+            newest == null || event.createdAt > newest.createdAt ||
+                (event.createdAt == newest.createdAt && event.id > newest.id)
+        }
+        merge(incoming)
+        trimToLimit()
+        if (newerCount > 0) {
+            if (atLatest) state.value.messages.firstOrNull()?.let { navigate(it.id) }
+            else mutableState.value = state.value.copy(newMessageCount = state.value.newMessageCount + newerCount)
+        }
+    }
+
     fun remove(eventId: String) {
         pendingLive.remove(eventId)
         val current = state.value
