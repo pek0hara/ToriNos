@@ -169,6 +169,10 @@ class ChannelListViewModel(
     private val cachedChannels = linkedMapOf<String, ChannelLocalState>()
     private val cacheReady = CompletableDeferred<Unit>()
     private val unreadTracker = ChannelUnreadTracker()
+    // 参加中チャンネル(kind 10005)。ログイン中のアカウントだけ同期する(匿名は端末内の★のみ)。
+    private val joinedChannels = accountSession?.let { session -> JoinedChannelRepository(session.pubkey, session.signer) }
+    private var joinedIds: Set<String> = emptySet()
+    private var joinedRefreshStarted = false
     private var catchUpStarted = false
     // ライブ購読の since。未読キャッチアップは until = liveSince - 1 として時刻で重ならないようにする。
     private val liveSince = Clock.System.now().epochSeconds
@@ -297,6 +301,10 @@ class ChannelListViewModel(
                 // 初回ページで観測元リレーを記録してから始める。初訪問のリレーでは端末状態が空のため、
                 // 状態の初回通知時点で始めると対象が0件のまま終わってしまう。
                 startUnreadCatchUpOnce()
+                if (!joinedRefreshStarted) {
+                    joinedRefreshStarted = true
+                    refreshJoinedChannels()
+                }
             } finally {
                 loadingMore = false
                 queueActivityFetches()
@@ -315,6 +323,7 @@ class ChannelListViewModel(
         val meta = event.toChannelMeta() ?: return
         if (event.id !in channelMap) channelMap[event.id] = ChannelItem(event, meta)
         ChannelLocalStore.recordChannelCreate(event, meta, relayUrl)
+        if (event.id in joinedIds) ChannelLocalStore.setFavorite(event.id, true)
         scheduleAuthorSubscription()
         emitReady()
     }
@@ -389,6 +398,10 @@ class ChannelListViewModel(
         }
     }
 
+    /**
+     * ★は「参加」として kind 10005 と同期する(2026-09-24 ユーザー判断)。表示は即時に切り替え、
+     * 送信に失敗したら戻す。ログインしていない場合は従来どおり端末内の★だけを切り替える。
+     */
     fun toggleFavorite(channelId: String) {
         if (relayUrl == null) return
         val current = _state.value as? UiState.Ready ?: return
@@ -396,6 +409,33 @@ class ChannelListViewModel(
         val newFavorite = !item.isFavorite
         launch {
             ChannelLocalStore.setFavorite(channelId, newFavorite)
+            val repository = joinedChannels ?: return@launch
+            val relayHint = cachedChannels[channelId]?.meta?.relays?.firstOrNull() ?: relayUrl
+            repository.setJoined(channelId, newFavorite, relayHint)
+                .onSuccess { joined -> joinedIds = joined }
+                .onFailure { error ->
+                    ChannelLocalStore.setFavorite(channelId, !newFavorite)
+                    val s = _state.value as? UiState.Ready ?: return@onFailure
+                    _state.value = s.copy(notice = "参加状態を同期できませんでした: ${error.message ?: "不明なエラー"}")
+                }
+        }
+    }
+
+    /** 他端末・他クライアントで参加したチャンネルを★にする。端末内だけの★は外さない(意図しない公開を避ける)。 */
+    private fun refreshJoinedChannels() {
+        val repository = joinedChannels ?: return
+        launch {
+            val joined = repository.refresh().getOrNull() ?: return@launch
+            joinedIds = joined
+            joined.forEach { channelId ->
+                if (ChannelLocalStore.get(channelId)?.hasMetadata == true) {
+                    ChannelLocalStore.setFavorite(channelId, true)
+                } else if (requestedNewMetaIds.add(channelId)) {
+                    // 一覧に無い参加中チャンネルは kind 40 を取得してから★を付ける(acceptChannel)。
+                    pendingNewMetaIds.add(channelId)
+                }
+            }
+            scheduleNewMetaSubscription()
         }
     }
 
