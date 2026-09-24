@@ -763,23 +763,21 @@ private fun MemoCalendarDay(
     val shape = MaterialTheme.shapes.small
     val colorScheme = MaterialTheme.colorScheme
     val entryIntensity = calendarEntryIntensity(entryCount)
-    val backgroundColor = when {
-        selected -> colorScheme.primary
-        entryCount == 0 -> colorScheme.surface
-        else -> lerp(colorScheme.surface, colorScheme.primary, entryIntensity)
+    val isToday = date == currentDate()
+    // 選択はヒートマップと同系色だと埋もれるため、背景色ではなく太い枠と太字で示す
+    val backgroundColor = if (entryCount == 0) {
+        colorScheme.surface
+    } else {
+        lerp(colorScheme.surface, colorScheme.primary, entryIntensity)
     }
-    val borderColor = when {
-        selected -> colorScheme.primary
-        date == currentDate() -> colorScheme.primary
-        else -> colorScheme.outlineVariant
-    }
+    val borderColor = if (selected) colorScheme.onSurfaceVariant else colorScheme.outlineVariant
     val contentColor = when {
-        selected -> colorScheme.onPrimary
         entryIntensity >= CalendarEntryHighContrastThreshold -> colorScheme.onPrimary
+        isToday -> colorScheme.primary
         else -> colorScheme.onSurface
     }
 
-    Column(
+    Box(
         modifier = modifier
             .height(32.dp)
             .clip(shape)
@@ -787,14 +785,24 @@ private fun MemoCalendarDay(
             .border(1.dp, borderColor, shape)
             .clickable(onClick = onClick)
             .padding(horizontal = 2.dp, vertical = 2.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.Center,
+        contentAlignment = Alignment.Center,
     ) {
         Text(
             text = date.day.toString(),
             style = MaterialTheme.typography.bodySmall,
+            fontWeight = if (selected || isToday) FontWeight.Bold else null,
             color = contentColor,
         )
+        if (isToday) {
+            // 今日は枠ではなく数字下のドットで示し、選択枠と競合させない
+            Box(
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .size(4.dp)
+                    .clip(CircleShape)
+                    .background(contentColor),
+            )
+        }
     }
 }
 
