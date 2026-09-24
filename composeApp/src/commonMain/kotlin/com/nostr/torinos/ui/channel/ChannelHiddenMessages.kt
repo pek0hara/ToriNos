@@ -1,6 +1,11 @@
 package com.nostr.torinos.ui.channel
 
 import com.nostr.torinos.model.NostrEvent
+import com.nostr.torinos.util.SynchronousLock
+import com.nostr.torinos.util.withLock
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 
 /**
  * kind 43 Hide Message(第7.1節、第16.15節)。自分が発行した kind 43 の対象メッセージを非表示にし、
@@ -35,8 +40,29 @@ internal object ChannelHiddenMessages {
         listOf(buildList { add("e"); add(messageId); relayHint?.takeIf(String::isNotBlank)?.let(::add) })
 
     /** 非表示の取り消し。対象 kind を `k` タグで示す(kind 5 の既存方針)。 */
-    fun unhideTags(hideEventId: String): List<List<String>> =
-        listOf(listOf("e", hideEventId), listOf("k", HIDE_KIND.toString()))
+    fun unhideTags(hideEventId: String): List<List<String>> = unhideTags(listOf(hideEventId))
+
+    /** まとめて取り消す。1件の kind 5 に複数の `e` タグを並べる(NIP-09)。 */
+    fun unhideTags(hideEventIds: Collection<String>): List<List<String>> =
+        hideEventIds.distinct().map { listOf("e", it) } + listOf(listOf("k", HIDE_KIND.toString()))
 
     const val HIDE_CONTENT = "{\"reason\":\"\"}"
+}
+
+/**
+ * アカウントごとの非表示メッセージ ID(メモリのみ)。チャンネル画面が更新し、そのチャンネルから開いた
+ * スレッド画面の返信一覧でも同じ非表示を効かせる(Loop 9)。
+ */
+internal object ChannelHiddenMessageStore {
+    private val lock = SynchronousLock()
+    private val flows = mutableMapOf<String, MutableStateFlow<Set<String>>>()
+
+    fun observe(ownerPubkey: String): StateFlow<Set<String>> = flowFor(ownerPubkey).asStateFlow()
+
+    fun update(ownerPubkey: String, hiddenMessageIds: Set<String>) {
+        flowFor(ownerPubkey).value = hiddenMessageIds
+    }
+
+    private fun flowFor(ownerPubkey: String): MutableStateFlow<Set<String>> =
+        lock.withLock { flows.getOrPut(ownerPubkey) { MutableStateFlow(emptySet()) } }
 }

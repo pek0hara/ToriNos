@@ -356,6 +356,29 @@ internal class ChannelController(
         }
     }
 
+    /** 非表示をまとめて取り消す。1件の kind 5 に全 kind 43 を並べる。 */
+    fun unhideAllMessages() {
+        val targets = hiddenMessages().filterValues { it.isNotEmpty() }
+        if (targets.isEmpty()) return
+        val publishContext = ChannelPublishContext.from(relayContext)
+        pendingUnhides += targets.keys
+        syncReadyState()
+        launch {
+            val result = signedEventPublisher.publish(
+                content = "",
+                kind = ChannelHiddenMessages.DELETION_KIND,
+                tags = ChannelHiddenMessages.unhideTags(targets.values),
+                relayUrls = publishContext.relayUrls,
+            )
+            pendingUnhides -= targets.keys
+            if (result is SignedPublishResult.Published) ownHideDeletions[result.event.id] = result.event
+            syncReadyState()
+            if (result !is SignedPublishResult.Published) {
+                (_state.value as? UiState.Ready)?.let { _state.value = it.copy(engagementError = "非表示を取り消せませんでした") }
+            }
+        }
+    }
+
     fun consumeHiddenNotice() {
         val ready = _state.value as? UiState.Ready ?: return
         _state.value = ready.copy(hiddenNoticeMessageId = null)
@@ -1035,11 +1058,12 @@ internal class ChannelController(
         )
     }
 
-    private fun readyState(canLoadMore: Boolean): UiState.Ready =
-        UiState.Ready(
+    private fun readyState(canLoadMore: Boolean): UiState.Ready {
+        val hidden = hiddenMessages()
+        return UiState.Ready(
             channelMeta = currentChannelMeta,
             channelOwnerPubkey = currentChannelOwnerPubkey,
-            messages = filteredMessages(),
+            messages = filteredMessages(hidden),
             profiles = currentProfiles,
             replyCounts = currentReplyCounts,
             reactionCounts = currentReactionCounts,
@@ -1060,16 +1084,22 @@ internal class ChannelController(
             relayStates = currentRelayStates.filterKeys { it in relayContext.readRelays },
             channelInfo = currentChannelInfo,
             relayRefusals = relayRefusals.filterKeys { it in relayContext.readRelays },
+            hiddenMessages = currentMessages.filter { it.id in hidden },
+            hiddenCount = hidden.values.count { it.isNotEmpty() },
         )
+    }
 
     private fun syncReadyState() {
         val current = _state.value as? UiState.Ready ?: readyState(canLoadMore = false)
+        val hidden = hiddenMessages()
+        // 同じチャンネルから開いたスレッド画面でも非表示を効かせる(Loop 9)。
+        ownPubkey?.let { ChannelHiddenMessageStore.update(it, hidden.keys) }
         _state.value = current.copy(
             history = history.state.value,
             canLoadMore = history.state.value.canLoadOlder,
             channelMeta = currentChannelMeta,
             channelOwnerPubkey = currentChannelOwnerPubkey,
-            messages = filteredMessages(),
+            messages = filteredMessages(hidden),
             profiles = currentProfiles,
             replyCounts = currentReplyCounts,
             reactionCounts = currentReactionCounts,
@@ -1088,13 +1118,14 @@ internal class ChannelController(
             relayStates = currentRelayStates.filterKeys { it in relayContext.readRelays },
             channelInfo = currentChannelInfo,
             relayRefusals = relayRefusals.filterKeys { it in relayContext.readRelays },
+            hiddenMessages = currentMessages.filter { it.id in hidden },
+            hiddenCount = hidden.values.count { it.isNotEmpty() },
         )
     }
 
-    private fun filteredMessages(): List<NostrEvent> {
+    private fun filteredMessages(hidden: Map<String, String>): List<NostrEvent> {
         val muted = accountSession?.muteStore?.mutedPubkeys?.value.orEmpty()
         val ngWords = accountSession?.ngWordStore?.ngWords?.value.orEmpty()
-        val hidden = hiddenMessages()
         return currentMessages.filter { msg ->
             msg.id !in hidden &&
                 !muted.contains(msg.pubkey) &&

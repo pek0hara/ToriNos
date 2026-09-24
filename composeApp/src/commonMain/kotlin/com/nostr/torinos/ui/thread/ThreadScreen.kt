@@ -1,5 +1,6 @@
 package com.nostr.torinos.ui.thread
 
+import com.nostr.torinos.ui.channel.ChannelHiddenMessageStore
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitHorizontalTouchSlopOrCancellation
@@ -91,7 +92,16 @@ fun ThreadScreen(
     },
 ) {
     val noteContext = remember(channelId) { noteContextForChannel(channelId) }
-    val state by viewModel.state.collectAsState()
+    val rawState by viewModel.state.collectAsState()
+    // チャンネル画面で非表示にしたメッセージ(kind 43)は、そのチャンネルのスレッドの返信一覧でも隠す(Loop 9)。
+    val hiddenInChannel = if (channelId != null && ownPubkey != null) {
+        ChannelHiddenMessageStore.observe(ownPubkey).collectAsState().value
+    } else {
+        emptySet()
+    }
+    val state = if (hiddenInChannel.isEmpty()) rawState else rawState.copy(
+        replies = rawState.replies.filterNot { it.id in hiddenInChannel },
+    )
     val snackbarHostState = remember { SnackbarHostState() }
     var selectedTab by remember(initialTab) { mutableStateOf(ThreadTab.fromRouteValue(initialTab)) }
     var didSelectTabManually by remember(eventId) { mutableStateOf(false) }

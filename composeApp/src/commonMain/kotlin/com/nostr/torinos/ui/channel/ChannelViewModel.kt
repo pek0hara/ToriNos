@@ -64,6 +64,10 @@ class ChannelViewModel(
             val hiddenNoticeMessageId: String? = null,
             /** 閲覧先リレーのうち、購読を拒否(CLOSED)したものとその理由。 */
             val relayRefusals: Map<String, String> = emptyMap(),
+            /** 非表示にしたメッセージのうち、読み込み済みのもの(管理画面用)。 */
+            val hiddenMessages: List<NostrEvent> = emptyList(),
+            /** 非表示にしたメッセージの総数(送信中を除く)。読み込み範囲外も含む。 */
+            val hiddenCount: Int = 0,
         ) : UiState {
             fun isLiked(eventId: String): Boolean = likedReactions.containsKey(eventId) ||
                 pendingEngagementOperations[eventId]?.get(EngagementSlot.Reaction)?.request is EngagementRequest.AddLike
@@ -133,6 +137,7 @@ class ChannelViewModel(
     fun hideMessage(eventId: String) = controller.hideMessage(eventId)
     fun unhideMessage(eventId: String) = controller.unhideMessage(eventId)
     fun consumeHiddenNotice() = controller.consumeHiddenNotice()
+    fun unhideAllMessages() = controller.unhideAllMessages()
 
     override fun onCleared() {
         controller.close()

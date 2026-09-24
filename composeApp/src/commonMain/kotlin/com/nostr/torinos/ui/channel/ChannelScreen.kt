@@ -131,6 +131,7 @@ fun ChannelScreen(
     val listState = remember(channelId, selectedRelayUrl) { LazyListState() }
     var showThreadInfoDialog by remember(channelId, selectedRelayUrl) { mutableStateOf(false) }
     var showRelayDetails by remember(channelId, selectedRelayUrl) { mutableStateOf(false) }
+    var showHiddenMessages by remember(channelId, selectedRelayUrl) { mutableStateOf(false) }
 
     LaunchedEffect((state as? ChannelViewModel.UiState.Ready)?.hiddenNoticeMessageId) {
         val messageId = (state as? ChannelViewModel.UiState.Ready)?.hiddenNoticeMessageId ?: return@LaunchedEffect
@@ -522,6 +523,15 @@ fun ChannelScreen(
     }
 
     val readyState = state as? ChannelViewModel.UiState.Ready
+    if (showHiddenMessages && readyState != null) {
+        ChannelHiddenMessagesSheet(
+            ready = readyState,
+            onUnhide = viewModel::unhideMessage,
+            onUnhideAll = viewModel::unhideAllMessages,
+            onDismiss = { showHiddenMessages = false },
+        )
+    }
+
     if (showRelayDetails && readyState != null) {
         ChannelRelayDetailsSheet(ready = readyState, onDismiss = { showRelayDetails = false })
     }
@@ -534,6 +544,11 @@ fun ChannelScreen(
                 meta = readyState.channelMeta,
             ),
             subscribedRelays = readyState.relayContext.readRelays.toList(),
+            hiddenCount = readyState.hiddenCount,
+            onOpenHiddenMessages = {
+                showThreadInfoDialog = false
+                showHiddenMessages = true
+            },
             ownerPubkey = readyState.channelOwnerPubkey,
             ownerProfile = readyState.channelOwnerPubkey?.let { readyState.profiles[it] },
             canEdit = ownPubkey != null && ownPubkey == readyState.channelOwnerPubkey,
@@ -779,6 +794,8 @@ private fun ChannelMessageInputBar(
 private fun ThreadInfoDialog(
     info: ChannelInfo,
     subscribedRelays: List<String>,
+    hiddenCount: Int,
+    onOpenHiddenMessages: () -> Unit,
     ownerPubkey: String?,
     ownerProfile: com.nostr.torinos.model.NostrProfile?,
     canEdit: Boolean,
@@ -790,13 +807,18 @@ private fun ThreadInfoDialog(
         onDismissRequest = onDismiss,
         title = { Text("チャンネル情報") },
         text = {
-            ChannelInfoContent(
-                info = info.copy(ownerPubkey = info.ownerPubkey ?: ownerPubkey),
-                ownerProfile = ownerProfile,
-                onUserClick = onUserClick,
-                subscribedRelays = subscribedRelays,
-                modifier = Modifier.verticalScroll(rememberScrollState()),
-            )
+            Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
+                ChannelInfoContent(
+                    info = info.copy(ownerPubkey = info.ownerPubkey ?: ownerPubkey),
+                    ownerProfile = ownerProfile,
+                    onUserClick = onUserClick,
+                    subscribedRelays = subscribedRelays,
+                )
+                // 非表示にしたメッセージの管理への入口(Loop 9)。
+                TextButton(onClick = onOpenHiddenMessages) {
+                    Text("非表示にしたメッセージ (${hiddenCount})")
+                }
+            }
         },
         confirmButton = {
             TextButton(onClick = onDismiss) { Text("閉じる") }

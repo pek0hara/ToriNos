@@ -39,4 +39,25 @@ class ChannelHiddenMessagesTest {
         assertEquals(listOf(listOf("e", "m1")), ChannelHiddenMessages.hideTags("m1", null))
         assertEquals(listOf(listOf("e", "h1"), listOf("k", "43")), ChannelHiddenMessages.unhideTags("h1"))
     }
+
+    @Test
+    fun bulkUnhideIsOneDeletionWithAllHideEvents() {
+        assertEquals(
+            listOf(listOf("e", "h1"), listOf("e", "h2"), listOf("k", "43")),
+            ChannelHiddenMessages.unhideTags(listOf("h1", "h2", "h1")),
+        )
+        val hidden = ChannelHiddenMessages.hiddenTargets(
+            "me",
+            listOf(hide("h1", "m1"), hide("h2", "m2")),
+            listOf(NostrEvent("d", "me", 3, 5, ChannelHiddenMessages.unhideTags(listOf("h1", "h2")), "", "sig")),
+        )
+        assertEquals(emptyMap(), hidden)
+    }
+
+    @Test
+    fun storeIsScopedPerAccount() {
+        ChannelHiddenMessageStore.update("acct-a", setOf("m1"))
+        assertEquals(setOf("m1"), ChannelHiddenMessageStore.observe("acct-a").value)
+        assertEquals(emptySet(), ChannelHiddenMessageStore.observe("acct-b").value)
+    }
 }
