@@ -13,8 +13,6 @@ import androidx.compose.foundation.gestures.rememberTransformableState
 import androidx.compose.foundation.gestures.transformable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.isSystemInDarkTheme
-import androidx.compose.foundation.lazy.LazyRow
-import androidx.compose.foundation.lazy.items as lazyRowItems
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -31,9 +29,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
-import androidx.compose.foundation.lazy.grid.GridCells
-import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
-import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.rememberScrollState
@@ -51,12 +46,10 @@ import androidx.compose.material.icons.filled.MailOutline
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Repeat
-import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
-import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -82,7 +75,6 @@ import androidx.compose.ui.geometry.isSpecified
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.FilterQuality
 import androidx.compose.ui.graphics.graphicsLayer
-import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalClipboard
 import coil3.PlatformContext
@@ -92,8 +84,6 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
-import androidx.compose.ui.text.input.ImeAction
-import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -113,7 +103,6 @@ import com.nostr.torinos.model.parseNip94Event
 import com.nostr.torinos.model.timelinePreviewUrl
 import com.nostr.torinos.network.CustomEmojiStore
 import com.nostr.torinos.network.DisplayPreferencesStore
-import com.nostr.torinos.network.RecentReaction
 import com.nostr.torinos.ui.profile.customEmojiMap
 import com.nostr.torinos.ui.profile.AvatarCircle
 import com.nostr.torinos.ui.settings.setPlainText
@@ -1424,281 +1413,6 @@ private fun markReactionUsed(option: ReactionOption) {
     }
 }
 
-@Composable
-private fun AllReactionPickerDialog(
-    isLiked: Boolean,
-    selectedReactionKeys: Set<String>,
-    onDismiss: () -> Unit,
-    onSelect: (ReactionOption) -> Unit,
-    onSelectLike: () -> Unit,
-) {
-    val savedCustomEmojis by CustomEmojiStore.emojis.collectAsState()
-    val recentReactions by CustomEmojiStore.recentReactions.collectAsState()
-    var query by remember { mutableStateOf("") }
-    var filter by remember { mutableStateOf(ReactionSearchFilter.All) }
-    val normalizedQuery = remember(query) {
-        query.trim().trim(':').lowercase()
-    }
-    val unicodeEntries = remember(normalizedQuery, filter) {
-        if (filter == ReactionSearchFilter.Custom) return@remember emptyList()
-        UNICODE_REACTION_CATALOG
-            .filter { entry ->
-                normalizedQuery.isBlank() ||
-                    normalizedQuery in entry.value.lowercase() ||
-                    entry.keywords.any { normalizedQuery in it }
-            }
-    }
-    val customOptions = remember(savedCustomEmojis, normalizedQuery, filter) {
-        if (filter == ReactionSearchFilter.Unicode) return@remember emptyList()
-        savedCustomEmojis
-            .filter {
-                normalizedQuery.isBlank() ||
-                    normalizedQuery in it.shortcode.lowercase()
-            }
-            .map { ReactionOption.Custom(it.shortcode, it.imageUrl) }
-    }
-    val recentOptions = remember(savedCustomEmojis, recentReactions, filter) {
-        val savedEmojiMap = savedCustomEmojis.associateBy { it.shortcode }
-        recentReactions
-            .mapNotNull { recent ->
-                recent.toReactionOption(savedEmojiMap)?.let { option ->
-                    when (option) {
-                        is ReactionOption.Unicode -> option.takeUnless {
-                            filter == ReactionSearchFilter.Custom
-                        }
-                        is ReactionOption.Custom -> option.takeUnless {
-                            filter == ReactionSearchFilter.Unicode
-                        }
-                    }
-                }
-            }
-            .take(16)
-    }
-    val resultCount = unicodeEntries.size + customOptions.size +
-        if (
-            filter != ReactionSearchFilter.Custom &&
-            (normalizedQuery.isBlank() || "いいね".contains(normalizedQuery))
-        ) 1 else 0
-
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("リアクションを探す") },
-        text = {
-            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                OutlinedTextField(
-                    value = query,
-                    onValueChange = { query = it },
-                    placeholder = { Text("名前や :shortcode: で検索") },
-                    leadingIcon = {
-                        Icon(
-                            imageVector = Icons.Default.Search,
-                            contentDescription = null,
-                        )
-                    },
-                    trailingIcon = if (query.isNotEmpty()) {
-                        {
-                            IconButton(onClick = { query = "" }) {
-                                Icon(
-                                    imageVector = Icons.Default.Close,
-                                    contentDescription = "検索文字を消去",
-                                )
-                            }
-                        }
-                    } else {
-                        null
-                    },
-                    singleLine = true,
-                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
-                    modifier = Modifier.fillMaxWidth(),
-                )
-
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .horizontalScroll(rememberScrollState()),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    ReactionSearchFilter.entries.forEach { item ->
-                        FilterChip(
-                            selected = filter == item,
-                            onClick = { filter = item },
-                            label = { Text(item.label) },
-                        )
-                    }
-                }
-
-                if (normalizedQuery.isBlank() && recentOptions.isNotEmpty()) {
-                    Text(
-                        text = "最近使ったリアクション",
-                        style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                    LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                        lazyRowItems(
-                            items = recentOptions,
-                            key = { "recent-${it.key}" },
-                        ) { option ->
-                            ReactionSearchResultTile(
-                                option = option,
-                                selected = option.key in selectedReactionKeys,
-                                label = when (option) {
-                                    is ReactionOption.Unicode -> option.value
-                                    is ReactionOption.Custom -> option.shortcode
-                                },
-                                onClick = {
-                                    markReactionUsed(option)
-                                    onSelect(option)
-                                },
-                            )
-                        }
-                    }
-                }
-
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Text(
-                        text = if (normalizedQuery.isBlank()) "すべての候補" else "検索結果",
-                        style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                    Text(
-                        text = "${resultCount}件",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-
-                LazyVerticalGrid(
-                    columns = GridCells.Adaptive(minSize = 68.dp),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .heightIn(min = 160.dp, max = 330.dp),
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                    verticalArrangement = Arrangement.spacedBy(6.dp),
-                ) {
-                    if (
-                        filter != ReactionSearchFilter.Custom &&
-                        (normalizedQuery.isBlank() || "いいね".contains(normalizedQuery))
-                    ) {
-                        item(key = "default-like") {
-                            ReactionSearchResultTile(
-                                option = null,
-                                selected = isLiked,
-                                label = "いいね",
-                                onClick = onSelectLike,
-                            )
-                        }
-                    }
-                    items(
-                        items = unicodeEntries,
-                        key = { "unicode-${it.value}" },
-                    ) { entry ->
-                        val option = ReactionOption.Unicode(entry.value)
-                        ReactionSearchResultTile(
-                            option = option,
-                            selected = option.key in selectedReactionKeys,
-                            label = entry.keywords.firstOrNull() ?: entry.value,
-                            onClick = {
-                                markReactionUsed(option)
-                                onSelect(option)
-                            },
-                        )
-                    }
-                    items(
-                        items = customOptions,
-                        key = { it.key },
-                    ) { option ->
-                        ReactionSearchResultTile(
-                            option = option,
-                            selected = option.key in selectedReactionKeys,
-                            label = option.shortcode,
-                            onClick = {
-                                markReactionUsed(option)
-                                onSelect(option)
-                            },
-                        )
-                    }
-                }
-                if (resultCount == 0) {
-                    Text(
-                        text = if (normalizedQuery.isBlank()) {
-                            "この種類のリアクションはまだありません"
-                        } else {
-                            "「${query.trim()}」に一致するリアクションはありません\n名前や :shortcode: を変えてお試しください"
-                        },
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-            }
-        },
-        confirmButton = {
-            TextButton(onClick = onDismiss) {
-                Text("閉じる")
-            }
-        },
-    )
-}
-
-@Composable
-private fun ReactionSearchResultTile(
-    option: ReactionOption?,
-    selected: Boolean,
-    label: String,
-    onClick: () -> Unit,
-) {
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .height(72.dp)
-            .clip(RoundedCornerShape(12.dp))
-            .background(
-                if (selected) {
-                    MaterialTheme.colorScheme.primaryContainer
-                } else {
-                    MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f)
-                },
-            )
-            .clickable(onClick = onClick)
-            .padding(horizontal = 4.dp, vertical = 7.dp)
-            .semantics {
-                contentDescription = when (option) {
-                    null -> "いいね"
-                    is ReactionOption.Unicode -> label
-                    is ReactionOption.Custom -> ":${option.shortcode}:"
-                }
-            },
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.spacedBy(5.dp),
-    ) {
-        when (option) {
-            null -> Text(text = "❤️", fontSize = 24.sp)
-            is ReactionOption.Unicode -> Text(text = option.value, fontSize = 24.sp)
-            is ReactionOption.Custom -> NetworkImage(
-                url = option.imageUrl,
-                contentDescription = null,
-                contentScale = ContentScale.Fit,
-                modifier = Modifier.size(30.dp),
-            )
-        }
-        Text(
-            text = if (option is ReactionOption.Custom) ":$label:" else label,
-            style = MaterialTheme.typography.labelSmall,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-        )
-    }
-}
-
-private enum class ReactionSearchFilter(val label: String) {
-    All("すべて"),
-    Unicode("標準絵文字"),
-    Custom("カスタム"),
-}
-
 internal data class UnicodeReactionEntry(
     val value: String,
     val keywords: List<String>,
@@ -1769,6 +1483,7 @@ private fun ReportDialog(
     onDismiss: () -> Unit,
     onReport: (reason: String, detail: String) -> Unit,
 ) {
+    DismissKeyboardOnLeave()
     var selectedReason by remember { mutableStateOf(ReportReason.Spam) }
     var detail by remember { mutableStateOf("") }
 

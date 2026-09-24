@@ -17,14 +17,11 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.AddPhotoAlternate
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
-import androidx.compose.material3.Card
 import androidx.compose.material3.Checkbox
-import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -36,7 +33,6 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -52,10 +48,6 @@ import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.window.Dialog
-import androidx.lifecycle.viewmodel.compose.viewModel
-import androidx.lifecycle.viewmodel.initializer
-import androidx.lifecycle.viewmodel.viewModelFactory
 import com.nostr.torinos.crypto.KeyStorage
 import com.nostr.torinos.crypto.StoredAccount
 import com.nostr.torinos.account.AccountSessions
@@ -68,25 +60,19 @@ import com.nostr.torinos.crypto.isIosPlatform
 import com.nostr.torinos.crypto.normalizePrivateKey
 import com.nostr.torinos.crypto.rememberPasswordManagerSaver
 import com.nostr.torinos.crypto.toHex
-import com.nostr.torinos.model.NostrFilter
 import com.nostr.torinos.model.NostrProfile
-import com.nostr.torinos.network.NostrRepository
 import com.nostr.torinos.network.ProfileFetchPolicy
 import com.nostr.torinos.network.ProfileRepository
-import com.nostr.torinos.ui.components.EditableImage
-import com.nostr.torinos.ui.components.ImageCropperDialog
 import com.nostr.torinos.ui.components.ProfileNameText
-import com.nostr.torinos.ui.components.rememberImagePickerLauncher
-import com.nostr.torinos.ui.components.rememberDismissKeyboard
-import com.nostr.torinos.ui.components.rememberSyncedTextFieldValue
 import com.nostr.torinos.ui.profile.AvatarCircle
-import com.nostr.torinos.ui.profile.EditProfileViewModel
 import com.nostr.torinos.ui.settings.setPlainText
 import com.nostr.torinos.util.loggingExceptionHandler
 import com.nostr.torinos.util.logException
+import com.nostr.torinos.ui.components.DismissKeyboardOnLeave
 
 @Composable
 fun KeySetupScreen(onSetupComplete: (pubkeyHex: String) -> Unit, onDismiss: (() -> Unit)? = null) {
+    DismissKeyboardOnLeave()
     var importKey by remember { mutableStateOf("") }
     var showImportForm by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
@@ -493,137 +479,6 @@ private fun UsageConsentDialog(
             }
         },
     )
-}
-
-@Composable
-private fun InitialProfileDialog(
-    pubkey: String,
-    onComplete: () -> Unit,
-    viewModel: EditProfileViewModel = viewModel(
-        key = "initial-profile-$pubkey",
-        factory = viewModelFactory { initializer { EditProfileViewModel() } },
-    ),
-) {
-    val state by viewModel.state.collectAsState()
-    var displayNameValue by rememberSyncedTextFieldValue(state.displayName)
-    var imageToCrop by remember { mutableStateOf<EditableImage?>(null) }
-    val dismissKeyboard = rememberDismissKeyboard()
-    val pickImage = rememberImagePickerLauncher { bytes, mime ->
-        if (bytes != null && mime != null) imageToCrop = EditableImage(bytes, mime)
-    }
-
-    LaunchedEffect(state.saved) {
-        if (state.saved) {
-            viewModel.clearSaved()
-            onComplete()
-        }
-    }
-
-    Dialog(onDismissRequest = { if (!state.isSaving) onComplete() }) {
-        Card {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(16.dp),
-                verticalArrangement = Arrangement.spacedBy(12.dp),
-            ) {
-                Text("プロフィールを設定", style = MaterialTheme.typography.titleMedium)
-
-                Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
-                    AvatarCircle(
-                        pubkey = pubkey,
-                        name = state.displayName.ifBlank { state.name }.ifBlank { null },
-                        pictureUrl = state.picture.ifBlank { null },
-                        size = 80,
-                    )
-                }
-
-                OutlinedTextField(
-                    value = displayNameValue,
-                    onValueChange = {
-                        displayNameValue = it
-                        viewModel.onDisplayNameChange(it.text)
-                        viewModel.onNameChange(it.text)
-                    },
-                    label = { Text("名前") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth(),
-                    enabled = !state.isSaving,
-                )
-
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    OutlinedTextField(
-                        value = state.picture,
-                        onValueChange = viewModel::onPictureChange,
-                        label = { Text("プロフィール画像URL") },
-                        singleLine = true,
-                        modifier = Modifier.weight(1f),
-                        enabled = !state.isSaving,
-                    )
-                    IconButton(
-                        onClick = {
-                            dismissKeyboard()
-                            pickImage()
-                        },
-                        enabled = !state.isUploadingImage && !state.isSaving,
-                    ) {
-                        if (state.isUploadingImage) {
-                            CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
-                        } else {
-                            Icon(
-                                imageVector = Icons.Default.AddPhotoAlternate,
-                                contentDescription = "画像を選択してアップロード",
-                            )
-                        }
-                    }
-                }
-
-                state.error?.let {
-                    Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.labelSmall)
-                }
-
-                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-                    TextButton(onClick = onComplete, enabled = !state.isSaving) { Text("あとで") }
-                    Button(
-                        onClick = {
-                            viewModel.initFrom(NostrProfile())
-                            viewModel.onNameChange(state.name)
-                            viewModel.onDisplayNameChange(state.displayName)
-                            viewModel.onPictureChange(state.picture)
-                            viewModel.save()
-                        },
-                        enabled = !state.isSaving &&
-                            !state.isUploadingImage &&
-                            (state.displayName.isNotBlank() || state.picture.isNotBlank()),
-                    ) {
-                        if (state.isSaving) {
-                            CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
-                        } else {
-                            Text("保存して始める")
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    imageToCrop?.let { image ->
-        ImageCropperDialog(
-            image = image,
-            title = "プロフィール画像を調整",
-            aspectRatio = 1f,
-            circularMask = true,
-            onDismiss = { imageToCrop = null },
-            onCropped = { bytes, mime ->
-                imageToCrop = null
-                viewModel.uploadProfileImage(bytes, mime)
-            },
-        )
-    }
 }
 
 @Composable
