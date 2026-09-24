@@ -58,6 +58,8 @@ class ChannelViewModel(
             val publishState: ChannelPublishUiState = ChannelPublishUiState.Idle,
             /** 閲覧先リレーの接続状態。現在の relay context の readRelays に絞ったもの。 */
             val relayStates: Map<String, RelayConnectionState> = emptyMap(),
+            /** チャンネル情報画面の表示内容(FR-11)。kind 40 受信前は保存済みの状態から作る。 */
+            val channelInfo: ChannelInfo? = null,
         ) : UiState {
             fun isLiked(eventId: String): Boolean = likedReactions.containsKey(eventId) ||
                 pendingEngagementOperations[eventId]?.get(EngagementSlot.Reaction)?.request is EngagementRequest.AddLike

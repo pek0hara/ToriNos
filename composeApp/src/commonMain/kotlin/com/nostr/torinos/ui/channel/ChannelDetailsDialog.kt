@@ -35,6 +35,7 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import com.nostr.torinos.model.ChannelMetadataResolver
 import com.nostr.torinos.model.NostrEvent
+import com.nostr.torinos.network.ProfileRepository
 import com.nostr.torinos.ui.components.AppTopBar
 import com.nostr.torinos.ui.components.NetworkImage
 import com.nostr.torinos.ui.components.formatTimestamp
@@ -117,11 +118,11 @@ private fun ChannelOverview(state: ChannelListViewModel.DetailDialogState) {
             updateCandidates = state.events.filter { it.kind == 41 },
         )
     }
-    val creation = resolution?.channelCreateEvent ?: state.events.firstOrNull { it.kind == 40 }
-    val effectiveEvent = resolution?.effectiveEvent
-    val latestUpdate = effectiveEvent?.takeIf { it.kind == 41 }
-    val content = resolution?.metadata
-    val displayName = content?.name?.ifBlank { state.channelName } ?: state.channelName
+    val info = resolution?.let(ChannelInfo::from) ?: ChannelInfo(
+        channelId = state.channelId,
+        ownerPubkey = null,
+        meta = com.nostr.torinos.model.ChannelMeta(name = state.channelName),
+    )
 
     Surface(
         modifier = Modifier.fillMaxWidth(),
@@ -137,70 +138,11 @@ private fun ChannelOverview(state: ChannelListViewModel.DetailDialogState) {
                 style = MaterialTheme.typography.labelLarge,
                 color = MaterialTheme.colorScheme.primary,
             )
-            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                content?.picture?.takeIf { it.isNotBlank() }?.let { picture ->
-                    NetworkImage(
-                        url = picture,
-                        contentDescription = "チャンネル画像",
-                        modifier = Modifier
-                            .size(64.dp)
-                            .clip(RoundedCornerShape(10.dp)),
-                        contentScale = ContentScale.Crop,
-                        maxDecodeSizePx = 256,
-                    )
-                }
-                Column(
-                    modifier = Modifier.weight(1f),
-                    verticalArrangement = Arrangement.spacedBy(4.dp),
-                ) {
-                    Text(displayName, style = MaterialTheme.typography.titleLarge)
-                    Text(
-                        text = if (latestUpdate != null) "最新の KIND 41 を反映" else "KIND 40 の作成情報",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-            }
-            content?.about?.takeIf { it.isNotBlank() }?.let { about ->
-                OverviewValue(label = "説明", value = about)
-            }
-            OverviewValue(label = "チャンネルID", value = state.channelId, monospace = true)
-            creation?.let {
-                OverviewValue(label = "作成者", value = it.pubkey, monospace = true)
-                OverviewValue(label = "作成日時", value = formatTimestamp(it.createdAt))
-                it.clientName?.let { client -> OverviewValue(label = "作成クライアント", value = client) }
-            }
-            latestUpdate?.let {
-                OverviewValue(label = "最終更新日時", value = formatTimestamp(it.createdAt))
-                it.clientName?.let { client -> OverviewValue(label = "更新クライアント", value = client) }
-            }
-            content?.relays?.takeIf { it.isNotEmpty() }?.let { relays ->
-                OverviewValue(
-                    label = "推奨リレー (${relays.size})",
-                    value = relays.joinToString("\n"),
-                    monospace = true,
-                )
-            }
-        }
-    }
-}
-
-@Composable
-private fun OverviewValue(label: String, value: String, monospace: Boolean = false) {
-    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-        Text(
-            text = label,
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-        SelectionContainer {
-            Text(
-                text = value,
-                style = if (monospace) {
-                    MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace)
-                } else {
-                    MaterialTheme.typography.bodyMedium
-                },
+            // チャンネル画面の情報ダイアログと同じ表示(FR-11)。購読先は持たず、作成者はキャッシュ済みプロフィールだけ使う。
+            ChannelInfoContent(
+                info = info,
+                ownerProfile = info.ownerPubkey?.let { ProfileRepository.getCached(it) },
+                onUserClick = null,
             )
         }
     }

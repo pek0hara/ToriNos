@@ -512,7 +512,12 @@ fun ChannelScreen(
 
     if (showThreadInfoDialog && readyState != null) {
         ThreadInfoDialog(
-            meta = readyState.channelMeta,
+            info = readyState.channelInfo ?: ChannelInfo(
+                channelId = channelId,
+                ownerPubkey = readyState.channelOwnerPubkey,
+                meta = readyState.channelMeta,
+            ),
+            subscribedRelays = readyState.relayContext.readRelays.toList(),
             ownerPubkey = readyState.channelOwnerPubkey,
             ownerProfile = readyState.channelOwnerPubkey?.let { readyState.profiles[it] },
             canEdit = ownPubkey != null && ownPubkey == readyState.channelOwnerPubkey,
@@ -756,7 +761,8 @@ private fun ChannelMessageInputBar(
 
 @Composable
 private fun ThreadInfoDialog(
-    meta: ChannelMeta,
+    info: ChannelInfo,
+    subscribedRelays: List<String>,
     ownerPubkey: String?,
     ownerProfile: com.nostr.torinos.model.NostrProfile?,
     canEdit: Boolean,
@@ -766,13 +772,14 @@ private fun ThreadInfoDialog(
 ) {
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("スレッド情報") },
+        title = { Text("チャンネル情報") },
         text = {
-            ThreadInfoContent(
-                meta = meta,
-                ownerPubkey = ownerPubkey,
+            ChannelInfoContent(
+                info = info.copy(ownerPubkey = info.ownerPubkey ?: ownerPubkey),
                 ownerProfile = ownerProfile,
                 onUserClick = onUserClick,
+                subscribedRelays = subscribedRelays,
+                modifier = Modifier.verticalScroll(rememberScrollState()),
             )
         },
         confirmButton = {
@@ -780,71 +787,12 @@ private fun ThreadInfoDialog(
         },
         dismissButton = if (canEdit) {
             {
-                TextButton(onClick = onEditClick) { Text("編集") }
+                TextButton(onClick = onEditClick) { Text("チャンネルを編集") }
             }
         } else {
             null
         },
     )
-}
-
-@Composable
-private fun ThreadInfoContent(
-    meta: ChannelMeta,
-    ownerPubkey: String?,
-    ownerProfile: com.nostr.torinos.model.NostrProfile?,
-    onUserClick: (String) -> Unit,
-) {
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .verticalScroll(rememberScrollState()),
-        verticalArrangement = Arrangement.spacedBy(8.dp),
-    ) {
-        Text(
-            text = meta.name.ifBlank { "（タイトルなし）" },
-            style = MaterialTheme.typography.titleMedium,
-            maxLines = 3,
-            overflow = TextOverflow.Ellipsis,
-        )
-        if (meta.about.isNotBlank()) {
-            LinkedText(
-                text = meta.about,
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                onProfileClick = onUserClick,
-            )
-        }
-        if (ownerPubkey != null) {
-            Spacer(modifier = Modifier.size(4.dp))
-            Row(
-                modifier = Modifier.clickable { onUserClick(ownerPubkey) },
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                AvatarCircle(
-                    pubkey = ownerPubkey,
-                    name = ownerProfile?.bestName,
-                    pictureUrl = ownerProfile?.picture,
-                    size = 32,
-                )
-                Column(verticalArrangement = Arrangement.spacedBy(1.dp)) {
-                    Text(
-                        text = "スレッド作成者",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                    ProfileNameText(
-                        profile = ownerProfile,
-                        fallback = ownerPubkey.take(8) + "…" + ownerPubkey.takeLast(8),
-                        style = MaterialTheme.typography.labelMedium,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                }
-            }
-        }
-    }
 }
 
 private fun String.replyPreviewText(): String =

@@ -2,6 +2,8 @@ package com.nostr.torinos.ui.channel
 
 import com.nostr.torinos.model.ChannelRelayContext
 import com.nostr.torinos.network.RelayEntry
+import com.nostr.torinos.network.normalizeRelayUrl
+import com.nostr.torinos.network.normalizeRelayUrls
 import com.nostr.torinos.network.RelayPublishResult
 import com.nostr.torinos.ui.timeline.SignedPublishResult
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -115,6 +117,37 @@ internal data class ChannelCreatePlan(
                 recommendedRelays = context.recommendedRelays,
                 relayUrls = context.writeRelays.toList().ifEmpty { null },
                 primaryHint = context.primaryHint,
+            )
+        }
+    }
+}
+
+/**
+ * kind 41 編集で推奨リレーを追加したときの配送先(第16.10節、Loop 5e)。
+ * 追加先だけを読むクライアントがチャンネルを見つけられるよう、kind 41 を追加リレーにも送り、
+ * 署名済みの kind 40 を追加リレーへ再送する。ユーザー設定で write を切ったリレーには送らない。
+ */
+internal data class ChannelEditDelivery(
+    val metadataRelayUrls: List<String>?,
+    val addedRelays: List<String>,
+) {
+    companion object {
+        fun plan(
+            baseRelayUrls: List<String>?,
+            previousRecommended: List<String>,
+            nextRecommended: List<String>,
+            userWritableRelays: List<String>,
+            relayEntries: List<RelayEntry>,
+        ): ChannelEditDelivery {
+            val blocked = relayEntries.filterNot { it.write }.mapNotNull { normalizeRelayUrl(it.url) }.toSet()
+            val previous = normalizeRelayUrls(previousRecommended, limit = Int.MAX_VALUE).toSet()
+            val added = normalizeRelayUrls(nextRecommended, limit = Int.MAX_VALUE)
+                .filterNot { it in previous || it in blocked }
+            if (added.isEmpty()) return ChannelEditDelivery(baseRelayUrls, emptyList())
+            val base = baseRelayUrls ?: normalizeRelayUrls(userWritableRelays, limit = Int.MAX_VALUE)
+            return ChannelEditDelivery(
+                metadataRelayUrls = normalizeRelayUrls(base + added, limit = Int.MAX_VALUE),
+                addedRelays = added,
             )
         }
     }

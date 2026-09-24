@@ -157,6 +157,7 @@ internal class ChannelController(
     private var isRelayTransitioning = false
     private var currentRelayStates = emptyMap<String, RelayConnectionState>()
     private val messageSourceRelays = linkedMapOf<String, String>()
+    private var currentChannelInfo: ChannelInfo? = null
     // relay context 変更時に張り直すライブ購読。subId -> filter。
     private val liveFilters = linkedMapOf<String, NostrFilter>()
 
@@ -569,18 +570,26 @@ internal class ChannelController(
         launch {
             // 現在の実効メタデータから完全な内容を作る。relays・picture を落とすと推奨リレーが消える。
             val meta = editedChannelMeta(currentChannelMeta, dialog)
+            val delivery = ChannelEditDelivery.plan(
+                baseRelayUrls = publishContext.relayUrls,
+                previousRecommended = currentChannelMeta.relays,
+                nextRecommended = meta.relays,
+                userWritableRelays = RelayStore.writableRelayUrlsSnapshot(),
+                relayEntries = RelayStore.entries.value,
+            )
             val result = signedEventPublisher.publish(
                 content = meta.toChannelContent(),
                 kind = 41,
                 tags = ChannelEventTags.metadata(channelId, publishContext.primaryHint, categories = emptyList()) +
                     listOf(listOf("client", "ToriNos")),
-                relayUrls = publishContext.relayUrls,
+                relayUrls = delivery.metadataRelayUrls,
                 onEventRelayResult = { event, relayResult ->
-                    recordEditRelayResult(event, publishContext.targetsForDisplay, relayResult)
+                    recordEditRelayResult(event, delivery.metadataRelayUrls.orEmpty(), relayResult)
                 },
             )
             when (result) {
                 is SignedPublishResult.Published -> {
+                    rebroadcastChannelCreate(delivery.addedRelays)
                     // 自己発行分も受信イベントと同じ resolver 経路で反映する(第21.2節4)。
                     metadataUpdateCandidates[result.event.id] = result.event
                     if (channelCreateEvent != null) {
@@ -592,7 +601,7 @@ internal class ChannelController(
                     reportEditPartial(
                         result.event.id,
                         editPublishStates[result.event.id]
-                            ?: ChannelPublishUiState.from(publishContext.targetsForDisplay, result),
+                            ?: ChannelPublishUiState.from(delivery.metadataRelayUrls.orEmpty(), result),
                     )
                     _state.value = ready.copy(
                         channelMeta = currentChannelMeta,
@@ -606,7 +615,7 @@ internal class ChannelController(
                     )
                 }
                 is SignedPublishResult.Failed -> (_state.value as? UiState.Ready)?.let { ready ->
-                    val summary = ChannelPublishUiState.from(publishContext.targetsForDisplay, result).summary
+                    val summary = ChannelPublishUiState.from(delivery.metadataRelayUrls.orEmpty(), result).summary
                     _state.value = ready.copy(
                         editDialog = ready.editDialog?.copy(
                             isSaving = false,
@@ -687,6 +696,7 @@ internal class ChannelController(
         effectiveMetadataSourceEventId = resolution.effectiveEvent.id
         currentChannelMeta = resolution.metadata
         currentChannelOwnerPubkey = resolution.channelCreateEvent.pubkey
+        currentChannelInfo = ChannelInfo.from(resolution)
         updateRelayContext(resolution.metadata.relays)
         try {
             ChannelLocalStore.upsertChannelMetadata(
@@ -887,6 +897,7 @@ internal class ChannelController(
             if (localState != null && localState.hasMetadata && effectiveMetadataSourceEventId == null) {
                 currentChannelMeta = localState.meta
                 currentChannelOwnerPubkey = localState.ownerPubkey
+                currentChannelInfo = ChannelInfo.from(localState)
                 cachedMetadataSource = CachedMetadataSource(
                     ownerPubkey = localState.ownerPubkey,
                     eventId = localState.metadataEventId,
@@ -958,6 +969,7 @@ internal class ChannelController(
             relayContext = relayContext,
             isRelayTransitioning = isRelayTransitioning,
             relayStates = currentRelayStates.filterKeys { it in relayContext.readRelays },
+            channelInfo = currentChannelInfo,
         )
 
     private fun syncReadyState() {
@@ -984,6 +996,7 @@ internal class ChannelController(
             relayContext = relayContext,
             isRelayTransitioning = isRelayTransitioning,
             relayStates = currentRelayStates.filterKeys { it in relayContext.readRelays },
+            channelInfo = currentChannelInfo,
         )
     }
 
@@ -1099,6 +1112,22 @@ internal class ChannelController(
             settleAfterFirstEoseMillis = HISTORY_SETTLE_MS,
         ) { event -> if (noteContext.matches(event) && event.id !in locallyDeletedMessageIds) events += event }
         history.supplement(events)
+    }
+
+    /**
+     * 推奨リレーに追加したリレーへ、署名済みの kind 40 をそのまま再送する(再署名しない)。
+     * 失敗しても編集自体は成功しているため、ログに残すだけにする。
+     */
+    private fun rebroadcastChannelCreate(addedRelays: List<String>) {
+        val create = channelCreateEvent ?: return
+        if (addedRelays.isEmpty()) return
+        launch {
+            val result = NostrRepository.publishToRelaysWithResult(create, addedRelays, awaitAcceptance = true)
+            networkTraceLog {
+                "[ChannelController] rebroadcast kind40 channel=${channelId.take(8)} " +
+                    "ok=${result.successCount} failed=${result.failureCount}"
+            }
+        }
     }
 
     /** 最初に観測したリレーだけを返信の hint 用に覚える。ライブ受信分は観測元が分からないため記録されない。 */

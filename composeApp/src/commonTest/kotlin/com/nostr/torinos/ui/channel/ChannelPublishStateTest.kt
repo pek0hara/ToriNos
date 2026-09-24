@@ -124,4 +124,28 @@ class ChannelPublishStateTest {
         assertEquals(listOf("wss://mine"), plan.relayUrls)
         assertEquals("wss://mine", plan.primaryHint)
     }
+
+    @Test
+    fun editDeliveryAddsNewRecommendedRelaysOnly() {
+        val entries = listOf(RelayEntry("wss://readonly", enabled = true, write = false))
+        val delivery = ChannelEditDelivery.plan(
+            baseRelayUrls = listOf("wss://old", "wss://mine"),
+            previousRecommended = listOf("wss://old"),
+            nextRecommended = listOf("wss://old", "wss://new/", "wss://readonly"),
+            userWritableRelays = listOf("wss://mine"),
+            relayEntries = entries,
+        )
+        assertEquals(listOf("wss://new"), delivery.addedRelays)
+        assertEquals(listOf("wss://old", "wss://mine", "wss://new"), delivery.metadataRelayUrls)
+    }
+
+    @Test
+    fun editDeliveryWithoutAdditionsKeepsTheSnapshotTargets() {
+        val delivery = ChannelEditDelivery.plan(listOf("wss://a"), listOf("wss://a", "wss://b"), listOf("wss://a"), emptyList(), emptyList())
+        assertEquals(emptyList(), delivery.addedRelays)
+        assertEquals(listOf("wss://a"), delivery.metadataRelayUrls)
+        // 送信先の snapshot が無い(ユーザーの書き込みリレーへ送る)場合も、追加があれば明示リストにする。
+        val fromUserRelays = ChannelEditDelivery.plan(null, emptyList(), listOf("wss://new"), listOf("wss://mine"), emptyList())
+        assertEquals(listOf("wss://mine", "wss://new"), fromUserRelays.metadataRelayUrls)
+    }
 }
