@@ -53,6 +53,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.nostr.torinos.crypto.hexToNpub
 import com.nostr.torinos.crypto.StoredAccount
+import com.nostr.torinos.crypto.isIosPlatform
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
@@ -77,6 +78,7 @@ fun SettingsScreen(
     var nsec by remember { mutableStateOf<String?>(null) }
     var showLogoutDialog by remember { mutableStateOf(false) }
     var showDeleteAccountDialog by remember { mutableStateOf(false) }
+    var pendingDeleteStoredAccount by remember { mutableStateOf<StoredAccount?>(null) }
     val npub = remember(ownPubkey) {
         ownPubkey?.let { pubkey -> runCatching { hexToNpub(pubkey) }.getOrDefault(pubkey) }
     }
@@ -158,6 +160,10 @@ fun SettingsScreen(
                         activePubkey = ownPubkey,
                         isProcessing = state.isAccountActionProcessing,
                         onSwitch = { pubkey -> account.switchAccount(pubkey, onAccountChanged) },
+                        onDeleteStoredAccount = {
+                            account.clearAccountActionError()
+                            pendingDeleteStoredAccount = it
+                        },
                         onAddAccountClick = onAddAccountClick,
                     )
                     HorizontalDivider()
@@ -209,6 +215,30 @@ fun SettingsScreen(
         )
     }
 
+    pendingDeleteStoredAccount?.let { storedAccount ->
+        val shortNpub = storedAccount.npub.let {
+            if (it.length > 24) it.take(14) + "..." + it.takeLast(8) else it
+        }
+        ConfirmAccountDialog(
+            title = "保存済みアカウントを削除",
+            text = if (isIosPlatform) {
+                "$shortNpub の秘密鍵を、この端末とiCloudキーチェーンから削除します。同じApple Accountの端末にも反映されます。Nostr上のアカウントや投稿は削除されません。"
+            } else {
+                "$shortNpub の秘密鍵を、この端末の保存済みアカウントから削除します。Nostr上のアカウントや投稿は削除されません。"
+            },
+            confirmText = "削除",
+            isProcessing = state.isAccountActionProcessing,
+            error = state.accountActionError,
+            onDismiss = { pendingDeleteStoredAccount = null },
+            destructive = true,
+            onConfirm = {
+                accountViewModel?.deleteStoredAccount(storedAccount.pubkeyHex) {
+                    pendingDeleteStoredAccount = null
+                }
+            },
+        )
+    }
+
     if (showDeleteAccountDialog) {
         ConfirmAccountDialog(
             title = "アカウントを完全に削除",
@@ -235,6 +265,7 @@ private fun AccountSwitcherSection(
     activePubkey: String?,
     isProcessing: Boolean,
     onSwitch: (String) -> Unit,
+    onDeleteStoredAccount: (StoredAccount) -> Unit,
     onAddAccountClick: () -> Unit,
 ) {
     Column(
@@ -290,16 +321,28 @@ private fun AccountSwitcherSection(
                         )
                     }
                 }
-                Icon(
-                    imageVector = Icons.Default.Check,
-                    contentDescription = null,
-                    tint = if (account.pubkeyHex == activePubkey) {
-                        MaterialTheme.colorScheme.primary
-                    } else {
-                        MaterialTheme.colorScheme.surface
-                    },
-                    modifier = Modifier.size(20.dp),
-                )
+                // 削除アイコンはチェックマークと同じ位置に出す(ログアウト済みの非アクティブ行のみ)。
+                if (account.isLoggedOut && account.pubkeyHex != activePubkey) {
+                    Icon(
+                        imageVector = Icons.Default.Delete,
+                        contentDescription = "${profile?.bestName ?: shortNpub} の保存情報を削除",
+                        tint = MaterialTheme.colorScheme.error,
+                        modifier = Modifier
+                            .size(20.dp)
+                            .clickable(enabled = !isProcessing) { onDeleteStoredAccount(account) },
+                    )
+                } else {
+                    Icon(
+                        imageVector = Icons.Default.Check,
+                        contentDescription = null,
+                        tint = if (account.pubkeyHex == activePubkey) {
+                            MaterialTheme.colorScheme.primary
+                        } else {
+                            MaterialTheme.colorScheme.surface
+                        },
+                        modifier = Modifier.size(20.dp),
+                    )
+                }
             }
         }
         OutlinedButton(

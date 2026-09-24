@@ -2,6 +2,7 @@ package com.nostr.torinos.ui.settings
 
 import com.nostr.torinos.account.AccountSessionState
 import com.nostr.torinos.account.AccountSessions
+import com.nostr.torinos.crypto.KeyStorage
 import com.nostr.torinos.crypto.StoredAccount
 import com.nostr.torinos.model.NostrProfile
 import com.nostr.torinos.network.NostrRepository
@@ -238,6 +239,47 @@ class SettingsViewModel : SafeViewModel() {
                         accountActionError = e.message
                             ?.let { "アカウントを削除できませんでした: $it" }
                             ?: "アカウントを削除できませんでした",
+                    )
+                }
+            }
+        }
+    }
+
+    /** ログアウト済みアカウントの保存済み秘密鍵を端末から削除する。Nostr上のアカウントは変更しない。 */
+    fun deleteStoredAccount(pubkeyHex: String, onDeleted: () -> Unit) {
+        if (_state.value.isAccountActionProcessing) return
+        val account = _state.value.accounts.firstOrNull { it.pubkeyHex == pubkeyHex } ?: return
+        if (!account.isLoggedOut || accountSessionManager.currentSession?.pubkey == pubkeyHex) return
+
+        launch {
+            _state.update {
+                it.copy(
+                    isAccountActionProcessing = true,
+                    accountActionError = null,
+                )
+            }
+            try {
+                KeyStorage.deleteAccount(pubkeyHex)
+                val accounts = accountSessionManager.listAccounts()
+                _state.update {
+                    it.copy(
+                        accounts = accounts,
+                        profiles = it.profiles - pubkeyHex,
+                        isAccountActionProcessing = false,
+                        accountActionError = null,
+                    )
+                }
+                onDeleted()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                logException("SettingsViewModel", e, "Failed to delete stored account")
+                _state.update {
+                    it.copy(
+                        isAccountActionProcessing = false,
+                        accountActionError = e.message
+                            ?.let { message -> "保存済みアカウントを削除できませんでした: $message" }
+                            ?: "保存済みアカウントを削除できませんでした",
                     )
                 }
             }
