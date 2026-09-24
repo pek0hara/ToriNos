@@ -12,6 +12,8 @@ internal data class ChannelRelayRow(
     /** null は購読していない(投稿時だけ一時接続する)リレー。 */
     val connection: RelayConnectionState?,
     val lastPublish: LastPublish?,
+    /** 接続はしているが購読を拒否された理由(例: auth-required)。 */
+    val refusal: String? = null,
 ) {
     sealed interface LastPublish {
         data object Pending : LastPublish
@@ -53,6 +55,7 @@ internal object ChannelRelayPresentation {
         context: ChannelRelayContext,
         connectionStates: Map<String, RelayConnectionState>,
         publishState: ChannelPublishUiState,
+        refusals: Map<String, String> = emptyMap(),
     ): List<ChannelRelayRow> {
         val urls = linkedSetOf<String>().apply {
             addAll(context.recommendedRelays)
@@ -69,6 +72,7 @@ internal object ChannelRelayPresentation {
                 usedForRead = read,
                 usedForWrite = url in context.writeRelays,
                 connection = if (read) connectionStates[url] ?: RelayConnectionState.Connecting else null,
+                refusal = refusals[url]?.takeIf { read },
                 lastPublish = when {
                     publishState.phase == ChannelPublishUiState.Phase.Idle || url !in publishState.targets -> null
                     url in publishState.succeeded -> ChannelRelayRow.LastPublish.Succeeded

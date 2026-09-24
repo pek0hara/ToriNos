@@ -49,4 +49,18 @@ class ChannelRelayPresentationTest {
         assertNull(rows[2].connection)
         assertEquals(ChannelRelayRow.LastPublish.Failed("auth-required"), rows[2].lastPublish)
     }
+
+    @Test
+    fun refusalIsShownOnlyForReadRelays() {
+        val ctx = context(listOf("wss://rec"), listOf("wss://rec"), listOf("wss://rec", "wss://mine"))
+        val rows = ChannelRelayPresentation.rows(
+            ctx,
+            mapOf("wss://rec" to RelayConnectionState.Connected),
+            ChannelPublishUiState.Idle,
+            refusals = mapOf("wss://rec" to "auth-required: authentication required", "wss://mine" to "blocked"),
+        )
+        assertEquals("auth-required: authentication required", rows.first { it.url == "wss://rec" }.refusal)
+        // 投稿専用のリレーは購読しないので、拒否理由も出さない。
+        assertNull(rows.first { it.url == "wss://mine" }.refusal)
+    }
 }

@@ -62,6 +62,8 @@ class ChannelViewModel(
             val channelInfo: ChannelInfo? = null,
             /** 直前に非表示にしたメッセージ。「元に戻す」付きの snackbar を出す。 */
             val hiddenNoticeMessageId: String? = null,
+            /** 閲覧先リレーのうち、購読を拒否(CLOSED)したものとその理由。 */
+            val relayRefusals: Map<String, String> = emptyMap(),
         ) : UiState {
             fun isLiked(eventId: String): Boolean = likedReactions.containsKey(eventId) ||
                 pendingEngagementOperations[eventId]?.get(EngagementSlot.Reaction)?.request is EngagementRequest.AddLike

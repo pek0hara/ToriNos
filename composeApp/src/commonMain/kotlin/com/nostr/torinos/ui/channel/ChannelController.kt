@@ -41,6 +41,8 @@ import com.nostr.torinos.network.normalizeRelayUrl
 import com.nostr.torinos.network.normalizeRelayUrls
 import com.nostr.torinos.network.RelayTarget
 import com.nostr.torinos.network.SubscriptionBehavior
+import com.nostr.torinos.network.SubscriptionSession
+import com.nostr.torinos.network.SubscriptionSignal
 import com.nostr.torinos.network.SubscriptionSpec
 import com.nostr.torinos.network.ChannelLocalStateStore
 import com.nostr.torinos.network.ChannelLocalStore
@@ -160,6 +162,10 @@ internal class ChannelController(
     private var currentRelayStates = emptyMap<String, RelayConnectionState>()
     private val messageSourceRelays = linkedMapOf<String, String>()
     private var currentChannelInfo: ChannelInfo? = null
+    private var messageSession: SubscriptionSession? = null
+    private var messageFilter: NostrFilter? = null
+    // リレー URL → 購読拒否(CLOSED)の理由。EOSE かイベントを受けたら消す(第16.18節)。
+    private val relayRefusals = mutableMapOf<String, String>()
     // kind 43 Hide Message(第16.15節)。自分の kind 43 と、それを取り消す自分の kind 5。
     private val ownHideEvents = linkedMapOf<String, NostrEvent>()
     private val ownHideDeletions = linkedMapOf<String, NostrEvent>()
@@ -807,15 +813,6 @@ internal class ChannelController(
             }
         }
 
-        // ライブと有限履歴は別管理。履歴の確定前は新着もバッファに保持する。
-        jobs += launch {
-            NostrRepository.events(msgSubId).collect { event ->
-                if (!noteContext.matches(event)) return@collect
-                history.receive(event)
-                recordLatestMessage(event)
-            }
-        }
-
         jobs += launch {
             NostrRepository.events(replyCountSubId).collect { event ->
                 if (!noteContext.matches(event) || !seenReplyIds.add(event.id)) return@collect
@@ -991,7 +988,7 @@ internal class ChannelController(
             // メッセージ本体はローカルに持たないため、履歴は常にリレー取得から始める。
             history.initialize(emptyList(), localState?.readingPosition)
             subscribeLive(metaSubId, NostrFilter(ids = listOf(channelId)))
-            subscribeLive(msgSubId, NostrFilter(kinds = listOf(42), eTags = listOf(channelId), since = openedAt))
+            openMessageSession(NostrFilter(kinds = listOf(42), eTags = listOf(channelId), since = openedAt))
             accountSession?.pubkey?.let { me ->
                 // kind 43 はチャンネル ID を持たないため、自分の分をまとめて取り、表示中のメッセージだけに効かせる。
                 subscribeLive(hideSubId, NostrFilter(kinds = listOf(ChannelHiddenMessages.HIDE_KIND), authors = listOf(me), limit = 500))
@@ -1062,6 +1059,7 @@ internal class ChannelController(
             isRelayTransitioning = isRelayTransitioning,
             relayStates = currentRelayStates.filterKeys { it in relayContext.readRelays },
             channelInfo = currentChannelInfo,
+            relayRefusals = relayRefusals.filterKeys { it in relayContext.readRelays },
         )
 
     private fun syncReadyState() {
@@ -1089,6 +1087,7 @@ internal class ChannelController(
             isRelayTransitioning = isRelayTransitioning,
             relayStates = currentRelayStates.filterKeys { it in relayContext.readRelays },
             channelInfo = currentChannelInfo,
+            relayRefusals = relayRefusals.filterKeys { it in relayContext.readRelays },
         )
     }
 
@@ -1154,6 +1153,48 @@ internal class ChannelController(
         liveFilters.toList().forEach { (subscriptionId, filter) ->
             NostrRepository.subscribe(subscriptionId, filter, readTarget)
         }
+        messageFilter?.let { filter -> messageSession?.update(listOf(filter), readTarget) }
+    }
+
+    /**
+     * メッセージのライブ購読はセッション API で張る(Loop 8)。互換 API と違い、受信元リレー
+     * (返信の relay hint、第16.8節)とリレーごとの購読拒否理由(第16.18節)が取れる。
+     * ライブと有限履歴は別管理で、履歴の確定前の新着は [ChannelHistory] がバッファに保持する。
+     */
+    private suspend fun openMessageSession(filter: NostrFilter) {
+        messageFilter = filter
+        val session = NostrRepository.openSubscription(
+            SubscriptionSpec(id = msgSubId, filters = listOf(filter), target = readTarget, behavior = SubscriptionBehavior.Live),
+        )
+        messageSession = session
+        jobs += launch {
+            session.signals.collect { signal ->
+                when (signal) {
+                    is SubscriptionSignal.Event -> {
+                        clearRelayRefusal(signal.relayUrl)
+                        val event = signal.event
+                        if (!noteContext.matches(event)) return@collect
+                        rememberMessageSource(event.id, signal.relayUrl)
+                        history.receive(event)
+                        recordLatestMessage(event)
+                    }
+                    is SubscriptionSignal.Eose -> clearRelayRefusal(signal.relayUrl)
+                    is SubscriptionSignal.Closed -> {
+                        relayRefusals[signal.relayUrl] = signal.reason.ifBlank { "理由不明" }
+                        syncReadyState()
+                    }
+                    is SubscriptionSignal.RelayUnavailable -> {
+                        relayRefusals[signal.relayUrl] = signal.reason.ifBlank { "接続できません" }
+                        syncReadyState()
+                    }
+                    is SubscriptionSignal.FetchCompleted -> Unit
+                }
+            }
+        }
+    }
+
+    private fun clearRelayRefusal(relayUrl: String) {
+        if (relayRefusals.remove(relayUrl) != null) syncReadyState()
     }
 
     private fun planRelayContext(recommendedRelays: List<String>): ChannelRelayContext =

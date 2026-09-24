@@ -1831,7 +1831,9 @@ iOS Simulatorテスト
 | 5d | 通常投稿画面からのチャンネル返信 | `ComposerRelayContext`、返信の reply/p hint（第16.14節） | 完了（`5519087`、第29章） |
 | 5e | チャンネル情報の共通化・推奨リレー追加時の複製配送 | FR-11 の `ChannelInfoContent`、kind 41 で追加した推奨リレーへの kind 40/41 配送 | 完了（`a8a7c7f`、第30章） |
 | 6 | モデレーション | kind 43（kind 44 はユーザー判断で見送り） | kind 43 完了（`40e28b5`、第31章） |
-| 7 | 参加同期 | kind 10005（★と同期） | 完了（第32章） |
+| 7 | 参加同期 | kind 10005（★と同期） | 完了（`d1e4a93`、第32章） |
+| 8 | メッセージ購読のセッション API 化 | ライブ受信の観測元リレー、購読拒否理由の表示（L5c-R2・L5d-D4 の持ち越し） | 完了（第33章） |
+| 9 | 非表示メッセージの管理 | 非表示にしたメッセージの一覧・一括解除、スレッド画面での非表示（L6 の持ち越し） | 未着手 |
 
 依存関係やレビュー結果によってループを分割・統合してよい。ただし、変更した理由を直前ループのフィードバックへ記録する。
 
@@ -2406,7 +2408,7 @@ FR-11 の表示項目: アイコン、名前、実効メタデータの取得元
 
 ## 32. Loop 7: kind 10005 参加チャンネル同期（第7.3節・第16.17節、2026-09-24）
 
-- 状態: 完了（未コミット）
+- 状態: 完了（`d1e4a93`）
 - 対象: NIP-51 kind 10005（Public chats）でアカウントの参加中チャンネルを端末間同期する。
 - 変更した仕様（ユーザー判断）: 第16.17節の「`isFavorite` は端末ローカルの別概念として維持」をやめ、一覧の★を「参加」とし kind 10005 と同期する。
 - 開始時commit: `40e28b5`
@@ -2442,3 +2444,45 @@ FR-11 の表示項目: アイコン、名前、実効メタデータの取得元
 
 - 確定した仕様: 32.1節の書き込み規則。★＝参加（ユーザー判断）。
 - 本仕様書の Phase 1〜3 の計画ループ（0〜7。kind 44 はユーザー判断で見送り）はすべて実装済みとなった。未実施の実リレー確認: L4-S05、第25・26章、L5c-S05、L5d-S03、L5e-S03、L6-S02、L7 の★更新。
+
+## 33. Loop 8: メッセージのライブ購読をセッション API へ移す（2026-09-24）
+
+- 状態: 完了（L8-S02 のみ保留、未コミット）
+- 対象: チャンネル画面の kind 42 ライブ購読を互換 API（`subscribe` + `events()`）からセッション API（`openSubscription`）へ移し、受信元リレーとリレーごとの購読拒否（CLOSED）を扱う。第28.2節 L5c-R2（拒否理由の表示）と第29.1節 L5d-D4（ライブ受信の観測元）の持ち越しを解消する。
+- 対象外: メタデータ・返信数・リアクション等の関連購読（互換 API のまま。第16.6節 L3b-D1 の方式）。
+- 開始時commit: `d1e4a93`
+- 対象ファイル: `ChannelController.kt`（`openMessageSession`、`relayRefusals`）、`ChannelViewModel.kt`、`ChannelRelayPresentation.kt`・`ChannelRelayDetailsSheet.kt`（購読拒否の表示）、テスト `ChannelRelayPresentationTest.kt`。
+
+### 33.1 設計レビュー
+
+| ID | 重大度 | 指摘 | 対応 |
+| --- | --- | --- | --- |
+| L8-D1 | Note | 互換 API のイベント流は受信元リレーを持たず、CLOSED もイベントとして届かない | メッセージ購読だけセッションにする。`SubscriptionSignal.Event.relayUrl` を返信の hint 用に記録し、`Closed`・`RelayUnavailable` の理由をリレーごとに保持する。EOSE かイベントを受けたら理由を消す（第16.18節） |
+| L8-D2 | Note | relay context の切り替え（第16.7節）はセッションでも同じ方式で行えるか | `SubscriptionSession.update(filters, target)` が互換 API と同じ差分 REQ/CLOSE をするため、`applyReadTarget` から一緒に更新する |
+| L8-D3 | Note | 画面終了時の解放 | 既存の `NostrRepository.close(msgSubId)` はセッション管理の購読も閉じて `finish()` する。collector は `jobs` と一緒に取り消す |
+
+表示: 詳細シートで、接続していても購読を拒否したリレーは「購読拒否」とし、「リレーの応答: <理由>」を出す。投稿専用のリレー（購読しない）には出さない。
+
+### 33.2 実装レビュー
+
+| ID | 重大度 | 指摘 | 対応 |
+| --- | --- | --- | --- |
+| L8-R1 | Note | 旧 collector の説明コメントが別の購読の上に残った | セッション側の説明へ移した |
+| L8-R2 | Note | セッションは同じ ID の二重オープンを拒否する | Controller ごとに ID が一意（アカウント・チャンネル・リレーを含む）で、開くのは起動時の1回だけ |
+
+### 33.3 テスト
+
+| 検証 | 結果 |
+| --- | --- |
+| `./gradlew :composeApp:iosSimulatorArm64Test :composeApp:compileAndroidMain check` | 成功（iOS 単体テスト 610 件、失敗0。`ChannelRelayPresentationTest` +1件） |
+| iPhone 17 Simulator（iOS 26.5）Debug、2026-09-24 19:52〜、投稿なし | 下表 |
+
+| ID | シナリオ | 結果 | 証跡・備考 |
+| --- | --- | --- | --- |
+| L8-S01 | しおたぬの住処のリレー詳細 | 成功 | `nostr-relay.moctane.net`・`nostr-relay-jp.moctane.net` が「購読拒否／リレーの応答: auth-required: authentication required to subscribe」。セッションが CLOSED を受けていることを確認 |
+| L8-S02 | 開いているチャンネルにライブで新着が届く | 保留 | さびれたスナックを開いたまま約8分待ったが新着なし。yabu.me・r.kojira.io とも直近30分に kind 42 が1件も無く、自分で投稿しない限り確認できない。セッションが信号を受けていることは L8-S01（CLOSED）で確認済み。イベント処理は履歴取得と同じ collector 形式 |
+
+### 33.4 設計書へのフィードバック
+
+- 解消した持ち越し: L5c-R2、L5d-D4。
+- 次ループ: Loop 9（非表示メッセージの管理）。L8-S02 は新着のあるチャンネルか自分の投稿で確認する（回帰すると新着が表示されなくなるため、次に実リレーで投稿確認をする際に必ず行う）。

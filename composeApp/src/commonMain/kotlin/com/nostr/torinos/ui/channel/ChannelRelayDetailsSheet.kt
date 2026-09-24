@@ -31,7 +31,7 @@ internal fun ChannelRelayDetailsSheet(
     ready: ChannelViewModel.UiState.Ready,
     onDismiss: () -> Unit,
 ) {
-    val rows = ChannelRelayPresentation.rows(ready.relayContext, ready.relayStates, ready.publishState)
+    val rows = ChannelRelayPresentation.rows(ready.relayContext, ready.relayStates, ready.publishState, ready.relayRefusals)
     ModalBottomSheet(onDismissRequest = onDismiss) {
         Column(
             modifier = Modifier.padding(horizontal = 16.dp).padding(bottom = 24.dp),
@@ -76,7 +76,18 @@ private fun ChannelRelayRowItem(row: ChannelRelayRow) {
                 overflow = TextOverflow.Ellipsis,
             )
             val (label, color) = connectionLabel(row.connection)
-            Text(label, style = MaterialTheme.typography.labelSmall, color = color)
+            Text(
+                text = if (row.refusal != null) "購読拒否" else label,
+                style = MaterialTheme.typography.labelSmall,
+                color = if (row.refusal != null) MaterialTheme.colorScheme.error else color,
+            )
+        }
+        row.refusal?.let { reason ->
+            Text(
+                text = "リレーの応答: $reason",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.error,
+            )
         }
         Text(
             text = buildList {
