@@ -150,8 +150,9 @@ fun ChannelListScreen(
     val notice = (state as? ChannelListViewModel.UiState.Ready)?.notice
     LaunchedEffect(notice) {
         val message = notice ?: return@LaunchedEffect
-        viewModel.consumeNotice()
+        // 先に消費するとキーが変わってこの effect が取り消され、snackbar が出ない。表示してから消費する。
         snackbarHostState.showSnackbar(message)
+        viewModel.consumeNotice()
     }
     LaunchedEffect(createNotices, ownPubkey) {
         val next = createNotices.firstOrNull { it.pubkey == ownPubkey } ?: return@LaunchedEffect

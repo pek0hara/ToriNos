@@ -135,12 +135,13 @@ fun ChannelScreen(
 
     LaunchedEffect((state as? ChannelViewModel.UiState.Ready)?.hiddenNoticeMessageId) {
         val messageId = (state as? ChannelViewModel.UiState.Ready)?.hiddenNoticeMessageId ?: return@LaunchedEffect
-        viewModel.consumeHiddenNotice()
+        // 先に消費するとキーが変わってこの effect が取り消され、snackbar が出ない。表示してから消費する。
         val result = snackbarHostState.showSnackbar(
             message = "メッセージを非表示にしました",
             actionLabel = "元に戻す",
             duration = SnackbarDuration.Short,
         )
+        viewModel.consumeHiddenNotice()
         if (result == SnackbarResult.ActionPerformed) viewModel.unhideMessage(messageId)
     }
 
