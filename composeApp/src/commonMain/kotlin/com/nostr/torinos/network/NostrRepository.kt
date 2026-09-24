@@ -792,6 +792,7 @@ object NostrRepository {
         relayUrls: Collection<String>,
         onRelayResult: suspend (RelayPublishResult) -> Unit = {},
         respectRelayWritePolicy: Boolean = true,
+        awaitAcceptance: Boolean = false,
     ): RelayPublishResult {
         val targets = relayUrls.map { it.trim() }.filter { it.isNotBlank() }.distinct()
         if (targets.isEmpty()) return RelayPublishResult(emptySet(), emptyMap())
@@ -806,6 +807,7 @@ object NostrRepository {
                 val result = publishToRelaysWithResult(
                     event = event,
                     relayUrls = listOf(relayUrl),
+                    awaitAcceptance = awaitAcceptance,
                     respectRelayWritePolicy = respectRelayWritePolicy,
                 )
                 runCatching { onRelayResult(result) }

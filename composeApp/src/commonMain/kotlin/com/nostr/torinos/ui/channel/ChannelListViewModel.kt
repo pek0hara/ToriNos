@@ -17,6 +17,12 @@ import com.nostr.torinos.network.NostrRepository
 import com.nostr.torinos.network.ProfileFetchPolicy
 import com.nostr.torinos.network.ProfileRepository
 import com.nostr.torinos.network.RelayInformationRepository
+import com.nostr.torinos.network.RelayStore
+import com.nostr.torinos.network.normalizeRelayUrls
+import com.nostr.torinos.model.ChannelEventTags
+import com.nostr.torinos.model.toChannelContent
+import com.nostr.torinos.ui.timeline.SignedEventPublisher
+import com.nostr.torinos.ui.timeline.SignedPublishResult
 import com.nostr.torinos.ui.SafeViewModel
 import com.nostr.torinos.ui.profile.customEmojiMap
 import kotlin.reflect.KClass
@@ -33,8 +39,6 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
-import kotlinx.serialization.json.buildJsonObject
-import kotlinx.serialization.json.put
 
 data class ChannelItem(
     val event: NostrEvent,
@@ -83,7 +87,14 @@ class ChannelListViewModel(
         val body: String = "",
         val isCreating: Boolean = false,
         val error: String? = null,
-    )
+        /**
+         * kind 40 は送信済みで、最初の kind 42 だけが失敗した状態。再度「作成」を押すと投稿だけを再送し、
+         * チャンネルを二重に作らない(第16.11節 手順5)。
+         */
+        val createdChannel: NostrEvent? = null,
+    ) {
+        val isRetryingFirstPost: Boolean get() = createdChannel != null
+    }
 
     data class DeleteDialogState(
         val channelId: String,
@@ -496,52 +507,84 @@ class ChannelListViewModel(
         if (dialog.name.isBlank() || dialog.isCreating) return
         _state.value = current.copy(createDialog = dialog.copy(isCreating = true, error = null))
         launch {
-            val signer = accountSession?.signer ?: run {
-                val s = _state.value as? UiState.Ready ?: return@launch
-                _state.value = s.copy(createDialog = s.createDialog?.copy(isCreating = false, error = "秘密鍵が設定されていません"))
-                return@launch
-            }
-            runCatching {
+            val publisher = SignedEventPublisher(accountSession?.signer)
+            // 推奨リレーの初期値はユーザーの書き込みリレー(FR-04)。選択 UI は Loop 5 で追加する。
+            val recommendedRelays = normalizeRelayUrls(RelayStore.writableRelayUrlsSnapshot())
+            val relayUrls = recommendedRelays.ifEmpty { null }
+            val channelEvent = dialog.createdChannel ?: run {
                 val meta = ChannelMeta(
                     name = dialog.name.trim(),
                     about = dialog.about.trim(),
                     picture = "",
+                    relays = recommendedRelays,
                 )
-                val content = buildJsonObject {
-                    put("name", meta.name)
-                    put("about", meta.about)
-                    put("picture", "")
-                }.toString()
-                val event = signer.sign(content, kind = 40, tags = listOf(listOf("client", "ToriNos")))
-                NostrRepository.publish(event)
-                val firstPost = dialog.body.trim().takeIf { it.isNotBlank() }?.let { body ->
-                    signer.sign(
-                        content = body,
-                        kind = 42,
-                        tags = listOf(listOf("e", event.id, "", "root"), listOf("client", "ToriNos")),
-                    ).also { NostrRepository.publish(it) }
+                when (val result = publisher.publish(
+                    content = meta.toChannelContent(),
+                    kind = 40,
+                    tags = listOf(listOf("client", "ToriNos")),
+                    relayUrls = relayUrls,
+                )) {
+                    is SignedPublishResult.Published -> {
+                        acceptCreatedChannel(result.event, meta, result.relayResult.succeededRelays)
+                        result.event
+                    }
+                    SignedPublishResult.MissingSigner -> return@launch failCreate("秘密鍵が設定されていません")
+                    is SignedPublishResult.Failed -> return@launch failCreate(
+                        ChannelPublishUiState.from(recommendedRelays, result).summary
+                            ?: result.cause.message ?: "作成に失敗しました",
+                    )
                 }
-                Triple(event, meta, firstPost)
-            }.onSuccess { (event, meta, firstPost) ->
-                channelMap[event.id] = ChannelItem(event, meta)
-                lastActivities[event.id] = firstPost?.createdAt ?: event.createdAt
-                ChannelLocalStore.recordChannelCreate(event, meta, relayUrl)
-                firstPost?.let { post ->
-                    seenMessageIds.add(post.id)
-                    updateActivity(post, event.id)
-                }
-                scheduleAuthorSubscription()
-                val s = _state.value as? UiState.Ready ?: return@launch
-                _state.value = s.copy(
-                    channels = buildChannelList(),
-                    createDialog = null,
-                    createdChannelIdToOpen = event.id,
-                )
-            }.onFailure { e ->
-                val s = _state.value as? UiState.Ready ?: return@launch
-                _state.value = s.copy(createDialog = s.createDialog?.copy(isCreating = false, error = e.message ?: "作成に失敗しました"))
             }
+            val body = dialog.body.trim()
+            if (body.isNotBlank()) {
+                // 初回投稿は kind 40 と同じ送信先と relay hint を使う(第16.11節 手順4)。
+                val postResult = publisher.publish(
+                    content = body,
+                    kind = 42,
+                    tags = ChannelEventTags.rootMessage(channelEvent.id, recommendedRelays.firstOrNull()) +
+                        listOf(listOf("client", "ToriNos")),
+                    relayUrls = relayUrls,
+                )
+                if (postResult !is SignedPublishResult.Published) {
+                    val reason = (postResult as? SignedPublishResult.Failed)?.let {
+                        ChannelPublishUiState.from(recommendedRelays, it).summary ?: it.cause.message
+                    } ?: "秘密鍵が設定されていません"
+                    val s = _state.value as? UiState.Ready ?: return@launch
+                    _state.value = s.copy(
+                        channels = buildChannelList(),
+                        createDialog = s.createDialog?.copy(
+                            isCreating = false,
+                            createdChannel = channelEvent,
+                            error = "チャンネルは作成しました。最初の投稿を送信できませんでした（$reason）",
+                        ),
+                    )
+                    return@launch
+                }
+                seenMessageIds.add(postResult.event.id)
+                updateActivity(postResult.event, channelEvent.id)
+            }
+            val s = _state.value as? UiState.Ready ?: return@launch
+            _state.value = s.copy(
+                channels = buildChannelList(),
+                createDialog = null,
+                createdChannelIdToOpen = channelEvent.id,
+            )
         }
+    }
+
+    private suspend fun acceptCreatedChannel(event: NostrEvent, meta: ChannelMeta, succeededRelays: Set<String>) {
+        channelMap[event.id] = ChannelItem(event, meta)
+        lastActivities[event.id] = event.createdAt
+        // 受理したリレーを観測元として記録する。推奨リレー(content.relays)とは別に保持される。
+        succeededRelays.ifEmpty { setOfNotNull(relayUrl) }.forEach { url ->
+            ChannelLocalStore.recordChannelCreate(event, meta, url)
+        }
+        scheduleAuthorSubscription()
+    }
+
+    private fun failCreate(message: String) {
+        val s = _state.value as? UiState.Ready ?: return
+        _state.value = s.copy(createDialog = s.createDialog?.copy(isCreating = false, error = message))
     }
 
     private fun updateActivity(event: NostrEvent, channelId: String) {

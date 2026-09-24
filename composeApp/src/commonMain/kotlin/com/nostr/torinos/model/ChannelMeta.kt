@@ -89,6 +89,14 @@ internal object ChannelMetadataResolver {
 }
 
 private val channelJson = Json { ignoreUnknownKeys = true }
+private val channelContentJson = Json { encodeDefaults = true }
+
+/**
+ * kind 40/41 の content。差分ではなく完全なメタデータを出力する(FR-03)。
+ * relays は正規化してから書き、空でも `"relays":[]` として明示する。
+ */
+fun ChannelMeta.toChannelContent(): String =
+    channelContentJson.encodeToString(ChannelMeta.serializer(), copy(relays = normalizeRelayUrls(relays)))
 
 /** kind:40 イベントの content から ChannelMeta をパース */
 fun NostrEvent.toChannelMeta(): ChannelMeta? = try {

@@ -74,9 +74,11 @@ class ChannelLocalStoreTest {
         store.upsertChannelMetadata(create("c1", 10, "a"), update("u1", 20), ChannelMeta(name = "stale"))
         store.upsertChannelMetadata(create("c1", 10, "a"), create("c1", 10, "a"), ChannelMeta(name = "kind40"))
         assertEquals("latest", store.get("c1")!!.meta.name)
-        // 同時刻は event ID の辞書順で決定する。
-        store.upsertChannelMetadata(create("c1", 10, "a"), update("u3", 30), ChannelMeta(name = "tie"))
-        assertEquals("tie", store.get("c1")!!.meta.name)
+        // 同時刻は resolver と同じく event ID が小さい方を採用する。
+        store.upsertChannelMetadata(create("c1", 10, "a"), update("u3", 30), ChannelMeta(name = "tie-larger-id"))
+        assertEquals("latest", store.get("c1")!!.meta.name)
+        store.upsertChannelMetadata(create("c1", 10, "a"), update("u1", 30), ChannelMeta(name = "tie-smaller-id"))
+        assertEquals("tie-smaller-id", store.get("c1")!!.meta.name)
     }
 
     @Test
@@ -97,14 +99,16 @@ class ChannelLocalStoreTest {
         val writesBefore = storage.writes
         store.recordLatestMessage("c1", message("m2", 20, "x".repeat(500)))
         store.recordLatestMessage("c1", message("m1", 15, "older"))
-        store.recordLatestMessage("c1", message("m3", 20, "tie-newer-id"))
-        assertEquals("m3", store.get("c1")!!.latestMessage!!.eventId)
+        store.recordLatestMessage("c1", message("m3", 20, "tie-larger-id"))
+        assertEquals("m2", store.get("c1")!!.latestMessage!!.eventId)
+        store.recordLatestMessage("c1", message("m1b", 20, "tie-smaller-id"))
+        assertEquals("m1b", store.get("c1")!!.latestMessage!!.eventId)
         assertEquals(writesBefore, storage.writes)
         advanceTimeBy(401)
         runCurrent()
         assertEquals(writesBefore + 1, storage.writes)
         val restored = store(storage, backgroundScope).get("c1")!!.latestMessage!!
-        assertEquals("m3", restored.eventId)
+        assertEquals("m1b", restored.eventId)
 
         store.recordLatestMessage("c1", message("m4", 40, "y".repeat(500)))
         assertEquals(ChannelLocalStateStore.PREVIEW_MAX_CHARS, store.get("c1")!!.latestMessage!!.contentPreview.length)

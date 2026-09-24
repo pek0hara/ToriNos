@@ -200,7 +200,7 @@ wss://yabu.me/
 - 発行者 pubkey が kind 40 の発行者と一致する。
 - メタデータ JSON をパースできる。
 
-候補のうち最大の `(created_at, id)` を採用する。`created_at` が同じ場合は event ID の辞書順で決定し、端末ごとの不定な選択を避ける。
+候補のうち `created_at` が最大のものを採用する。`created_at` が同じ場合は event ID が辞書順で最小のものを採用し（NIP-01 の replaceable event の慣習。Loop 4 で端末ローカル保存の判定もこの規則へ統一）、端末ごとの不定な選択を避ける。
 
 NIP-10 形式の `root` marker と relay hint を持つイベントを ToriNos の発行形式とする。既存クライアント互換のため、受信時は marker のない旧イベントも受理してよい。
 
@@ -380,6 +380,33 @@ relay-jp.nostr.wirednet.jp   失敗
 - メッセージ本体の全履歴はローカルへ永続化しない。チャンネルを開くたびにリレーから取得し、表示用に一時的にメモリ上へ保持する（event ID による重複排除はメモリ上のセッション内で行う）。
 - 未読件数はローカルに保持する数値ではなく、起動時に現在選択中の単一リレーへの一括問い合わせ（`kinds:42`、対象 `channelId` を `e` タグへチャンク分割して列挙、`since` は各チャンク内の `lastReadAt` の最小値）で取得した件数からセッション開始時に算出し、以後はライブ受信でメモリ上のみ加算する（第16.12.1〜16.12.3節）。一度も開いていないチャンネル（`lastReadAt` 未設定）は件数を出さず「新着あり」フラグのみ表示する（第16.12.4節）。
 - 永続化先は Room/SQLite ではなく、`RelayStore` と同じ `LocalSettingsStorage` ベースの JSON 保存（`Map<channelId, ChannelLocalState>`）とする。migration・DAO・schema export・prune はいずれも不要になる。
+
+### FR-13: チャンネル作成シート（2026-09-24 追加）
+
+現在の「新規チャンネル」ダイアログ（`CreateChannelDialog`、名前・説明・本文の3欄の `AlertDialog`）を、フィード投稿の `PostSheet` と同等の操作感を持つ全画面シートへ置き換える。
+
+- 入力項目:
+  - チャンネル名（必須、1行）
+  - 説明（複数行）
+  - アイコン画像（任意）。フィード投稿と同じ `ImageUploader` でアップロードし、`picture` に URL を入れる。
+  - 推奨リレー（FR-04）。初期選択はユーザーの書き込みリレー。複数選択で、手入力の追加は FR-01 で検証する。
+  - 最初の投稿（任意）。フィード投稿の本文入力と同じく、カスタム絵文字・画像添付を使える。
+- 送信先の表示: 推奨リレーの選択結果と、実際の送信先（推奨 + ユーザーの書き込みリレー）をシート内で確認できる（FR-10 と同じ表示部品）。
+- 送信中・結果: kind 40 と最初の kind 42 のリレー別結果を表示する。「kind 40 成功・初回投稿失敗」の場合はシートを閉じず、「投稿を再送信」で kind 42 だけを再送する（Loop 4 の L4-D3 の挙動を維持）。
+- 閉じるとき: 入力があれば破棄の確認を出す。下書き保存（`PostSheet` の下書き一覧）とは共有しない。
+- 実装方針: `PostSheet` をそのままチャンネル作成に流用せず、本文入力欄・絵文字/画像ツールバー・リレー選択ダイアログ（`PostRelaySettingsDialog`）を共通部品として切り出して再利用する。送信処理は `ChannelListViewModel.createChannel()`（Loop 4）を使う。
+
+### FR-14: 一覧ヘッダーのキャッシュ一括削除ボタンの撤去（2026-09-24 追加）
+
+チャンネル一覧ヘッダーの「お気に入り以外のキャッシュを削除」ボタン（`CleaningServices` アイコン、`confirmBulkDelete` → `ChannelLocalStore.deleteNonFavorites`）と確認ダイアログを撤去する。
+
+理由（Loop 3.5 後の実装で確認）:
+
+- ボタンの本来の目的は Room DB に溜まるメッセージ全履歴の容量削減だったが、Loop 3.5 でメッセージ本体は保存しなくなった。端末に残るのは1チャンネルあたり約0.9KBの `ChannelLocalState` だけで、1,000件の上限と自動退避もある。
+- 押しても一覧の見た目はほぼ変わらない。そのセッションで取得済みのチャンネルはメモリ上の一覧に残り、次回起動時も kind 40 のページ取得で同じチャンネルが再び記録される。
+- 実際に消えるのは、お気に入り以外の既読位置と一覧プレビューだけで、未読件数の起点（`lastReadAt`）を失う副作用のほうが大きい。
+
+個別チャンネルの「この端末から削除」（長押し → 削除ダイアログ、削除要求を送らない方）は残す。
 
 ## 7. 第2段階の要件
 
@@ -589,12 +616,12 @@ UIを更新
 - [ ] 所有者以外が発行した kind 41 は反映されない。
 - [ ] `wss://example.com` と `wss://example.com/` が同一リレーとして扱われる。
 - [x] チャンネル推奨リレーがユーザー設定外でも kind 42 を購読できる。（Loop 3b、L3b-S01）
-- [ ] kind 42 がすべての選択済み推奨リレーへ送信される。
-- [ ] kind 42 の `e` タグに root marker と relay hint が入る。
+- [x] kind 42 がすべての選択済み推奨リレーへ送信される。（Loop 4、L4-S02）
+- [x] kind 42 の `e` タグに root marker と relay hint が入る。（Loop 4、L4-S01/S02）
 - [ ] 返信時に root/reply/p タグが正しく生成される。
 - [ ] 閲覧先と投稿先を UI から確認できる。
 - [ ] リレー別の送信成功・失敗を確認できる。
-- [ ] 一部成功時は投稿済み、全失敗時は未投稿として扱われる。
+- [x] 一部成功時は投稿済み、全失敗時は未投稿として扱われる。（Loop 4、単体テスト。全失敗・一部失敗の実リレー確認は未実施）
 - [ ] kind 41 のリレー変更を、画面を開き直さずに購読と UI へ反映できる。
 - [ ] 既存の relays を持たない NIP-28 チャンネルも引き続き閲覧・投稿できる。
 
@@ -1442,6 +1469,15 @@ Ready
 - ネットワーク購読失敗はキャッシュ表示を消さない。
 - `CancellationException` は既存方針どおり必ず再送出する。
 
+### 16.20.1 チャンネル作成シートの設計（FR-13）
+
+- `ui/channel/ChannelCreateSheet.kt`（新規）。表示は `ModalBottomSheet` の全画面、ヘッダーに「キャンセル」「作成（または投稿を再送信）」。
+- 状態は `ChannelListViewModel.CreateDialogState` を拡張して使う: `picture`・`pictureUploadState`・`selectedRelays`・`customRelayInput`・`publishState`・`createdChannel`（Loop 4）。
+- `PostSheet` から次を共通部品として切り出す: 本文入力欄（カスタム絵文字候補を含む）、画像添付ツールバー、リレー複数選択ダイアログ（現 `PostRelaySettingsDialog`、第8.4節の `RelayMultiSelector` に相当）。`PostSheet` 側の挙動は変えない。
+- 推奨リレーの選択は `content.relays` に、送信先は `selectedRelays + ユーザーの書き込みリレー`（`ChannelRelayContextBuilder` と同じ規則）にする。
+- 最初の投稿に画像を添付した場合は、フィード投稿と同じく本文へ URL を追記する（imeta タグの扱いも `PostViewModel` に合わせる）。
+- テスト: 状態遷移（検証エラー、画像アップロード中の作成禁止、kind 40 成功・kind 42 失敗からの再送、全件失敗）を ViewModel の単体テストで確認する。
+
 ### 16.21 ログと診断
 
 本文、秘密鍵、署名前データはログへ出さない。次の構造化情報だけを記録する。
@@ -1779,10 +1815,11 @@ iOS Simulatorテスト
 | 0 | 現在の未コミット差分の安定化 | チャンネル詳細、一覧UI、DB v6、キャッシュ改善のレビュー・Simulator確認 | 保留（外部送信・障害注入テスト待ち） |
 | 1 | モデルと純粋ロジック | URL正規化、`ChannelMeta.relays`、metadata resolver、relay context、タグbuilder | 完了 |
 | 2 | 明示購読とDB v7 | 未登録推奨リレー購読、metadata cache、migration 6→7 | 完了 |
-| 3 | チャンネル購読 | 推奨リレーからkind 42取得、kind 41更新時の再購読 | 完了（3a `3e3464f`、3b 未コミット、第23章） |
+| 3 | チャンネル購読 | 推奨リレーからkind 42取得、kind 41更新時の再購読 | 完了（3a `3e3464f`、3b `8b827d6`、第23章） |
 | 3.5 | ローカル永続化の簡素化 | Room/SQLite撤去、`ChannelLocalState`のJSON永続化、未読件数のキャッチアップ方式への移行(第22章) | 完了（`f42dca2`、第22.5節） |
-| 4 | チャンネル投稿 | kind 40/41/42の配送、relay hint、リレー別結果 | 未着手 |
+| 4 | チャンネル投稿 | kind 40/41/42の配送、relay hint、リレー別結果 | 完了（未コミット、第24章） |
 | 5 | UIと返信連携 | ヘッダー、投稿先、詳細、編集、通常返信画面 | 未着手 |
+| 5a | チャンネル作成シート・一覧ヘッダー整理（2026-09-24 追加） | FR-13 のシート（推奨リレー選択・アイコン画像・最初の投稿）、FR-14 のキャッシュ一括削除ボタン撤去 | 未着手 |
 | 6 | モデレーション | kind 43/44 | 未着手 |
 | 7 | 参加同期 | kind 10005 | 未着手 |
 
@@ -1799,13 +1836,14 @@ iOS Simulatorテスト
 | 2: 明示購読とDB v7 | 完了（Room実装はLoop 3.5で置換予定、第22章） | `RelayTarget.Explicit`の意味修正、DB migration 6→7、`ChannelCacheStore`のmetadata API | なし | `55a6018` |
 | 3a: resolver接続 | 完了 | `ChannelController`のkind 40/41ライブ判定を`ChannelMetadataResolver`へ移行 | 同時刻kind 41の受信順依存が実チャンネル画面側に残存。resolver移行で解消 | `3e3464f` |
 | 3.5: ローカル永続化の簡素化 | 完了 | Room/SQLite(DB v1〜v7)撤去、`ChannelLocalState`のJSON永続化、未読キャッチアップ | 一覧のリレー別絞り込み欠落(D1)／kind 40再取得でkind 41上書き(R1)／リレー上限で下限判定不能(R4)／キャッチアップが1チャンクで飽和(R6)／初訪問リレーでキャッチアップ未実行(R7)／スクロールしないと既読化されない既存不具合(R8)。すべて解消 | `f42dca2` |
-| 3b: チャンネル購読の relay context 対応 | 完了 | 推奨リレーを含む `Explicit` 購読、kind 41 変更時の二段階再購読、複数リレー履歴取得 | 新規チャンネルで推奨リレーの最新履歴が欠落(R1)／kind 40 先着で保存済みkind 41から巻き戻り・購読先がばたつく(R2)／応答しないリレー1件で履歴ページが10秒待ち・未完了(D2)。すべて解消 | 未コミット |
+| 3b: チャンネル購読の relay context 対応 | 完了 | 推奨リレーを含む `Explicit` 購読、kind 41 変更時の二段階再購読、複数リレー履歴取得 | 新規チャンネルで推奨リレーの最新履歴が欠落(R1)／kind 40 先着で保存済みkind 41から巻き戻り・購読先がばたつく(R2)／応答しないリレー1件で履歴ページが10秒待ち・未完了(D2)。すべて解消 | `8b827d6` |
+| 4: チャンネル投稿 | 完了 | kind 40/41/42 の配送先・relay hint・リレー別結果、kind 41 編集の完全メタデータ化 | kind 41 編集で推奨リレーが消える(R1)／拒否したリレーも成功扱い(D2)／応答しないリレーで投稿が10秒待ち(R3)／同時刻 tie-break が resolver と逆(R2) 。すべて解消 | 未コミット |
 
 設計レビュー・実装レビューの詳細、自動テストコマンド、Simulator実施環境（macOS/Xcode/Simulatorバージョン等）は各コミットメッセージ（`git log`）に記載している。
 
 ### 21.2 未解決の申し送り事項
 
-1. L0-S08（自分のkind 40削除要求の実リレー送信確認）、L0-S10（接続不能リレーでのUI確認）は副作用・障害注入が必要なため未実施のまま。
+1. ~~L0-S08（自分のkind 40削除要求の実リレー送信確認）~~ Loop 4 の L4-S04 で確認済み。L0-S10（接続不能リレーでのUI確認）は障害注入が必要なため未実施のまま。
 2. L3a-S01（仮称）: チャンネル画面を開き、kind 40のみ／kind 40+41／同時刻複数kind 41の各ケースで表示メタデータが正しいことをSimulatorで確認する。Mac画面のロックでSimulator GUIが操作できず保留、ロック解除後に再試行する。
 3. ~~Loop 3b: `ChannelRelayContext`・kind 41受信時の二段階再購読を`ChannelController`へ接続する。~~ Loop 3bで完了（第23章）。
 4. `saveThreadMeta()`（kind 41自己編集）の楽観的更新を候補プール（`metadataUpdateCandidates`）経由に統合し、自己発行イベントも同じresolver経路で扱う（Phase 2 kind 41編集強化、第16.10節と合わせて検討）。
@@ -1965,7 +2003,7 @@ Loop 3a完了後のレビューで、チャンネルメッセージのローカ�
 
 ## 23. Loop 3b: チャンネル購読の relay context 対応
 
-- 状態: 完了（未コミット）
+- 状態: 完了（`8b827d6`）
 - 対象: `ChannelController` の全ライブ購読・履歴取得を `ChannelRelayContext.readRelays` 由来の `RelayTarget.Explicit` へ切り替える。kind 41 による推奨リレー変更時の二段階再購読（FR-05、FR-08、第16.6〜16.7節）。
 - 対象外: 投稿先（`writeRelays`）への配送と relay hint（Loop 4）。ヘッダー・投稿欄・詳細の表示（Loop 5）。チャンネル一覧の未読キャッチアップ（選択中リレーのまま、第21.2節10）。
 - 開始時commit: `f42dca2`
@@ -2016,4 +2054,74 @@ Loop 3a完了後のレビューで、チャンネルメッセージのローカ�
 - 確定した仕様: 第16.6節「Loop 3b の実装で確定した事項」、第16.7節の待機条件・追加リレーの最新ページ補完、第19章 未決5。受け入れ条件「推奨リレーがユーザー設定外でも kind 42 を購読できる」を達成。
 - 変更した仕様: 第16.6節のセッション API 前提を、互換 API での target 張り替えに変更（L3b-D1）。
 - 次ループへ送る課題: 第21.2節の 11〜13。受け入れ条件「kind 41 のリレー変更を画面を開き直さずに購読と UI へ反映」は購読側のみ達成で、UI 側は Loop 5。Loop 4（投稿先・relay hint）では `relayContext.writeRelays` と `primaryHint` がすでに `UiState` と Controller にあるため、それを投稿 snapshot に使う。
+
+## 24. Loop 4: チャンネル投稿の配送先・relay hint・リレー別結果
+
+- 状態: 完了（未コミット）
+- 対象: kind 42（チャンネル画面からの投稿）・kind 41（編集）・kind 40（新規作成と初回投稿）・kind 5（チャンネル内メッセージの削除要求）の送信先を `ChannelRelayContext.writeRelays` の投稿開始時 snapshot にし、NIP-28/NIP-10 形式の `root` marker と relay hint を付ける。リレー別の送信結果を `UiState` まで伝える（FR-03、FR-04、FR-06、FR-07、第16.8〜16.11節）。
+- 対象外: 結果の画面表示（投稿先の概要・失敗リレーの一覧、Loop 5）。kind 40 作成時の推奨リレー選択 UI と kind 41 の picture/relays 編集 UI（Loop 5。本ループでは推奨リレーの初期値＝ユーザーの書き込みリレーを使い、編集では既存の relays を保持する）。通常投稿画面からのチャンネル返信（reply/p タグ、Loop 5）。チャンネル内のリアクション・リポストの送信先（従来どおりユーザーの書き込みリレー）。
+- 開始時commit: `8b827d6`
+- 対象ファイル:
+  - 新規: `ui/channel/ChannelPublishState.kt`（`ChannelPublishUiState`・`ChannelPublishContext`）、テスト `ChannelPublishStateTest.kt`・`model/ChannelContentTest.kt`
+  - 変更: `ui/timeline/SignedEventPublisher.kt`（指定リレー投稿・リレー別結果・逐次通知）、`network/NostrRepository.kt`（`publishToRelaysUntilFirstSuccess` に `awaitAcceptance`）、`model/ChannelMeta.kt`（`toChannelContent`）、`ChannelController.kt`、`ChannelViewModel.kt`（`publishState`）、`ChannelListViewModel.kt`、`ChannelListScreen.kt`（初回投稿の再送ボタン）、`network/ChannelLocalStore.kt`（tie-break）、テスト `SignedEventPublisherTest.kt`・`ChannelLocalStoreTest.kt`・`ChannelCachedMetadataTest.kt`
+
+### 24.1 設計レビュー
+
+| ID | 重大度 | 指摘 | 対応 |
+| --- | --- | --- | --- |
+| L4-D1 | Note | 第8.2節の `SignedPublishResult.Published` に `RelayPublishResult` を持たせる案 | 採用。全件失敗時も `Failed.relayResult` にリレー別の理由を残す。`relayUrls == null` の既存呼び出しは従来どおりユーザーの書き込みリレーへ送る |
+| L4-D2 | Major | 既存の指定リレー投稿は「ソケットへ送れた」ことを成功としており、`auth-required` などで拒否したリレーも成功に数える。リレー別結果の表示（FR-10）と矛盾する | チャンネル系の投稿は OK 応答での受理を成功とする（`awaitAcceptance = true`） |
+| L4-D3 | Minor | kind 40 作成で「kind 40 成功・初回 kind 42 失敗」のとき、ダイアログを閉じると本文が失われ、再試行するとチャンネルが二重にできる | ダイアログを残して送信済みの kind 40 を保持し、ボタンを「投稿を再送信」に変えて kind 42 だけを再送する。名前・説明は編集不可にする |
+| L4-D4 | Note | 削除要求（kind 5）の送信先 | 削除対象のメッセージを配送したチャンネルの書き込み先へ送る |
+
+### 24.2 実装レビュー
+
+| ID | 重大度 | 指摘 | 対応 |
+| --- | --- | --- | --- |
+| L4-R1 | Major | kind 41 編集の content が name/about/picture だけで、保存すると `relays` が消える（resolver は空の relays を採用し、以後の購読・投稿先から推奨リレーが外れる） | 実効メタデータを copy して完全な `ChannelMeta` を出力する `toChannelContent()` に統一。kind 40 作成も同じ関数を使う |
+| L4-R2 | Major | Loop 3.5/3b で追加した `ChannelLocalStateStore.isNewer` は同時刻で ID の大きい方を新しいとしていたが、`ChannelMetadataResolver` は小さい方を選ぶ（NIP-01 の慣習）。同時刻の kind 41 が2件あると一覧と画面で表示が食い違い、`shouldKeepCachedMetadata` が resolver の選択を永久に上書きする | resolver と同じ「ID が小さい方を新しいとみなす」に統一し、テストを修正 |
+| L4-R3 | Major | OK 応答をすべてのリレーから待つと、応答しない推奨リレーが1件あるだけで投稿ボタンが 10 秒（PUBLISH_TIMEOUT）塞がる | 最初の受理で戻る `publishToRelaysUntilFirstSuccess` に `awaitAcceptance` を追加して使い、残りのリレーの結果は `onRelayResult` で届けて `publishState` へ統合する（全件揃うまで `Sending`） |
+| L4-R4 | Minor | 送信後の表示がリレーからの echo 待ち | 成功イベントを `ChannelHistory.receive` と一覧プレビューへ即時反映する（event ID で重複排除） |
+| L4-R5 | Minor | kind 41 編集の権限確認が UI の表示条件だけ | `saveThreadMeta()` 冒頭で `ownPubkey == 所有者` を再検証する（第16.10節） |
+| L4-R6 | Note | 自己発行 kind 41 の楽観的更新が resolver を通らない（第21.2節4） | 成功した kind 41 を候補へ追加して resolver を再実行する |
+| L4-R7 | Note | 既存の呼び出し側が末尾ラムダで `publisher` を渡しており、引数追加でコンパイルエラー | 新しい `relayPublisher` 引数を `publisher` の前に置いた |
+| L4-R8 | Note | 後から届くリレー結果が前の投稿の状態を上書きしうる | 投稿ごとの sequence で古い通知を捨てる |
+
+### 24.3 自動テスト
+
+| コマンド | 結果 | 備考 |
+| --- | --- | --- |
+| `./gradlew :composeApp:iosSimulatorArm64Test` | 成功（569件、失敗0） | 新規: `ChannelPublishStateTest` 4件、`ChannelContentTest` 3件、`SignedEventPublisherTest` +1件、`ChannelCachedMetadataTest` +1件。`ChannelLocalStoreTest` の同時刻ケースを resolver の規則へ修正 |
+| `./gradlew :composeApp:compileAndroidMain` | 成功 | |
+| `./gradlew check` | 成功 | |
+| `xcodebuild … -configuration Debug`（DerivedData 再作成） | 成功 | 確認中だけ `ENABLE_NETWORK_TRACE_LOGS = true`。確認後に戻した |
+
+途中のコンパイルエラーは2件（公開関数が internal 型を露出、既存テストの末尾ラムダ）。いずれも実装側を修正し、テストは変更していない。
+
+### 24.4 Simulatorテスト
+
+ユーザーの許可を得て、テスト用チャンネルを実リレーへ作成して実施した。
+
+環境: macOS 26.5 / Xcode 26.6 / iPhone 17 Simulator（iOS 26.5）/ Debug（ネットワークトレースログ有効）/ テストアカウント `aba863f5…` / 選択リレー `wss://yabu.me` / 書き込みリレー5件（yabu.me, r.kojira.io, relay-jp.nostr.wirednet.jp, nos.lol, relay.damus.io）/ 2026-09-24 13:44〜13:50。検証は `nak req` で各リレーから該当イベントを取得して行った。
+
+| ID | シナリオ | 結果 | 証跡・備考 |
+| --- | --- | --- | --- |
+| L4-S01 | テスト用チャンネルを本文付きで作成する | 成功 | kind 40 `7d722b05…` の content に `relays`（書き込みリレー5件）が入る。初回 kind 42 `a031805b…` のタグは `["e", <kind40>, "wss://yabu.me", "root"]`。両方とも5リレーすべてが OK=true。作成後にチャンネル画面へ遷移 |
+| L4-S02 | チャンネル画面から投稿する | 成功 | kind 42 `a44bb53e…`、タグは root + relay hint。5リレーが OK=true。送信から約1.2秒で入力欄が空になり、echo を待たずに一覧へ表示された |
+| L4-S03 | チャンネル名を編集する | 成功 | kind 41 `19b67bcb…` のタグは `["e", <kind40>, "wss://yabu.me", "root"]`、content は name 以外（about・picture・relays 5件）を保持（L4-R1 の修正確認）。ヘッダーと一覧が編集後の名前に更新 |
+| L4-S04 | テスト用チャンネルへ削除要求を送る | 成功 | kind 5 `324ce9b9…` のタグは `e` と `k=40`。5リレーが OK=true、一覧から消えた（L0-S08 も兼ねる） |
+| L4-S05 | 一部失敗・全件失敗 | 未実施 | 応答しないリレー・拒否するリレーを書き込み先に含める障害注入が必要なため、単体テスト（`ChannelPublishStateTest`・`SignedEventPublisherTest`）のみで確認 |
+
+備考:
+- 作業中、日本語 IME のため cliclick の文字入力が化けた。作成ボタンは押さずにダイアログを取り消し、以後は `simctl pbcopy` と長押しメニューの「ペースト」で入力した（化けた入力は送信されていない）。
+- 作成から約1分後、他ユーザー（`b737d876…`）がテスト用チャンネルに「👍」を投稿した。一覧のライブ受信でプレビューが更新されることも確認できた。チャンネルの削除要求は送ったが、他ユーザーの投稿と自分の kind 42 2件は各リレーに残りうる（削除要求は NIP-09 上もリレーの対応次第）。
+
+### 24.5 設計書へのフィードバック
+
+- 確定した仕様: `SignedPublishResult` の結果伝播（第16.9節）。チャンネル系の投稿は OK 受理を成功とし、最初の受理で戻って残りを逐次反映する。kind 40 初回投稿失敗時の再送（第16.11節 手順5）。kind 40/41 の content は常に完全な `ChannelMeta`（relays を含む）。同時刻の決定規則は resolver（小さい ID）に統一。
+- 変更した仕様: 第16.4節「最大の `(created_at, id)`」の記述は実装（created_at 最大、同時刻は ID 最小）と異なる。実装側を正とし、Loop 1 以降の resolver と揃えた。
+- 次ループへ送る課題:
+  1. Loop 5: `publishState` の表示（投稿先の概要、`2件中1件に送信しました`、失敗リレーの一覧）、kind 40 作成時の推奨リレー選択、kind 41 の picture/relays 編集 UI、通常投稿画面からのチャンネル返信（reply/p タグと hint）。
+  2. チャンネル内のリアクション・リポスト（`NoteEngagementCoordinator`）は従来どおりユーザーの書き込みリレーへ送っている。チャンネルの書き込み先へ揃えるかは Loop 5 で判断する。
+  3. L4-S05（一部失敗・全件失敗の実リレー確認）は障害注入の手段を用意してから実施する。
 

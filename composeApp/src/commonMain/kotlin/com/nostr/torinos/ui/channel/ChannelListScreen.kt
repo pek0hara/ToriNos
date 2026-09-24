@@ -451,7 +451,7 @@ private fun CreateChannelDialog(
                     },
                     label = { Text("チャンネル名 *") },
                     singleLine = true,
-                    enabled = !dialog.isCreating,
+                    enabled = !dialog.isCreating && !dialog.isRetryingFirstPost,
                     modifier = Modifier.fillMaxWidth(),
                 )
                 OutlinedTextField(
@@ -462,7 +462,7 @@ private fun CreateChannelDialog(
                     },
                     label = { Text("説明") },
                     maxLines = 3,
-                    enabled = !dialog.isCreating,
+                    enabled = !dialog.isCreating && !dialog.isRetryingFirstPost,
                     modifier = Modifier.fillMaxWidth(),
                 )
                 OutlinedTextField(
@@ -495,7 +495,7 @@ private fun CreateChannelDialog(
                 if (dialog.isCreating) {
                     CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
                 } else {
-                    Text("作成")
+                    Text(if (dialog.isRetryingFirstPost) "投稿を再送信" else "作成")
                 }
             }
         },

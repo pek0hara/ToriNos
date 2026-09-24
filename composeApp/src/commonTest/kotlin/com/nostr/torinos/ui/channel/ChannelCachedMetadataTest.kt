@@ -20,6 +20,13 @@ class ChannelCachedMetadataTest {
     }
 
     @Test
+    fun sameSecondTieFollowsResolverRuleOfSmallerEventId() {
+        // resolver は同時刻なら小さい ID を選ぶ。保存値の方が ID が大きければ解決結果を採用する。
+        assertFalse(shouldKeepCachedMetadata(cachedKind41, "owner", event("u40", 200, 41)))
+        assertTrue(shouldKeepCachedMetadata(cachedKind41, "owner", event("u42", 200, 41)))
+    }
+
+    @Test
     fun cacheWithDifferentOwnerOrMissingCacheIsIgnored() {
         assertFalse(shouldKeepCachedMetadata(cachedKind41, "someone-else", event("c40", 100, 40)))
         assertFalse(shouldKeepCachedMetadata(null, "owner", event("c40", 100, 40)))

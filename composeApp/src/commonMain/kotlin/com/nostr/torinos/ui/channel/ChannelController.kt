@@ -15,7 +15,9 @@ import com.nostr.torinos.engagement.PendingEngagementOperation
 import com.nostr.torinos.engagement.displayOwnEmojiReactionEventIds
 import com.nostr.torinos.engagement.isRepostedByMe
 import com.nostr.torinos.model.ChannelMeta
+import com.nostr.torinos.model.ChannelEventTags
 import com.nostr.torinos.model.ChannelMetadataResolver
+import com.nostr.torinos.model.toChannelContent
 import com.nostr.torinos.model.CustomReaction
 import com.nostr.torinos.model.ReactionOption
 import com.nostr.torinos.model.UnicodeReaction
@@ -32,6 +34,7 @@ import com.nostr.torinos.model.toReactionOption
 import com.nostr.torinos.network.ChannelReadingPosition
 import com.nostr.torinos.model.ChannelRelayContext
 import com.nostr.torinos.network.RelayConnectionState
+import com.nostr.torinos.network.RelayPublishResult
 import com.nostr.torinos.network.RelayStore
 import com.nostr.torinos.network.RelayTarget
 import com.nostr.torinos.network.SubscriptionBehavior
@@ -59,8 +62,6 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withContext
-import kotlinx.serialization.json.buildJsonObject
-import kotlinx.serialization.json.put
 
 internal class ChannelController(
     private val channelId: String,
@@ -135,6 +136,7 @@ internal class ChannelController(
     private val engagementCoordinator = NoteEngagementCoordinator(accountSession?.signer)
     private val signedEventPublisher = SignedEventPublisher(accountSession?.signer)
     private var nextEngagementOperationId = 0L
+    private var publishSequence = 0L
     private val noteContext = NoteContext.Channel(channelId)
     private val openedAt = Clock.System.now().epochSeconds
 
@@ -210,38 +212,81 @@ internal class ChannelController(
         val text = current.draftText.trim()
         if (text.isBlank() || current.isPosting) return
 
-        _state.value = current.copy(isPosting = true, postError = null)
+        // 送信先と relay hint は開始時点で固定し、送信中の kind 41 更新の影響を受けない(第16.9節)。
+        val publishContext = ChannelPublishContext.from(relayContext)
+        val sequence = ++publishSequence
+        _state.value = current.copy(
+            isPosting = true,
+            postError = null,
+            publishState = ChannelPublishUiState.sending(publishContext.targetsForDisplay),
+        )
         launch {
             val result = signedEventPublisher.publish(
-                text,
-                noteContext.eventKind,
-                noteContext.replyTags(replyToId = null, replyToPubkey = null) +
+                content = text,
+                kind = noteContext.eventKind,
+                tags = ChannelEventTags.rootMessage(channelId, publishContext.primaryHint) +
                     listOf(listOf("client", "ToriNos")),
+                relayUrls = publishContext.relayUrls,
+                // 最初の受理後に届く残りのリレーの結果。リポジトリのスコープから呼ばれるため画面側へ戻す。
+                onRelayResult = { relayResult ->
+                    launch { updatePublishState(sequence) { it.withRelayResult(relayResult) } }
+                },
             )
+            val publishState = ChannelPublishUiState.from(publishContext.targetsForDisplay, result)
+                .let { fresh -> (_state.value as? UiState.Ready)?.publishState?.let { mergeProgress(fresh, it) } ?: fresh }
+            if (result is SignedPublishResult.Published) {
+                // リレーからの echo を待たずに表示する。event ID で重複排除される。
+                history.receive(result.event)
+                recordLatestMessage(result.event)
+            }
             (_state.value as? UiState.Ready)?.let { ready ->
                 _state.value = when (result) {
-                    is SignedPublishResult.Published -> ready.copy(draftText = "", isPosting = false)
+                    // 1件以上成功なら投稿済み。一部失敗は publishState に残して案内する。
+                    is SignedPublishResult.Published -> ready.copy(
+                        draftText = "",
+                        isPosting = false,
+                        publishState = publishState,
+                    )
                     SignedPublishResult.MissingSigner -> ready.copy(
                         isPosting = false,
                         postError = "秘密鍵が設定されていません",
+                        publishState = publishState,
                     )
+                    // 全件失敗は下書きを残して再試行できるようにする。
                     is SignedPublishResult.Failed -> ready.copy(
                         isPosting = false,
-                        postError = result.cause.message ?: "送信に失敗しました",
+                        postError = publishState.summary ?: result.cause.message ?: "送信に失敗しました",
+                        publishState = publishState,
                     )
                 }
             }
         }
     }
 
+    private fun updatePublishState(sequence: Long, transform: (ChannelPublishUiState) -> ChannelPublishUiState) {
+        if (sequence != publishSequence) return
+        val ready = _state.value as? UiState.Ready ?: return
+        _state.value = ready.copy(publishState = transform(ready.publishState))
+    }
+
+    /** 戻り値より先に届いた他リレーの結果を失わないよう統合する。 */
+    private fun mergeProgress(fresh: ChannelPublishUiState, progress: ChannelPublishUiState): ChannelPublishUiState =
+        if (fresh.phase == ChannelPublishUiState.Phase.Failed || progress.targets != fresh.targets) {
+            fresh
+        } else {
+            fresh.withRelayResult(RelayPublishResult(progress.succeeded, progress.failed))
+        }
+
     fun deleteMessage(eventId: String) {
         val event = currentMessages.firstOrNull { it.id == eventId } ?: return
         if (ownPubkey == null || event.pubkey != ownPubkey) return
         launch {
+            // 削除要求はメッセージを配送したチャンネルの書き込み先へ送る。
             val result = signedEventPublisher.publish(
                 content = "",
                 kind = 5,
                 tags = listOf(listOf("e", eventId), listOf("k", event.kind.toString())),
+                relayUrls = ChannelPublishContext.from(relayContext).relayUrls,
             )
             when (result) {
                 is SignedPublishResult.Published -> {
@@ -406,38 +451,54 @@ internal class ChannelController(
         val current = _state.value as? UiState.Ready ?: return
         val dialog = current.editDialog ?: return
         if (dialog.title.isBlank() || dialog.isSaving) return
+        // UI の表示条件だけに頼らず、署名前に所有者であることを再検証する(第16.10節)。
+        if (ownPubkey == null || ownPubkey != currentChannelOwnerPubkey) {
+            _state.value = current.copy(editDialog = dialog.copy(error = "チャンネルの作成者だけが編集できます"))
+            return
+        }
         _state.value = current.copy(editDialog = dialog.copy(isSaving = true, error = null))
+        val publishContext = ChannelPublishContext.from(relayContext)
         launch {
-            val title = dialog.title.trim()
-            val description = dialog.description.trim()
-            val content = buildJsonObject {
-                put("name", title)
-                put("about", description)
-                put("picture", currentChannelMeta.picture)
-            }.toString()
+            // 現在の実効メタデータから完全な内容を作る。relays・picture を落とすと推奨リレーが消える。
+            val meta = currentChannelMeta.copy(name = dialog.title.trim(), about = dialog.description.trim())
             val result = signedEventPublisher.publish(
-                content,
-                41,
-                listOf(listOf("e", channelId), listOf("client", "ToriNos")),
+                content = meta.toChannelContent(),
+                kind = 41,
+                tags = ChannelEventTags.metadata(channelId, publishContext.primaryHint, categories = emptyList()) +
+                    listOf(listOf("client", "ToriNos")),
+                relayUrls = publishContext.relayUrls,
             )
-            val ready = _state.value as? UiState.Ready ?: return@launch
             when (result) {
                 is SignedPublishResult.Published -> {
-                    currentChannelMeta = currentChannelMeta.copy(name = title, about = description)
-                    _state.value = ready.copy(channelMeta = currentChannelMeta, editDialog = null)
+                    // 自己発行分も受信イベントと同じ resolver 経路で反映する(第21.2節4)。
+                    metadataUpdateCandidates[result.event.id] = result.event
+                    if (channelCreateEvent != null) {
+                        applyMetadataResolution()
+                    } else {
+                        currentChannelMeta = meta
+                    }
+                    val ready = _state.value as? UiState.Ready ?: return@launch
+                    val partial = ChannelPublishUiState.from(publishContext.targetsForDisplay, result).summary
+                    _state.value = ready.copy(
+                        channelMeta = currentChannelMeta,
+                        editDialog = null,
+                        engagementError = partial?.let { "チャンネル情報を保存しました（$it）" },
+                    )
                 }
-                SignedPublishResult.MissingSigner -> _state.value = ready.copy(
-                    editDialog = ready.editDialog?.copy(
-                        isSaving = false,
-                        error = "秘密鍵が設定されていません",
-                    ),
-                )
-                is SignedPublishResult.Failed -> _state.value = ready.copy(
-                    editDialog = ready.editDialog?.copy(
-                        isSaving = false,
-                        error = result.cause.message ?: "保存に失敗しました",
-                    ),
-                )
+                SignedPublishResult.MissingSigner -> (_state.value as? UiState.Ready)?.let { ready ->
+                    _state.value = ready.copy(
+                        editDialog = ready.editDialog?.copy(isSaving = false, error = "秘密鍵が設定されていません"),
+                    )
+                }
+                is SignedPublishResult.Failed -> (_state.value as? UiState.Ready)?.let { ready ->
+                    val summary = ChannelPublishUiState.from(publishContext.targetsForDisplay, result).summary
+                    _state.value = ready.copy(
+                        editDialog = ready.editDialog?.copy(
+                            isSaving = false,
+                            error = summary ?: result.cause.message ?: "保存に失敗しました",
+                        ),
+                    )
+                }
             }
         }
     }

@@ -28,6 +28,32 @@ class SignedEventPublisherTest {
         assertIs<SignedPublishResult.Failed>(failure)
     }
 
+    @Test
+    fun explicitRelaysReturnPerRelayResultsForPartialAndTotalFailure(): Unit = runBlocking {
+        var requested: Collection<String>? = null
+        val reported = mutableListOf<RelayPublishResult>()
+        val partial = SignedEventPublisher(
+            FakeSigner(),
+            publisher = { error("user relays must not be used") },
+            relayPublisher = { _, urls, onRelayResult ->
+                requested = urls
+                onRelayResult(RelayPublishResult(setOf("wss://a"), emptyMap()))
+                RelayPublishResult(setOf("wss://a"), mapOf("wss://b" to "auth-required"))
+            },
+        ).publish("hi", 42, emptyList(), relayUrls = listOf("wss://a", "wss://b")) { reported += it }
+        assertEquals(listOf("wss://a", "wss://b"), requested)
+        assertEquals(listOf(RelayPublishResult(setOf("wss://a"), emptyMap())), reported)
+        val published = assertIs<SignedPublishResult.Published>(partial)
+        assertEquals(mapOf("wss://b" to "auth-required"), published.relayResult.failedRelays)
+
+        val total = SignedEventPublisher(
+            FakeSigner(),
+            relayPublisher = { _, _, _ -> RelayPublishResult(emptySet(), mapOf("wss://a" to "timeout")) },
+        ).publish("hi", 42, emptyList(), relayUrls = listOf("wss://a"))
+        val failed = assertIs<SignedPublishResult.Failed>(total)
+        assertEquals(mapOf("wss://a" to "timeout"), failed.relayResult?.failedRelays)
+    }
+
     private class FakeSigner : AccountSigner {
         override val pubkey = "pubkey"
         override fun encryptToSelf(plaintext: String) = plaintext

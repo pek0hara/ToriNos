@@ -53,6 +53,8 @@ class ChannelViewModel(
             val relayContext: ChannelRelayContext = ChannelRelayContext.EMPTY,
             /** kind 41 による推奨リレー変更で、購読先を切り替えている最中。 */
             val isRelayTransitioning: Boolean = false,
+            /** 直近の投稿のリレー別結果(第16.9節)。 */
+            val publishState: ChannelPublishUiState = ChannelPublishUiState.Idle,
         ) : UiState {
             fun isLiked(eventId: String): Boolean = likedReactions.containsKey(eventId) ||
                 pendingEngagementOperations[eventId]?.get(EngagementSlot.Reaction)?.request is EngagementRequest.AddLike

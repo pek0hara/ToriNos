@@ -333,9 +333,12 @@ internal open class ChannelLocalStateStore(
         const val MAX_OBSERVED_RELAYS = 20
         const val PREVIEW_MAX_CHARS = 200
 
-        /** `(createdAt, id)`の辞書順で[aCreatedAt]/[aId]が厳密に新しいか(第16.4節と同じ決定規則)。 */
+        /**
+         * [aCreatedAt]/[aId] が厳密に新しいか。`ChannelMetadataResolver` と同じく、created_at が同じなら
+         * event ID が小さい方を新しいとみなす(NIP-01 の replaceable event の慣習)。
+         */
         fun isNewer(aCreatedAt: Long, aId: String, bCreatedAt: Long, bId: String): Boolean =
-            aCreatedAt > bCreatedAt || (aCreatedAt == bCreatedAt && aId > bId)
+            aCreatedAt > bCreatedAt || (aCreatedAt == bCreatedAt && aId < bId)
     }
 }
 
