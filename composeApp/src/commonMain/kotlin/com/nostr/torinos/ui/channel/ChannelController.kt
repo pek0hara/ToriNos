@@ -94,6 +94,8 @@ internal class ChannelController(
     private val reactionSubId = "ch-react-$shortId-$relayKey"
     private val repostSubId = "ch-repost-$shortId-$relayKey"
     private val quoteRepostSubId = "ch-qrepost-$shortId-$relayKey"
+    private val hideSubId = "ch-hide-$shortId-$relayKey"
+    private val unhideSubId = "ch-unhide-$shortId-$relayKey"
 
     private val seenReplyIds = linkedSetOf<String>()
     private val seenReactionIds = linkedSetOf<String>()
@@ -158,6 +160,11 @@ internal class ChannelController(
     private var currentRelayStates = emptyMap<String, RelayConnectionState>()
     private val messageSourceRelays = linkedMapOf<String, String>()
     private var currentChannelInfo: ChannelInfo? = null
+    // kind 43 Hide Message(第16.15節)。自分の kind 43 と、それを取り消す自分の kind 5。
+    private val ownHideEvents = linkedMapOf<String, NostrEvent>()
+    private val ownHideDeletions = linkedMapOf<String, NostrEvent>()
+    private val pendingHides = mutableSetOf<String>()
+    private val pendingUnhides = mutableSetOf<String>()
     // relay context 変更時に張り直すライブ購読。subId -> filter。
     private val liveFilters = linkedMapOf<String, NostrFilter>()
 
@@ -288,6 +295,65 @@ internal class ChannelController(
         } else {
             fresh.withRelayResult(RelayPublishResult(progress.succeeded, progress.failed))
         }
+
+    private fun hiddenMessages(): Map<String, String> {
+        val me = ownPubkey ?: return emptyMap()
+        val confirmed = ChannelHiddenMessages.hiddenTargets(me, ownHideEvents.values, ownHideDeletions.values)
+        return confirmed.filterKeys { it !in pendingUnhides } + pendingHides.associateWith { "" }
+    }
+
+    /** 表示を即時に隠し、kind 43 を送る。全リレーで失敗したときだけ元に戻す(第16.15節)。 */
+    fun hideMessage(messageId: String) {
+        if (ownPubkey == null || messageId in hiddenMessages()) return
+        val publishContext = ChannelPublishContext.from(relayContext)
+        pendingHides += messageId
+        syncReadyState()
+        launch {
+            val result = signedEventPublisher.publish(
+                content = ChannelHiddenMessages.HIDE_CONTENT,
+                kind = ChannelHiddenMessages.HIDE_KIND,
+                tags = ChannelHiddenMessages.hideTags(messageId, replyRelayHint(messageId) ?: publishContext.primaryHint) +
+                    listOf(listOf("client", "ToriNos")),
+                relayUrls = publishContext.relayUrls,
+            )
+            pendingHides -= messageId
+            if (result is SignedPublishResult.Published) ownHideEvents[result.event.id] = result.event
+            syncReadyState()
+            val synced = _state.value as? UiState.Ready ?: return@launch
+            _state.value = when (result) {
+                is SignedPublishResult.Published -> synced.copy(hiddenNoticeMessageId = messageId)
+                SignedPublishResult.MissingSigner -> synced.copy(engagementError = "秘密鍵が設定されていません")
+                is SignedPublishResult.Failed -> synced.copy(engagementError = "メッセージを非表示にできませんでした")
+            }
+        }
+    }
+
+    /** 非表示を取り消す。自分の kind 43 に kind 5 を送る。 */
+    fun unhideMessage(messageId: String) {
+        val hideEventId = hiddenMessages()[messageId]?.takeIf { it.isNotEmpty() } ?: return
+        val publishContext = ChannelPublishContext.from(relayContext)
+        pendingUnhides += messageId
+        syncReadyState()
+        launch {
+            val result = signedEventPublisher.publish(
+                content = "",
+                kind = ChannelHiddenMessages.DELETION_KIND,
+                tags = ChannelHiddenMessages.unhideTags(hideEventId),
+                relayUrls = publishContext.relayUrls,
+            )
+            pendingUnhides -= messageId
+            if (result is SignedPublishResult.Published) ownHideDeletions[result.event.id] = result.event
+            syncReadyState()
+            if (result !is SignedPublishResult.Published) {
+                (_state.value as? UiState.Ready)?.let { _state.value = it.copy(engagementError = "非表示を取り消せませんでした") }
+            }
+        }
+    }
+
+    fun consumeHiddenNotice() {
+        val ready = _state.value as? UiState.Ready ?: return
+        _state.value = ready.copy(hiddenNoticeMessageId = null)
+    }
 
     fun deleteMessage(eventId: String) {
         val event = currentMessages.firstOrNull { it.id == eventId } ?: return
@@ -862,6 +928,19 @@ internal class ChannelController(
             }
         }
 
+        jobs += launch {
+            NostrRepository.events(hideSubId).collect { event ->
+                if (event.kind != ChannelHiddenMessages.HIDE_KIND || event.pubkey != ownPubkey) return@collect
+                if (ownHideEvents.put(event.id, event) == null) syncReadyState()
+            }
+        }
+        jobs += launch {
+            NostrRepository.events(unhideSubId).collect { event ->
+                if (event.kind != ChannelHiddenMessages.DELETION_KIND || event.pubkey != ownPubkey) return@collect
+                if (ownHideDeletions.put(event.id, event) == null) syncReadyState()
+            }
+        }
+
         // 共通プロフィールキャッシュを監視
         jobs += launch {
             ProfileRepository.observeChanges().collect { changedPubkeys ->
@@ -913,6 +992,19 @@ internal class ChannelController(
             history.initialize(emptyList(), localState?.readingPosition)
             subscribeLive(metaSubId, NostrFilter(ids = listOf(channelId)))
             subscribeLive(msgSubId, NostrFilter(kinds = listOf(42), eTags = listOf(channelId), since = openedAt))
+            accountSession?.pubkey?.let { me ->
+                // kind 43 はチャンネル ID を持たないため、自分の分をまとめて取り、表示中のメッセージだけに効かせる。
+                subscribeLive(hideSubId, NostrFilter(kinds = listOf(ChannelHiddenMessages.HIDE_KIND), authors = listOf(me), limit = 500))
+                subscribeLive(
+                    unhideSubId,
+                    NostrFilter(
+                        kinds = listOf(ChannelHiddenMessages.DELETION_KIND),
+                        authors = listOf(me),
+                        parentKindTags = listOf(ChannelHiddenMessages.HIDE_KIND.toString()),
+                        limit = 500,
+                    ),
+                )
+            }
         }
     }
 
@@ -1003,8 +1095,10 @@ internal class ChannelController(
     private fun filteredMessages(): List<NostrEvent> {
         val muted = accountSession?.muteStore?.mutedPubkeys?.value.orEmpty()
         val ngWords = accountSession?.ngWordStore?.ngWords?.value.orEmpty()
+        val hidden = hiddenMessages()
         return currentMessages.filter { msg ->
-            !muted.contains(msg.pubkey) &&
+            msg.id !in hidden &&
+                !muted.contains(msg.pubkey) &&
                 (ngWords.isEmpty() || ngWords.none { msg.content.contains(it, ignoreCase = true) })
         }
     }
@@ -1176,6 +1270,8 @@ internal class ChannelController(
         NostrRepository.close(reactionSubId)
         NostrRepository.close(repostSubId)
         NostrRepository.close(quoteRepostSubId)
+        NostrRepository.close(hideSubId)
+        NostrRepository.close(unhideSubId)
     }
 
     private fun rememberReceivedEvent(events: LinkedHashMap<String, NostrEvent>, event: NostrEvent) {

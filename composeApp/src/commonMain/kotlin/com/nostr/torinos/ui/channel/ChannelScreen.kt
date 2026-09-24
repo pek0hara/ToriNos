@@ -38,7 +38,9 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarDuration
 import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.SnackbarResult
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -129,6 +131,17 @@ fun ChannelScreen(
     val listState = remember(channelId, selectedRelayUrl) { LazyListState() }
     var showThreadInfoDialog by remember(channelId, selectedRelayUrl) { mutableStateOf(false) }
     var showRelayDetails by remember(channelId, selectedRelayUrl) { mutableStateOf(false) }
+
+    LaunchedEffect((state as? ChannelViewModel.UiState.Ready)?.hiddenNoticeMessageId) {
+        val messageId = (state as? ChannelViewModel.UiState.Ready)?.hiddenNoticeMessageId ?: return@LaunchedEffect
+        viewModel.consumeHiddenNotice()
+        val result = snackbarHostState.showSnackbar(
+            message = "メッセージを非表示にしました",
+            actionLabel = "元に戻す",
+            duration = SnackbarDuration.Short,
+        )
+        if (result == SnackbarResult.ActionPerformed) viewModel.unhideMessage(messageId)
+    }
 
     LaunchedEffect((state as? ChannelViewModel.UiState.Ready)?.engagementError) {
         val error = (state as? ChannelViewModel.UiState.Ready)?.engagementError ?: return@LaunchedEffect
@@ -452,6 +465,9 @@ fun ChannelScreen(
                                                         } else null,
                                                         ownPubkey = ownPubkey,
                                                         onDelete = { viewModel.deleteMessage(message.id) },
+                                                        onHide = if (ownPubkey != null) {
+                                                            { viewModel.hideMessage(message.id) }
+                                                        } else null,
                                                         isMuted = mutedPubkeys.contains(message.pubkey),
                                                         onNoteClick = onOpenThread,
                                                     )

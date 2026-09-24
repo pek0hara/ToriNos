@@ -162,6 +162,8 @@ fun NoteCard(
     replyParent: QuotedEvent? = null,
     ownPubkey: String? = null,
     onDelete: (() -> Unit)? = null,
+    /** NIP-28 kind 43。チャンネルのメッセージを自分の表示から隠す(すべての投稿に出す)。 */
+    onHide: (() -> Unit)? = null,
     isMuted: Boolean = false,
     onMute: (() -> Unit)? = null,
     onUnmute: (() -> Unit)? = null,
@@ -363,6 +365,15 @@ fun NoteCard(
                                     onClick = {
                                         showMenu = false
                                         onDelete()
+                                    },
+                                )
+                            }
+                            if (onHide != null) {
+                                DropdownMenuItem(
+                                    text = { Text("このメッセージを非表示") },
+                                    onClick = {
+                                        showMenu = false
+                                        onHide()
                                     },
                                 )
                             }

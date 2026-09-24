@@ -60,6 +60,8 @@ class ChannelViewModel(
             val relayStates: Map<String, RelayConnectionState> = emptyMap(),
             /** チャンネル情報画面の表示内容(FR-11)。kind 40 受信前は保存済みの状態から作る。 */
             val channelInfo: ChannelInfo? = null,
+            /** 直前に非表示にしたメッセージ。「元に戻す」付きの snackbar を出す。 */
+            val hiddenNoticeMessageId: String? = null,
         ) : UiState {
             fun isLiked(eventId: String): Boolean = likedReactions.containsKey(eventId) ||
                 pendingEngagementOperations[eventId]?.get(EngagementSlot.Reaction)?.request is EngagementRequest.AddLike
@@ -126,6 +128,9 @@ class ChannelViewModel(
         controller.onViewport(ids, anchorId, offset, savePosition)
 
     fun replyRelayHint(eventId: String): String? = controller.replyRelayHint(eventId)
+    fun hideMessage(eventId: String) = controller.hideMessage(eventId)
+    fun unhideMessage(eventId: String) = controller.unhideMessage(eventId)
+    fun consumeHiddenNotice() = controller.consumeHiddenNotice()
 
     override fun onCleared() {
         controller.close()
