@@ -378,7 +378,7 @@ relay-jp.nostr.wirednet.jp   失敗
   - 既読位置（`lastReadAt` と直近のスクロール位置）。
   - 一覧プレビュー用に、チャンネルごと直近1件のメッセージ（event ID・created_at・pubkey・本文先頭の切り詰め）のみ。全履歴は保持しない。
 - メッセージ本体の全履歴はローカルへ永続化しない。チャンネルを開くたびにリレーから取得し、表示用に一時的にメモリ上へ保持する（event ID による重複排除はメモリ上のセッション内で行う）。
-- 未読件数はローカルに保持する数値ではなく、起動時に現在選択中の単一リレーへの一括問い合わせ（`kinds:42`、対象 `channelId` を `e` タグへチャンク分割して列挙、`since` は保持済み `lastReadAt` の最小値）で取得した件数からセッション開始時に算出し、以後はライブ受信でメモリ上のみ加算する（第16.12.1〜16.12.3節）。一度も開いていないチャンネル（`lastReadAt` 未設定）は件数を出さず「新着あり」フラグのみ表示する（第16.12.4節）。
+- 未読件数はローカルに保持する数値ではなく、起動時に現在選択中の単一リレーへの一括問い合わせ（`kinds:42`、対象 `channelId` を `e` タグへチャンク分割して列挙、`since` は各チャンク内の `lastReadAt` の最小値）で取得した件数からセッション開始時に算出し、以後はライブ受信でメモリ上のみ加算する（第16.12.1〜16.12.3節）。一度も開いていないチャンネル（`lastReadAt` 未設定）は件数を出さず「新着あり」フラグのみ表示する（第16.12.4節）。
 - 永続化先は Room/SQLite ではなく、`RelayStore` と同じ `LocalSettingsStorage` ベースの JSON 保存（`Map<channelId, ChannelLocalState>`）とする。migration・DAO・schema export・prune はいずれも不要になる。
 
 ## 7. 第2段階の要件
@@ -1068,13 +1068,15 @@ val publishState: ChannelPublishUiState = ChannelPublishUiState.Idle
 @Serializable
 data class ChannelLocalState(
     val channelId: String,
-    val ownerPubkey: String,
-    val metadataEventId: String,
-    val metadataKind: Int,
-    val metadataCreatedAt: Long,
-    val meta: ChannelMeta,
+    val ownerPubkey: String = "",          // 空 = kind 40 未取得のまま既読位置だけ保存した暫定行
+    val channelCreatedAt: Long = 0,        // Loop 3.5で追加: 一覧のキャッシュ表示に kind 40 の作成日時が必要
+    val metadataEventId: String = "",
+    val metadataKind: Int = 40,
+    val metadataCreatedAt: Long = 0,
+    val meta: ChannelMeta = ChannelMeta(),
+    val observedRelays: List<String> = emptyList(), // Loop 3.5で追加: kind 40 を観測したリレー(正規化済み、最大20件)
     val isFavorite: Boolean = false,
-    val lastReadAt: Long = 0,
+    val lastReadAt: Long? = null,          // Loop 3.5で変更: null = 未開封(第16.12.4節)。0 と区別する
     val lastScrolledMessageId: String? = null,
     val lastScrolledCreatedAt: Long? = null,
     val lastScrolledOffset: Int = 0,
@@ -1090,34 +1092,50 @@ data class ChannelLatestMessagePreview(
 )
 ```
 
-`unreadCount` はこの型に含めない（第16.12.3節）。`latestMessage` はチャンネルごと直近1件のみで、履歴は持たない。
+`unreadCount` はこの型に含めない（第16.12.3節）。`latestMessage` はチャンネルごと直近1件のみで、履歴は持たない（本文は先頭200文字に切り詰める）。
+
+`observedRelays` は Loop 3.5 の設計レビューで追加した（L35-D1）。旧 Room 実装の一覧は `channel_relays`（観測元リレー）で選択中リレーに絞り込んでいたため、これを持たないと別リレーで見つけたチャンネルまで一覧に混ざる。推奨リレー `meta.relays` とは別フィールドとし、第16.1節の原則4を JSON 上でも維持する。お気に入り・既読位置はリレーをまたいで共有する（旧実装と同じ）。
 
 #### Store API
 
 ```kotlin
-suspend fun getChannelLocalState(channelId: String): ChannelLocalState?
-suspend fun getAllChannelLocalStates(): Map<String, ChannelLocalState>
+// 実装: network/ChannelLocalStore.kt の ChannelLocalStateStore(ストレージとスコープを注入してテスト可能)
+fun observe(relayUrl: String): Flow<List<ChannelLocalState>>   // observedRelays に relayUrl を含み、メタデータ取得済みの行
+suspend fun get(channelId: String): ChannelLocalState?
+suspend fun recordChannelCreate(event: NostrEvent, meta: ChannelMeta, observedRelayUrl: String?)
 suspend fun upsertChannelMetadata(
     channelCreateEvent: NostrEvent,
     effectiveEvent: NostrEvent,
     metadata: ChannelMeta,
+    observedRelayUrl: String? = null,
 )
-suspend fun upsertLatestMessagePreview(channelId: String, preview: ChannelLatestMessagePreview)
-suspend fun markRead(channelId: String, readAt: Long)
+suspend fun recordLatestMessage(channelId: String, event: NostrEvent)   // 新しい場合だけ置換。永続化は debounce
+suspend fun clearLatestMessage(channelId: String, eventId: String)      // 削除要求を送った投稿をプレビューから外す
+suspend fun markRead(channelId: String, readAt: Long)                   // 後退させない
 suspend fun saveReadingPosition(channelId: String, position: ChannelReadingPosition)
 suspend fun setFavorite(channelId: String, isFavorite: Boolean)
 suspend fun deleteChannel(channelId: String)
+suspend fun deleteNonFavorites(relayUrl: String)                         // 一括削除ボタン用(旧APIと同じ意味)
 ```
 
 kind 41 の event ID を channel ID として保存しないよう、`upsertChannelMetadata` は create event と effective event を明示的に分ける（旧設計から変更なし）。
+
+Loop 3.5 で確定したメタデータ保存規則:
+
+- `recordChannelCreate`（一覧の kind 40 ページ取得）は、保存済みの実効メタデータが kind 41 由来なら `meta` を上書きしない（L35-R1）。旧 Room 実装の `upsertChannel` は一覧を読み直すたびに kind 40 の値で name/about を上書きしていた。
+- `upsertChannelMetadata` は、保存済みの方が `(createdAt, id)` で新しければ維持する（L35-R2）。別リレーで開いて古い kind 41 しか届かなかった場合に巻き戻さないため。判定規則は第16.4節と同じ。
+- 一覧は保存済みメタデータが kind 41 由来なら kind 40 の元値より優先して表示する。
 
 #### 永続化先
 
 `RelayStore` が使う `LocalSettingsStorage`（キー文字列 → JSON 文字列の read/write）を流用し、単一キー（例: `channel_local_state`）へ `Map<channelId, ChannelLocalState>` を JSON でまるごと保存・読込する。Room/SQLite、DAO、schema export、migration、prune はいずれも不要になる。
 
-- 読込はアプリ起動時に1回、Map全体をデコードしてメモリへ載せる。
-- 書込は `upsertChannelMetadata` / `markRead` / お気に入り変更など、発生頻度が低い操作でのみ行う。`latestMessage` の更新はライブ受信のたびに発生しうるため、`ChannelController.saveReadingPosition` と同じ debounce パターン（第9.2節、400ms）で書込頻度を抑える。
-- チャンネル数が数百件規模になっても JSON 全体のシリアライズ・デシリアライズは軽量である前提を置く。数千件規模まで増えた場合は分割保存（チャンネルIDでシャーディング等）を再検討する。
+- 読込は初回アクセス時に1回、Map全体をデコードしてメモリへ載せる。キーは `channel_local_state_v1`。未知フィールドは無視し、デコード失敗時は空として扱う（ログに残す）。
+- 書込は `upsertChannelMetadata` / `markRead` / お気に入り変更など、発生頻度が低い操作では即時に行う。`latestMessage` の更新はライブ受信のたびに発生しうるため 400ms の debounce で書込頻度を抑える。debounce はストア自身のスコープで動かし、画面・ViewModel の破棄で書込が失われないようにする。書込は直列化し、常に書込直前の最新スナップショットを書く。
+- 書込失敗はネットワーク表示を止めずログに残す（第16.20節）。
+- 保持件数の上限を 1,000 件とし、超過時は非お気に入り・未開封・活動の古いものから落とす（L35-R5）。一覧の kind 40 ページ取得で見えたチャンネルはすべて記録されるため、上限がないと無制限に増える。実測 1 件あたり約 0.9KB（50 件で 43KB）で、上限時でも約 0.9MB。
+- チャンネル数が数千件規模まで増えた場合は分割保存（チャンネルIDでシャーディング等）を再検討する。
+- 旧 Room DB ファイル（`torinos_channel_cache.db` と `-wal`/`-shm`/`-journal`/`.lck`）は起動時に削除する。旧 DB からの移行は行わない（L35-D2。Simulator 上の旧 DB は 83 チャンネル中お気に入り 0 件・既読行 3 件で、移行コストに見合わないと判断した）。
 
 #### メッセージ本体の扱い
 
@@ -1134,13 +1152,24 @@ kind 41 の event ID を channel ID として保存しないよう、`upsertChan
 対象は「一度でも開いたことがある（`lastReadAt` が設定済みの）チャンネル」のみ。未開封チャンネルは第16.12.4節で別に扱う。
 
 ```text
-1. 永続化済み ChannelLocalState のうち lastReadAt が設定済みの全件から、その最小値 sinceFloor を求める
-2. 対象 channelId を最大 CHUNK_SIZE 件ごとに分割する（初期値 200。リレーのフィルターサイズ上限を考慮した目安値で、実測後に調整する）
-3. 各チャンクごとに NostrFilter(kinds = [42], eTags = チャンク分の channelId, since = sinceFloor, limit = CATCH_UP_LIMIT) で選択中リレーへ問い合わせる（初期値 limit = 1000）
-4. 返ってきたイベントを channelId ごとに集計し、createdAt > その channel の lastReadAt であるものの件数を数える
-5. 件数をメモリ上の unreadCounts[channelId] へ設定する（表示は上限キャップ、例 "99+"）。あるチャンクの返却件数がそのチャンクの limit にちょうど達した場合、そのチャンクに含まれる全チャンネルの件数は「取りこぼしうる」と判断し、正確な内訳を区別せず曖昧表示（キャップ表示）へ倒す
-6. 集計対象イベント本体は保持せず破棄する
+1. 永続化済み ChannelLocalState のうち、選択中リレーで観測済みかつ lastReadAt が設定済みのものを対象にする
+2. 対象を lastReadAt の降順に並べ、最大 CHUNK_SIZE 件ごとに分割する（初期値 200）。
+   各チャンクの since はそのチャンク内の lastReadAt の最小値とする（L35-R3。全体の最小値より取得範囲が狭くなるだけで取りこぼしは増えない）
+3. limit = min(NIP-11 の limitation.max_limit ?: 500, CATCH_UP_LIMIT=1000) とする（L35-R4）
+4. 各チャンクごとに NostrFilter(kinds = [42], eTags = チャンク分の channelId, since, until = ライブ購読の since - 1, limit) で選択中リレーへ問い合わせる
+5. 返ってきたイベントを channelId ごとに集計し、createdAt > その channel の lastReadAt であるものの件数を数える
+6. 返却件数が limit に達したチャンクは「取りこぼしうる」。2件以上のチャンクなら半分に分割して再問い合わせする（L35-R6）。
+   1件だけのチャンク、または REQ 総数が MAX_REQUESTS=16 を超える場合は、そのチャンクの全チャンネルを下限値（"N+"）として確定する
+7. 件数をメモリ上へ設定する（表示は 99 超で "99+"、下限値は "N+"）。各チャンネルの最新1件は一覧プレビューへ反映する
+8. 集計対象イベント本体は保持せず破棄する
 ```
+
+Loop 3.5 の実装・Simulator 確認で確定した補足:
+
+- `until = ライブ購読の since - 1` とすることで、キャッチアップとライブ受信（第16.12.2節）が時刻で重ならず、同じ event の二重計上を避ける。
+- 要求 limit がリレー側の上限を超えると、リレーは黙って切り詰めて返すため「limit に達した」ことを検出できない（L35-R4）。strfry 等の既定値に合わせ、NIP-11 が取れないときは 500 を仮定する。
+- 分割再問い合わせ（L35-R6）は Simulator で発見した。既読位置が 3 時間前・14 日前・30 日前の 3 チャンネルが1チャンクに入ると since が 30 日前になり、活発なチャンネルの既読済みメッセージで 500 件が埋まって全チャンネルが下限値表示（`26+`/`3+`/`13+`、実際は 26/3/15）になった。分割後は 26/3/15 と一致した。
+- キャッチアップは状態の初回通知時ではなく、一覧の kind 40 初回ページ取得後に開始する（L35-R7）。初訪問のリレーでは観測元リレーがまだ記録されておらず、対象 0 件のまま終わっていた。
 
 一括問い合わせにする理由は、チャンネルごとに個別 REQ を送ると起動時に選択中リレーへ数十〜数百件の購読が同時発生するため。`eTags` に channelId を並べた単一フィルター（チャンク分割あり）へまとめ、クライアント側で振り分ける。
 
@@ -1154,11 +1183,18 @@ kind 41 の event ID を channel ID として保存しないよう、`upsertChan
 
 チャンネルを開いて `markRead` を呼んだ時点で `unreadCounts[channelId] = 0` とし、`lastReadAt` を永続化する。次回起動時のキャッチアップは新しい `lastReadAt` を起点にする。
 
+実装では件数を加算値として持たず、キャッチアップ結果（集計時の `lastReadAt` 付き）とセッション中にライブ受信した `(eventId, createdAt)` を別々に保持し、表示のたびに「集計時の `lastReadAt` が現在値と一致するキャッチアップ件数 + 現在の `lastReadAt` より新しいライブ受信件数」で求める（`ChannelUnreadTracker`）。既読化で `lastReadAt` が進むと古い集計は自動的に無効になり、既読化後に届いたメッセージだけが残る。
+
+Loop 3.5 の Simulator 確認で、チャンネルを開いてスクロールせずに戻ると `markRead` が呼ばれない既存不具合を発見し修正した（L35-R8）。`ChannelScreen` の viewport 通知は最新位置への初回移動中は捨てられ、`distinctUntilChanged` のため移動完了後に再通知されなかった。旧 DB で既読行が 3 件しかなかった原因と考えられる。
+
 ##### 16.12.4 未開封チャンネル（`lastReadAt` 未設定）
 
 一度も開いていないチャンネルは起動時キャッチアップの対象に含めない（`since` の起点がなく、全履歴取得になりコストが跳ね上がるため）。件数は算出せず、一覧には具体的な数値の代わりに「新着あり」相当の真偽値フラグのみを表示する。
 
-フラグは、チャンネル一覧のライブ購読（第16.12.2節と同じ `liveSubId`）でその channelId の kind:42 を1件でも観測したか、または `ChannelLocalState.latestMessage` が設定済みかで判定する。初回オープン（`markRead` 呼び出し）以降は、通常の件数ベースの未読表示（第16.12.1〜16.12.3節）へ切り替わる。
+フラグは、チャンネル一覧のライブ購読（第16.12.2節と同じ `liveSubId`）でその channelId の kind:42 をセッション中に1件でも観測したかで判定する。初回オープン（`markRead` 呼び出し）以降は、通常の件数ベースの未読表示（第16.12.1〜16.12.3節）へ切り替わる。
+
+> [!NOTE]
+> Loop 3.5 で「`ChannelLocalState.latestMessage` が設定済み」の条件を外した（L35-D3）。一覧は表示中チャンネルの最新1件を取得してプレビューに使うため、この条件ではほぼすべての未開封チャンネルに「新着あり」が付き、フラグの意味がなくなる。
 
 ##### 16.12.5 オフライン・取得失敗時
 
@@ -1727,7 +1763,7 @@ iOS Simulatorテスト
 | 1 | モデルと純粋ロジック | URL正規化、`ChannelMeta.relays`、metadata resolver、relay context、タグbuilder | 完了 |
 | 2 | 明示購読とDB v7 | 未登録推奨リレー購読、metadata cache、migration 6→7 | 完了 |
 | 3 | チャンネル購読 | 推奨リレーからkind 42取得、kind 41更新時の再購読 | 着手中(3a完了、3bは未着手) |
-| 3.5 | ローカル永続化の簡素化 | Room/SQLite撤去、`ChannelLocalState`のJSON永続化、未読件数のキャッチアップ方式への移行(第22章) | 計画中 |
+| 3.5 | ローカル永続化の簡素化 | Room/SQLite撤去、`ChannelLocalState`のJSON永続化、未読件数のキャッチアップ方式への移行(第22章) | 完了（未コミット、第22.5節） |
 | 4 | チャンネル投稿 | kind 40/41/42の配送、relay hint、リレー別結果 | 未着手 |
 | 5 | UIと返信連携 | ヘッダー、投稿先、詳細、編集、通常返信画面 | 未着手 |
 | 6 | モデレーション | kind 43/44 | 未着手 |
@@ -1745,6 +1781,7 @@ iOS Simulatorテスト
 | 1: モデルと純粋ロジック | 完了 | URL正規化、`ChannelMeta.relays`、`ChannelMetadataResolver`、`ChannelRelayContextBuilder`、`ChannelEventTags` | `normalizeRelayUrl`がFR-01のquery/fragment拒否に違反。既定ポート省略も未実装。両方修正・回帰テスト追加 | `25156a9` |
 | 2: 明示購読とDB v7 | 完了（Room実装はLoop 3.5で置換予定、第22章） | `RelayTarget.Explicit`の意味修正、DB migration 6→7、`ChannelCacheStore`のmetadata API | なし | `55a6018` |
 | 3a: resolver接続 | 完了 | `ChannelController`のkind 40/41ライブ判定を`ChannelMetadataResolver`へ移行 | 同時刻kind 41の受信順依存が実チャンネル画面側に残存。resolver移行で解消 | `3e3464f` |
+| 3.5: ローカル永続化の簡素化 | 完了 | Room/SQLite(DB v1〜v7)撤去、`ChannelLocalState`のJSON永続化、未読キャッチアップ | 一覧のリレー別絞り込み欠落(D1)／kind 40再取得でkind 41上書き(R1)／リレー上限で下限判定不能(R4)／キャッチアップが1チャンクで飽和(R6)／初訪問リレーでキャッチアップ未実行(R7)／スクロールしないと既読化されない既存不具合(R8)。すべて解消 | 未コミット |
 
 設計レビュー・実装レビューの詳細、自動テストコマンド、Simulator実施環境（macOS/Xcode/Simulatorバージョン等）は各コミットメッセージ（`git log`）に記載している。
 
@@ -1755,7 +1792,11 @@ iOS Simulatorテスト
 3. Loop 3b: `ChannelRelayContext`・`SubscriptionSession`・kind 41受信時の二段階再購読（FR-08、第16.7節）を`ChannelController`へ接続する。
 4. `saveThreadMeta()`（kind 41自己編集）の楽観的更新を候補プール（`metadataUpdateCandidates`）経由に統合し、自己発行イベントも同じresolver経路で扱う（Phase 2 kind 41編集強化、第16.10節と合わせて検討）。
 5. `ChannelController`向けのテスト基盤（NostrRepository/ChannelCacheStoreのfake化）導入を検討する。
-6. 第22章の方針により、Loop 2で実装したRoom関連コード（DB v7 migration、`ChannelListViewModel.kt`×2・`ChannelController.kt`×1の`upsertChannel`呼び出し）はLoop 3.5で置換する。
+6. ~~第22章の方針により、Loop 2で実装したRoom関連コードはLoop 3.5で置換する。~~ Loop 3.5で完了。
+7. L3a-S01はLoop 3.5のSimulator確認で一部確認済み（kind 40+41のチャンネルで一覧・画面ともkind 41のaboutが反映される）。kind 40のみ／同時刻複数kind 41のケースは未確認のまま。
+8. Loop 3.5の未確認シナリオ: L35-S12（ライブ受信による未読加算・未開封チャンネルの「新着あり」表示。新着待ち）、通信断・キャッチアップ失敗時の前回値維持（第16.12.5節、障害注入が必要）、自分の最新投稿の削除によるプレビュー除去（kind 5 送信が必要）、チャンネル新規作成（kind 40 送信が必要）。
+9. 起動直後に `NostrRelay.disconnect` が一時リレー解放時の `JobCancellationException` をスタックトレース付きでログ出力している。Loop 3.5以前からの挙動で機能影響はないが、ログのノイズとして別途整理する（Note）。
+10. 未読件数の対象は選択中の単一リレーのまま（第22.4節4）。Loop 3b着手時に推奨リレーまで広げるか再検討する。
 
 ### 21.3 Simulator定義済みシナリオ（再利用可能）
 
@@ -1825,13 +1866,78 @@ Loop 3a完了後のレビューで、チャンネルメッセージのローカ�
 3. 未読キャッチアップの`CHUNK_SIZE`(初期値200)と`CATCH_UP_LIMIT`(初期値1000)は暫定値であり、実際のリレー応答(フィルターサイズ上限、`limit`充足時の挙動)を見て調整する(第16.12.1節)。
 4. 未読機能を`ChannelRelayContext`(Loop 3b)導入後も選択中リレー単一スコープのままにするか、推奨リレーまで対象を広げるかは、Loop 3b着手時に再検討する(第16.12節)。
 
-### 22.5 Loop 3.5 計画: ローカル永続化の簡素化（実装）
+### 22.5 Loop 3.5: ローカル永続化の簡素化（実装）
 
-- 状態: 計画中(未着手)
+- 状態: 完了（L35-S12 のみ保留。未コミット。作業ツリーには本ループと無関係な検索・キーボード関連の未コミット変更も含まれるため、コミット範囲はユーザー確認後に決める）
 - 対象:
   - `ChannelCacheStore`/`ChannelCacheDatabase`関連コードのRoom実装を撤去し、`ChannelLocalState`のJSON永続化へ置き換える。
   - `ChannelController`・`ChannelListViewModel`の呼び出し元を新Store APIへ配線し直す。
   - 起動時キャッチアップ購読とメモリ上未読加算を`ChannelListViewModel`へ実装する。
-  - 新設計の単体テスト(JSON永続化のシリアライズ/デシリアライズ、未読キャッチアップの集計ロジックなど、pure logicとして分離できる範囲)を追加する。
-- 対象外: Loop 3b(session化・kind 41二段階再購読)は引き続き別ループ。kind 43/44/10005(Phase 3)。
-- 依存関係: Loop 1〜3aの成果物(resolver、relay context builder、event tags)は流用する。Loop 2で追加したRoom DB v7のmigration・エンティティはこのLoopで削除する。
+  - 新設計の単体テスト(JSON永続化、未読キャッチアップの集計ロジック)を追加する。
+- 対象外: Loop 3b(session化・kind 41二段階再購読)。kind 43/44/10005(Phase 3)。旧 Room DB からのデータ移行(L35-D2)。
+- 開始時commit: `b265bfa`
+- 対象ファイル:
+  - 新規: `network/ChannelLocalStore.kt`（旧 `ChannelCacheStore.kt` を置換）、`ui/channel/ChannelUnreadTracker.kt`、`androidMain`/`iosMain` の `LegacyChannelCache.*.kt`、テスト `ChannelLocalStoreTest.kt`・`ChannelUnreadTrackerTest.kt`
+  - 変更: `ChannelListViewModel.kt`、`ChannelController.kt`、`ChannelListScreen.kt`（未読バッジ）、`ChannelScreen.kt`（既読化不具合の修正）、`AppSessionCoordinator.kt`（prune → 旧DB削除）、`composeApp/build.gradle.kts`・`build.gradle.kts`・`gradle/libs.versions.toml`（Room/KSP/SQLite 依存の削除）
+  - 削除: `mobileMain` の `ChannelCacheStore.mobile.kt`・`network/cache/*`、`android/iosMain` の `ChannelCacheDatabaseBuilder.*.kt`、`composeApp/schemas/`
+
+#### 設計レビュー
+
+| ID | 重大度 | 指摘 | 対応 |
+| --- | --- | --- | --- |
+| L35-D1 | Major | 第16.12節の `ChannelLocalState` には観測元リレーがなく、一覧のリレー別絞り込み（旧 `channel_relays`）が失われる | `observedRelays` を追加。`observe(relayUrl)` で絞り込む |
+| L35-D2 | Minor | Room 撤去で旧DBのお気に入り・既読位置が失われる | 旧DB（83件中お気に入り0件・既読行3件）を確認し、移行しないと判断。起動時に旧DBファイルを削除する |
+| L35-D3 | Minor | 未開封チャンネルの「新着あり」を `latestMessage` 有無でも立てると、ほぼ全件に付く | セッション中のライブ観測だけで判定する（第16.12.4節を更新） |
+| L35-D4 | Note | 既読位置の保存が `relayUrl != null` の場合に限られていた（Room は実際にはリレー非依存） | ストアがリレー非依存のため条件を外した。リレー指定なしで開いた画面でも既読化される |
+| L35-D5 | Note | 一覧の活動取得はチャンネルごとに最大 100〜200 件を取得して DB へ書いていた（未読件数算出のため） | 未読はキャッチアップで数えるため `limit = 1`（プレビュー用の最新1件）へ削減 |
+
+#### 実装レビュー
+
+| ID | 重大度 | 指摘 | 対応 |
+| --- | --- | --- | --- |
+| L35-R1 | Major | 一覧の kind 40 取得のたびに kind 41 由来の name/about を kind 40 の値で上書きする（旧 `upsertChannel` と同じ挙動を引き継ぐところだった） | `recordChannelCreate` は kind 41 由来のメタデータを維持。単体テスト追加 |
+| L35-R2 | Minor | 別リレーで古い kind 41 しか届かないと保存済みメタデータが巻き戻る | `(createdAt, id)` で新しい方を維持。同時刻 tie-break もテスト |
+| L35-R3 | Note | キャッチアップの since を全体の最小値にすると取得範囲が不要に広い | lastReadAt の近いもの同士でチャンク化し、チャンク単位の最小値にする |
+| L35-R4 | Major | `limit = 1000` はリレー上限（strfry 既定 500 等）を超え、黙って切り詰められると飽和を検出できない | NIP-11 `max_limit`（取得不可なら 500）で limit を抑える |
+| L35-R5 | Minor | 一覧で見えた全チャンネルを記録するため、JSON が無制限に増える | 1,000 件上限と退避順（非お気に入り・未開封・古い順）を追加 |
+| L35-R6 | Major | （Simulator で発見）既読位置が離れたチャンネルが同じチャンクに入ると既読済みメッセージで limit が埋まり、全件が下限値表示・過少計上になる | 飽和したチャンクを半分に分けて再問い合わせ（REQ 総数 16 まで） |
+| L35-R7 | Major | （Simulator で発見）初訪問のリレーでは状態の初回通知が空で、キャッチアップが対象 0 件のまま終わる | kind 40 初回ページ取得後に開始し、lastReadAt はストアから直接読む |
+| L35-R8 | Major | （Simulator で発見、既存不具合）チャンネルを開いてスクロールせずに戻ると `markRead` が呼ばれない | viewport 通知の値に `navigating` を含め、初回移動の完了時に必ず再通知する |
+| L35-R9 | Minor | 自分の最新投稿へ削除要求を送っても一覧プレビューに残る（Room は削除で再計算されていた） | `clearLatestMessage` を追加 |
+| L35-R10 | Note | `CancellationException` の再送出、画面破棄時の書込喪失 | ストア内は再送出を確認。debounce 書込はストア自身のスコープで実行し、ViewModel 破棄の影響を受けない |
+
+#### 自動テスト
+
+| コマンド | 結果 | 備考 |
+| --- | --- | --- |
+| `./gradlew :composeApp:iosSimulatorArm64Test` | 成功（547件、失敗0） | 新規 `ChannelLocalStoreTest` 12件、`ChannelUnreadTrackerTest` 11件。既存 `ChannelHistoryTest` 18件も成功 |
+| `./gradlew :composeApp:compileAndroidMain` | 成功 | Android の旧DB削除 actual を含む |
+| `./gradlew check` | 成功 | `verifyNoDirectProfileSubscriptions` を含む |
+| `xcodebuild … -configuration Debug`（DerivedData 再作成） | 成功 | `Task :composeApp` 49件で Gradle 実行を確認 |
+
+途中で失敗したテストは1件（`ChannelUnreadTrackerTest.markingReadResetsCountButKeepsLaterLiveMessages`）。原因はテストの期待値の誤り（キャッチアップ5件 + ライブ2件 = 7件を6件としていた）で、実装は変更していない。
+
+#### Simulatorテスト
+
+環境: macOS 26.5 / Xcode 26.6 / iPhone 17 Simulator（iOS 26.5）/ Debug / ログイン済みテストアカウント / 選択リレー `wss://r.kojira.io`・`wss://yabu.me` / 実リレー接続 / 2026-09-24 12:06〜12:25。期待値は `nak req`（読み取りのみ）で同じリレーへ問い合わせて求めた。
+
+| ID | シナリオ | 結果 | 証跡・備考 |
+| --- | --- | --- | --- |
+| L35-S01 | 旧DBがある状態で新ビルドを起動する | 成功 | `Documents/torinos_channel_cache.db`（5.4MB）と `-wal`/`-shm`/`.lck` が削除された。旧DBは作業用に退避済み |
+| L35-S02 | 空のストアでチャンネル一覧を開く | 成功 | r.kojira.io で50件表示。`channel_local_state_v1` に50件・43KB保存、`observedRelays` 記録 |
+| L35-S03 | チャンネルを開く（ローカル履歴なし） | 成功 | さびれたスナックの履歴がリレーから表示された |
+| L35-S04 | 再起動後に一覧を開く | 成功 | リレー応答前から kind 41 の about（2行目「ツケがたまってたり」）が表示された |
+| L35-S05 | スクロールせずにチャンネルを開いて戻る | 修正後成功 | 修正前は `lastReadAt` が保存されず（L35-R8）。修正後はバーが既読色になり `lastReadAt` が保存された |
+| L35-S06 | 既読位置を3h/14d/30d前に戻して再起動する | 修正後成功 | 修正前は `26+`/`3+`/`13+`（L35-R6）。修正後は 26/3/15 でリレー問い合わせ結果と一致 |
+| L35-S07 | 未読バッジのあるチャンネルを開いて戻る | 成功 | バッジが消え、`lastReadAt` が更新された |
+| L35-S08 | お気に入りを切り替える | 成功 | 即時に UI 反映、JSON に保存 |
+| L35-S09 | 設定アプリへ切り替えて戻る | 成功 | 一覧・バッジ・お気に入りが維持された |
+| L35-S10 | アプリを終了して再起動する | 成功 | お気に入り・既読状態は保存値から、未読件数はキャッチアップで再計算された |
+| L35-S11 | 初訪問のリレー（yabu.me）へ切り替える | 修正後成功 | 修正前はバッジが出なかった（L35-R7）。修正後はスナック26・しおたぬ0でリレー結果と一致。r.kojira.io にしかないチャンネルは表示されない |
+| L35-S12 | 一覧表示中に新着を受信する | 保留 | 12:21〜12:43 の約22分、yabu.me に kind 42 の新着が1件もなく未確認（`nak req -k 42 --since 1790220090` で0件を確認）。自分で投稿すると実リレーへの公開になるため行っていない。加算ロジックは `ChannelUnreadTrackerTest` の単体テストでのみ確認済み |
+
+#### 設計書へのフィードバック
+
+- 確定した仕様: 第16.12節の `ChannelLocalState`（`observedRelays`・`channelCreatedAt`・nullable の `lastReadAt`）、Store API、メタデータ保存規則、1,000件上限、旧DB削除。第16.12.1節のチャンク単位 since、NIP-11 による limit、飽和時の分割再問い合わせ、開始タイミング。第16.12.3節の件数算出方式。
+- 変更した仕様: 第16.12.4節の「新着あり」判定から `latestMessage` 条件を削除（L35-D3）。第6章 FR-12 の since 記述をチャンク単位へ更新。
+- 次ループへ送る課題: 第21.2節の 7〜10。未読キャッチアップの `CHUNK_SIZE`（200）は、実利用でチャンネル数が 200 を超えたときのリレーのフィルターサイズ上限を未確認（第22.4節3）。

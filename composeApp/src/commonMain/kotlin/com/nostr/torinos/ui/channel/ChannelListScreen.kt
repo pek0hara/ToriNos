@@ -632,8 +632,11 @@ private fun ChannelRow(
                             containerColor = MaterialTheme.colorScheme.primary,
                             contentColor = MaterialTheme.colorScheme.onPrimary,
                         ) {
-                            Text(if (item.unreadCount > 99) "99+" else "${item.unreadCount}")
+                            Text(unreadBadgeText(item.unreadCount, item.unreadCountIsLowerBound))
                         }
+                    } else if (item.hasNewActivity) {
+                        // 未開封チャンネルは件数を出さず、新着の有無だけを示す(第16.12.4節)。
+                        Badge(containerColor = MaterialTheme.colorScheme.primary)
                     }
                 },
             ) {
@@ -664,4 +667,10 @@ private fun relativeTime(epochSeconds: Long): String {
         diff < 86400L * 30L -> "${diff / 86400L}日前"
         else -> "${diff / (86400L * 30L)}ヶ月前"
     }
+}
+
+internal fun unreadBadgeText(count: Int, isLowerBound: Boolean): String = when {
+    count > 99 -> "99+"
+    isLowerBound -> "$count+"
+    else -> "$count"
 }

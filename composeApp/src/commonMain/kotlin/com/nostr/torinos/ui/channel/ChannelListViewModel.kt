@@ -11,11 +11,12 @@ import com.nostr.torinos.model.NostrFilter
 import com.nostr.torinos.model.NostrProfile
 import com.nostr.torinos.model.toChannelMeta
 import com.nostr.torinos.model.toProfile
-import com.nostr.torinos.network.CachedChannelSummary
-import com.nostr.torinos.network.ChannelCacheStore
+import com.nostr.torinos.network.ChannelLocalState
+import com.nostr.torinos.network.ChannelLocalStore
 import com.nostr.torinos.network.NostrRepository
 import com.nostr.torinos.network.ProfileFetchPolicy
 import com.nostr.torinos.network.ProfileRepository
+import com.nostr.torinos.network.RelayInformationRepository
 import com.nostr.torinos.ui.SafeViewModel
 import com.nostr.torinos.ui.profile.customEmojiMap
 import kotlin.reflect.KClass
@@ -31,6 +32,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 
@@ -45,6 +47,10 @@ data class ChannelItem(
     val latestMessagePreview: String? = null,
     val latestMessageCustomEmojis: Map<String, String> = emptyMap(),
     val unreadCount: Int = 0,
+    /** 起動時キャッチアップが上限に達し、実際の未読は [unreadCount] 以上ありうる。 */
+    val unreadCountIsLowerBound: Boolean = false,
+    /** 未開封チャンネルでセッション中に新着を観測した(第16.12.4節)。 */
+    val hasNewActivity: Boolean = false,
     val hasBeenOpened: Boolean = false,
     val isFavorite: Boolean = false,
 )
@@ -62,6 +68,7 @@ class ChannelListViewModel(
         private const val PAGE_SIZE = 50
         private const val MAX_SEEN_MSG_IDS = 5_000
         private const val PROFILE_MAX_AGE_MS = 15 * 60 * 1_000L
+        private const val RELAY_INFO_TIMEOUT_MS = 3_000L
 
         val Factory: ViewModelProvider.Factory = object : ViewModelProvider.Factory {
             @Suppress("UNCHECKED_CAST")
@@ -123,13 +130,18 @@ class ChannelListViewModel(
     private val liveSubId = "ch-list-live-$relayKey"
     // ライブで発見した未知チャンネルの kind:40 取得
     private val newMetaSubId = "ch-list-newmeta-$relayKey"
+    private val catchUpSubId = "ch-list-unread-$relayKey"
 
     private val channelMap = linkedMapOf<String, ChannelItem>()
     private val lastActivities = mutableMapOf<String, Long>()
     private val seenMessageIds = linkedSetOf<String>()
     private val authorProfiles = mutableMapOf<String, NostrProfile>()
-    private val cachedChannels = linkedMapOf<String, CachedChannelSummary>()
+    private val cachedChannels = linkedMapOf<String, ChannelLocalState>()
     private val cacheReady = CompletableDeferred<Unit>()
+    private val unreadTracker = ChannelUnreadTracker()
+    private var catchUpStarted = false
+    // ライブ購読の since。未読キャッチアップは until = liveSince - 1 として時刻で重ならないようにする。
+    private val liveSince = Clock.System.now().epochSeconds
 
     private val jobs = mutableListOf<Job>()
     private val activityQueue = ChannelActivityQueue()
@@ -152,12 +164,17 @@ class ChannelListViewModel(
     }
 
     private fun start() {
-        // DB キャッシュ（Phase 0: 即時表示）
+        // 端末ローカル状態（Phase 0: 即時表示）
         jobs += launch {
             val cacheRelayUrl = relayUrl ?: return@launch
-            ChannelCacheStore.observeChannels(cacheRelayUrl).collect { channels ->
+            ChannelLocalStore.observe(cacheRelayUrl).collect { channels ->
                 cachedChannels.clear()
-                channels.forEach { cachedChannels[it.channelId] = it }
+                channels
+                    .sortedWith(
+                        compareByDescending<ChannelLocalState> { it.isFavorite }
+                            .thenByDescending { it.latestMessage?.createdAt ?: it.channelCreatedAt },
+                    )
+                    .forEach { cachedChannels[it.channelId] = it }
                 emitReady(immediate = _state.value is UiState.Loading)
                 cacheReady.complete(Unit)
                 scheduleAuthorSubscription()
@@ -172,6 +189,7 @@ class ChannelListViewModel(
                 if (!seenMessageIds.add(event.id)) return@collect
                 if (seenMessageIds.size > MAX_SEEN_MSG_IDS) seenMessageIds.remove(seenMessageIds.first())
                 val channelId = event.channelIdFromMessage() ?: return@collect
+                unreadTracker.onLive(channelId, event.id, event.createdAt)
                 updateActivity(event, channelId)
                 if (!channelMap.containsKey(channelId) && requestedNewMetaIds.add(channelId)) {
                     pendingNewMetaIds.add(channelId)
@@ -213,7 +231,7 @@ class ChannelListViewModel(
             // ライブ購読を常時開始（起動時点以降の新着のみ）
             NostrRepository.subscribe(
                 liveSubId,
-                NostrFilter(kinds = listOf(42), since = Clock.System.now().epochSeconds),
+                NostrFilter(kinds = listOf(42), since = liveSince),
                 relayUrl = relayUrl,
             )
             loadMore()
@@ -242,6 +260,9 @@ class ChannelListViewModel(
                     oldestBootstrapCreatedAt = oldest ?: oldestBootstrapCreatedAt
                     hasMoreChannels = count >= PAGE_SIZE
                 }
+                // 初回ページで観測元リレーを記録してから始める。初訪問のリレーでは端末状態が空のため、
+                // 状態の初回通知時点で始めると対象が0件のまま終わってしまう。
+                startUnreadCatchUpOnce()
             } finally {
                 loadingMore = false
                 queueActivityFetches()
@@ -259,7 +280,7 @@ class ChannelListViewModel(
     private suspend fun acceptChannel(event: NostrEvent) {
         val meta = event.toChannelMeta() ?: return
         if (event.id !in channelMap) channelMap[event.id] = ChannelItem(event, meta)
-        relayUrl?.let { ChannelCacheStore.upsertChannel(it, event, meta) }
+        ChannelLocalStore.recordChannelCreate(event, meta, relayUrl)
         scheduleAuthorSubscription()
         emitReady()
     }
@@ -308,7 +329,7 @@ class ChannelListViewModel(
                         ),
                     )
                     NostrRepository.publish(deletion)
-                    relayUrl?.let { ChannelCacheStore.deleteChannel(it, dialog.channelId) }
+                    ChannelLocalStore.deleteChannel(dialog.channelId)
                 }.onSuccess {
                     channelMap.remove(dialog.channelId)
                     cachedChannels.remove(dialog.channelId)
@@ -327,11 +348,7 @@ class ChannelListViewModel(
                     )
                 }
             } else {
-                relayUrl?.let { cacheRelayUrl ->
-                    runCatching {
-                        ChannelCacheStore.deleteChannel(cacheRelayUrl, dialog.channelId)
-                    }
-                }
+                ChannelLocalStore.deleteChannel(dialog.channelId)
                 val s = _state.value as? UiState.Ready ?: return@launch
                 _state.value = s.copy(deleteDialog = null)
             }
@@ -339,12 +356,12 @@ class ChannelListViewModel(
     }
 
     fun toggleFavorite(channelId: String) {
-        val cacheRelayUrl = relayUrl ?: return
+        if (relayUrl == null) return
         val current = _state.value as? UiState.Ready ?: return
         val item = current.channels.firstOrNull { it.event.id == channelId } ?: return
         val newFavorite = !item.isFavorite
         launch {
-            ChannelCacheStore.setFavorite(cacheRelayUrl, channelId, newFavorite)
+            ChannelLocalStore.setFavorite(channelId, newFavorite)
         }
     }
 
@@ -437,9 +454,7 @@ class ChannelListViewModel(
         val cacheRelayUrl = relayUrl ?: return
         _state.value = current.copy(bulkDeleteDialog = dialog.copy(isDeleting = true))
         launch {
-            runCatching {
-                ChannelCacheStore.deleteNonFavorites(cacheRelayUrl)
-            }
+            ChannelLocalStore.deleteNonFavorites(cacheRelayUrl)
             val s = _state.value as? UiState.Ready ?: return@launch
             _state.value = s.copy(bulkDeleteDialog = null)
         }
@@ -510,7 +525,7 @@ class ChannelListViewModel(
             }.onSuccess { (event, meta, firstPost) ->
                 channelMap[event.id] = ChannelItem(event, meta)
                 lastActivities[event.id] = firstPost?.createdAt ?: event.createdAt
-                relayUrl?.let { ChannelCacheStore.upsertChannel(it, event, meta) }
+                ChannelLocalStore.recordChannelCreate(event, meta, relayUrl)
                 firstPost?.let { post ->
                     seenMessageIds.add(post.id)
                     updateActivity(post, event.id)
@@ -545,8 +560,61 @@ class ChannelListViewModel(
             )
             scheduleAuthorSubscription()
         }
-        relayUrl?.let {
-            launch { ChannelCacheStore.upsertMessage(it, event, channelId) }
+        // 全履歴は保存しない。一覧プレビュー用の直近1件だけを端末へ残す(第16.12節)。
+        launch { ChannelLocalStore.recordLatestMessage(channelId, event) }
+    }
+
+    private suspend fun currentLastReadAts(relayUrl: String): Map<String, Long?> =
+        ChannelLocalStore.observe(relayUrl).first().associate { it.channelId to it.lastReadAt }
+
+    private fun <K, V : Any> Map<K, V?>.filterValuesNotNull(): Map<K, V> =
+        mapNotNull { (key, value) -> value?.let { key to it } }.toMap()
+
+    /** 選択中リレーへ既読チャンネルの新着を一括問い合わせし、未読件数の起点を作る(第16.12.1節)。 */
+    private fun startUnreadCatchUpOnce() {
+        if (catchUpStarted || relayUrl == null) return
+        catchUpStarted = true
+        launch {
+            // collector 経由の cachedChannels は反映が遅れうるため、ストアから直接読む。
+            val lastReadAts = currentLastReadAts(relayUrl).filterValuesNotNull()
+            if (lastReadAts.isEmpty()) return@launch
+            val relayMaxLimit = withTimeoutOrNull(RELAY_INFO_TIMEOUT_MS) {
+                RelayInformationRepository.fetch(relayUrl).getOrNull()?.limitation?.maxLimit
+            }
+            val limit = ChannelUnreadCatchUp.effectiveLimit(relayMaxLimit)
+            val pending = ArrayDeque(ChannelUnreadCatchUp.plan(lastReadAts))
+            var requests = 0
+            while (pending.isNotEmpty()) {
+                val chunk = pending.removeFirst()
+                requests++
+                val events = mutableListOf<NostrEvent>()
+                val completed = fetch(catchUpSubId, NostrFilter(
+                    kinds = listOf(42),
+                    eTags = chunk.channelIds,
+                    since = chunk.since,
+                    until = liveSince - 1,
+                    limit = limit,
+                )) { event -> if (event.kind == 42) events += event }
+                // 失敗・タイムアウトしたチャンクは前回値を維持する(第16.12.5節)。
+                if (!completed) continue
+                val results = ChannelUnreadCatchUp.tally(chunk, events, lastReadAts, limit) { it.channelIdFromMessage() }
+                val retry = if (results.values.any { it.isLowerBound }) {
+                    ChannelUnreadCatchUp.split(chunk, lastReadAts)
+                } else {
+                    emptyList()
+                }
+                // 分割後の要求が予算内に収まる場合だけ再問い合わせし、この回の下限値は捨てる。
+                if (retry.isNotEmpty() && requests + pending.size + retry.size <= ChannelUnreadCatchUp.MAX_REQUESTS) {
+                    retry.asReversed().forEach(pending::addFirst)
+                } else {
+                    unreadTracker.applyCatchUp(results, currentLastReadAts(relayUrl))
+                }
+                events.groupBy { it.channelIdFromMessage() }.forEach { (channelId, channelEvents) ->
+                    val newest = channelEvents.maxWithOrNull(compareBy<NostrEvent> { it.createdAt }.thenBy { it.id })
+                    if (channelId != null && newest != null) updateActivity(newest, channelId)
+                }
+                emitReady()
+            }
         }
     }
 
@@ -608,10 +676,10 @@ class ChannelListViewModel(
             launch {
                 try {
                     yield()
-                    val since = cachedChannels[channelId]?.latestMessageCreatedAt
+                    // 未読件数はキャッチアップで数えるため、ここではプレビュー用の最新1件だけを取る。
+                    val since = cachedChannels[channelId]?.latestMessage?.createdAt
                     fetch(activitySubId, NostrFilter(
-                        kinds = listOf(42), eTags = listOf(channelId), since = since,
-                        limit = if (since != null) 200 else 100,
+                        kinds = listOf(42), eTags = listOf(channelId), since = since, limit = 1,
                     )) { event ->
                         if (event.kind == 42 && event.channelIdFromMessage() == channelId && seenMessageIds.add(event.id)) {
                             if (seenMessageIds.size > MAX_SEEN_MSG_IDS) seenMessageIds.remove(seenMessageIds.first())
@@ -653,7 +721,7 @@ class ChannelListViewModel(
             channelMap.values.map { it.event.pubkey } +
                 channelMap.values.mapNotNull { it.latestMessageAuthorPubkey } +
                 cachedChannels.values.map { it.ownerPubkey } +
-                cachedChannels.values.mapNotNull { it.latestMessageAuthorPubkey }
+                cachedChannels.values.mapNotNull { it.latestMessage?.pubkey }
             )
             .toSet()
         if (authorPubkeys.isNotEmpty() && authorPubkeys != subscribedAuthorPubkeys) {
@@ -674,20 +742,29 @@ class ChannelListViewModel(
                 val item = channelMap[channelId] ?: cachedChannels[channelId]?.toChannelItem()
                 item?.let {
                     val cached = cachedChannels[channelId]
+                    val cachedLatest = cached?.latestMessage
                     val lastActivityAt = listOfNotNull(
                         lastActivities[channelId],
-                        cached?.latestMessageCreatedAt,
+                        cachedLatest?.createdAt,
                     ).maxOrNull()
+                    // ライブで受けた本文(カスタム絵文字タグ付き)が端末保存のプレビューより新しければそちらを使う。
+                    val useCachedPreview = cachedLatest != null &&
+                        (it.latestMessagePreview == null || cachedLatest.createdAt > (lastActivities[channelId] ?: 0))
+                    val latestAuthor = if (useCachedPreview) cachedLatest.pubkey else it.latestMessageAuthorPubkey
+                    val badge = unreadTracker.badge(channelId, cached?.lastReadAt)
                     it.copy(
+                        // kind 41 で更新された実効メタデータは kind 40 の元値より優先する。
+                        meta = cached?.takeIf { state -> state.metadataKind == 41 }?.meta ?: it.meta,
                         authorProfile = authorProfiles[it.event.pubkey],
                         lastActivityAt = lastActivityAt,
-                        latestMessageAuthorPubkey = cached?.latestMessageAuthorPubkey ?: it.latestMessageAuthorPubkey,
-                        latestMessageAuthorProfile = (cached?.latestMessageAuthorPubkey ?: it.latestMessageAuthorPubkey)
-                            ?.let { pubkey -> authorProfiles[pubkey] },
-                        latestMessagePreview = cached?.latestMessagePreview ?: it.latestMessagePreview,
-                        latestMessageCustomEmojis = it.latestMessageCustomEmojis,
-                        unreadCount = cached?.unreadCount ?: 0,
-                        hasBeenOpened = cached?.hasBeenOpened ?: false,
+                        latestMessageAuthorPubkey = latestAuthor,
+                        latestMessageAuthorProfile = latestAuthor?.let { pubkey -> authorProfiles[pubkey] },
+                        latestMessagePreview = if (useCachedPreview) cachedLatest.contentPreview else it.latestMessagePreview,
+                        latestMessageCustomEmojis = if (useCachedPreview) emptyMap() else it.latestMessageCustomEmojis,
+                        unreadCount = badge.count,
+                        unreadCountIsLowerBound = badge.isLowerBound,
+                        hasNewActivity = badge.hasNewActivity,
+                        hasBeenOpened = cached?.lastReadAt != null,
                         isFavorite = cached?.isFavorite ?: false,
                     )
                 }
@@ -697,26 +774,21 @@ class ChannelListViewModel(
                     .thenByDescending { it.lastActivityAt ?: it.event.createdAt },
             )
 
-    private fun CachedChannelSummary.toChannelItem(): ChannelItem =
+    private fun ChannelLocalState.toChannelItem(): ChannelItem =
         ChannelItem(
             event = NostrEvent(
                 id = channelId,
                 pubkey = ownerPubkey,
-                createdAt = createdAt,
+                createdAt = channelCreatedAt,
                 kind = 40,
                 tags = emptyList(),
                 content = "",
                 sig = "",
             ),
-            meta = ChannelMeta(
-                name = name,
-                about = about,
-                picture = picture,
-            ),
-            lastActivityAt = latestMessageCreatedAt,
-            latestMessageAuthorPubkey = latestMessageAuthorPubkey,
-            latestMessagePreview = latestMessagePreview,
-            unreadCount = unreadCount,
+            meta = meta,
+            lastActivityAt = latestMessage?.createdAt,
+            latestMessageAuthorPubkey = latestMessage?.pubkey,
+            latestMessagePreview = latestMessage?.contentPreview,
             isFavorite = isFavorite,
         )
 

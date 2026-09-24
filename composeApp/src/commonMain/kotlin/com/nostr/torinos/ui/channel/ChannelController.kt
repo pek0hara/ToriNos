@@ -33,7 +33,7 @@ import com.nostr.torinos.network.ChannelReadingPosition
 import com.nostr.torinos.network.RelayTarget
 import com.nostr.torinos.network.SubscriptionBehavior
 import com.nostr.torinos.network.SubscriptionSpec
-import com.nostr.torinos.network.ChannelCacheStore
+import com.nostr.torinos.network.ChannelLocalStore
 import com.nostr.torinos.network.NostrRepository
 import com.nostr.torinos.network.ProfileFetchPolicy
 import com.nostr.torinos.network.ProfileRepository
@@ -135,9 +135,8 @@ internal class ChannelController(
         channelId = channelId,
         fetch = ::fetchHistoryPage,
         lookup = { id ->
-            ChannelCacheStore.getMessage(channelId, id)
-                ?: fetchHistoryPage(NostrFilter(ids = listOf(id), kinds = listOf(42), limit = 1))
-                    .events.firstOrNull()
+            fetchHistoryPage(NostrFilter(ids = listOf(id), kinds = listOf(42), limit = 1))
+                .events.firstOrNull()
         },
     )
 
@@ -151,15 +150,21 @@ internal class ChannelController(
                 behavior = SubscriptionBehavior.Fetch(10_000),
             ),
         ) { event -> if (noteContext.matches(event)) events.add(event) }
-        val retainedEvents = events.filterNot { it.id in locallyDeletedMessageIds }
+        // メッセージ本体は端末へ保存しない(第16.12節)。一覧プレビュー用に最新1件だけ記録する。
+        val retainedEvents = events.filterNot { it.id in locallyDeletedMessageIds }.distinctBy { it.id }
+        retainedEvents.maxWithOrNull(compareBy<NostrEvent> { it.createdAt }.thenBy { it.id })
+            ?.let { recordLatestMessage(it) }
+        return ChannelHistoryPage(retainedEvents, complete)
+    }
+
+    private suspend fun recordLatestMessage(event: NostrEvent) {
         try {
-            relayUrl?.let { url -> ChannelCacheStore.upsertMessages(url, retainedEvents, channelId) }
+            ChannelLocalStore.recordLatestMessage(channelId, event)
         } catch (cancelled: CancellationException) {
             throw cancelled
         } catch (error: Exception) {
-            logException("ChannelController", error, "Could not cache messages")
+            logException("ChannelController", error, "Could not record latest channel message")
         }
-        return ChannelHistoryPage(retainedEvents.distinctBy { it.id }, complete)
     }
 
     init {
@@ -222,13 +227,7 @@ internal class ChannelController(
                 is SignedPublishResult.Published -> {
                     locallyDeletedMessageIds += eventId
                     history.remove(eventId)
-                    try {
-                        ChannelCacheStore.deleteMessage(eventId)
-                    } catch (cancelled: CancellationException) {
-                        throw cancelled
-                    } catch (error: Exception) {
-                        logException("ChannelController", error, "Could not delete cached channel message")
-                    }
+                    ChannelLocalStore.clearLatestMessage(channelId, eventId)
                 }
                 SignedPublishResult.MissingSigner -> {
                     val ready = _state.value as? UiState.Ready
@@ -440,11 +439,10 @@ internal class ChannelController(
             scheduleMentionedProfileFetch(event.content)
             scheduleEngagementFetch(event.id)
         }
-        val url = relayUrl ?: return
         val latestVisible = visible.maxOfOrNull { it.createdAt }
         if (latestVisible != null && latestVisible > lastMarkedReadAt) {
             lastMarkedReadAt = latestVisible
-            launch { ChannelCacheStore.markRead(url, channelId, latestVisible) }
+            launch { ChannelLocalStore.markRead(channelId, latestVisible) }
         }
         if (!savePosition || history.state.value.isLoading || history.state.value.navigation != null) return
         val anchor = visible.firstOrNull { it.id == anchorId } ?: return
@@ -453,23 +451,22 @@ internal class ChannelController(
         positionSaveJob?.cancel()
         positionSaveJob = launch {
             delay(POSITION_SAVE_DEBOUNCE_MS)
-            saveReadingPosition(url, position)
+            saveReadingPosition(position)
         }
     }
 
     fun flushReadingPosition() {
-        val url = relayUrl ?: return
         val position = pendingReadingPosition ?: return
         if (position == savedReadingPosition) return
         positionSaveJob?.cancel()
         // 画面破棄直後に ViewModel のスコープがキャンセルされても、最後の位置だけは保存を完了する。
         positionSaveJob = launch(start = CoroutineStart.UNDISPATCHED) {
-            withContext(NonCancellable) { saveReadingPosition(url, position) }
+            withContext(NonCancellable) { saveReadingPosition(position) }
         }
     }
 
-    private suspend fun saveReadingPosition(url: String, position: ChannelReadingPosition) {
-        ChannelCacheStore.saveReadingPosition(url, channelId, position)
+    private suspend fun saveReadingPosition(position: ChannelReadingPosition) {
+        ChannelLocalStore.saveReadingPosition(channelId, position)
         savedReadingPosition = position
     }
 
@@ -489,7 +486,7 @@ internal class ChannelController(
         currentChannelMeta = resolution.metadata
         currentChannelOwnerPubkey = resolution.channelCreateEvent.pubkey
         try {
-            ChannelCacheStore.upsertChannelMetadata(
+            ChannelLocalStore.upsertChannelMetadata(
                 channelCreateEvent = resolution.channelCreateEvent,
                 effectiveEvent = resolution.effectiveEvent,
                 metadata = resolution.metadata,
@@ -540,7 +537,7 @@ internal class ChannelController(
             NostrRepository.events(msgSubId).collect { event ->
                 if (!noteContext.matches(event)) return@collect
                 history.receive(event)
-                relayUrl?.let { ChannelCacheStore.upsertMessage(it, event, channelId) }
+                recordLatestMessage(event)
             }
         }
 
@@ -668,19 +665,22 @@ internal class ChannelController(
         }
 
         jobs += launch {
-            val url = relayUrl
-            val cachedState = try {
-                withTimeoutOrNull(10_000) {
-                    val cached = if (url != null) ChannelCacheStore.getMessages(url, channelId, ChannelHistory.PAGE_SIZE) else emptyList()
-                    cached to url?.let { ChannelCacheStore.getReadingPosition(it, channelId) }
-                }
+            val localState = try {
+                withTimeoutOrNull(10_000) { ChannelLocalStore.get(channelId) }
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (error: Exception) {
-                logException("ChannelController", error, "Could not read channel cache")
+                logException("ChannelController", error, "Could not read channel local state")
                 null
             }
-            history.initialize(cachedState?.first.orEmpty(), cachedState?.second)
+            // 保存済みの実効メタデータを暫定表示し、kind 40/41 の受信後に resolver の結果で置き換える(第16.6節)。
+            if (localState != null && localState.hasMetadata && effectiveMetadataSourceEventId == null) {
+                currentChannelMeta = localState.meta
+                currentChannelOwnerPubkey = localState.ownerPubkey
+                syncReadyState()
+            }
+            // メッセージ本体はローカルに持たないため、履歴は常にリレー取得から始める。
+            history.initialize(emptyList(), localState?.readingPosition)
             NostrRepository.subscribe(metaSubId, NostrFilter(ids = listOf(channelId)), relayUrl = relayUrl)
             NostrRepository.subscribe(
                 msgSubId,

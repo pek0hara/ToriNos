@@ -77,7 +77,7 @@ import com.nostr.torinos.model.NoteContext
 import com.nostr.torinos.model.NostrEvent
 import com.nostr.torinos.model.NostrProfile
 import com.nostr.torinos.model.noteContextForChannel
-import com.nostr.torinos.network.ChannelCacheStore
+import com.nostr.torinos.network.deleteLegacyChannelCacheDatabase
 import com.nostr.torinos.network.CustomEmojiStore
 import com.nostr.torinos.network.RelayPublishResult
 import com.nostr.torinos.network.RelayStore
@@ -298,14 +298,14 @@ internal fun AppSessionCoordinator(
             }
         }
 
-        // 起動時のアカウント復元は AccountSessionManager が担当する。DB整理は独立して行う。
+        // 起動時のアカウント復元は AccountSessionManager が担当する。旧チャンネルDBの削除は独立して行う。
         LaunchedEffect(Unit) {
             try {
-                ChannelCacheStore.prune()
+                deleteLegacyChannelCacheDatabase()
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Throwable) {
-                logException("App", e, "Failed to prune channel cache")
+                logException("App", e, "Failed to delete legacy channel cache")
             }
         }
 

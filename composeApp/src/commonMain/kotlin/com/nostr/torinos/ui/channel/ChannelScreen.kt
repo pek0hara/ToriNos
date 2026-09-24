@@ -206,10 +206,15 @@ fun ChannelScreen(
             val layout = listState.layoutInfo
             val ids = layout.visibleItemsInfo.mapNotNull { it.key as? String }.toSet()
             val anchor = layout.visibleItemsInfo.firstOrNull { it.index == listState.firstVisibleItemIndex }?.key as? String
-            Triple(ids, anchor, listState.firstVisibleItemScrollOffset) to
-                (userHasScrolled && !navigating && (state as? ChannelViewModel.UiState.Ready)?.history?.navigation == null)
-        }.distinctUntilChanged().collect { (viewport, save) ->
-            if (!navigating) viewModel.onViewport(viewport.first, viewport.second, viewport.third, save)
+            // navigating も値に含め、初回の最新位置への移動が終わった時点で必ず再通知させる。
+            // 含めないと、移動中に通知を捨てた後スクロールしない限り既読化されない。
+            Triple(ids, anchor, listState.firstVisibleItemScrollOffset) to (
+                navigating to
+                    (userHasScrolled && !navigating && (state as? ChannelViewModel.UiState.Ready)?.history?.navigation == null)
+                )
+        }.distinctUntilChanged().collect { (viewport, flags) ->
+            val (isNavigating, save) = flags
+            if (!isNavigating) viewModel.onViewport(viewport.first, viewport.second, viewport.third, save)
         }
     }
     LaunchedEffect(viewModel, history?.navigation?.sequence, isForeground) {

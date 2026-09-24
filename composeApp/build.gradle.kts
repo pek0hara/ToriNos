@@ -7,8 +7,6 @@ plugins {
     alias(libs.plugins.composeMultiplatform)
     alias(libs.plugins.composeCompiler)
     alias(libs.plugins.kotlinxSerialization)
-    alias(libs.plugins.ksp)
-    alias(libs.plugins.androidxRoom)
 }
 
 kotlin {
@@ -50,10 +48,6 @@ kotlin {
         val commonMain by getting
         val mobileMain by creating {
             dependsOn(commonMain)
-            dependencies {
-                implementation(libs.androidx.room.runtime)
-                implementation(libs.androidx.sqlite.bundled)
-            }
         }
         val androidMain by getting {
             dependsOn(mobileMain)
@@ -105,16 +99,6 @@ kotlin {
             implementation(libs.kotlinx.coroutines.test)
         }
     }
-}
-
-dependencies {
-    add("kspAndroid", libs.androidx.room.compiler)
-    add("kspIosArm64", libs.androidx.room.compiler)
-    add("kspIosSimulatorArm64", libs.androidx.room.compiler)
-}
-
-room {
-    schemaDirectory("$projectDir/schemas")
 }
 
 val verifyNoDirectProfileSubscriptions by tasks.registering {
