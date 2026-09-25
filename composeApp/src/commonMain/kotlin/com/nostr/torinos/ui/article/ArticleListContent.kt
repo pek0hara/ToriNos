@@ -25,6 +25,7 @@ internal fun ArticleListContent(
     listState: LazyListState,
     onArticleClick: (pubkey: String, identifier: String) -> Unit,
     onAuthorClick: ((pubkey: String) -> Unit)?,
+    onTopicClick: ((String) -> Unit)?,
     modifier: Modifier = Modifier,
     contentPadding: PaddingValues = PaddingValues(),
     emptyText: String = "記事がありません",
@@ -57,6 +58,7 @@ internal fun ArticleListContent(
                     article = article,
                     onClick = { onArticleClick(article.event.pubkey, article.meta.identifier) },
                     onAuthorClick = onAuthorClick?.let { { it(article.event.pubkey) } },
+                    onTopicClick = onTopicClick,
                 )
                 HorizontalDivider()
             }

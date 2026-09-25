@@ -60,6 +60,7 @@ fun ArticleDetailScreen(
     onEditArticle: (pubkey: String, identifier: String) -> Unit,
     onUserClick: (pubkey: String) -> Unit,
     onNoteClick: (eventId: String) -> Unit,
+    onTopicClick: (String) -> Unit,
 ) {
     val relays by RelayStore.relays.collectAsState(initial = emptyList())
     val selectedRelayUrl by RelayStore.selectedArticleRelayUrl.collectAsState()
@@ -156,6 +157,7 @@ fun ArticleDetailScreen(
                             loadingQuoteIds = state.loadingQuoteIds,
                             onUserClick = onUserClick,
                             onNoteClick = onNoteClick,
+                            onTopicClick = onTopicClick,
                         )
                     }
                 }
@@ -231,6 +233,7 @@ private fun ArticleDetailContent(
     loadingQuoteIds: Set<String>,
     onUserClick: (pubkey: String) -> Unit,
     onNoteClick: (eventId: String) -> Unit,
+    onTopicClick: (String) -> Unit,
 ) {
     Column(
         modifier = Modifier
@@ -266,10 +269,10 @@ private fun ArticleDetailContent(
             onNoteClick = onNoteClick,
         )
         if (article.meta.topics.isNotEmpty()) {
-            Text(
-                text = article.meta.topics.joinToString("  ") { "#$it" },
+            ArticleTopics(
+                topics = article.meta.topics,
+                onTopicClick = onTopicClick,
                 style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.primary,
             )
         }
     }

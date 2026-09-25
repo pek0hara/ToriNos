@@ -2,6 +2,8 @@ package com.nostr.torinos.ui.article
 
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.WindowInsets
@@ -22,7 +24,9 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -58,17 +62,21 @@ fun UserArticleListScreen(
         return
     }
 
+    // ユーザー別記事一覧のトピックは、この画面の中だけで使う。
+    var topic by rememberSaveable(pubkey) { mutableStateOf<String?>(null) }
+    val query = ArticleQuery(authorScope = ArticleAuthorScope.Only(pubkey), topic = topic)
     val viewModel: ArticleListViewModel = accountSessionViewModel(
         key = "user-articles-$pubkey-$activeRelayUrl",
     ) { session ->
         ArticleListViewModel(
-            query = ArticleQuery.Author(pubkey),
+            initialQuery = query,
             relayUrl = activeRelayUrl,
             accountSession = session,
         )
     }
+    LaunchedEffect(viewModel, query) { viewModel.setQuery(query) }
     val state by viewModel.state.collectAsState()
-    val listState = rememberSaveable(pubkey, selectedRelayUrl, saver = LazyListState.Saver) { LazyListState() }
+    val listState = rememberSaveable(pubkey, selectedRelayUrl, topic, saver = LazyListState.Saver) { LazyListState() }
     val profile = state.profiles[pubkey]
 
     LaunchedEffect(listState, state.canLoadMore, state.isLoadingMore) {
@@ -110,14 +118,27 @@ fun UserArticleListScreen(
                 onClick = { onUserClick(pubkey) },
             )
             HorizontalDivider()
-            ArticleListContent(
-                state = state,
-                listState = listState,
-                onArticleClick = onArticleClick,
-                onAuthorClick = null,
-                emptyText = "記事がありません",
-                modifier = Modifier.fillMaxWidth().weight(1f),
-            )
+            Box(modifier = Modifier.fillMaxWidth().weight(1f)) {
+                ArticleListContent(
+                    state = state,
+                    listState = listState,
+                    onArticleClick = onArticleClick,
+                    onAuthorClick = null,
+                    onTopicClick = { topic = it },
+                    contentPadding = PaddingValues(
+                        top = articleFloatingFiltersHeight(hasAuthorFilter = false, hasTopic = topic != null),
+                    ),
+                    emptyText = if (topic == null) "記事がありません" else "条件に合う記事がありません",
+                    modifier = Modifier.fillMaxSize(),
+                )
+                ArticleFloatingFilters(
+                    authorFilter = null,
+                    onAuthorFilterChange = {},
+                    topic = topic,
+                    onClearTopic = { topic = null },
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
         }
     }
 }

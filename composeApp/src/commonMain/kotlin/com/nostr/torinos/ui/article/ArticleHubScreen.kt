@@ -1,9 +1,12 @@
 package com.nostr.torinos.ui.article
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.material.icons.Icons
@@ -42,6 +45,10 @@ fun ArticleHubScreen(
     onOpenRelaySettings: () -> Unit,
     onArticleClick: (pubkey: String, identifier: String) -> Unit,
     onAuthorClick: (pubkey: String) -> Unit,
+    authorFilter: ArticleAuthorFilter,
+    onAuthorFilterChange: (ArticleAuthorFilter) -> Unit,
+    topic: String?,
+    onTopicChange: (String?) -> Unit,
     selectedServiceTab: ServiceTab,
     onServiceTabSelected: (ServiceTab) -> Unit,
 ) {
@@ -58,11 +65,18 @@ fun ArticleHubScreen(
         return
     }
 
+    val query = ArticleQuery(
+        authorScope = authorFilter.toAuthorScope(ownPubkey),
+        topic = topic,
+    )
     val viewModel: ArticleListViewModel = accountSessionViewModel(key = "article-hub-$activeRelayUrl") { session ->
-        ArticleListViewModel(query = ArticleQuery.Global, relayUrl = activeRelayUrl, accountSession = session)
+        ArticleListViewModel(initialQuery = query, relayUrl = activeRelayUrl, accountSession = session)
     }
+    LaunchedEffect(viewModel, query) { viewModel.setQuery(query) }
     val state by viewModel.state.collectAsState()
-    val listState = rememberSaveable(activeRelayUrl, saver = LazyListState.Saver) { LazyListState() }
+    val listState = rememberSaveable(activeRelayUrl, query, saver = LazyListState.Saver) { LazyListState() }
+    // 未ログイン時は著者セグメントを出さず「すべて」に固定する。
+    val showAuthorFilter = ownPubkey != null
     val headerBackgroundColor = MaterialTheme.colorScheme.background
     val headerContentColor = MaterialTheme.colorScheme.onBackground
 
@@ -121,18 +135,34 @@ fun ArticleHubScreen(
             }
         },
     ) { padding ->
-        ArticleListContent(
-            state = state,
-            listState = listState,
-            onArticleClick = onArticleClick,
-            onAuthorClick = onAuthorClick,
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(padding)
-                .serviceTabSwipe(
-                    selectedTab = selectedServiceTab,
-                    onTabSelected = onServiceTabSelected,
+        Box(modifier = Modifier.fillMaxSize().padding(padding)) {
+            ArticleListContent(
+                state = state,
+                listState = listState,
+                onArticleClick = onArticleClick,
+                onAuthorClick = onAuthorClick,
+                onTopicClick = onTopicChange,
+                contentPadding = PaddingValues(
+                    top = articleFloatingFiltersHeight(
+                        hasAuthorFilter = showAuthorFilter,
+                        hasTopic = topic != null,
+                    ),
                 ),
-        )
+                emptyText = if (query == ArticleQuery()) "記事がありません" else "条件に合う記事がありません",
+                modifier = Modifier
+                    .fillMaxSize()
+                    .serviceTabSwipe(
+                        selectedTab = selectedServiceTab,
+                        onTabSelected = onServiceTabSelected,
+                    ),
+            )
+            ArticleFloatingFilters(
+                authorFilter = authorFilter.takeIf { showAuthorFilter },
+                onAuthorFilterChange = onAuthorFilterChange,
+                topic = topic,
+                onClearTopic = { onTopicChange(null) },
+                modifier = Modifier.fillMaxWidth(),
+            )
+        }
     }
 }

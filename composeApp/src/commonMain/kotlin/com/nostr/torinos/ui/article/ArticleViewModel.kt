@@ -150,26 +150,30 @@ internal fun List<ArticleItem>.withUpsertedArticle(candidate: ArticleItem): List
     return result
 }
 
-/** 記事一覧の取得条件。 */
-sealed interface ArticleQuery {
-    /** 選択中リレーの全著者の記事。 */
-    data object Global : ArticleQuery
+/** 記事一覧で取得する著者の範囲。 */
+sealed interface ArticleAuthorScope {
+    /** 選択中リレーの全著者。 */
+    data object All : ArticleAuthorScope
 
-    /** 指定した著者の記事。 */
-    data class Author(val pubkey: String) : ArticleQuery
+    /** ログイン中アカウントのフォロー中ユーザー。 */
+    data object Following : ArticleAuthorScope
+
+    /** 指定した1人の著者。 */
+    data class Only(val pubkey: String) : ArticleAuthorScope
 }
 
-private val ArticleQuery.authorPubkey: String?
-    get() = (this as? ArticleQuery.Author)?.pubkey
-
-private fun ArticleQuery.matchesAuthor(pubkey: String): Boolean =
-    authorPubkey == null || authorPubkey == pubkey
+/** 記事一覧の取得条件。著者の範囲とトピックはAND条件でリレーのフィルターへ変換する。 */
+data class ArticleQuery(
+    val authorScope: ArticleAuthorScope = ArticleAuthorScope.All,
+    val topic: String? = null,
+)
 
 class ArticleListViewModel(
-    private val query: ArticleQuery,
+    initialQuery: ArticleQuery,
     private val relayUrl: String? = null,
     private val accountSession: AccountSession? = null,
 ) : SafeViewModel() {
+    private var query = initialQuery
     private val _state = MutableStateFlow(ArticleListState())
     val state: StateFlow<ArticleListState> = _state.asStateFlow()
 
@@ -183,8 +187,13 @@ class ArticleListViewModel(
             accountSession?.muteStore?.mutedPubkeys?.drop(1)?.collect { updateStateFromEvents() }
         }
         launch {
+            accountSession?.followRepository?.followedPubkeys?.drop(1)?.collect {
+                if (query.authorScope == ArticleAuthorScope.Following) refresh()
+            }
+        }
+        launch {
             ArticleMemoryCache.articleEvents.collect { localEvent ->
-                if (!localEvent.matches(relayUrl) || !query.matchesAuthor(localEvent.event.pubkey)) return@collect
+                if (!localEvent.matches(relayUrl) || !matchesQuery(localEvent.event)) return@collect
                 rawEvents[localEvent.event.id] = localEvent.event
                 applyLocalArticleEvent(localEvent.event)
                 fetchMissingProfiles()
@@ -192,11 +201,18 @@ class ArticleListViewModel(
         }
         launch {
             ArticleMemoryCache.articleDeletions.collect { deletion ->
-                if (!deletion.matches(relayUrl) || !query.matchesAuthor(deletion.pubkey)) return@collect
+                if (!deletion.matches(relayUrl) || !matchesAuthorScope(deletion.pubkey)) return@collect
                 removeRawArticle(deletion.address)
                 applyLocalArticleDeletion(deletion.address)
             }
         }
+        refresh()
+    }
+
+    /** 取得条件を変更する。条件が変わった場合だけ一覧を読み込み直す。 */
+    fun setQuery(newQuery: ArticleQuery) {
+        if (newQuery == query) return
+        query = newQuery
         refresh()
     }
 
@@ -223,15 +239,26 @@ class ArticleListViewModel(
             error = null,
         )
         try {
-            val events = fetchArticleEvents(
-                filter = NostrFilter(
-                    kinds = listOf(NIP23_ARTICLE_KIND),
-                    authors = query.authorPubkey?.let(::listOf),
-                    until = until,
-                    limit = ARTICLE_PAGE_SIZE,
-                ),
-                relayUrl = relayUrl,
-            )
+            val authors = when (val scope = query.authorScope) {
+                ArticleAuthorScope.All -> null
+                ArticleAuthorScope.Following -> followedPubkeys().toList()
+                is ArticleAuthorScope.Only -> listOf(scope.pubkey)
+            }
+            // フォローが0人のとき、空のauthorsをリレーへ送らず結果なしとして扱う。
+            val events = if (authors?.isEmpty() == true) {
+                emptyList()
+            } else {
+                fetchArticleEvents(
+                    filter = NostrFilter(
+                        kinds = listOf(NIP23_ARTICLE_KIND),
+                        authors = authors,
+                        tTags = query.topic?.let(::listOf),
+                        until = until,
+                        limit = ARTICLE_PAGE_SIZE,
+                    ),
+                    relayUrl = relayUrl,
+                )
+            }
             lastPageSize = events.size
             events.forEach { event ->
                 rawEvents[event.id] = event
@@ -326,9 +353,25 @@ class ArticleListViewModel(
         _state.value = _state.value.copy(articles = articles)
     }
 
+    private fun followedPubkeys(): Set<String> =
+        accountSession?.followRepository?.followedPubkeys?.value.orEmpty()
+
+    private fun matchesAuthorScope(pubkey: String): Boolean = when (val scope = query.authorScope) {
+        ArticleAuthorScope.All -> true
+        ArticleAuthorScope.Following -> pubkey in followedPubkeys()
+        is ArticleAuthorScope.Only -> scope.pubkey == pubkey
+    }
+
+    private fun matchesQuery(event: NostrEvent): Boolean {
+        if (!matchesAuthorScope(event.pubkey)) return false
+        val topic = query.topic ?: return true
+        return event.toArticleMeta()?.topics?.contains(topic) == true
+    }
+
     /** 著者指定の一覧では、記事が1件もなくても見出し用に著者のプロフィールを取得する。 */
     private suspend fun fetchMissingProfiles() {
-        val missing = (listOfNotNull(query.authorPubkey) + rawEvents.values.map { it.pubkey })
+        val scopedAuthor = (query.authorScope as? ArticleAuthorScope.Only)?.pubkey
+        val missing = (listOfNotNull(scopedAuthor) + rawEvents.values.map { it.pubkey })
             .distinct()
             .filterNot { it in _state.value.profiles }
         val cachedProfiles = ProfileRepository.getCached(missing)

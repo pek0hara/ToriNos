@@ -35,6 +35,7 @@ internal fun ArticleCard(
     article: ArticleItem,
     onClick: () -> Unit,
     onAuthorClick: (() -> Unit)?,
+    onTopicClick: ((String) -> Unit)?,
 ) {
     val imageUrl = article.meta.imageUrl?.takeIf { it.isNotBlank() }
     Column(
@@ -103,12 +104,10 @@ internal fun ArticleCard(
         }
         ArticleAuthorLine(article = article, onUserClick = onAuthorClick)
         if (article.meta.topics.isNotEmpty()) {
-            Text(
-                text = article.meta.topics.take(5).joinToString("  ") { "#$it" },
-                style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.primary,
+            ArticleTopics(
+                topics = article.meta.topics.take(5),
+                onTopicClick = onTopicClick,
                 maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
             )
         }
     }

@@ -86,6 +86,7 @@ import com.nostr.torinos.network.RelayStore
 import com.nostr.torinos.network.resolveReplyTarget
 import com.nostr.torinos.ui.article.ArticleDetailScreen
 import com.nostr.torinos.ui.article.ArticleEditorScreen
+import com.nostr.torinos.ui.article.ArticleAuthorFilter
 import com.nostr.torinos.ui.article.ArticleHubScreen
 import com.nostr.torinos.ui.article.UserArticleListScreen
 import com.nostr.torinos.ui.channel.ChannelListScreen
@@ -203,6 +204,9 @@ internal fun AppSessionCoordinator(
         val followingFeedListState = remember { LazyListState() }
         val globalFeedListState = remember { LazyListState() }
         var currentServiceTab by remember { mutableStateOf(ServiceTab.Articles) }
+        // 記事タブの絞り込み。リレー切り替えでは維持し、アカウント切り替えとアプリ再起動で既定値へ戻る。
+        var articleAuthorFilter by remember { mutableStateOf(ArticleAuthorFilter.All) }
+        var articleTopic by remember { mutableStateOf<String?>(null) }
         val appLifecycle = LocalLifecycleOwner.current.lifecycle
 
         LaunchedEffect(appLifecycle) {
@@ -909,6 +913,10 @@ internal fun AppSessionCoordinator(
                                     onAuthorClick = { pubkey ->
                                         nav.navigate(UserArticlesRoute(pubkey))
                                     },
+                                    authorFilter = articleAuthorFilter,
+                                    onAuthorFilterChange = { articleAuthorFilter = it },
+                                    topic = articleTopic,
+                                    onTopicChange = { articleTopic = it },
                                     selectedServiceTab = currentServiceTab,
                                     onServiceTabSelected = { currentServiceTab = it },
                                 )
@@ -963,6 +971,14 @@ internal fun AppSessionCoordinator(
                             },
                             onUserClick = ::openProfileDrawer,
                             onNoteClick = { eventId -> nav.navigate(ThreadRoute(eventId)) },
+                            onTopicClick = { topic ->
+                                articleTopic = topic
+                                currentServiceTab = ServiceTab.Articles
+                                // 記事タブがスタックにあればそこまで戻し、途中の一覧や詳細を積み残さない。
+                                if (!nav.popBackStack(route = "services", inclusive = false)) {
+                                    navigateTopLevelRoute("services")
+                                }
+                            },
                         )
                     }
                     composable("article-editor") {
