@@ -39,7 +39,9 @@ class StatusPublisher internal constructor(
         when (target) {
             is StatusPublishTarget.SelectedRelay ->
                 NostrRepository.publishToRelays(event, listOf(target.relayUrl))
-            StatusPublishTarget.WritableRelays -> NostrRepository.publish(event)
+            // プロフィール画面では全書き込みリレーを対象にするが、未接続リレーの
+            // タイムアウトまで編集シートを送信中にしない。最初の成功後も残りは送信される。
+            StatusPublishTarget.WritableRelays -> NostrRepository.publishUntilFirstSuccess(event)
         }
     },
 ) {

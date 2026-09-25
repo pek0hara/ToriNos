@@ -276,6 +276,10 @@ internal sealed interface StatusPublishResult {
 ステータスタブは`SelectedRelay`、プロフィール画面は`WritableRelays`を指定する。初期実装では現行と同じく
 WebSocketへの送信完了を成功とし、リレーの`OK`応答は待たない。
 
+`WritableRelays`は最初の1リレーへの送信成功でUI上の投稿を完了し、残りのリレーへの送信は
+`NostrRepository`のスコープで継続する。未接続リレーの接続タイムアウトによって、ステータスの
+保存・削除シートが送信中のまま塞がれないようにする。全リレーが失敗した場合だけ`Rejected`を返す。
+
 ### 5.5 外部依存の境界
 
 ViewModelのテストからグローバルなRepositoryを直接操作しないよう、購読、プロフィール、時刻を

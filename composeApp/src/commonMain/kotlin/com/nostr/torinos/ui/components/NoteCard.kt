@@ -1336,7 +1336,7 @@ private fun reactionChipColors(darkTheme: Boolean): ReactionChipColors =
     }
 
 @Composable
-private fun QuickReactionMenu(
+internal fun QuickReactionMenu(
     expanded: Boolean,
     selectedReactionKeys: Set<String>,
     onDismiss: () -> Unit,

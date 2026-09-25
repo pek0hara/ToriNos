@@ -688,6 +688,22 @@ object NostrRepository {
         return result
     }
 
+    /**
+     * 有効な書き込みリレーのうち最初の1件へ送信できた時点で戻る。
+     * 残りのリレーへの送信はリポジトリのスコープで継続するため、未接続リレーの
+     * タイムアウトが投稿完了後のUIを塞がない。
+     */
+    suspend fun publishUntilFirstSuccess(event: NostrEvent): RelayPublishResult {
+        val targets = RelayStore.writableRelayUrlsSnapshot()
+        check(targets.isNotEmpty()) { "書き込み可能なリレーがありません" }
+        val result = publishToRelaysUntilFirstSuccess(event, targets)
+        check(result.succeededRelays.isNotEmpty()) {
+            "すべてのリレーへの送信に失敗しました: ${result.failedRelays.keys.joinToString()}"
+        }
+        ReactionEventStore.observe(event, result.succeededRelays)
+        return result
+    }
+
     /** 署名済みイベントを指定リレーにだけ送信する。未接続リレーは一時接続して送る。 */
     suspend fun publishToRelays(event: NostrEvent, relayUrls: Collection<String>) {
         val result = publishToRelaysWithResult(event, relayUrls)

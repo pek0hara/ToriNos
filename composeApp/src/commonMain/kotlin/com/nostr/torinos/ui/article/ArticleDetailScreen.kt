@@ -2,11 +2,16 @@ package com.nostr.torinos.ui.article
 
 import com.nostr.torinos.article.commentReplyTarget
 import com.nostr.torinos.model.ReplyTarget
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.asPaddingValues
+import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -39,6 +44,10 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
+import androidx.compose.ui.input.nestedscroll.NestedScrollSource
+import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -108,6 +117,20 @@ fun ArticleDetailScreen(
         }
     }
     var showDeleteDialog by rememberSaveable(pubkey, identifier) { mutableStateOf(false) }
+    var showCommentsSheet by rememberSaveable(pubkey, identifier) { mutableStateOf(false) }
+    // 本文を下へ読み進めている間は下部バーを隠し、上へ戻すと再表示する。
+    var isEngagementBarVisible by remember { mutableStateOf(true) }
+    val barScrollConnection = remember {
+        object : NestedScrollConnection {
+            override fun onPreScroll(available: Offset, source: NestedScrollSource): Offset {
+                when {
+                    available.y < -BarToggleThresholdPx -> isEngagementBarVisible = false
+                    available.y > BarToggleThresholdPx -> isEngagementBarVisible = true
+                }
+                return Offset.Zero
+            }
+        }
+    }
 
     LaunchedEffect(state.deleteCompletedCount) {
         if (state.deleteCompletedCount > 0) {
@@ -167,30 +190,58 @@ fun ArticleDetailScreen(
                 )
             }
             state.article != null -> state.article?.let { article ->
-                LazyColumn(
-                    modifier = Modifier.fillMaxSize().padding(padding),
-                    contentPadding = PaddingValues(bottom = 24.dp),
-                ) {
-                    item(contentType = "article") {
-                        ArticleDetailContent(
-                            article = article,
-                            quotedEvents = state.quotedEvents,
-                            quotedProfiles = state.quotedProfiles,
-                            loadingQuoteIds = state.loadingQuoteIds,
-                            onUserClick = onUserClick,
-                            onNoteClick = onNoteClick,
-                            onTopicClick = onTopicClick,
+                // 下部バーは本文の上に重ねる。バーの出入りで本文の高さを変えず、スクロール中の再レイアウトを避ける。
+                val navigationBarBottom = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
+                Box(modifier = Modifier.fillMaxSize().padding(padding)) {
+                    LazyColumn(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .nestedScroll(barScrollConnection),
+                        contentPadding = PaddingValues(bottom = EngagementBarHeight + navigationBarBottom + 24.dp),
+                    ) {
+                        item(contentType = "article") {
+                            ArticleDetailContent(
+                                article = article,
+                                quotedEvents = state.quotedEvents,
+                                quotedProfiles = state.quotedProfiles,
+                                loadingQuoteIds = state.loadingQuoteIds,
+                                onUserClick = onUserClick,
+                                onNoteClick = onNoteClick,
+                                onTopicClick = onTopicClick,
+                            )
+                        }
+                    }
+                    AnimatedVisibility(
+                        visible = isEngagementBarVisible,
+                        enter = slideInVertically { it },
+                        exit = slideOutVertically { it },
+                        modifier = Modifier.align(Alignment.BottomCenter),
+                    ) {
+                        ArticleEngagementBar(
+                            engagement = state.engagement,
+                            actions = reactionActions,
+                            onOpenComments = { showCommentsSheet = true },
+                            onComment = { onComment(article.commentReplyTarget(), article.displayTitle) },
                         )
                     }
-                    articleEngagementItems(
-                        engagement = state.engagement,
-                        onUserClick = onUserClick,
-                        reactionActions = reactionActions,
-                        onComment = { onComment(article.commentReplyTarget(), article.displayTitle) },
-                    )
                 }
             }
         }
+    }
+
+    val sheetArticle = state.article
+    if (showCommentsSheet && sheetArticle != null) {
+        ArticleCommentsSheet(
+            engagement = state.engagement,
+            actions = reactionActions,
+            onUserClick = { pubkey ->
+                showCommentsSheet = false
+                onUserClick(pubkey)
+            },
+            onComment = { onComment(sheetArticle.commentReplyTarget(), sheetArticle.displayTitle) },
+            onRetry = viewModel::reloadEngagement,
+            onDismiss = { showCommentsSheet = false },
+        )
     }
 
     if (showDeleteDialog) {
@@ -305,3 +356,5 @@ private fun ArticleDetailContent(
         }
     }
 }
+
+private const val BarToggleThresholdPx = 6f

@@ -49,16 +49,14 @@ import com.nostr.torinos.ui.components.formatTimestamp
 import com.nostr.torinos.ui.components.stripImageUrls
 import com.nostr.torinos.ui.profile.AvatarCircle
 
-/** 記事詳細の本文の下に、リアクション集計とコメント一覧を並べる。 */
+/** コメントシートの中身として、リアクションの内訳とコメント一覧を並べる。 */
 internal fun LazyListScope.articleEngagementItems(
     engagement: ArticleEngagementState,
     onUserClick: (pubkey: String) -> Unit,
     reactionActions: ArticleReactionActions?,
     onComment: () -> Unit,
+    onRetry: () -> Unit,
 ) {
-    item(key = "engagement-divider", contentType = "divider") {
-        HorizontalDivider(modifier = Modifier.padding(horizontal = 20.dp))
-    }
     when (engagement) {
         ArticleEngagementState.Loading -> item(key = "engagement-loading", contentType = "loading") {
             Box(
@@ -67,7 +65,15 @@ internal fun LazyListScope.articleEngagementItems(
             ) { CircularProgressIndicator(modifier = Modifier.size(24.dp), strokeWidth = 2.dp) }
         }
         is ArticleEngagementState.Failed -> item(key = "engagement-failed", contentType = "message") {
-            EngagementMessage(text = engagement.message, isError = true)
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(end = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Box(modifier = Modifier.weight(1f)) {
+                    EngagementMessage(text = engagement.message, isError = true)
+                }
+                TextButton(onClick = onRetry) { Text("再試行") }
+            }
         }
         is ArticleEngagementState.Loaded -> {
             item(key = "engagement-reactions", contentType = "reactions") {
