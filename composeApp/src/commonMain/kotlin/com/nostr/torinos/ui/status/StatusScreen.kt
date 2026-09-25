@@ -11,10 +11,12 @@ import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.AccessTime
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.CircularProgressIndicator
@@ -39,12 +41,14 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.lifecycle.viewmodel.initializer
-import androidx.lifecycle.viewmodel.compose.viewModel
+import androidx.lifecycle.compose.LifecycleStartEffect
+import kotlin.time.Clock
 import com.nostr.torinos.account.accountSessionViewModel
-import androidx.lifecycle.viewmodel.viewModelFactory
 import com.nostr.torinos.model.NostrProfile
 import com.nostr.torinos.network.RelayStore
+import com.nostr.torinos.status.GENERAL_STATUS_IDENTIFIER
+import com.nostr.torinos.status.StatusEntry
+import com.nostr.torinos.status.StatusPublishState
 import com.nostr.torinos.ui.components.LinkedText
 import com.nostr.torinos.ui.components.ProfileNameText
 import com.nostr.torinos.ui.components.formatTimestamp
@@ -89,14 +93,19 @@ fun StatusScreen(
     }
 
     val viewModel: StatusViewModel = accountSessionViewModel(
-        key = "status-$activeRelayUrl",
+        key = "status",
     ) { accountSession ->
-        StatusViewModel(relayUrl = activeRelayUrl, accountSession = accountSession)
+        StatusViewModel(accountSession = accountSession)
     }
     val state by viewModel.state.collectAsState()
     var showDialog by remember { mutableStateOf(false) }
     val headerBackgroundColor = MaterialTheme.colorScheme.background
     val headerContentColor = MaterialTheme.colorScheme.onBackground
+
+    LifecycleStartEffect(viewModel, activeRelayUrl) {
+        viewModel.start(activeRelayUrl)
+        onStopOrDispose { viewModel.stop() }
+    }
 
     LaunchedEffect(showComposer) {
         if (showComposer) {
@@ -104,9 +113,11 @@ fun StatusScreen(
             onComposerShown()
         }
     }
-    LaunchedEffect(state.publishCompletedCount) {
-        if (state.publishCompletedCount > 0) {
+    LaunchedEffect(state.publishState) {
+        val succeeded = state.publishState as? StatusPublishState.Succeeded
+        if (succeeded != null) {
             showDialog = false
+            viewModel.consumePublishResult(succeeded.eventId)
         }
     }
 
@@ -173,8 +184,15 @@ fun StatusScreen(
             )
             Box(modifier = Modifier.fillMaxSize()) {
                 when {
-                    state.isInitialLoad && state.statuses.isEmpty() -> {
+                    state.loadState == StatusLoadState.Loading && state.statuses.isEmpty() -> {
                         CircularProgressIndicator(modifier = Modifier.align(Alignment.Center))
+                    }
+                    state.selectedCategories.isEmpty() -> {
+                        Text(
+                            text = "カテゴリが選択されていません",
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.align(Alignment.Center),
+                        )
                     }
                     state.statuses.isEmpty() -> {
                         Text(
@@ -208,16 +226,18 @@ fun StatusScreen(
     }
 
     if (showDialog) {
-        val currentStatus = state.ownGeneralStatus
         StatusComposerSheet(
             title = "ステータス",
-            actionLabel = if (currentStatus == null) "追加" else "保存",
-            initialStatusTag = currentStatus?.statusTag ?: "general",
-            initialContent = currentStatus?.event?.content.orEmpty(),
-            initialExpiration = currentStatus?.expiration,
-            initialReferenceUrl = currentStatus?.referenceUrls?.firstOrNull().orEmpty(),
-            isPublishing = state.isPublishing,
-            errorMessage = state.errorMessage,
+            initialStatusTag = GENERAL_STATUS_IDENTIFIER,
+            initialStatuses = state.ownStatuses.mapValues { (_, status) ->
+                StatusComposerValue(
+                    content = status.event.content,
+                    expiration = status.expiration,
+                    referenceUrl = status.referenceUrls.firstOrNull().orEmpty(),
+                )
+            },
+            isPublishing = state.publishState is StatusPublishState.Publishing,
+            errorMessage = (state.publishState as? StatusPublishState.Failed)?.message,
             onDismiss = {
                 showDialog = false
                 viewModel.clearError()
@@ -225,6 +245,7 @@ fun StatusScreen(
             onSubmit = { tag, content, expiration, referenceUrl ->
                 viewModel.publishStatus(tag, content, expiration, referenceUrl)
             },
+            onDelete = viewModel::deleteStatus,
         )
     }
 }
@@ -273,7 +294,7 @@ private fun CategoryFilterRow(
 
 @Composable
 private fun StatusRow(
-    status: UserStatus,
+    status: StatusEntry,
     profile: NostrProfile?,
     onUserClick: () -> Unit,
 ) {
@@ -281,9 +302,9 @@ private fun StatusRow(
         modifier = Modifier
             .fillMaxWidth()
             .clickable(onClick = onUserClick)
-            .padding(horizontal = 16.dp, vertical = 12.dp),
+            .padding(horizontal = 16.dp, vertical = 8.dp),
         horizontalArrangement = Arrangement.spacedBy(12.dp),
-        verticalAlignment = Alignment.CenterVertically,
+        verticalAlignment = Alignment.Top,
     ) {
         AvatarCircle(
             pubkey = status.event.pubkey,
@@ -317,8 +338,8 @@ private fun StatusRow(
                     modifier = Modifier.padding(start = 8.dp),
                 )
             }
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                StatusTagLabel(status.statusTag)
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.Top) {
+                StatusTagLabel(status.identifier)
                 LinkedText(
                     text = status.event.content,
                     style = MaterialTheme.typography.bodyMedium,
@@ -337,12 +358,23 @@ private fun StatusRow(
                     overflow = TextOverflow.Ellipsis,
                 )
             }
-            status.expiration?.let {
-                Text(
-                    text = "終了 ${formatTimestamp(it)}",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
+            status.expiration?.let { expiration ->
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.AccessTime,
+                        contentDescription = null,
+                        modifier = Modifier.size(14.dp),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Text(
+                        text = statusExpirationRemainingText(expiration, Clock.System.now().epochSeconds),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
             }
         }
     }
@@ -372,13 +404,23 @@ private fun StatusTagText(statusTag: String) {
     )
 }
 
+internal fun statusExpirationRemainingText(expiration: Long, now: Long): String {
+    val remaining = expiration - now
+    return when {
+        remaining <= 0L -> "終了"
+        remaining < 60L -> "まもなく終了"
+        remaining < 3600L -> "あと${remaining / 60L}分"
+        remaining < 2L * 86400L -> "あと${remaining / 3600L}時間"
+        else -> "あと${remaining / 86400L}日"
+    }
+}
 
 private fun String.statusTagDisplayLabel(): String =
     when {
-        equals("general", ignoreCase = true) -> "💬"
-        equals("music", ignoreCase = true) -> "♫"
+        this == "general" -> "💬"
+        this == "music" -> "♫"
         else -> this
     }
 
 private fun String.isDefaultStatusTag(): Boolean =
-    equals("general", ignoreCase = true) || equals("music", ignoreCase = true)
+    this == "general" || this == "music"

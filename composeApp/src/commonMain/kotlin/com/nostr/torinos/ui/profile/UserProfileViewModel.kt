@@ -4,6 +4,7 @@ import androidx.lifecycle.ViewModel
 import com.nostr.torinos.ui.SafeViewModel
 import com.nostr.torinos.crypto.isWriteSupported
 import com.nostr.torinos.model.NostrFilter
+import com.nostr.torinos.model.NostrEvent
 import com.nostr.torinos.model.NostrProfile
 import com.nostr.torinos.model.extractNpubReferences
 import com.nostr.torinos.account.AccountSession
@@ -11,6 +12,7 @@ import com.nostr.torinos.network.NostrRepository
 import com.nostr.torinos.network.ProfileFetchPolicy
 import com.nostr.torinos.network.ProfileRepository
 import com.nostr.torinos.network.RelayListEventCache
+import com.nostr.torinos.status.StatusSnapshot
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -55,7 +57,7 @@ class UserProfileViewModel(
     private var linkedProfileObserverJob: Job? = null
     private var followingCountStarted = false
     private var followersLoadCompletion: CompletableDeferred<Unit>? = null
-    private var latestGeneralStatusCreatedAt = -1L
+    private var generalStatusSnapshot = StatusSnapshot()
     private val linkedProfilePubkeys = linkedSetOf<String>()
     private val followerPubkeys = linkedSetOf<String>()
     private val followerEventIds = linkedSetOf<String>()
@@ -216,9 +218,7 @@ class UserProfileViewModel(
 
         collectorJobs += launch {
             NostrRepository.events(generalStatusSubId).collect { event ->
-                if (event.createdAt <= latestGeneralStatusCreatedAt) return@collect
-                latestGeneralStatusCreatedAt = event.createdAt
-                _state.update { it.copy(generalStatus = event.toActiveGeneralStatus()) }
+                applyGeneralStatusEvent(event)
             }
         }
 
@@ -253,6 +253,16 @@ class UserProfileViewModel(
                 followersLoadCompletion?.complete(Unit)
             }
         }
+    }
+
+    private fun applyGeneralStatusEvent(event: NostrEvent) {
+        val reduction = reduceProfileGeneralStatus(
+            snapshot = generalStatusSnapshot,
+            event = event,
+            expectedPubkey = pubkey,
+        ) ?: return
+        generalStatusSnapshot = reduction.snapshot
+        _state.update { it.copy(generalStatus = reduction.generalStatus) }
     }
 
     override fun onCleared() {

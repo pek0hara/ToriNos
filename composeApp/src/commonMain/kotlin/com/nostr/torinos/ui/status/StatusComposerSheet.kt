@@ -59,50 +59,75 @@ import androidx.compose.ui.window.DialogProperties
 import androidx.compose.ui.window.PopupProperties
 import com.nostr.torinos.ui.components.formatTimestamp
 import com.nostr.torinos.ui.components.rememberDismissKeyboard
+import com.nostr.torinos.status.GENERAL_STATUS_IDENTIFIER
 import kotlin.time.Clock
 import kotlin.time.Instant
-import kotlinx.datetime.LocalDate
-import kotlinx.datetime.LocalDateTime
 import kotlinx.datetime.TimeZone
-import kotlinx.datetime.toInstant
 import kotlinx.datetime.toLocalDateTime
 import com.nostr.torinos.ui.components.DismissKeyboardOnLeave
+
+private data class StatusComposerFields(
+    val content: String,
+    val expirationOption: StatusExpirationOption,
+    val customExpiration: Long,
+    val referenceUrl: String,
+    val showReferenceUrl: Boolean,
+)
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 internal fun StatusComposerSheet(
     title: String,
-    actionLabel: String,
+    actionLabel: String? = null,
     isPublishing: Boolean,
     errorMessage: String?,
     onDismiss: () -> Unit,
     onSubmit: (statusTag: String, content: String, expiration: Long?, referenceUrl: String?) -> Unit,
-    initialStatusTag: String = GENERAL_STATUS_TAG,
+    initialStatusTag: String = GENERAL_STATUS_IDENTIFIER,
     initialContent: String = "",
     initialExpiration: Long? = null,
     initialReferenceUrl: String = "",
-    onDelete: (() -> Unit)? = null,
+    initialStatuses: Map<String, StatusComposerValue> = emptyMap(),
+    categorySelectionEnabled: Boolean = true,
+    onDelete: ((String) -> Unit)? = null,
 ) {
     DismissKeyboardOnLeave()
-    val initialCategoryOption = StatusCategoryOption.forTag(initialStatusTag)
+    val initialCategoryOption = StatusCategoryOption.forIdentifier(initialStatusTag)
     var selectedCategoryOption by remember(initialStatusTag) { mutableStateOf(initialCategoryOption) }
     var customStatusTag by remember(initialStatusTag) {
         mutableStateOf(if (initialCategoryOption == StatusCategoryOption.Custom) initialStatusTag else "")
     }
-    var content by remember(initialContent) { mutableStateOf(initialContent) }
-    var referenceUrl by remember(initialReferenceUrl) { mutableStateOf(initialReferenceUrl) }
-    var showReferenceUrl by remember(initialReferenceUrl) { mutableStateOf(initialReferenceUrl.isNotBlank()) }
-    var selectedExpirationOption by remember(initialExpiration) {
+    // シートを開いた時点の値を編集元として固定し、購読更新で入力中の下書きを上書きしない。
+    val statusValues = remember(initialStatusTag) {
+        initialStatuses.toMutableMap().apply {
+            if (initialStatusTag !in this &&
+                (initialContent.isNotBlank() || initialExpiration != null || initialReferenceUrl.isNotBlank())
+            ) {
+                put(
+                    initialStatusTag,
+                    StatusComposerValue(initialContent, initialExpiration, initialReferenceUrl),
+                )
+            }
+        }.toMap()
+    }
+    val initialValue = statusValues[initialStatusTag] ?: StatusComposerValue()
+    var draftsByIdentifier by remember(statusValues) {
+        mutableStateOf<Map<String, StatusComposerFields>>(emptyMap())
+    }
+    var content by remember(initialValue) { mutableStateOf(initialValue.content) }
+    var referenceUrl by remember(initialValue) { mutableStateOf(initialValue.referenceUrl) }
+    var showReferenceUrl by remember(initialValue) { mutableStateOf(initialValue.referenceUrl.isNotBlank()) }
+    var selectedExpirationOption by remember(initialValue) {
         mutableStateOf(
-            if (initialExpiration == null) {
+            if (initialValue.expiration == null) {
                 StatusExpirationOption.NoExpiration
             } else {
                 StatusExpirationOption.Custom
             },
         )
     }
-    var customExpiration by remember(initialExpiration) {
-        mutableStateOf(initialExpiration ?: Clock.System.now().epochSeconds + DAY_SECONDS)
+    var customExpiration by remember(initialValue) {
+        mutableStateOf(initialValue.expiration ?: Clock.System.now().epochSeconds + DAY_SECONDS)
     }
     var showExpirationOptions by remember { mutableStateOf(false) }
     var showCustomDatePicker by remember { mutableStateOf(false) }
@@ -116,23 +141,73 @@ internal fun StatusComposerSheet(
         StatusExpirationOption.Custom -> "カスタム（${formatTimestamp(customExpiration)}）"
         else -> selectedExpirationOption.label
     }
-    val canSubmit = content.isNotBlank() &&
-        (selectedCategoryOption != StatusCategoryOption.Custom || customStatusTag.isNotBlank()) &&
-        (selectedExpirationOption != StatusExpirationOption.Custom ||
-            customExpiration > Clock.System.now().epochSeconds)
+    val selectedIdentifier = selectedCategoryOption.identifier(customStatusTag)
+    val selectedStatusExists = selectedIdentifier.isNotBlank() && statusValues.containsKey(selectedIdentifier)
+    val resolvedActionLabel = actionLabel ?: if (selectedStatusExists) "保存" else "追加"
+    val contentLabel = when (selectedCategoryOption) {
+        StatusCategoryOption.General -> "いまの気分や近況"
+        StatusCategoryOption.Music -> "聴いている音楽"
+        StatusCategoryOption.Custom -> "ステータス"
+    }
+    val contentPlaceholder = when (selectedCategoryOption) {
+        StatusCategoryOption.General -> "例：開発中です 🐦"
+        StatusCategoryOption.Music -> "例：曲名 — アーティスト"
+        StatusCategoryOption.Custom -> "内容を入力"
+    }
+    fun currentFields() = StatusComposerFields(
+        content = content,
+        expirationOption = selectedExpirationOption,
+        customExpiration = customExpiration,
+        referenceUrl = referenceUrl,
+        showReferenceUrl = showReferenceUrl,
+    )
+    fun fieldsFor(identifier: String): StatusComposerFields {
+        draftsByIdentifier[identifier]?.let { return it }
+        val value = statusValues[identifier]
+        val expiration = value?.expiration
+        return StatusComposerFields(
+            content = value?.content.orEmpty(),
+            expirationOption = if (expiration == null) {
+                StatusExpirationOption.NoExpiration
+            } else {
+                StatusExpirationOption.Custom
+            },
+            customExpiration = expiration ?: Clock.System.now().epochSeconds + DAY_SECONDS,
+            referenceUrl = value?.referenceUrl.orEmpty(),
+            showReferenceUrl = value?.referenceUrl?.isNotBlank() == true,
+        )
+    }
+    fun loadFields(fields: StatusComposerFields) {
+        content = fields.content
+        referenceUrl = fields.referenceUrl
+        showReferenceUrl = fields.showReferenceUrl
+        selectedExpirationOption = fields.expirationOption
+        customExpiration = fields.customExpiration
+        customDateMillis = customExpiration.toUtcDateMillis()
+    }
+    fun selectCategory(option: StatusCategoryOption) {
+        draftsByIdentifier = draftsByIdentifier + (selectedIdentifier to currentFields())
+        selectedCategoryOption = option
+        val nextIdentifier = option.identifier(customStatusTag)
+        loadFields(fieldsFor(nextIdentifier))
+    }
+    val draft = StatusDraft(
+        category = selectedCategoryOption,
+        customIdentifier = customStatusTag,
+        content = content,
+        expirationOption = selectedExpirationOption,
+        customExpiration = customExpiration,
+        referenceUrl = referenceUrl,
+    )
+    val canSubmit = draft.isValid(Clock.System.now().epochSeconds)
     val submit = {
         isDeleting = false
-        val expiration = when (selectedExpirationOption) {
-            StatusExpirationOption.TwentyFourHours ->
-                Clock.System.now().epochSeconds + DAY_SECONDS
-            StatusExpirationOption.Custom -> customExpiration
-            StatusExpirationOption.NoExpiration -> null
-        }
+        val submission = draft.submission(Clock.System.now().epochSeconds)
         onSubmit(
-            selectedCategoryOption.tag(customStatusTag),
-            content,
-            expiration,
-            referenceUrl,
+            submission.identifier,
+            submission.content,
+            submission.expiration,
+            submission.referenceUrl,
         )
     }
 
@@ -198,7 +273,7 @@ internal fun StatusComposerSheet(
                                 strokeWidth = 2.dp,
                             )
                         } else {
-                            Text(actionLabel)
+                            Text(resolvedActionLabel)
                         }
                     }
                 }
@@ -210,23 +285,37 @@ internal fun StatusComposerSheet(
                         .verticalScroll(rememberScrollState()),
                     verticalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    ) {
-                        StatusCategoryOption.entries.forEach { option ->
-                            FilterChip(
-                                selected = selectedCategoryOption == option,
-                                onClick = { selectedCategoryOption = option },
-                                label = { Text(option.label) },
-                                enabled = !isPublishing,
-                            )
+                    if (categorySelectionEnabled) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            StatusCategoryOption.entries.forEach { option ->
+                                FilterChip(
+                                    selected = selectedCategoryOption == option,
+                                    onClick = { selectCategory(option) },
+                                    label = { Text(option.label) },
+                                    enabled = !isPublishing,
+                                )
+                            }
                         }
                     }
                     if (selectedCategoryOption == StatusCategoryOption.Custom) {
                         OutlinedTextField(
                             value = customStatusTag,
-                            onValueChange = { customStatusTag = it },
+                            onValueChange = { newStatusTag ->
+                                val oldIdentifier = selectedCategoryOption.identifier(customStatusTag)
+                                val oldIdentifierWasKnown = oldIdentifier in statusValues ||
+                                    (oldIdentifier.isNotBlank() && oldIdentifier in draftsByIdentifier)
+                                draftsByIdentifier = draftsByIdentifier + (oldIdentifier to currentFields())
+                                customStatusTag = newStatusTag
+                                val newIdentifier = selectedCategoryOption.identifier(newStatusTag)
+                                if (newIdentifier in draftsByIdentifier || newIdentifier in statusValues) {
+                                    loadFields(fieldsFor(newIdentifier))
+                                } else if (oldIdentifierWasKnown) {
+                                    loadFields(fieldsFor(newIdentifier))
+                                }
+                            },
                             label = { Text("カテゴリ名") },
                             singleLine = true,
                             enabled = !isPublishing,
@@ -236,8 +325,8 @@ internal fun StatusComposerSheet(
                     OutlinedTextField(
                         value = content,
                         onValueChange = { content = it },
-                        label = { Text("いまの気分や近況") },
-                        placeholder = { Text("例：開発中です 🐦") },
+                        label = { Text(contentLabel) },
+                        placeholder = { Text(contentPlaceholder) },
                         minLines = 2,
                         maxLines = 4,
                         enabled = !isPublishing,
@@ -344,11 +433,11 @@ internal fun StatusComposerSheet(
                             style = MaterialTheme.typography.bodySmall,
                         )
                     }
-                    if (onDelete != null) {
+                    if (onDelete != null && selectedStatusExists) {
                         TextButton(
                             onClick = {
                                 isDeleting = true
-                                onDelete()
+                                onDelete(selectedIdentifier)
                             },
                             enabled = !isPublishing,
                         ) {
@@ -480,56 +569,3 @@ private fun CustomExpirationTimePickerDialog(
         }
     }
 }
-
-private fun Long.toUtcDateMillis(): Long {
-    val date = Instant.fromEpochSeconds(this)
-        .toLocalDateTime(TimeZone.currentSystemDefault())
-        .date
-    return LocalDateTime(date.year, date.month, date.day, 0, 0)
-        .toInstant(TimeZone.UTC)
-        .toEpochMilliseconds()
-}
-
-private fun customExpirationEpochSeconds(
-    selectedDateMillis: Long,
-    hour: Int,
-    minute: Int,
-): Long {
-    val date: LocalDate = Instant.fromEpochMilliseconds(selectedDateMillis)
-        .toLocalDateTime(TimeZone.UTC)
-        .date
-    return LocalDateTime(date.year, date.month, date.day, hour, minute)
-        .toInstant(TimeZone.currentSystemDefault())
-        .epochSeconds
-}
-
-private enum class StatusCategoryOption(
-    val label: String,
-    private val fixedTag: String?,
-) {
-    General("💬 一般", GENERAL_STATUS_TAG),
-    Music("♫ 音楽", MUSIC_STATUS_TAG),
-    Custom("その他", null);
-
-    fun tag(customStatusTag: String): String = fixedTag ?: customStatusTag.trim()
-
-    companion object {
-        fun forTag(statusTag: String): StatusCategoryOption = when {
-            statusTag.equals(GENERAL_STATUS_TAG, ignoreCase = true) -> General
-            statusTag.equals(MUSIC_STATUS_TAG, ignoreCase = true) -> Music
-            else -> Custom
-        }
-    }
-}
-
-private enum class StatusExpirationOption(
-    val label: String,
-) {
-    TwentyFourHours("24時間後"),
-    Custom("カスタム"),
-    NoExpiration("終了なし"),
-}
-
-private const val DAY_SECONDS = 24 * 60 * 60L
-private const val GENERAL_STATUS_TAG = "general"
-private const val MUSIC_STATUS_TAG = "music"

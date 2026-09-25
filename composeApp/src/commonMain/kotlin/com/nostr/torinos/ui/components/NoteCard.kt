@@ -103,7 +103,7 @@ import com.nostr.torinos.model.parseNip94Event
 import com.nostr.torinos.model.timelinePreviewUrl
 import com.nostr.torinos.network.CustomEmojiStore
 import com.nostr.torinos.network.DisplayPreferencesStore
-import com.nostr.torinos.ui.profile.customEmojiMap
+import com.nostr.torinos.emoji.customEmojiMap
 import com.nostr.torinos.ui.profile.AvatarCircle
 import com.nostr.torinos.ui.settings.setPlainText
 import kotlinx.coroutines.launch

@@ -32,6 +32,7 @@ import com.nostr.torinos.ui.feed.FeedViewModel
 import com.nostr.torinos.ui.status.StatusComposerSheet
 import com.nostr.torinos.model.COMMENT_EVENT_KIND
 import com.nostr.torinos.model.NostrEvent
+import com.nostr.torinos.status.StatusPublishState
 
 @Composable
 fun MyProfileScreen(
@@ -108,9 +109,11 @@ fun MyProfileScreen(
         }
     }
 
-    LaunchedEffect(state.generalStatusPublishCompletedCount) {
-        if (state.generalStatusPublishCompletedCount > 0) {
+    LaunchedEffect(state.generalStatusPublishState) {
+        val succeeded = state.generalStatusPublishState as? StatusPublishState.Succeeded
+        if (succeeded != null) {
             showStatusEdit = false
+            viewModel.consumeGeneralStatusPublishResult(succeeded.eventId)
         }
     }
 
@@ -171,19 +174,20 @@ fun MyProfileScreen(
             StatusComposerSheet(
                 title = "ステータス",
                 actionLabel = if (state.generalStatus == null) "追加" else "保存",
+                categorySelectionEnabled = false,
                 initialStatusTag = PROFILE_GENERAL_STATUS_TAG,
                 initialContent = state.generalStatus?.content.orEmpty(),
                 initialExpiration = state.generalStatus?.expiration,
                 initialReferenceUrl = state.generalStatus?.referenceUrl.orEmpty(),
-                isPublishing = state.isGeneralStatusPublishing,
-                errorMessage = state.generalStatusError,
+                isPublishing = state.generalStatusPublishState is StatusPublishState.Publishing,
+                errorMessage = (state.generalStatusPublishState as? StatusPublishState.Failed)?.message,
                 onDismiss = {
                     showStatusEdit = false
                     viewModel.clearGeneralStatusError()
                 },
                 onSubmit = viewModel::publishStatus,
                 onDelete = state.generalStatus?.let {
-                    { viewModel.publishStatus(PROFILE_GENERAL_STATUS_TAG, "", null, null) }
+                    { _: String -> viewModel.deleteGeneralStatus() }
                 },
             )
         }

@@ -88,7 +88,7 @@ import com.nostr.torinos.ui.components.RelaySelector
 import com.nostr.torinos.ui.components.stripImageUrls
 import com.nostr.torinos.ui.components.formatTimestamp
 import com.nostr.torinos.ui.profile.AvatarCircle
-import com.nostr.torinos.ui.profile.customEmojiMap
+import com.nostr.torinos.emoji.customEmojiMap
 import com.nostr.torinos.ui.service.ServiceTab
 import com.nostr.torinos.ui.service.ServiceTabRow
 import kotlinx.coroutines.flow.distinctUntilChanged

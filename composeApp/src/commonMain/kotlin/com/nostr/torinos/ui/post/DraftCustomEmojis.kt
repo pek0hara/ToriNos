@@ -1,7 +1,7 @@
 package com.nostr.torinos.ui.post
 
 import com.nostr.torinos.network.CustomEmoji
-import com.nostr.torinos.ui.profile.customEmojiTagsForContent
+import com.nostr.torinos.emoji.customEmojiTagsForContent
 
 /** Resolve newly typed codes once; retain the draft's URLs for existing codes. */
 internal fun resolveDraftEmojis(

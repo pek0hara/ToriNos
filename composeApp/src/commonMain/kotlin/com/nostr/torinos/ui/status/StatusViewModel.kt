@@ -4,288 +4,375 @@ import com.nostr.torinos.account.AccountSession
 import com.nostr.torinos.model.NostrEvent
 import com.nostr.torinos.model.NostrFilter
 import com.nostr.torinos.model.NostrProfile
-import com.nostr.torinos.network.CustomEmojiStore
 import com.nostr.torinos.network.NostrRepository
 import com.nostr.torinos.network.ProfileFetchPolicy
 import com.nostr.torinos.network.ProfileRepository
+import com.nostr.torinos.status.GENERAL_STATUS_IDENTIFIER
+import com.nostr.torinos.status.MUSIC_STATUS_IDENTIFIER
+import com.nostr.torinos.status.PublishStatusCommand
+import com.nostr.torinos.status.STATUS_EVENT_KIND
+import com.nostr.torinos.status.StatusEntry
+import com.nostr.torinos.status.StatusEventCodec
+import com.nostr.torinos.status.StatusEventReducer
+import com.nostr.torinos.status.StatusPublishResult
+import com.nostr.torinos.status.StatusPublishState
+import com.nostr.torinos.status.StatusPublishTarget
+import com.nostr.torinos.status.StatusPublisher
+import com.nostr.torinos.status.StatusSnapshot
 import com.nostr.torinos.ui.SafeViewModel
-import com.nostr.torinos.ui.profile.customEmojiMap
-import com.nostr.torinos.ui.profile.customEmojiTagsForContent
 import kotlin.time.Clock
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 
-data class UserStatus(
-    val event: NostrEvent,
-    val statusTag: String,
-    val expiration: Long?,
-    val referenceUrls: List<String>,
-    val customEmojis: Map<String, String>,
-) {
-    val key: String = "${event.pubkey}:$statusTag"
+private val DEFAULT_CATEGORIES = listOf(GENERAL_STATUS_IDENTIFIER, MUSIC_STATUS_IDENTIFIER)
+
+enum class StatusLoadState {
+    Idle,
+    Loading,
+    Ready,
 }
 
-private val DEFAULT_CATEGORIES = listOf("general", "music")
-
 data class StatusState(
-    val statuses: List<UserStatus> = emptyList(),
-    val ownGeneralStatus: UserStatus? = null,
+    val statuses: List<StatusEntry> = emptyList(),
+    val ownStatuses: Map<String, StatusEntry> = emptyMap(),
     val availableCategories: List<String> = DEFAULT_CATEGORIES,
     val selectedCategories: Set<String> = DEFAULT_CATEGORIES.toSet(),
     val profiles: Map<String, NostrProfile> = emptyMap(),
-    val isInitialLoad: Boolean = true,
-    val isPublishing: Boolean = false,
-    val publishCompletedCount: Int = 0,
-    val errorMessage: String? = null,
+    val loadState: StatusLoadState = StatusLoadState.Idle,
+    val publishState: StatusPublishState = StatusPublishState.Idle,
 )
 
-class StatusViewModel(
-    private val relayUrl: String? = null,
+internal interface StatusSubscriptionGateway {
+    fun events(subscriptionId: String): Flow<NostrEvent>
+    fun eose(subscriptionId: String): Flow<Unit>
+    suspend fun subscribe(subscriptionId: String, filter: NostrFilter, relayUrl: String)
+    fun close(subscriptionId: String)
+}
+
+private object NostrStatusSubscriptionGateway : StatusSubscriptionGateway {
+    override fun events(subscriptionId: String): Flow<NostrEvent> = NostrRepository.events(subscriptionId)
+    override fun eose(subscriptionId: String): Flow<Unit> = NostrRepository.eose(subscriptionId)
+
+    override suspend fun subscribe(subscriptionId: String, filter: NostrFilter, relayUrl: String) {
+        NostrRepository.subscribe(subscriptionId, filter, relayUrl = relayUrl)
+    }
+
+    override fun close(subscriptionId: String) = NostrRepository.close(subscriptionId)
+}
+
+internal interface StatusProfileGateway {
+    fun observeChanges(): Flow<Set<String>>
+    fun getCached(pubkeys: Set<String>): Map<String, NostrProfile>
+    suspend fun ensureProfiles(pubkeys: Set<String>, relayHint: String)
+}
+
+private object RepositoryStatusProfileGateway : StatusProfileGateway {
+    override fun observeChanges(): Flow<Set<String>> = ProfileRepository.observeChanges()
+    override fun getCached(pubkeys: Set<String>): Map<String, NostrProfile> =
+        ProfileRepository.getCached(pubkeys)
+
+    override suspend fun ensureProfiles(pubkeys: Set<String>, relayHint: String) {
+        ProfileRepository.ensureProfiles(
+            pubkeys,
+            ProfileFetchPolicy.CacheFirst(PROFILE_MAX_AGE_MS),
+            relayHint = relayHint,
+        )
+    }
+}
+
+internal class StatusViewModel(
     private val accountSession: AccountSession? = null,
+    private val subscriptions: StatusSubscriptionGateway = NostrStatusSubscriptionGateway,
+    private val profileGateway: StatusProfileGateway = RepositoryStatusProfileGateway,
+    private val publisher: StatusPublisher = StatusPublisher(accountSession?.signer),
+    private val nowEpochSeconds: () -> Long = { Clock.System.now().epochSeconds },
 ) : SafeViewModel() {
     private val _state = MutableStateFlow(StatusState())
     val state: StateFlow<StatusState> = _state.asStateFlow()
 
     private val instanceKey = nextInstanceKey()
-    private val relayKey = relayUrl?.hashCode()?.toString() ?: "all"
-    private val statusSubId = "status-$relayKey-$instanceKey"
-    private val ownGeneralStatusSubId = "status-own-general-$relayKey-$instanceKey"
-    private val rawStatuses = linkedMapOf<String, UserStatus>()
+    private var snapshot = StatusSnapshot()
     private val pendingPubkeys = linkedSetOf<String>()
-    private val jobs = mutableListOf<Job>()
+    private val sessionJobs = mutableListOf<Job>()
     private var profileBatchJob: Job? = null
-    private var started = false
+    private var publishJob: Job? = null
+    private var activeRelayUrl: String? = null
+    private var lastRelayUrl: String? = null
+    private var statusSubId: String? = null
+    private var ownStatusSubId: String? = null
+    private var generation = 0L
 
-    init {
-        start()
+    fun start(relayUrl: String) {
+        if (activeRelayUrl == relayUrl) return
+        val reusingSnapshot = lastRelayUrl == relayUrl
+        stop()
+        activeRelayUrl = relayUrl
+        lastRelayUrl = relayUrl
+        val currentGeneration = ++generation
+        val relayKey = relayUrl.hashCode().toString()
+        val currentStatusSubId = "status-$relayKey-$instanceKey-$currentGeneration"
+        val currentOwnSubId = "status-own-$relayKey-$instanceKey-$currentGeneration"
+        statusSubId = currentStatusSubId
+        ownStatusSubId = currentOwnSubId
+
+        if (!reusingSnapshot) {
+            snapshot = StatusSnapshot()
+            pendingPubkeys.clear()
+            _state.value = StatusState(loadState = StatusLoadState.Loading)
+        } else {
+            _state.update {
+                it.copy(loadState = if (it.statuses.isEmpty()) StatusLoadState.Loading else StatusLoadState.Ready)
+            }
+        }
+
+        sessionJobs += launch {
+            subscriptions.events(currentStatusSubId).collect { event ->
+                if (isCurrent(currentGeneration, relayUrl)) rememberStatus(event)
+            }
+        }
+        sessionJobs += launch {
+            subscriptions.events(currentOwnSubId).collect { event ->
+                if (isCurrent(currentGeneration, relayUrl) && event.pubkey == accountSession?.pubkey) {
+                    rememberStatus(event)
+                }
+            }
+        }
+        sessionJobs += launch {
+            subscriptions.eose(currentStatusSubId).collect {
+                if (isCurrent(currentGeneration, relayUrl)) {
+                    _state.update { state -> state.copy(loadState = StatusLoadState.Ready) }
+                }
+            }
+        }
+        sessionJobs += launch {
+            delay(INITIAL_LOAD_TIMEOUT_MS)
+            if (isCurrent(currentGeneration, relayUrl)) {
+                _state.update { state -> state.copy(loadState = StatusLoadState.Ready) }
+            }
+        }
+        sessionJobs += launch {
+            profileGateway.observeChanges().collect { changedPubkeys ->
+                if (!isCurrent(currentGeneration, relayUrl)) return@collect
+                val currentProfiles = _state.value.profiles
+                val statusPubkeys = snapshot.latestByAddress.keys.mapTo(linkedSetOf()) { it.pubkey }
+                val targets = pendingPubkeys + currentProfiles.keys + statusPubkeys
+                val affected = if (changedPubkeys.isEmpty()) targets else changedPubkeys.intersect(targets)
+                if (affected.isEmpty()) return@collect
+                val profiles = currentProfiles - affected + profileGateway.getCached(affected)
+                _state.update { state ->
+                    if (state.profiles == profiles) state else state.copy(profiles = profiles)
+                }
+            }
+        }
+        sessionJobs += launch {
+            accountSession?.muteStore?.mutedPubkeys?.collect {
+                if (isCurrent(currentGeneration, relayUrl)) rebuildStatuses()
+            }
+        }
+        sessionJobs += launch {
+            while (isCurrent(currentGeneration, relayUrl)) {
+                delay(EXPIRATION_REFRESH_INTERVAL_MS)
+                if (isCurrent(currentGeneration, relayUrl)) rebuildStatuses()
+            }
+        }
+        sessionJobs += launch {
+            subscriptions.subscribe(
+                currentStatusSubId,
+                NostrFilter(kinds = listOf(STATUS_EVENT_KIND), limit = STATUS_LIMIT),
+                relayUrl,
+            )
+            accountSession?.pubkey?.let { ownPubkey ->
+                if (!isCurrent(currentGeneration, relayUrl)) return@let
+                subscriptions.subscribe(
+                    currentOwnSubId,
+                    NostrFilter(
+                        kinds = listOf(STATUS_EVENT_KIND),
+                        authors = listOf(ownPubkey),
+                        limit = OWN_STATUS_LIMIT,
+                    ),
+                    relayUrl,
+                )
+            }
+        }
+    }
+
+    fun stop() {
+        generation++
+        activeRelayUrl = null
+        sessionJobs.forEach(Job::cancel)
+        sessionJobs.clear()
+        profileBatchJob?.cancel()
+        profileBatchJob = null
+        publishJob?.cancel()
+        publishJob = null
+        statusSubId?.let(subscriptions::close)
+        ownStatusSubId?.let(subscriptions::close)
+        statusSubId = null
+        ownStatusSubId = null
+        _state.update {
+            it.copy(
+                loadState = StatusLoadState.Idle,
+                publishState = StatusPublishState.Idle,
+            )
+        }
     }
 
     fun toggleCategory(category: String) {
         val current = _state.value.selectedCategories
         val updated = if (category in current) current - category else current + category
-        _state.value = _state.value.copy(selectedCategories = updated)
+        _state.update { it.copy(selectedCategories = updated) }
         rebuildStatuses()
     }
 
     fun clearError() {
-        _state.value = _state.value.copy(errorMessage = null)
+        _state.update {
+            if (it.publishState is StatusPublishState.Failed) {
+                it.copy(publishState = StatusPublishState.Idle)
+            } else {
+                it
+            }
+        }
     }
 
-    fun publishStatus(statusTag: String, content: String, expiration: Long?, referenceUrl: String?) {
-        val tag = statusTag.trim().ifBlank { "general" }
-        val body = content.trim()
-        val explicitReferenceUrl = referenceUrl
-            ?.trim()
-            ?.takeIf { it.isNotBlank() }
-        if (body.isEmpty()) {
-            _state.value = _state.value.copy(errorMessage = "ステータスを入力してください")
+    fun consumePublishResult(eventId: String) {
+        _state.update {
+            val succeeded = it.publishState as? StatusPublishState.Succeeded
+            if (succeeded?.eventId == eventId) it.copy(publishState = StatusPublishState.Idle) else it
+        }
+    }
+
+    fun publishStatus(identifier: String, content: String, expiration: Long?, referenceUrl: String?) {
+        publishStatusCommand(PublishStatusCommand(identifier, content, expiration, referenceUrl))
+    }
+
+    fun deleteStatus(identifier: String) {
+        publishStatusCommand(
+            PublishStatusCommand(
+                identifier = identifier,
+                content = "",
+                expiration = null,
+                referenceUrl = null,
+                isDeletion = true,
+            ),
+        )
+    }
+
+    private fun publishStatusCommand(command: PublishStatusCommand) {
+        val relayUrl = activeRelayUrl
+        if (relayUrl == null) {
+            _state.update {
+                it.copy(publishState = StatusPublishState.Failed("リレーが選択されていません"))
+            }
             return
         }
-        launch {
-            _state.value = _state.value.copy(isPublishing = true, errorMessage = null)
-            try {
-                val signer = accountSession?.signer ?: error("秘密鍵が見つかりません")
-                val tags = buildList {
-                    add(listOf("d", tag))
-                    if (expiration != null) add(listOf("expiration", expiration.toString()))
-                    addAll(customEmojiTagsForContent(body, CustomEmojiStore.emojis.value))
-                    (listOfNotNull(explicitReferenceUrl) + extractWebUrls(body)).distinct().forEach { url ->
-                        add(listOf("r", url))
+        if (_state.value.publishState is StatusPublishState.Publishing) return
+        val expectedGeneration = generation
+        publishJob = launch {
+            _state.update { it.copy(publishState = StatusPublishState.Publishing) }
+            when (
+                val result = publisher.publish(
+                    command,
+                    StatusPublishTarget.SelectedRelay(relayUrl),
+                )
+            ) {
+                is StatusPublishResult.Published -> {
+                    if (!isCurrent(expectedGeneration, relayUrl)) return@launch
+                    rememberStatus(result.event)
+                    _state.update {
+                        it.copy(publishState = StatusPublishState.Succeeded(result.event.id))
                     }
                 }
-                val event = signer.sign(
-                    content = body,
-                    kind = STATUS_KIND,
-                    tags = tags,
-                )
-                rememberStatus(event)
-                if (relayUrl != null) {
-                    NostrRepository.publishToRelays(event, listOf(relayUrl))
-                } else {
-                    NostrRepository.publish(event)
+                is StatusPublishResult.Rejected -> {
+                    if (!isCurrent(expectedGeneration, relayUrl)) return@launch
+                    _state.update { it.copy(publishState = StatusPublishState.Failed(result.message)) }
                 }
-                _state.value = _state.value.copy(
-                    isPublishing = false,
-                    publishCompletedCount = _state.value.publishCompletedCount + 1,
-                )
-            } catch (e: Throwable) {
-                _state.value = _state.value.copy(
-                    isPublishing = false,
-                    errorMessage = e.message ?: "ステータスの投稿に失敗しました",
-                )
             }
         }
     }
 
-    private fun start() {
-        if (started) return
-        started = true
-
-        jobs += launch {
-            NostrRepository.events(statusSubId).collect { event ->
-                if (event.kind != STATUS_KIND) return@collect
-                rememberStatus(event)
-            }
-        }
-        jobs += launch {
-            NostrRepository.events(ownGeneralStatusSubId).collect { event ->
-                if (event.kind != STATUS_KIND || event.pubkey != accountSession?.pubkey) return@collect
-                rememberStatus(event)
-            }
-        }
-        jobs += launch {
-            ProfileRepository.observeChanges().collect { changedPubkeys ->
-                val currentProfiles = _state.value.profiles
-                val targets = pendingPubkeys + currentProfiles.keys
-                val affected = if (changedPubkeys.isEmpty()) targets else changedPubkeys.intersect(targets)
-                if (affected.isEmpty()) return@collect
-                val profiles = currentProfiles - affected + ProfileRepository.getCached(affected)
-                if (profiles != _state.value.profiles) _state.value = _state.value.copy(profiles = profiles)
-            }
-        }
-        jobs += launch {
-            NostrRepository.eose(statusSubId).collect {
-                _state.value = _state.value.copy(isInitialLoad = false)
-            }
-        }
-        jobs += launch {
-            delay(INITIAL_LOAD_TIMEOUT_MS)
-            if (_state.value.isInitialLoad) {
-                _state.value = _state.value.copy(isInitialLoad = false)
-            }
-        }
-        jobs += launch {
-            while (started) {
-                delay(EXPIRATION_REFRESH_INTERVAL_MS)
-                rebuildStatuses()
-            }
-        }
-        jobs += launch {
-            accountSession?.muteStore?.mutedPubkeys?.collect { rebuildStatuses() }
-        }
-        jobs += launch {
-            NostrRepository.subscribe(
-                statusSubId,
-                NostrFilter(kinds = listOf(STATUS_KIND), limit = STATUS_LIMIT),
-                relayUrl = relayUrl,
-            )
-            accountSession?.pubkey?.let { ownPubkey ->
-                NostrRepository.subscribe(
-                    ownGeneralStatusSubId,
-                    NostrFilter(
-                        kinds = listOf(STATUS_KIND),
-                        authors = listOf(ownPubkey),
-                        dTags = listOf(GENERAL_STATUS_TAG),
-                        limit = 1,
-                    ),
-                    relayUrl = relayUrl,
-                )
-            }
-        }
-    }
+    private fun isCurrent(expectedGeneration: Long, relayUrl: String): Boolean =
+        generation == expectedGeneration && activeRelayUrl == relayUrl
 
     private fun rememberStatus(event: NostrEvent) {
-        val statusTag = event.tags.firstOrNull { it.firstOrNull() == "d" }?.getOrNull(1)
-            ?.takeIf { it.isNotBlank() }
-            ?: "general"
-        val expiration = event.tags.firstOrNull { it.firstOrNull() == "expiration" }
-            ?.getOrNull(1)
-            ?.toLongOrNull()
-        val referenceUrls = event.tags
-            .filter { it.firstOrNull() == "r" }
-            .mapNotNull { it.getOrNull(1)?.trim()?.takeIf { url -> url.isNotBlank() } }
-            .distinct()
-        val status = UserStatus(
-            event = event,
-            statusTag = statusTag,
-            expiration = expiration,
-            referenceUrls = referenceUrls,
-            customEmojis = event.tags.customEmojiMap(),
-        )
-        val existing = rawStatuses[status.key]
-        if (existing != null && existing.event.createdAt >= event.createdAt) return
-        if (event.content.isBlank()) {
-            rawStatuses.remove(status.key)
-        } else {
-            rawStatuses[status.key] = status
-        }
-        scheduleProfileFetch(event.pubkey)
+        val status = StatusEventCodec.parse(event) ?: return
+        val updated = StatusEventReducer.reduce(snapshot, status)
+        if (updated == snapshot) return
+        snapshot = updated
+        if (status.content.isNotBlank()) scheduleProfileFetch(status.address.pubkey)
         rebuildStatuses()
     }
 
     private fun rebuildStatuses() {
-        val now = Clock.System.now().epochSeconds
-        val selected = _state.value.selectedCategories
-        val visibleCandidates = rawStatuses.values
-            .filter { it.expiration == null || it.expiration > now }
-            .filter { accountSession?.muteStore?.isMuted(it.event.pubkey) != true }
-        val extraCategories = visibleCandidates
-            .map { it.statusTag }
-            .distinct()
+        val selectedCategories = _state.value.selectedCategories
+        val now = nowEpochSeconds()
+        val mutedPubkeys = accountSession?.muteStore?.mutedPubkeys?.value.orEmpty()
+        val activeStatuses = StatusEventReducer.activeStatuses(snapshot, now, mutedPubkeys)
+        val extraCategories = activeStatuses
+            .asSequence()
+            .map(StatusEntry::identifier)
             .filter { it !in DEFAULT_CATEGORIES }
-        val allCategories = DEFAULT_CATEGORIES + extraCategories
-        val active = visibleCandidates
-            .filter { selected.isEmpty() || it.statusTag in selected }
-            .sortedByDescending { it.event.createdAt }
-        val ownGeneralStatus = visibleCandidates.firstOrNull {
-            it.event.pubkey == accountSession?.pubkey &&
-                it.statusTag.equals(GENERAL_STATUS_TAG, ignoreCase = true)
-        }
-        _state.value = _state.value.copy(
-            statuses = active,
-            ownGeneralStatus = ownGeneralStatus,
-            availableCategories = allCategories,
-        )
-    }
-
-    private fun scheduleProfileFetch(pubkey: String) {
-        if (pubkey in _state.value.profiles || !pendingPubkeys.add(pubkey)) return
-        ProfileRepository.getCached(pubkey)?.let { profile ->
-            _state.value = _state.value.copy(profiles = _state.value.profiles + (pubkey to profile))
-        }
-        profileBatchJob?.cancel()
-        profileBatchJob = launch {
-            delay(PROFILE_BATCH_DELAY_MS)
-            ProfileRepository.ensureProfiles(
-                pendingPubkeys.toSet(),
-                ProfileFetchPolicy.CacheFirst(PROFILE_MAX_AGE_MS),
-                relayHint = relayUrl,
+            .plus(
+                selectedCategories
+                    .asSequence()
+                    .filter { it !in DEFAULT_CATEGORIES },
+            )
+            .distinct()
+            .sorted()
+            .toList()
+        val ownStatuses = activeStatuses
+            .filter { it.address.pubkey == accountSession?.pubkey }
+            .associateBy(StatusEntry::identifier)
+        _state.update {
+            it.copy(
+                statuses = StatusEventReducer.visibleStatuses(
+                    snapshot,
+                    now,
+                    selectedCategories,
+                    mutedPubkeys,
+                ),
+                ownStatuses = ownStatuses,
+                availableCategories = DEFAULT_CATEGORIES + extraCategories,
             )
         }
     }
 
-    override fun onCleared() {
-        super.onCleared()
-        jobs.forEach { it.cancel() }
+    private fun scheduleProfileFetch(pubkey: String) {
+        if (pubkey in _state.value.profiles || !pendingPubkeys.add(pubkey)) return
+        val cached = profileGateway.getCached(setOf(pubkey))
+        if (cached.isNotEmpty()) {
+            _state.update { it.copy(profiles = it.profiles + cached) }
+        }
         profileBatchJob?.cancel()
-        NostrRepository.close(statusSubId)
-        NostrRepository.close(ownGeneralStatusSubId)
+        val relayUrl = activeRelayUrl ?: return
+        val expectedGeneration = generation
+        profileBatchJob = launch {
+            delay(PROFILE_BATCH_DELAY_MS)
+            if (!isCurrent(expectedGeneration, relayUrl)) return@launch
+            val requested = pendingPubkeys.toSet()
+            pendingPubkeys.removeAll(requested)
+            if (requested.isNotEmpty()) profileGateway.ensureProfiles(requested, relayUrl)
+        }
+    }
+
+    override fun onCleared() {
+        stop()
+        super.onCleared()
     }
 
     private companion object {
-        const val STATUS_KIND = 30315
         const val STATUS_LIMIT = 200
+        const val OWN_STATUS_LIMIT = 100
         const val INITIAL_LOAD_TIMEOUT_MS = 5_000L
         const val EXPIRATION_REFRESH_INTERVAL_MS = 60_000L
         const val PROFILE_BATCH_DELAY_MS = 300L
-        const val PROFILE_MAX_AGE_MS = 15 * 60 * 1_000L
-        const val GENERAL_STATUS_TAG = "general"
         var nextKey = 0
         fun nextInstanceKey(): Int = nextKey++
     }
 }
 
-private val webUrlRegex = Regex("""https?://\S+""")
-
-private fun extractWebUrls(content: String): List<String> =
-    webUrlRegex.findAll(content)
-        .mapNotNull { match ->
-            match.value
-                .trimEnd('.', ',', ';', ':', ')', ']', '}', '>', '"', '\'')
-                .takeIf { it.isNotBlank() }
-        }
-        .distinct()
-        .toList()
+private const val PROFILE_MAX_AGE_MS = 15 * 60 * 1_000L

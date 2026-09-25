@@ -96,7 +96,7 @@ import com.nostr.torinos.ui.components.RelaySelector
 import com.nostr.torinos.ui.components.formatTimestamp
 import com.nostr.torinos.ui.components.stripImageUrls
 import com.nostr.torinos.ui.profile.AvatarCircle
-import com.nostr.torinos.ui.profile.customEmojiMap
+import com.nostr.torinos.emoji.customEmojiMap
 import kotlinx.datetime.LocalDate
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collectLatest

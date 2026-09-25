@@ -1,5 +1,8 @@
 package com.nostr.torinos.ui.profile
 
+import com.nostr.torinos.emoji.customEmojiMap
+import com.nostr.torinos.emoji.customEmojiTagsForContent
+
 import com.nostr.torinos.account.AccountSession
 import com.nostr.torinos.ui.SafeViewModel
 import com.nostr.torinos.model.NostrProfile

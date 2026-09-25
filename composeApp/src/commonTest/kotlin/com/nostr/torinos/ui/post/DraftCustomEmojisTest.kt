@@ -3,7 +3,7 @@ package com.nostr.torinos.ui.post
 import com.nostr.torinos.model.COMMENT_EVENT_KIND
 import com.nostr.torinos.model.NoteContext
 import com.nostr.torinos.network.CustomEmoji
-import com.nostr.torinos.ui.profile.customEmojiTagsForContent
+import com.nostr.torinos.emoji.customEmojiTagsForContent
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNull

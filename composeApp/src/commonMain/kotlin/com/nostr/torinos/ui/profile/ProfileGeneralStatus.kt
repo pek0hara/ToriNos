@@ -1,13 +1,17 @@
 package com.nostr.torinos.ui.profile
 
 import com.nostr.torinos.model.NostrEvent
-import com.nostr.torinos.network.CustomEmoji
+import com.nostr.torinos.status.GENERAL_STATUS_IDENTIFIER
+import com.nostr.torinos.status.STATUS_EVENT_KIND
+import com.nostr.torinos.status.StatusAddress
+import com.nostr.torinos.status.StatusEntry
+import com.nostr.torinos.status.StatusEventCodec
+import com.nostr.torinos.status.StatusEventReducer
+import com.nostr.torinos.status.StatusSnapshot
 import kotlin.time.Clock
 
-internal const val PROFILE_STATUS_KIND = 30315
-internal const val PROFILE_GENERAL_STATUS_TAG = "general"
-
-private val customEmojiCodeRegex = Regex(""":([a-zA-Z0-9_-]+):""")
+internal const val PROFILE_STATUS_KIND = STATUS_EVENT_KIND
+internal const val PROFILE_GENERAL_STATUS_TAG = GENERAL_STATUS_IDENTIFIER
 
 data class ProfileGeneralStatus(
     val content: String,
@@ -16,49 +20,45 @@ data class ProfileGeneralStatus(
     val customEmojis: Map<String, String> = emptyMap(),
 )
 
-internal fun NostrEvent.toActiveGeneralStatus(): ProfileGeneralStatus? {
-    if (kind != PROFILE_STATUS_KIND) return null
-    val statusTag = tags.firstOrNull { it.firstOrNull() == "d" }
-        ?.getOrNull(1)
-        ?.takeIf { it.isNotBlank() }
-        ?: PROFILE_GENERAL_STATUS_TAG
-    if (statusTag != PROFILE_GENERAL_STATUS_TAG) return null
+internal data class ProfileGeneralStatusReduction(
+    val snapshot: StatusSnapshot,
+    val generalStatus: ProfileGeneralStatus?,
+)
 
-    val expiration = tags.firstOrNull { it.firstOrNull() == "expiration" }
-        ?.getOrNull(1)
-        ?.toLongOrNull()
-    if (expiration != null && expiration <= Clock.System.now().epochSeconds) return null
+internal fun reduceProfileGeneralStatus(
+    snapshot: StatusSnapshot,
+    event: NostrEvent,
+    expectedPubkey: String,
+    nowEpochSeconds: Long = Clock.System.now().epochSeconds,
+): ProfileGeneralStatusReduction? {
+    val candidate = StatusEventCodec.parse(event) ?: return null
+    val expectedAddress = StatusAddress(expectedPubkey, GENERAL_STATUS_IDENTIFIER)
+    if (candidate.address != expectedAddress) return null
+    val updated = StatusEventReducer.reduce(snapshot, candidate)
+    if (updated == snapshot) return null
+    return ProfileGeneralStatusReduction(
+        snapshot = updated,
+        generalStatus = StatusEventReducer.activeStatus(updated, expectedAddress, nowEpochSeconds)
+            ?.toProfileGeneralStatus(),
+    )
+}
 
+internal fun NostrEvent.toActiveGeneralStatus(
+    nowEpochSeconds: Long = Clock.System.now().epochSeconds,
+): ProfileGeneralStatus? {
+    val status = StatusEventCodec.parse(this) ?: return null
+    if (status.identifier != PROFILE_GENERAL_STATUS_TAG) return null
+    val expiration = status.expiration
+    if (expiration != null && expiration <= nowEpochSeconds) return null
+    return status.toProfileGeneralStatus()
+}
+
+private fun StatusEntry.toProfileGeneralStatus(): ProfileGeneralStatus? {
     val body = content.trim().takeIf { it.isNotBlank() } ?: return null
     return ProfileGeneralStatus(
         content = body,
         expiration = expiration,
-        referenceUrl = tags.firstOrNull { it.firstOrNull() == "r" }
-            ?.getOrNull(1)
-            ?.trim()
-            ?.takeIf { it.isNotBlank() },
-        customEmojis = tags.customEmojiMap(),
+        referenceUrl = referenceUrls.firstOrNull(),
+        customEmojis = customEmojis,
     )
-}
-
-internal fun List<List<String>>.customEmojiMap(): Map<String, String> =
-    mapNotNull { tag ->
-        if (tag.firstOrNull() != "emoji") return@mapNotNull null
-        val shortcode = tag.getOrNull(1)?.trim()?.trim(':')?.takeIf { it.isNotBlank() }
-            ?: return@mapNotNull null
-        val imageUrl = tag.getOrNull(2)?.trim()?.takeIf { it.isNotBlank() }
-            ?: return@mapNotNull null
-        shortcode to imageUrl
-    }.toMap()
-
-internal fun customEmojiTagsForContent(content: String, emojis: List<CustomEmoji>): List<List<String>> {
-    val emojiMap = emojis.associateBy { it.shortcode }
-    return customEmojiCodeRegex.findAll(content)
-        .mapNotNull { match ->
-            val shortcode = match.groupValues[1]
-            val emoji = emojiMap[shortcode] ?: return@mapNotNull null
-            listOf("emoji", emoji.shortcode, emoji.imageUrl)
-        }
-        .distinct()
-        .toList()
 }

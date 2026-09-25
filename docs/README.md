@@ -15,6 +15,7 @@
 - [`feed-scroll-performance-design.md`](./feed-scroll-performance-design.md) — フィードの状態分離、描画軽量化、位置保持、画像・プリフェッチ方針
 - [`feed-chrome-interaction-design.md`](./feed-chrome-interaction-design.md) — フィードヘッダー／ボトムナビのドラッグ、慣性中断、先頭再表示を扱う操作状態機械
 - [`feed-chrome-refactor-design.md`](./feed-chrome-refactor-design.md) — 現行のフィードヘッダー動作を固定したまま分岐を純粋ロジックへ移す段階的リファクタ計画
+- [`status-tab-refactor-design.md`](./status-tab-refactor-design.md) — ステータスタブの購読ライフサイクル、置換イベント集約、投稿処理を整理する段階的リファクタ設計
 - [`profile-cache-design.md`](./profile-cache-design.md) — kind 0プロフィールの取得、キャッシュ、更新方針
 - [`cache-performance-refactor-design.md`](./cache-performance-refactor-design.md) — キャッシュと長寿命状態の上限、差分通知、DB・画像メモリの性能改善方針
 - [`search-performance-fix-plan.md`](./search-performance-fix-plan.md) — 検索性能の設計と導入状況、キャッシュ・購読・WebSocketのライフサイクル

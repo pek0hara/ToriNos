@@ -13,7 +13,7 @@ import com.nostr.torinos.network.CustomEmojiStore
 import com.nostr.torinos.network.ImageUploader
 import com.nostr.torinos.network.NostrRepository
 import com.nostr.torinos.network.RelayPublishResult
-import com.nostr.torinos.ui.profile.customEmojiTagsForContent
+import com.nostr.torinos.emoji.customEmojiTagsForContent
 import kotlin.time.Clock
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.MutableStateFlow

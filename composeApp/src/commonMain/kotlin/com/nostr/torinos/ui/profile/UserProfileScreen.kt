@@ -2,6 +2,7 @@ package com.nostr.torinos.ui.profile
 
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.foundation.lazy.LazyListState
@@ -25,6 +26,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.LifecycleStartEffect
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.nostr.torinos.account.accountSessionViewModel
@@ -147,6 +149,9 @@ fun UserProfileScreen(
                     onClick = onOpenJournal,
                     icon = Icons.Default.Today,
                     contentDescription = "ジャーナル",
+                    modifier = Modifier
+                        .navigationBarsPadding()
+                        .padding(bottom = 8.dp),
                 )
             }
         },

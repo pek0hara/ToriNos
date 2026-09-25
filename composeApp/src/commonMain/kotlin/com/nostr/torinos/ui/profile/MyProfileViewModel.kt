@@ -2,16 +2,22 @@ package com.nostr.torinos.ui.profile
 
 import com.nostr.torinos.account.AccountSession
 import com.nostr.torinos.ui.SafeViewModel
+import com.nostr.torinos.model.NostrEvent
 import com.nostr.torinos.model.NostrFilter
 import com.nostr.torinos.model.NostrProfile
 import com.nostr.torinos.model.extractNpubReferences
-import com.nostr.torinos.network.CustomEmojiStore
 import com.nostr.torinos.network.NostrRepository
 import com.nostr.torinos.network.ProfileFetchPolicy
 import com.nostr.torinos.network.ProfileRepository
 import com.nostr.torinos.network.RelayListEventCache
 import com.nostr.torinos.network.RelayStore
-import com.nostr.torinos.ui.components.extractWebUrls
+import com.nostr.torinos.status.GENERAL_STATUS_IDENTIFIER
+import com.nostr.torinos.status.PublishStatusCommand
+import com.nostr.torinos.status.StatusPublishResult
+import com.nostr.torinos.status.StatusPublishState
+import com.nostr.torinos.status.StatusPublishTarget
+import com.nostr.torinos.status.StatusPublisher
+import com.nostr.torinos.status.StatusSnapshot
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -30,9 +36,7 @@ data class MyProfileState(
     val followersCount: Int = 0,
     val isFollowersLoading: Boolean = false,
     val followersLoaded: Boolean = false,
-    val isGeneralStatusPublishing: Boolean = false,
-    val generalStatusPublishCompletedCount: Int = 0,
-    val generalStatusError: String? = null,
+    val generalStatusPublishState: StatusPublishState = StatusPublishState.Idle,
 )
 
 class MyProfileViewModel(
@@ -51,9 +55,10 @@ class MyProfileViewModel(
     private var followerCollectorJob: Job? = null
     private var followerEoseJob: Job? = null
     private var linkedProfileObserverJob: Job? = null
-    private var latestGeneralStatusCreatedAt = -1L
+    private var generalStatusSnapshot = StatusSnapshot()
     private var hasPublishedRelayList = false
     private val linkedProfilePubkeys = linkedSetOf<String>()
+    private val statusPublisher = StatusPublisher(accountSession?.signer)
 
     init {
         start()
@@ -107,9 +112,7 @@ class MyProfileViewModel(
 
         collectorJobs += launch {
             NostrRepository.events(generalStatusSubId).collect { event ->
-                if (event.createdAt <= latestGeneralStatusCreatedAt) return@collect
-                latestGeneralStatusCreatedAt = event.createdAt
-                _state.update { it.copy(generalStatus = event.toActiveGeneralStatus()) }
+                applyGeneralStatusEvent(event)
             }
         }
 
@@ -182,63 +185,76 @@ class MyProfileViewModel(
         expiration: Long?,
         referenceUrl: String?,
     ) {
-        val tag = statusTag.trim().ifBlank { PROFILE_GENERAL_STATUS_TAG }
-        val body = content.trim()
-        val explicitReferenceUrl = referenceUrl
-            ?.trim()
-            ?.takeIf { it.isNotBlank() }
+        publishStatusCommand(
+            PublishStatusCommand(statusTag, content, expiration, referenceUrl),
+        )
+    }
+
+    fun deleteGeneralStatus() {
+        publishStatusCommand(
+            PublishStatusCommand(
+                identifier = GENERAL_STATUS_IDENTIFIER,
+                content = "",
+                expiration = null,
+                referenceUrl = null,
+                isDeletion = true,
+            ),
+        )
+    }
+
+    private fun publishStatusCommand(command: PublishStatusCommand) {
+        if (_state.value.generalStatusPublishState is StatusPublishState.Publishing) return
         launch {
-            _state.update { it.copy(isGeneralStatusPublishing = true, generalStatusError = null) }
-            try {
-                val signer = accountSession?.signer ?: error("秘密鍵が見つかりません")
-                val tags = buildList {
-                    add(listOf("d", tag))
-                    if (expiration != null) add(listOf("expiration", expiration.toString()))
-                    addAll(customEmojiTagsForContent(body, CustomEmojiStore.emojis.value))
-                    (listOfNotNull(explicitReferenceUrl) + extractWebUrls(body)).distinct().forEach { url ->
-                        add(listOf("r", url))
+            _state.update { it.copy(generalStatusPublishState = StatusPublishState.Publishing) }
+            when (val result = statusPublisher.publish(command, StatusPublishTarget.WritableRelays)) {
+                is StatusPublishResult.Published -> {
+                    val isGeneral = command.identifier.trim().ifBlank { GENERAL_STATUS_IDENTIFIER } ==
+                        GENERAL_STATUS_IDENTIFIER
+                    if (isGeneral) applyGeneralStatusEvent(result.event)
+                    _state.update {
+                        it.copy(
+                            generalStatusPublishState = StatusPublishState.Succeeded(result.event.id),
+                        )
                     }
                 }
-                val event = signer.sign(
-                    content = body,
-                    kind = PROFILE_STATUS_KIND,
-                    tags = tags,
-                )
-                if (tag == PROFILE_GENERAL_STATUS_TAG) {
-                    latestGeneralStatusCreatedAt = event.createdAt
-                }
-                _state.update { currentState ->
-                    currentState.copy(
-                        generalStatus = if (tag == PROFILE_GENERAL_STATUS_TAG) {
-                            body.takeIf { it.isNotBlank() }?.let {
-                                ProfileGeneralStatus(
-                                    content = it,
-                                    expiration = expiration,
-                                    referenceUrl = explicitReferenceUrl,
-                                    customEmojis = event.tags.customEmojiMap(),
-                                )
-                            }
-                        } else {
-                            currentState.generalStatus
-                        },
-                        isGeneralStatusPublishing = false,
-                        generalStatusPublishCompletedCount = currentState.generalStatusPublishCompletedCount + 1,
-                    )
-                }
-                NostrRepository.publish(event)
-            } catch (e: Throwable) {
-                _state.update {
-                    it.copy(
-                        isGeneralStatusPublishing = false,
-                        generalStatusError = e.message ?: "ステータスの保存に失敗しました",
-                    )
+                is StatusPublishResult.Rejected -> {
+                    _state.update {
+                        it.copy(generalStatusPublishState = StatusPublishState.Failed(result.message))
+                    }
                 }
             }
         }
     }
 
+    private fun applyGeneralStatusEvent(event: NostrEvent) {
+        val reduction = reduceProfileGeneralStatus(
+            snapshot = generalStatusSnapshot,
+            event = event,
+            expectedPubkey = ownPubkey,
+        ) ?: return
+        generalStatusSnapshot = reduction.snapshot
+        _state.update { it.copy(generalStatus = reduction.generalStatus) }
+    }
+
     fun clearGeneralStatusError() {
-        _state.update { it.copy(generalStatusError = null) }
+        _state.update {
+            if (it.generalStatusPublishState is StatusPublishState.Failed) {
+                it.copy(generalStatusPublishState = StatusPublishState.Idle)
+            } else {
+                it
+            }
+        }
+    }
+
+    fun consumeGeneralStatusPublishResult(eventId: String) {
+        _state.update {
+            val succeeded = it.generalStatusPublishState as? StatusPublishState.Succeeded
+            if (succeeded?.eventId == eventId) {
+                it.copy(generalStatusPublishState = StatusPublishState.Idle)
+            } else {
+                it
+            }
+        }
     }
 
     override fun onCleared() {

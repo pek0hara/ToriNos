@@ -28,7 +28,7 @@ import com.nostr.torinos.model.toChannelContent
 import com.nostr.torinos.ui.timeline.SignedEventPublisher
 import com.nostr.torinos.ui.timeline.SignedPublishResult
 import com.nostr.torinos.ui.SafeViewModel
-import com.nostr.torinos.ui.profile.customEmojiMap
+import com.nostr.torinos.emoji.customEmojiMap
 import kotlin.reflect.KClass
 import kotlin.time.Clock
 import com.nostr.torinos.network.RelayTarget
