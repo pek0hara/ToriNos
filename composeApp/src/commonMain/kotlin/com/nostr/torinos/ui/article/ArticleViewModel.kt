@@ -787,39 +787,6 @@ private suspend fun fetchArticleEvents(
     }
 }
 
-private suspend fun fetchEventsByIds(
-    ids: List<String>,
-    relayUrl: String? = null,
-): List<NostrEvent> = coroutineScope {
-    val eventIds = ids.distinct()
-    if (eventIds.isEmpty()) return@coroutineScope emptyList()
-    val subId = articleSubscriptionId("article-quote", eventIds)
-    val mutex = Mutex()
-    val events = mutableListOf<NostrEvent>()
-    var collector: Job? = null
-    try {
-        collector = launch(start = CoroutineStart.UNDISPATCHED) {
-            NostrRepository.events(subId).collect { event ->
-                if (event.id in eventIds) {
-                    mutex.withLock { events += event }
-                }
-            }
-        }
-        NostrRepository.subscribe(
-            subId,
-            NostrFilter(ids = eventIds, limit = eventIds.size),
-            relayUrl = relayUrl,
-        )
-        withTimeoutOrNull(ARTICLE_FETCH_TIMEOUT_MS) {
-            NostrRepository.eose(subId).first()
-        }
-        mutex.withLock { events.distinctBy { it.id } }
-    } finally {
-        runCatching { NostrRepository.close(subId) }
-        collector?.cancelAndJoin()
-    }
-}
-
 private suspend fun fetchProfiles(
     pubkeys: List<String>,
     relayUrl: String? = null,

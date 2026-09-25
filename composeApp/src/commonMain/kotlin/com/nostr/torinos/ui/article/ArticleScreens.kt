@@ -75,9 +75,12 @@ import com.nostr.torinos.model.ArticleAuthorItem
 import com.nostr.torinos.model.ArticleItem
 import com.nostr.torinos.model.NostrEvent
 import com.nostr.torinos.model.NostrProfile
-import com.nostr.torinos.model.extractNostrEventReferences
 import com.nostr.torinos.model.quotedEventIds
 import com.nostr.torinos.model.stripNostrEventUris
+import com.nostr.torinos.article.MarkdownBlock
+import com.nostr.torinos.article.MarkdownInline
+import com.nostr.torinos.article.parseArticleMarkdown
+import com.nostr.torinos.article.parseMarkdownInline
 import com.nostr.torinos.account.LocalAccountSession
 import com.nostr.torinos.network.RelayStore
 import com.nostr.torinos.ui.components.LinkedText
@@ -1027,81 +1030,11 @@ internal fun MarkdownBody(
     onUserClick: (pubkey: String) -> Unit,
     onNoteClick: (eventId: String) -> Unit,
 ) {
-    val inlineQuoteIds = mutableSetOf<String>()
+    val markdown = remember(content, articleQuoteIds) { parseArticleMarkdown(content, articleQuoteIds) }
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        parseMarkdownBlocks(content).forEach { block ->
-            val quoteIds = when (block) {
-                MarkdownBlock.Blank,
-                is MarkdownBlock.Code,
-                is MarkdownBlock.Image,
-                -> emptyList()
-                is MarkdownBlock.Heading -> extractNostrEventReferences(block.text).map { it.eventId }
-                is MarkdownBlock.Quote -> extractNostrEventReferences(block.text).map { it.eventId }
-                is MarkdownBlock.ListItem -> extractNostrEventReferences(block.text).map { it.eventId }
-                is MarkdownBlock.Paragraph -> extractNostrEventReferences(block.text).map { it.eventId }
-            }
-            inlineQuoteIds += quoteIds
-            when (block) {
-                MarkdownBlock.Blank -> Box(modifier = Modifier.height(6.dp))
-                is MarkdownBlock.Heading -> stripNostrEventUris(block.text).takeIf { it.isNotBlank() }?.let { text ->
-                    MarkdownInlineText(
-                        text = text,
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = if (block.level == 1) FontWeight.Bold else FontWeight.SemiBold,
-                        headingLevel = block.level,
-                    )
-                }
-                is MarkdownBlock.Quote -> stripNostrEventUris(block.text).takeIf { it.isNotBlank() }?.let { text ->
-                    MarkdownInlineText(
-                        text = text,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .background(
-                                MaterialTheme.colorScheme.surfaceVariant,
-                                RoundedCornerShape(6.dp),
-                            )
-                            .padding(10.dp),
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-                is MarkdownBlock.ListItem -> stripNostrEventUris(block.text).takeIf { it.isNotBlank() }?.let { text ->
-                    MarkdownInlineText(
-                        text = "• $text",
-                        style = MaterialTheme.typography.bodyLarge,
-                    )
-                }
-                is MarkdownBlock.Code -> Text(
-                    text = block.text,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .background(
-                            MaterialTheme.colorScheme.surfaceVariant,
-                            RoundedCornerShape(6.dp),
-                        )
-                        .padding(10.dp),
-                    fontFamily = FontFamily.Monospace,
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                is MarkdownBlock.Image -> NetworkImage(
-                    url = block.url,
-                    contentDescription = block.alt.takeIf { it.isNotBlank() },
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(220.dp)
-                        .clip(RoundedCornerShape(8.dp)),
-                    contentScale = ContentScale.Fit,
-                    maxDecodeSizePx = 1200,
-                )
-                is MarkdownBlock.Paragraph -> stripNostrEventUris(block.text).takeIf { it.isNotBlank() }?.let { text ->
-                    MarkdownInlineText(
-                        text = text,
-                        style = MaterialTheme.typography.bodyLarge,
-                    )
-                }
-            }
-            quoteIds.forEach { eventId ->
+        markdown.sections.forEach { section ->
+            section.block?.let { MarkdownBlockContent(it) }
+            section.quoteIds.forEach { eventId ->
                 ArticleQuotePreviewSlot(
                     eventId = eventId,
                     quotedEvents = quotedEvents,
@@ -1112,7 +1045,7 @@ internal fun MarkdownBody(
                 )
             }
         }
-        articleQuoteIds.filterNot { it in inlineQuoteIds }.forEach { eventId ->
+        markdown.trailingQuoteIds.forEach { eventId ->
             ArticleQuotePreviewSlot(
                 eventId = eventId,
                 quotedEvents = quotedEvents,
@@ -1124,6 +1057,63 @@ internal fun MarkdownBody(
         }
     }
 }
+
+@Composable
+private fun MarkdownBlockContent(block: MarkdownBlock) {
+    when (block) {
+        MarkdownBlock.Blank -> Box(modifier = Modifier.height(6.dp))
+        is MarkdownBlock.Heading -> MarkdownInlineText(
+            text = block.text,
+            style = MaterialTheme.typography.titleMedium,
+            fontWeight = if (block.level == 1) FontWeight.Bold else FontWeight.SemiBold,
+            headingLevel = block.level,
+        )
+        is MarkdownBlock.Quote -> MarkdownInlineText(
+            text = block.text,
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(
+                    MaterialTheme.colorScheme.surfaceVariant,
+                    RoundedCornerShape(6.dp),
+                )
+                .padding(10.dp),
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        is MarkdownBlock.ListItem -> MarkdownInlineText(
+            text = "• ${block.text}",
+            style = MaterialTheme.typography.bodyLarge,
+        )
+        is MarkdownBlock.Code -> Text(
+            text = block.text,
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(
+                    MaterialTheme.colorScheme.surfaceVariant,
+                    RoundedCornerShape(6.dp),
+                )
+                .padding(10.dp),
+            fontFamily = FontFamily.Monospace,
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        is MarkdownBlock.Image -> NetworkImage(
+            url = block.url,
+            contentDescription = block.alt.takeIf { it.isNotBlank() },
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(220.dp)
+                .clip(RoundedCornerShape(8.dp)),
+            contentScale = ContentScale.Fit,
+            maxDecodeSizePx = 1200,
+        )
+        is MarkdownBlock.Paragraph -> MarkdownInlineText(
+            text = block.text,
+            style = MaterialTheme.typography.bodyLarge,
+        )
+    }
+}
+
 
 @Composable
 private fun ArticleQuotePreviewSlot(
@@ -1280,155 +1270,41 @@ private fun MarkdownInlineText(
     )
 }
 
-private fun parseMarkdownBlocks(content: String): List<MarkdownBlock> {
-    val blocks = mutableListOf<MarkdownBlock>()
-    val codeLines = mutableListOf<String>()
-    var inCodeBlock = false
-
-    content.lines().forEach { rawLine ->
-        val line = rawLine.trimEnd()
-        if (inCodeBlock) {
-            if (line.trimStart().startsWith("```")) {
-                blocks += MarkdownBlock.Code(codeLines.joinToString("\n"))
-                codeLines.clear()
-                inCodeBlock = false
-            } else {
-                codeLines += rawLine
-            }
-            return@forEach
-        }
-
-        when {
-            line.trimStart().startsWith("```") -> inCodeBlock = true
-            line.isBlank() -> blocks += MarkdownBlock.Blank
-            markdownImageRegex.matchEntire(line.trim()) != null -> {
-                val match = markdownImageRegex.matchEntire(line.trim())!!
-                blocks += MarkdownBlock.Image(
-                    alt = match.groupValues[1],
-                    url = match.groupValues[2],
-                )
-            }
-            line.startsWith("### ") -> blocks += MarkdownBlock.Heading(3, line.removePrefix("### "))
-            line.startsWith("## ") -> blocks += MarkdownBlock.Heading(2, line.removePrefix("## "))
-            line.startsWith("# ") -> blocks += MarkdownBlock.Heading(1, line.removePrefix("# "))
-            line.startsWith(">") -> blocks += MarkdownBlock.Quote(line.removePrefix(">").trim())
-            line.startsWith("- ") || line.startsWith("* ") -> blocks += MarkdownBlock.ListItem(line.drop(2))
-            line.startsWith("    ") -> blocks += MarkdownBlock.Code(line.trimStart())
-            else -> blocks += MarkdownBlock.Paragraph(line)
-        }
-    }
-
-    if (inCodeBlock) {
-        blocks += MarkdownBlock.Code(codeLines.joinToString("\n"))
-    }
-    return blocks
-}
-
-private sealed interface MarkdownBlock {
-    data object Blank : MarkdownBlock
-    data class Heading(val level: Int, val text: String) : MarkdownBlock
-    data class Paragraph(val text: String) : MarkdownBlock
-    data class Quote(val text: String) : MarkdownBlock
-    data class ListItem(val text: String) : MarkdownBlock
-    data class Code(val text: String) : MarkdownBlock
-    data class Image(val alt: String, val url: String) : MarkdownBlock
-}
-
-private val markdownImageRegex = Regex("""!\[([^]]*)]\((https://[^)\s]+)\)""")
-
 private fun markdownAnnotatedString(
     text: String,
     linkStyle: TextLinkStyles,
     codeStyle: SpanStyle,
 ): AnnotatedString = buildAnnotatedString {
-    appendMarkdownInline(text, linkStyle, codeStyle)
+    appendMarkdownInline(parseMarkdownInline(text), linkStyle, codeStyle)
 }
 
 private fun AnnotatedString.Builder.appendMarkdownInline(
-    text: String,
+    nodes: List<MarkdownInline>,
     linkStyle: TextLinkStyles,
     codeStyle: SpanStyle,
 ) {
-    var index = 0
-    while (index < text.length) {
-        when {
-            text.startsWith("`", index) -> {
-                val end = text.indexOf('`', startIndex = index + 1)
-                if (end > index) {
-                    pushStyle(codeStyle)
-                    append(text.substring(index + 1, end))
-                    pop()
-                    index = end + 1
-                } else {
-                    append(text[index])
-                    index += 1
-                }
+    nodes.forEach { node ->
+        when (node) {
+            is MarkdownInline.Text -> append(node.text)
+            is MarkdownInline.Code -> {
+                pushStyle(codeStyle)
+                append(node.text)
+                pop()
             }
-            text.startsWith("**", index) -> {
-                val end = text.indexOf("**", startIndex = index + 2)
-                if (end > index) {
-                    pushStyle(SpanStyle(fontWeight = FontWeight.Bold))
-                    appendMarkdownInline(text.substring(index + 2, end), linkStyle, codeStyle)
-                    pop()
-                    index = end + 2
-                } else {
-                    append(text[index])
-                    index += 1
-                }
+            is MarkdownInline.Bold -> {
+                pushStyle(SpanStyle(fontWeight = FontWeight.Bold))
+                appendMarkdownInline(node.children, linkStyle, codeStyle)
+                pop()
             }
-            text.startsWith("__", index) -> {
-                val end = text.indexOf("__", startIndex = index + 2)
-                if (end > index) {
-                    pushStyle(SpanStyle(fontWeight = FontWeight.Bold))
-                    appendMarkdownInline(text.substring(index + 2, end), linkStyle, codeStyle)
-                    pop()
-                    index = end + 2
-                } else {
-                    append(text[index])
-                    index += 1
-                }
+            is MarkdownInline.Italic -> {
+                pushStyle(SpanStyle(fontStyle = FontStyle.Italic))
+                appendMarkdownInline(node.children, linkStyle, codeStyle)
+                pop()
             }
-            text[index] == '*' -> {
-                val end = text.indexOf('*', startIndex = index + 1)
-                if (end > index + 1) {
-                    pushStyle(SpanStyle(fontStyle = FontStyle.Italic))
-                    appendMarkdownInline(text.substring(index + 1, end), linkStyle, codeStyle)
-                    pop()
-                    index = end + 1
-                } else {
-                    append(text[index])
-                    index += 1
-                }
-            }
-            text[index] == '_' -> {
-                val end = text.indexOf('_', startIndex = index + 1)
-                if (end > index + 1) {
-                    pushStyle(SpanStyle(fontStyle = FontStyle.Italic))
-                    appendMarkdownInline(text.substring(index + 1, end), linkStyle, codeStyle)
-                    pop()
-                    index = end + 1
-                } else {
-                    append(text[index])
-                    index += 1
-                }
-            }
-            text[index] == '[' -> {
-                val labelEnd = text.indexOf("](", startIndex = index + 1)
-                val urlEnd = if (labelEnd > index) text.indexOf(')', startIndex = labelEnd + 2) else -1
-                if (labelEnd > index && urlEnd > labelEnd + 2) {
-                    val url = text.substring(labelEnd + 2, urlEnd)
-                    pushLink(LinkAnnotation.Url(url = url, styles = linkStyle))
-                    appendMarkdownInline(text.substring(index + 1, labelEnd), linkStyle, codeStyle)
-                    pop()
-                    index = urlEnd + 1
-                } else {
-                    append(text[index])
-                    index += 1
-                }
-            }
-            else -> {
-                append(text[index])
-                index += 1
+            is MarkdownInline.Link -> {
+                pushLink(LinkAnnotation.Url(url = node.url, styles = linkStyle))
+                appendMarkdownInline(node.children, linkStyle, codeStyle)
+                pop()
             }
         }
     }
