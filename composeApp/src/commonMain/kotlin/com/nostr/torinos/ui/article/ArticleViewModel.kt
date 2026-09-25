@@ -1,6 +1,10 @@
 package com.nostr.torinos.ui.article
 
 import com.nostr.torinos.account.AccountSession
+import com.nostr.torinos.article.ArticleReactionSummary
+import com.nostr.torinos.article.articleEngagementFilters
+import com.nostr.torinos.article.articleTopLevelComments
+import com.nostr.torinos.article.summarizeArticleReactions
 import com.nostr.torinos.model.ArticleItem
 import com.nostr.torinos.model.NIP23_ARTICLE_KIND
 import com.nostr.torinos.model.NostrEvent
@@ -14,12 +18,16 @@ import com.nostr.torinos.network.NostrRepository
 import com.nostr.torinos.network.ProfileFetchPolicy
 import com.nostr.torinos.network.ProfileRepository
 import com.nostr.torinos.network.RelayStore
+import com.nostr.torinos.network.SubscriptionBehavior
+import com.nostr.torinos.network.SubscriptionSignal
+import com.nostr.torinos.network.SubscriptionSpec
 import com.nostr.torinos.ui.SafeViewModel
 import com.nostr.torinos.util.BoundedLruCache
 import kotlin.random.Random
 import kotlin.time.Clock
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.cancelAndJoin
@@ -31,8 +39,10 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.takeWhile
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 
 data class ArticleListState(
@@ -397,7 +407,21 @@ data class ArticleDetailState(
     val deleteCompletedCount: Int = 0,
     val deleteError: String? = null,
     val error: String? = null,
+    val engagement: ArticleEngagementState = ArticleEngagementState.Loading,
 )
+
+/** 記事詳細のリアクションとコメントの取得状態。 */
+sealed interface ArticleEngagementState {
+    data object Loading : ArticleEngagementState
+
+    data class Loaded(
+        val reactions: ArticleReactionSummary,
+        val comments: List<NostrEvent>,
+        val commentProfiles: Map<String, NostrProfile>,
+    ) : ArticleEngagementState
+
+    data class Failed(val message: String) : ArticleEngagementState
+}
 
 class ArticleDetailViewModel(
     private val pubkey: String,
@@ -409,6 +433,7 @@ class ArticleDetailViewModel(
     val state: StateFlow<ArticleDetailState> = _state.asStateFlow()
     private var loadJob: Job? = null
     private var quoteJob: Job? = null
+    private var engagementJob: Job? = null
 
     init {
         load()
@@ -417,6 +442,7 @@ class ArticleDetailViewModel(
     fun load() {
         loadJob?.cancel()
         quoteJob?.cancel()
+        engagementJob?.cancel()
         _state.value = ArticleDetailState()
         loadJob = launch {
             try {
@@ -444,6 +470,9 @@ class ArticleDetailViewModel(
                 val missingQuoteIds = quoteIds.filterNot { it in cachedQuotedEvents }
                 if (latest != null && missingQuoteIds.isNotEmpty()) {
                     quoteJob = launch { fetchQuotedEvents(missingQuoteIds) }
+                }
+                if (latest != null) {
+                    engagementJob = launch { loadEngagement(latest) }
                 }
             } catch (e: CancellationException) {
                 throw e
@@ -502,6 +531,41 @@ class ArticleDetailViewModel(
                     deleteError = e.message ?: "記事の削除要求を送信できませんでした",
                 )
             }
+        }
+    }
+
+    /** 記事へのリアクションとコメントを、有効な全リレーから有限取得する。 */
+    private suspend fun loadEngagement(article: ArticleItem) {
+        val articleEventIds = setOf(article.event.id)
+        val ownPubkey = accountSession?.signer?.pubkey
+        val isMuted: (String) -> Boolean = { accountSession?.muteStore?.isMuted(it) == true }
+        try {
+            val events = fetchEventsOnce(
+                articleEngagementFilters(article.address, articleEventIds, ARTICLE_ENGAGEMENT_LIMIT),
+            )
+            val comments = articleTopLevelComments(events, article.address, articleEventIds, isMuted)
+            val reactions = summarizeArticleReactions(events, article.address, articleEventIds, ownPubkey, isMuted)
+            val commenters = comments.map { it.pubkey }.distinct()
+            _state.value = _state.value.copy(
+                engagement = ArticleEngagementState.Loaded(
+                    reactions = reactions,
+                    comments = comments,
+                    commentProfiles = ProfileRepository.getCached(commenters),
+                ),
+            )
+            val missing = commenters.filterNot { it in ProfileRepository.getCached(commenters) }
+            if (missing.isEmpty()) return
+            val fetched = fetchProfiles(missing, relayUrl)
+            val loaded = _state.value.engagement as? ArticleEngagementState.Loaded ?: return
+            _state.value = _state.value.copy(
+                engagement = loaded.copy(commentProfiles = loaded.commentProfiles + fetched),
+            )
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Throwable) {
+            _state.value = _state.value.copy(
+                engagement = ArticleEngagementState.Failed(e.message ?: "リアクションとコメントを読み込めませんでした"),
+            )
         }
     }
 
@@ -619,6 +683,27 @@ private suspend fun fetchArticleEvents(
     }
 }
 
+/** 有効な全リレーへ有限購読し、全リレーの完了またはタイムアウトまでに届いたイベントを返す。 */
+private suspend fun fetchEventsOnce(filters: List<NostrFilter>): List<NostrEvent> {
+    val events = linkedMapOf<String, NostrEvent>()
+    val session = NostrRepository.openSubscription(
+        SubscriptionSpec(
+            id = articleSubscriptionId("article-engagement", filters),
+            filters = filters,
+            behavior = SubscriptionBehavior.Fetch(timeoutMillis = ARTICLE_FETCH_TIMEOUT_MS),
+        ),
+    )
+    try {
+        session.signals.takeWhile { signal ->
+            if (signal is SubscriptionSignal.Event) events[signal.event.id] = signal.event
+            signal !is SubscriptionSignal.FetchCompleted
+        }.collect { }
+    } finally {
+        withContext(NonCancellable) { session.close() }
+    }
+    return events.values.toList()
+}
+
 private suspend fun fetchProfiles(
     pubkeys: List<String>,
     relayUrl: String? = null,
@@ -637,6 +722,7 @@ private const val ARTICLE_PAGE_SIZE = 50
 private const val ARTICLE_RAW_EVENT_WINDOW = 1_000
 private const val ARTICLE_DETAIL_AUTHOR_FALLBACK_LIMIT = 100
 private const val ARTICLE_FETCH_TIMEOUT_MS = 8_000L
+private const val ARTICLE_ENGAGEMENT_LIMIT = 500
 private const val PROFILE_FETCH_TIMEOUT_MS = 5_000L
 private const val PROFILE_FETCH_LIMIT = 200
 private const val PROFILE_MAX_AGE_MS = 15 * 60 * 1_000L

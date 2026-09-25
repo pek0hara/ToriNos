@@ -1098,7 +1098,7 @@ private const val LikeReactionGroupKey = "like"
 private const val MaxPreviewUsers = 5
 
 @Composable
-private fun ReactionSummaryRow(
+internal fun ReactionSummaryRow(
     totalReactionCount: Int,
     explicitLikeCount: Int?,
     isLiked: Boolean,

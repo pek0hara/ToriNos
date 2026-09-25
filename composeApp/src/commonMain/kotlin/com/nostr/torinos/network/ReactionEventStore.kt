@@ -182,6 +182,10 @@ private fun NostrEvent.matchesReactionFilter(
 
     val targetId = reactionTargetId()
     if (filter.eTags != null && targetId !in filter.eTags) return false
+    if (filter.aTags != null) {
+        val addresses = tags.filter { it.firstOrNull() == "a" }.mapNotNull { it.getOrNull(1) }
+        if (addresses.none { it in filter.aTags }) return false
+    }
     if (filter.pTags != null) {
         val knownTargetAuthor = targetId?.let(targetAuthors::get)
         val taggedPubkeys = tags

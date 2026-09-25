@@ -21,6 +21,7 @@ data class NostrFilter(
     @SerialName("#p") val pTags: List<String>? = null,
     @SerialName("#P") val rootPubkeyTags: List<String>? = null,
     @SerialName("#a") val aTags: List<String>? = null,
+    @SerialName("#A") val rootAddressTags: List<String>? = null,
     @SerialName("#d") val dTags: List<String>? = null,
     @SerialName("#t") val tTags: List<String>? = null,
     val search: String? = null,

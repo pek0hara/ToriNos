@@ -27,6 +27,21 @@ class ReactionEventStoreTest {
     }
 
     @Test
+    fun addressTagSubscriptionOnlyReplaysReactionsToThatAddress() {
+        val articleReaction = reaction(id = "article-reaction", targetId = "article-version", pTag = "author")
+            .let { it.copy(tags = it.tags + listOf(listOf("a", "30023:author:post"))) }
+        val noteReaction = reaction(id = "note-reaction", targetId = "note", pTag = "author")
+        ReactionEventStore.observe(articleReaction)
+        ReactionEventStore.observe(noteReaction)
+
+        val cached = ReactionEventStore.matching(
+            listOf(NostrFilter(kinds = listOf(7), aTags = listOf("30023:author:post"))),
+        )
+
+        assertEquals(listOf(articleReaction), cached)
+    }
+
+    @Test
     fun cachedReactionIsOnlyReplayedToItsSourceRelay() {
         val reaction = reaction(id = "reaction", targetId = "note", pTag = "author")
         ReactionEventStore.observe(reaction, setOf("wss://one.example"))

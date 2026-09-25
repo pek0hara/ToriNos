@@ -160,6 +160,10 @@ fun ArticleDetailScreen(
                             onTopicClick = onTopicClick,
                         )
                     }
+                    articleEngagementItems(
+                        engagement = state.engagement,
+                        onUserClick = onUserClick,
+                    )
                 }
             }
         }
