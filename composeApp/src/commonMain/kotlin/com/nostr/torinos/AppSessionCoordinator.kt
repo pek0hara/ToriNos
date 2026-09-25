@@ -206,7 +206,7 @@ internal fun AppSessionCoordinator(
         val globalFeedListState = remember { LazyListState() }
         var currentServiceTab by remember { mutableStateOf(ServiceTab.Articles) }
         // 記事タブの絞り込み。リレー切り替えでは維持し、アカウント切り替えとアプリ再起動で既定値へ戻る。
-        var articleAuthorFilter by remember { mutableStateOf(ArticleAuthorFilter.All) }
+        var articleAuthorFilter by remember { mutableStateOf(ArticleAuthorFilter.Following) }
         var articleTopic by remember { mutableStateOf<String?>(null) }
         // 記事へのコメントは投稿後にスレッドへ遷移せず、記事詳細のコメント一覧を取り直す。
         var articleCommentParentId by remember { mutableStateOf<String?>(null) }

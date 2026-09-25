@@ -148,7 +148,12 @@ fun ArticleHubScreen(
                         hasTopic = topic != null,
                     ),
                 ),
-                emptyText = if (query == ArticleQuery()) "記事がありません" else "条件に合う記事がありません",
+                emptyText = when {
+                    query == ArticleQuery() -> "記事がありません"
+                    query == ArticleQuery(authorScope = ArticleAuthorScope.Following) ->
+                        "フォロー中のユーザーの記事がありません"
+                    else -> "条件に合う記事がありません"
+                },
                 modifier = Modifier
                     .fillMaxSize()
                     .serviceTabSwipe(
