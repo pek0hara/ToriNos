@@ -28,7 +28,7 @@ class NoteEngagementService(
                     tags = listOf(
                         listOf("e", command.target.validEventId()),
                         listOf("p", command.target.validEventPubkey()),
-                    ),
+                    ) + command.target.addressableTags(),
                 )
                 is NoteEngagementCommand.AddEmoji -> activeSigner.sign(
                     content = command.option.eventContent,
@@ -36,7 +36,7 @@ class NoteEngagementService(
                     tags = command.option.eventTags(
                         command.target.validEventId(),
                         command.target.validEventPubkey(),
-                    ),
+                    ) + command.target.addressableTags(),
                 )
                 is NoteEngagementCommand.RemoveReaction -> activeSigner.sign(
                     content = "",
@@ -84,12 +84,23 @@ sealed interface NoteEngagementCommand {
     data class RemoveRepost(val repostEventId: String) : NoteEngagementCommand
 }
 
+/**
+ * リアクション対象。記事などのaddressable eventでは[address]と[kind]を指定し、
+ * NIP-25に従って`a`と`k`タグも付ける。
+ */
 data class NoteTarget(
     val eventId: String,
     val eventPubkey: String,
+    val address: String? = null,
+    val kind: Int? = null,
 ) {
     internal fun validEventId(): String = eventId.requireNotBlank("eventId")
     internal fun validEventPubkey(): String = eventPubkey.requireNotBlank("eventPubkey")
+
+    internal fun addressableTags(): List<List<String>> = buildList {
+        address?.let { add(listOf("a", it.requireNotBlank("address"))) }
+        kind?.let { add(listOf("k", it.toString())) }
+    }
 }
 
 private fun String.requireNotBlank(name: String): String =

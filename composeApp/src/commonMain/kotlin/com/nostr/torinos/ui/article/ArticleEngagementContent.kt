@@ -16,7 +16,10 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -24,8 +27,14 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import com.nostr.torinos.article.ArticleReactionSummary
 import com.nostr.torinos.emoji.customEmojiMap
+import com.nostr.torinos.engagement.EngagementRequest
+import com.nostr.torinos.engagement.EngagementSlot
+import com.nostr.torinos.engagement.NoteEngagementState
+import com.nostr.torinos.engagement.displayOwnEmojiReactionEventIds
+import com.nostr.torinos.engagement.hasOwnReaction
+import com.nostr.torinos.model.ReactionOption
+import com.nostr.torinos.network.CustomEmojiStore
 import com.nostr.torinos.model.NostrEvent
 import com.nostr.torinos.model.NostrProfile
 import com.nostr.torinos.model.stripNostrEventUris
@@ -33,6 +42,7 @@ import com.nostr.torinos.ui.components.LinkedText
 import com.nostr.torinos.ui.components.NetworkImage
 import com.nostr.torinos.ui.components.ProfileNameText
 import com.nostr.torinos.ui.components.ReactionSummaryRow
+import com.nostr.torinos.ui.components.StandardEmojiPickerSheet
 import com.nostr.torinos.ui.components.extractImageUrls
 import com.nostr.torinos.ui.components.formatTimestamp
 import com.nostr.torinos.ui.components.stripImageUrls
@@ -42,6 +52,7 @@ import com.nostr.torinos.ui.profile.AvatarCircle
 internal fun LazyListScope.articleEngagementItems(
     engagement: ArticleEngagementState,
     onUserClick: (pubkey: String) -> Unit,
+    reactionActions: ArticleReactionActions?,
 ) {
     item(key = "engagement-divider", contentType = "divider") {
         HorizontalDivider(modifier = Modifier.padding(horizontal = 20.dp))
@@ -58,7 +69,11 @@ internal fun LazyListScope.articleEngagementItems(
         }
         is ArticleEngagementState.Loaded -> {
             item(key = "engagement-reactions", contentType = "reactions") {
-                ArticleReactions(summary = engagement.reactions)
+                ArticleReactions(
+                    reactions = engagement.reactions,
+                    error = engagement.reactionError,
+                    actions = reactionActions,
+                )
             }
             item(key = "engagement-comments-header", contentType = "section-header") {
                 Text(
@@ -90,10 +105,28 @@ internal fun LazyListScope.articleEngagementItems(
     }
 }
 
+/** リアクション操作。未ログイン時はnullにして表示だけを行う。 */
+internal class ArticleReactionActions(
+    val onLike: () -> Unit,
+    val onUnlike: () -> Unit,
+    val onReact: (ReactionOption) -> Unit,
+    val onUnreact: (ReactionOption) -> Unit,
+)
+
 @Composable
-private fun ArticleReactions(summary: ArticleReactionSummary) {
-    Box(modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 12.dp)) {
-        if (summary.totalCount == 0) {
+private fun ArticleReactions(
+    reactions: NoteEngagementState,
+    error: String?,
+    actions: ArticleReactionActions?,
+) {
+    var showStandardEmojiPicker by remember { mutableStateOf(false) }
+    val isLiked = reactions.ownLikeEventId != null ||
+        reactions.pendingOperations[EngagementSlot.Reaction]?.request == EngagementRequest.AddLike
+    Column(
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 12.dp),
+        verticalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        if (reactions.reactionCount == 0 && actions == null) {
             Text(
                 text = "リアクションはまだありません",
                 style = MaterialTheme.typography.bodySmall,
@@ -101,18 +134,38 @@ private fun ArticleReactions(summary: ArticleReactionSummary) {
             )
         } else {
             ReactionSummaryRow(
-                totalReactionCount = summary.totalCount,
-                explicitLikeCount = summary.likeCount,
-                isLiked = summary.ownLikeEventId != null,
-                customReactions = summary.customReactions,
-                unicodeReactions = summary.unicodeReactions,
-                ownEmojiReactionEventIds = summary.ownEmojiReactionEventIds,
-                onLike = null,
-                onEmojiReact = null,
-                onEmojiUnreact = null,
-                onOpenStandardEmojiPicker = {},
+                totalReactionCount = reactions.reactionCount,
+                explicitLikeCount = reactions.likeReactionCount,
+                isLiked = isLiked,
+                customReactions = reactions.customReactions,
+                unicodeReactions = reactions.unicodeReactions,
+                ownEmojiReactionEventIds = reactions.displayOwnEmojiReactionEventIds,
+                onLike = actions?.let { { if (isLiked) it.onUnlike() else it.onLike() } },
+                onEmojiReact = actions?.onReact,
+                onEmojiUnreact = actions?.onUnreact,
+                onOpenStandardEmojiPicker = { showStandardEmojiPicker = true },
             )
         }
+        error?.let {
+            Text(
+                text = it,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.error,
+            )
+        }
+    }
+    if (showStandardEmojiPicker && actions != null && !reactions.hasOwnReaction) {
+        StandardEmojiPickerSheet(
+            onDismiss = { showStandardEmojiPicker = false },
+            onSelect = { option ->
+                showStandardEmojiPicker = false
+                when (option) {
+                    is ReactionOption.Unicode -> CustomEmojiStore.markUnicodeUsed(option.value)
+                    is ReactionOption.Custom -> CustomEmojiStore.markCustomReactionUsed(option.shortcode, option.imageUrl)
+                }
+                actions.onReact(option)
+            },
+        )
     }
 }
 

@@ -1,5 +1,6 @@
 package com.nostr.torinos.article
 
+import com.nostr.torinos.engagement.NoteEngagementState
 import com.nostr.torinos.model.COMMENT_EVENT_KIND
 import com.nostr.torinos.model.CustomReaction
 import com.nostr.torinos.model.NIP23_ARTICLE_KIND
@@ -93,6 +94,16 @@ internal fun summarizeArticleReactions(
         }
     return summary
 }
+
+/** 投稿と同じ楽観更新（[com.nostr.torinos.engagement.EngagementReducer]）を使うための変換。 */
+internal fun ArticleReactionSummary.toEngagementState(): NoteEngagementState = NoteEngagementState(
+    reactionCount = totalCount,
+    likeReactionCount = likeCount,
+    customReactions = customReactions,
+    unicodeReactions = unicodeReactions,
+    ownLikeEventId = ownLikeEventId,
+    ownEmojiReactionEventIds = ownEmojiReactionEventIds,
+)
 
 private fun Map<String, String>.withOwn(isOwn: Boolean, option: ReactionOption, eventId: String): Map<String, String> =
     if (isOwn) this + (option.key to eventId) else this

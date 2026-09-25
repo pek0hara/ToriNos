@@ -1,7 +1,14 @@
 package com.nostr.torinos.ui.article
 
 import com.nostr.torinos.account.AccountSession
-import com.nostr.torinos.article.ArticleReactionSummary
+import com.nostr.torinos.article.toEngagementState
+import com.nostr.torinos.engagement.EngagementOperationId
+import com.nostr.torinos.engagement.EngagementRequest
+import com.nostr.torinos.engagement.NoteEngagementCommand
+import com.nostr.torinos.engagement.NoteEngagementState
+import com.nostr.torinos.engagement.NoteTarget
+import com.nostr.torinos.model.ReactionOption
+import com.nostr.torinos.ui.timeline.NoteEngagementCoordinator
 import com.nostr.torinos.article.articleEngagementFilters
 import com.nostr.torinos.article.articleTopLevelComments
 import com.nostr.torinos.article.summarizeArticleReactions
@@ -415,9 +422,10 @@ sealed interface ArticleEngagementState {
     data object Loading : ArticleEngagementState
 
     data class Loaded(
-        val reactions: ArticleReactionSummary,
+        val reactions: NoteEngagementState,
         val comments: List<NostrEvent>,
         val commentProfiles: Map<String, NostrProfile>,
+        val reactionError: String? = null,
     ) : ArticleEngagementState
 
     data class Failed(val message: String) : ArticleEngagementState
@@ -434,6 +442,11 @@ class ArticleDetailViewModel(
     private var loadJob: Job? = null
     private var quoteJob: Job? = null
     private var engagementJob: Job? = null
+    private val engagementCoordinator = NoteEngagementCoordinator(accountSession?.signer)
+    private var nextEngagementOperationId = 0L
+
+    /** ログイン中（署名できる）ときだけリアクションを送れる。 */
+    val canReact: Boolean = accountSession?.signer != null
 
     init {
         load()
@@ -534,6 +547,74 @@ class ArticleDetailViewModel(
         }
     }
 
+    fun like() {
+        val article = _state.value.article ?: return
+        runReaction(EngagementRequest.AddLike, NoteEngagementCommand.AddLike(article.reactionTarget()))
+    }
+
+    fun unlike() {
+        val reactionId = loadedEngagement()?.reactions?.ownLikeEventId ?: return
+        runReaction(EngagementRequest.RemoveLike, NoteEngagementCommand.RemoveReaction(reactionId))
+    }
+
+    fun react(option: ReactionOption) {
+        val article = _state.value.article ?: return
+        runReaction(
+            EngagementRequest.AddEmoji(option),
+            NoteEngagementCommand.AddEmoji(article.reactionTarget(), option),
+        )
+    }
+
+    fun unreact(option: ReactionOption) {
+        val reactionId = loadedEngagement()?.reactions?.ownEmojiReactionEventIds?.get(option.key) ?: return
+        runReaction(EngagementRequest.RemoveEmoji(option), NoteEngagementCommand.RemoveReaction(reactionId))
+    }
+
+    private fun loadedEngagement(): ArticleEngagementState.Loaded? =
+        _state.value.engagement as? ArticleEngagementState.Loaded
+
+    private fun updateLoadedEngagement(transform: (ArticleEngagementState.Loaded) -> ArticleEngagementState.Loaded) {
+        val loaded = loadedEngagement() ?: return
+        _state.value = _state.value.copy(engagement = transform(loaded))
+    }
+
+    /** 楽観的に集計へ反映してから送信し、失敗したら巻き戻す。 */
+    private fun runReaction(request: EngagementRequest, command: NoteEngagementCommand) {
+        val loaded = loadedEngagement() ?: return
+        val operationId = EngagementOperationId("article-${++nextEngagementOperationId}")
+        val optimistic = engagementCoordinator.begin(loaded.reactions, operationId, request)
+        if (optimistic == loaded.reactions) return
+        updateLoadedEngagement { it.copy(reactions = optimistic, reactionError = null) }
+        launch {
+            engagementCoordinator.execute(command)
+                .onSuccess { published ->
+                    updateLoadedEngagement {
+                        it.copy(reactions = engagementCoordinator.commit(it.reactions, operationId, published.id))
+                    }
+                }
+                .onFailure { error ->
+                    val message = when (command) {
+                        is NoteEngagementCommand.RemoveReaction -> "リアクションの解除に失敗しました"
+                        else -> "リアクションの送信に失敗しました"
+                    }
+                    updateLoadedEngagement {
+                        it.copy(
+                            reactions = engagementCoordinator.rollback(it.reactions, operationId),
+                            reactionError = error.message?.let { detail -> "$message: $detail" } ?: message,
+                        )
+                    }
+                }
+        }
+    }
+
+    /** 記事へのリアクション対象。版IDに加えてaddressと種類を付け、編集後の版にも引き継がれるようにする。 */
+    private fun ArticleItem.reactionTarget(): NoteTarget = NoteTarget(
+        eventId = event.id,
+        eventPubkey = event.pubkey,
+        address = address,
+        kind = NIP23_ARTICLE_KIND,
+    )
+
     /** 記事へのリアクションとコメントを、有効な全リレーから有限取得する。 */
     private suspend fun loadEngagement(article: ArticleItem) {
         val articleEventIds = setOf(article.event.id)
@@ -548,7 +629,7 @@ class ArticleDetailViewModel(
             val commenters = comments.map { it.pubkey }.distinct()
             _state.value = _state.value.copy(
                 engagement = ArticleEngagementState.Loaded(
-                    reactions = reactions,
+                    reactions = reactions.toEngagementState(),
                     comments = comments,
                     commentProfiles = ProfileRepository.getCached(commenters),
                 ),

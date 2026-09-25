@@ -30,6 +30,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
@@ -85,6 +86,18 @@ fun ArticleDetailScreen(
         )
     }
     val state by viewModel.state.collectAsState()
+    val reactionActions = remember(viewModel) {
+        if (viewModel.canReact) {
+            ArticleReactionActions(
+                onLike = viewModel::like,
+                onUnlike = viewModel::unlike,
+                onReact = viewModel::react,
+                onUnreact = viewModel::unreact,
+            )
+        } else {
+            null
+        }
+    }
     var showDeleteDialog by rememberSaveable(pubkey, identifier) { mutableStateOf(false) }
 
     LaunchedEffect(state.deleteCompletedCount) {
@@ -163,6 +176,7 @@ fun ArticleDetailScreen(
                     articleEngagementItems(
                         engagement = state.engagement,
                         onUserClick = onUserClick,
+                        reactionActions = reactionActions,
                     )
                 }
             }

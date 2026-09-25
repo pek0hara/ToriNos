@@ -41,6 +41,32 @@ class NoteEngagementServiceTest {
     }
 
     @Test
+    fun reactionToAddressableEventAddsAddressAndKindTags() = runBlocking {
+        val service = NoteEngagementService(RecordingSigner()) {
+            RelayPublishResult(setOf("relay"), emptyMap())
+        }
+        val target = NoteTarget("article-version", "author", address = "30023:author:post", kind = 30023)
+
+        val like = service.execute(NoteEngagementCommand.AddLike(target)).getOrThrow()
+        val emoji = service.execute(
+            NoteEngagementCommand.AddEmoji(target, ReactionOption.Unicode("🔥")),
+        ).getOrThrow()
+
+        val expectedTargetTags = listOf(
+            listOf("e", "article-version"),
+            listOf("p", "author"),
+        )
+        val expectedAddressTags = listOf(
+            listOf("a", "30023:author:post"),
+            listOf("k", "30023"),
+        )
+        assertEquals("+", like.content)
+        assertEquals(expectedTargetTags + expectedAddressTags, like.tags)
+        assertEquals("🔥", emoji.content)
+        assertEquals(expectedTargetTags + expectedAddressTags, emoji.tags)
+    }
+
+    @Test
     fun removeReactionCreatesDeletionEvent() = runBlocking {
         val service = NoteEngagementService(RecordingSigner()) {
             RelayPublishResult(setOf("relay"), emptyMap())

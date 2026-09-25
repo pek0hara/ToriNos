@@ -457,7 +457,9 @@ data class ArticleDetailState(
       （kind `1111`と`a`タグ付きkind `1`）を表示する。取得は`openSubscription`の`Fetch`で有効な全リレーへ送る。
       判定と集計は`article/ArticleEngagement.kt`の純粋関数に置く。
       `ReactionEventStore`のキャッシュ再送が`#a`条件を無視していたため、照合に`#a`を追加した。
-    - 11b: 記事へのリアクション送信と取り消し。`a`・`e`・`k`・`p`タグを付ける。
+    - 11b（完了）: 記事へのリアクション送信と取り消し。`NoteTarget`に任意の`address`と`kind`を追加し、
+      指定時だけ`a`・`k`タグを付ける（`e`・`p`は従来どおり）。集計は`NoteEngagementState`へ変換し、
+      投稿と同じ`EngagementReducer`で楽観更新・巻き戻しを行う。未ログイン時は表示のみ。
     - 11c: 記事へのコメント投稿（ルートを記事addressとするNIP-22）。
     - 未決: 記事をルートとするコメントへの返信の表示。既存のスレッド画面はルートがkind `1`の返信しか
       取得しないため、コメントのタップでスレッドへ遷移する仕様（0.4）はスレッド側の対応を含めて別途決める。
