@@ -19,8 +19,21 @@ data class MediaMetadata(
     val fallbackUrls: List<String> = emptyList(),
     val service: String? = null,
 ) {
+    /** `m` の MIME を優先し、なければ URL の拡張子で判定する。 */
+    val mediaKind: MediaKind?
+        get() = mediaKindFromMimeType(mimeType) ?: mediaKindFromUrl(url)
+
     val isImage: Boolean
-        get() = mimeType?.startsWith("image/", ignoreCase = true) == true || looksLikeImageUrl(url)
+        get() = mediaKind == MediaKind.Image
+
+    /** 投稿カード内のプレイヤーで再生する対象か。 */
+    val isPlayable: Boolean
+        get() = mediaKind == MediaKind.Video || mediaKind == MediaKind.Audio
+
+    /** 動画の待機表示に使うポスター画像。 */
+    val posterUrl: String?
+        get() = listOfNotNull(previewUrl, thumbnailUrl)
+            .firstOrNull { it.startsWith("https://") || it.startsWith("http://") }
 
     /** NIP-92 representation for embedding NIP-94 fields in a note. */
     fun toImetaTag(): List<String> = buildList {
@@ -102,8 +115,27 @@ private fun String.parseDimensions(): Pair<Int, Int>? {
     return width to height
 }
 
-private fun looksLikeImageUrl(url: String): Boolean =
-    IMAGE_EXTENSION_REGEX.containsMatchIn(url.substringBefore('?').substringBefore('#'))
+enum class MediaKind { Image, Video, Audio }
+
+private fun mediaKindFromMimeType(mimeType: String?): MediaKind? {
+    val type = mimeType?.substringBefore('/')?.lowercase() ?: return null
+    return when (type) {
+        "image" -> MediaKind.Image
+        "video" -> MediaKind.Video
+        "audio" -> MediaKind.Audio
+        else -> null
+    }
+}
+
+private fun mediaKindFromUrl(url: String): MediaKind? {
+    val path = url.substringBefore('?').substringBefore('#')
+    return when {
+        IMAGE_EXTENSION_REGEX.containsMatchIn(path) -> MediaKind.Image
+        VIDEO_EXTENSION_REGEX.containsMatchIn(path) -> MediaKind.Video
+        AUDIO_EXTENSION_REGEX.containsMatchIn(path) -> MediaKind.Audio
+        else -> null
+    }
+}
 
 private fun imgurThumbnailUrl(url: String): String? {
     val match = IMGUR_IMAGE_REGEX.matchEntire(url) ?: return null
@@ -120,6 +152,8 @@ private fun blossomThumbnailUrl(url: String, widthPx: Int): String? {
 const val NIP94_FILE_METADATA_KIND = 1063
 
 private val IMAGE_EXTENSION_REGEX = Regex("\\.(?:jpg|jpeg|png|gif|webp|bmp|svg)$", RegexOption.IGNORE_CASE)
+private val VIDEO_EXTENSION_REGEX = Regex("\\.(?:mp4|m4v|mov|webm)$", RegexOption.IGNORE_CASE)
+private val AUDIO_EXTENSION_REGEX = Regex("\\.(?:mp3|m4a|aac|wav|ogg|oga|opus|flac)$", RegexOption.IGNORE_CASE)
 private val IMGUR_IMAGE_REGEX = Regex(
     "^(https?://i\\.imgur\\.com/)([A-Za-z0-9]+)\\.(jpg|jpeg|png|gif|webp)([?#].*)?$",
     RegexOption.IGNORE_CASE,

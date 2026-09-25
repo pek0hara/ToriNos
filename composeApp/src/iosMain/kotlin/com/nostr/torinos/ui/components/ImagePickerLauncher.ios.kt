@@ -125,7 +125,7 @@ private suspend fun pickImageProvider(): NSItemProvider? = suspendCancellableCor
     }
 }
 
-private fun topViewController(): UIViewController? {
+internal fun topViewController(): UIViewController? {
     val activeScene = UIApplication.sharedApplication.connectedScenes
         .filterIsInstance<UIWindowScene>()
         .firstOrNull { it.activationState == UISceneActivationStateForegroundActive }

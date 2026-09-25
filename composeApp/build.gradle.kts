@@ -59,6 +59,8 @@ kotlin {
                 implementation(libs.secp256k1.kmp.jni.android)
                 implementation(libs.datastore.preferences)
                 implementation(libs.activity.compose)
+                implementation(libs.media3.exoplayer)
+                implementation(libs.media3.ui)
                 implementation(libs.credentials)
                 implementation(libs.credentials.play.services.auth)
             }

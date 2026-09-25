@@ -77,12 +77,14 @@ import androidx.compose.ui.graphics.FilterQuality
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalClipboard
+import androidx.compose.ui.platform.LocalUriHandler
 import coil3.PlatformContext
 import coil3.request.ImageRequest
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
@@ -435,6 +437,7 @@ fun NoteCard(
                     onImageClick = { urls, index -> expandedImageState = ExpandedImageState(urls, index) },
                     onNoteClick = onReplyParentClick,
                     showImagePreview = showImagePreviews,
+                    hostEventId = event.id,
                 )
                 Spacer(modifier = Modifier.height(4.dp))
             }
@@ -467,6 +470,14 @@ fun NoteCard(
                         )
                     }
                 }
+                parsedContent.playableMedia.forEach { media ->
+                    Spacer(modifier = Modifier.height(8.dp))
+                    InlineMediaPlayer(
+                        media = media,
+                        sourceId = event.id,
+                        showPoster = showImagePreviews || imagePreviewRevealed,
+                    )
+                }
                 parsedContent.linkPreviewUrl?.let { url ->
                     LinkPreviewCard(
                         url = url,
@@ -484,6 +495,7 @@ fun NoteCard(
                         onImageClick = { urls, index -> expandedImageState = ExpandedImageState(urls, index) },
                         onNoteClick = onQuotedNoteClick,
                         showImagePreview = showImagePreviews,
+                        hostEventId = event.id,
                     )
                 }
             }
@@ -653,6 +665,13 @@ private val prettyEventJson = Json {
     prettyPrint = true
 }
 
+/** 投稿詳細で一覧表示する、本文とタグに含まれるWeb URL。本文、タグの順に重複なく並べる。 */
+internal fun extractEventUrls(event: NostrEvent): List<String> =
+    (sequenceOf(event.content) + event.tags.asSequence().flatten())
+        .flatMap { extractWebUrls(it) }
+        .distinct()
+        .toList()
+
 @Composable
 private fun NoteDetailsDialog(
     event: NostrEvent,
@@ -663,6 +682,8 @@ private fun NoteDetailsDialog(
     val eventJson = remember(event) {
         prettyEventJson.encodeToString(NostrEvent.serializer(), event)
     }
+    val eventUrls = remember(event) { extractEventUrls(event) }
+    val uriHandler = LocalUriHandler.current
 
     Dialog(
         onDismissRequest = onDismiss,
@@ -708,6 +729,27 @@ private fun NoteDetailsDialog(
                     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                         NoteDetailRow(label = "Kind", value = event.kind.toString())
                         NoteDetailRow(label = "投稿日時", value = formatTimestamp(event.createdAt))
+                        if (eventUrls.isNotEmpty()) {
+                            Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                                Text(
+                                    text = "URL",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                                eventUrls.forEach { url ->
+                                    Text(
+                                        text = url,
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        color = MaterialTheme.colorScheme.primary,
+                                        textDecoration = TextDecoration.Underline,
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .clickable { uriHandler.openUri(url) }
+                                            .padding(vertical = 4.dp),
+                                    )
+                                }
+                            }
+                        }
                     }
                     Text(
                         text = "イベントJSON",
@@ -1544,6 +1586,8 @@ data class ParsedNoteContent(
     val textContent: String,
     val images: List<MediaMetadata>,
     val linkPreviewUrl: String?,
+    /** 投稿カード内のプレイヤーで再生する動画・音声。本文での出現順。 */
+    val playableMedia: List<MediaMetadata> = emptyList(),
 ) {
     val imageUrls: List<String> get() = images.map { it.url }
 }
@@ -1551,16 +1595,25 @@ data class ParsedNoteContent(
 fun parseNoteContent(event: NostrEvent): ParsedNoteContent {
     val content = event.content
     val inlineMetadata = parseImetaTags(event.tags)
-        .filter { metadata -> content.contains(metadata.url) && metadata.isImage }
-    val nip94Metadata = parseNip94Event(event)?.takeIf { it.isImage }
+        .filter { metadata -> content.contains(metadata.url) && metadata.mediaKind != null }
+    val nip94Metadata = parseNip94Event(event)?.takeIf { it.mediaKind != null }
     val metadataByUrl = (inlineMetadata + listOfNotNull(nip94Metadata)).associateBy { it.url }
-    val imageUrls = (extractImageUrls(content) + metadataByUrl.keys).distinct()
-    val images = imageUrls.map { url -> metadataByUrl[url] ?: MediaMetadata(url = url) }
+    val metadataFor = { url: String -> metadataByUrl[url] ?: MediaMetadata(url = url) }
+    val imageUrls = (extractImageUrls(content) + metadataByUrl.filterValues { it.isImage }.keys)
+        .distinct()
+        .filter { url -> metadataFor(url).isImage }
+    val images = imageUrls.map(metadataFor)
     val contentWithoutQuotes = stripNostrEventUris(content)
-    val linkPreviewUrl = extractWebUrls(contentWithoutQuotes)
-        .firstOrNull { it !in imageUrls && !isImageUrl(it) }
-    val textContent = if (imageUrls.isNotEmpty()) {
-        imageUrls.fold(stripImageUrls(contentWithoutQuotes)) { text, url -> text.replace(url, "") }.trim()
+    val webUrls = extractWebUrls(contentWithoutQuotes)
+    val playableMedia = (webUrls + metadataByUrl.keys)
+        .distinct()
+        .map(metadataFor)
+        .filter { it.isPlayable }
+    val hiddenUrls = imageUrls + playableMedia.map { it.url }
+    val linkPreviewUrl = webUrls
+        .firstOrNull { it !in hiddenUrls && !isImageUrl(it) && metadataFor(it).mediaKind == null }
+    val textContent = if (hiddenUrls.isNotEmpty()) {
+        hiddenUrls.fold(stripImageUrls(contentWithoutQuotes)) { text, url -> text.replace(url, "") }.trim()
     } else {
         contentWithoutQuotes
     }
@@ -1568,6 +1621,7 @@ fun parseNoteContent(event: NostrEvent): ParsedNoteContent {
         textContent = textContent,
         images = images,
         linkPreviewUrl = linkPreviewUrl,
+        playableMedia = playableMedia,
     )
 }
 
@@ -1605,6 +1659,8 @@ private fun QuotePreview(
     onImageClick: (List<String>, Int) -> Unit,
     onNoteClick: ((eventId: String) -> Unit)? = null,
     showImagePreview: Boolean = true,
+    /** 同じ引用が複数のカードに出ても再生状態を共有しないよう、引用元カードのIDを渡す。 */
+    hostEventId: String = "",
 ) {
     var sensitiveContentRevealed by remember(event.id) { mutableStateOf(false) }
     var imagePreviewRevealed by remember(event.id) { mutableStateOf(false) }
@@ -1648,27 +1704,31 @@ private fun QuotePreview(
                     ),
             )
             Row(
+                modifier = Modifier.weight(1f),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                ProfileNameText(
-                    profile = profile,
-                    fallback = event.shortPubkey,
-                    style = MaterialTheme.typography.labelSmall,
-                    fontWeight = FontWeight.Bold,
-                    color = MaterialTheme.colorScheme.primary,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier
-                        .then(
-                            if (onNoteClick != null) Modifier.clickable { onNoteClick(event.id) }
-                            else Modifier
-                        ),
-                )
+                Box(modifier = Modifier.weight(1f)) {
+                    ProfileNameText(
+                        profile = profile,
+                        fallback = event.shortPubkey,
+                        style = MaterialTheme.typography.labelSmall,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.primary,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier
+                            .then(
+                                if (onNoteClick != null) Modifier.clickable { onNoteClick(event.id) }
+                                else Modifier
+                            ),
+                    )
+                }
                 Text(
                     text = formatTimestamp(event.createdAt, todayTimeOnly = true),
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
                 )
             }
         }
@@ -1700,6 +1760,14 @@ private fun QuotePreview(
                         onReveal = { imagePreviewRevealed = true },
                     )
                 }
+            }
+            parsedContent.playableMedia.forEach { media ->
+                InlineMediaPlayer(
+                    media = media,
+                    sourceId = "$hostEventId>${event.id}",
+                    showPoster = showImagePreview || imagePreviewRevealed,
+                    maxHeight = 180.dp,
+                )
             }
         }
     }
