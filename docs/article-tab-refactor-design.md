@@ -415,8 +415,8 @@ data class ArticleDetailState(
    - `ArticleMarkdownParser`を抽出し、現行出力を固定するテストを先に書く。
    - ユーザータブ廃止（0.1）が決定したため、`partitionArticleAuthors`、`shouldAutoLoadMore`の抽出は行わない。
    - 未使用の`fetchEventsByIds()`を削除する。
-2. **画面ファイルの分割**（挙動変更なし）
-   - 5.4の表に従って移動する。`MarkdownBody`内の解析に`remember(content)`を付ける。
+2. **画面ファイルの分割**（挙動変更なし、完了）
+   - 5.4の表に従って移動する。`MarkdownBody`内の解析の`remember`化は段階1で実施済み。
 3. **一覧ViewModelの統合**（挙動変更なし）
    - `ArticleListViewModel(query)`を導入し、2つの一覧ViewModelを置き換える。
    - 生成を`accountSessionViewModel`へ統一する（3.7の修正）。
