@@ -24,7 +24,6 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import com.nostr.torinos.model.ArticleAuthorItem
 import com.nostr.torinos.model.ArticleItem
 import com.nostr.torinos.ui.components.NetworkImage
 import com.nostr.torinos.ui.components.ProfileNameText
@@ -35,6 +34,7 @@ import com.nostr.torinos.ui.profile.AvatarCircle
 internal fun ArticleCard(
     article: ArticleItem,
     onClick: () -> Unit,
+    onAuthorClick: (() -> Unit)?,
 ) {
     val imageUrl = article.meta.imageUrl?.takeIf { it.isNotBlank() }
     Column(
@@ -101,7 +101,7 @@ internal fun ArticleCard(
                 overflow = TextOverflow.Ellipsis,
             )
         }
-        ArticleAuthorLine(article = article, onUserClick = onClick)
+        ArticleAuthorLine(article = article, onUserClick = onAuthorClick)
         if (article.meta.topics.isNotEmpty()) {
             Text(
                 text = article.meta.topics.take(5).joinToString("  ") { "#$it" },
@@ -117,10 +117,10 @@ internal fun ArticleCard(
 @Composable
 internal fun ArticleAuthorLine(
     article: ArticleItem,
-    onUserClick: () -> Unit,
+    onUserClick: (() -> Unit)?,
 ) {
     Row(
-        modifier = Modifier.clickable(onClick = onUserClick),
+        modifier = if (onUserClick != null) Modifier.clickable(onClick = onUserClick) else Modifier,
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(8.dp),
     ) {
@@ -142,56 +142,5 @@ internal fun ArticleAuthorLine(
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
-    }
-}
-
-@Composable
-internal fun ArticleAuthorRow(
-    author: ArticleAuthorItem,
-    onClick: () -> Unit,
-) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clickable(onClick = onClick)
-            .padding(horizontal = 16.dp, vertical = 14.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(12.dp),
-    ) {
-        AvatarCircle(
-            pubkey = author.pubkey,
-            name = author.profile?.bestName,
-            pictureUrl = author.profile?.picture,
-            size = 44,
-        )
-        Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-            ProfileNameText(
-                profile = author.profile,
-                fallback = author.pubkey.take(8),
-                style = MaterialTheme.typography.titleSmall,
-                fontWeight = FontWeight.SemiBold,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
-            Text(
-                text = author.latestArticle.displayTitle,
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis,
-            )
-        }
-        Column(horizontalAlignment = Alignment.End) {
-            Text(
-                text = "${author.articleCount}",
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.SemiBold,
-            )
-            Text(
-                text = "記事",
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
     }
 }

@@ -1,14 +1,21 @@
 package com.nostr.torinos.ui.article
 
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -17,11 +24,17 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.snapshotFlow
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
 import com.nostr.torinos.account.accountSessionViewModel
+import com.nostr.torinos.model.NostrProfile
 import com.nostr.torinos.network.RelayStore
 import com.nostr.torinos.ui.components.AppTopBar
+import com.nostr.torinos.ui.components.ProfileNameText
+import com.nostr.torinos.ui.profile.AvatarCircle
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.filter
 
@@ -31,6 +44,7 @@ fun UserArticleListScreen(
     pubkey: String,
     onBack: () -> Unit,
     onArticleClick: (pubkey: String, identifier: String) -> Unit,
+    onUserClick: (pubkey: String) -> Unit,
 ) {
     val relays by RelayStore.relays.collectAsState(initial = emptyList())
     val selectedRelayUrl by RelayStore.selectedArticleRelayUrl.collectAsState()
@@ -89,15 +103,70 @@ fun UserArticleListScreen(
             )
         },
     ) { padding ->
-        ArticleListContent(
-            state = state,
-            listState = listState,
-            selectedTab = ArticleHubTab.Articles,
-            onArticleClick = onArticleClick,
-            onAuthorClick = {},
-            onLoadMore = viewModel::loadMore,
-            emptyText = "記事がありません",
-            modifier = Modifier.fillMaxSize().padding(padding),
+        Column(modifier = Modifier.fillMaxSize().padding(padding)) {
+            UserArticleProfileHeader(
+                pubkey = pubkey,
+                profile = profile,
+                onClick = { onUserClick(pubkey) },
+            )
+            HorizontalDivider()
+            ArticleListContent(
+                state = state,
+                listState = listState,
+                onArticleClick = onArticleClick,
+                onAuthorClick = null,
+                emptyText = "記事がありません",
+                modifier = Modifier.fillMaxWidth().weight(1f),
+            )
+        }
+    }
+}
+
+@Composable
+private fun UserArticleProfileHeader(
+    pubkey: String,
+    profile: NostrProfile?,
+    onClick: () -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .padding(horizontal = 16.dp, vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        AvatarCircle(
+            pubkey = pubkey,
+            name = profile?.bestName,
+            pictureUrl = profile?.picture,
+            size = 48,
         )
+        Column(
+            modifier = Modifier.weight(1f),
+            verticalArrangement = Arrangement.spacedBy(2.dp),
+        ) {
+            ProfileNameText(
+                profile = profile,
+                fallback = pubkey.take(8),
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            profile?.about
+                ?.lineSequence()
+                ?.map { it.trim() }
+                ?.firstOrNull { it.isNotEmpty() }
+                ?.let { about ->
+                    Text(
+                        text = about,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+        }
     }
 }

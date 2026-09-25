@@ -26,13 +26,6 @@ data class ArticleItem(
     val sortTime: Long get() = meta.publishedAt ?: event.createdAt
 }
 
-data class ArticleAuthorItem(
-    val pubkey: String,
-    val profile: NostrProfile?,
-    val articleCount: Int,
-    val latestArticle: ArticleItem,
-)
-
 fun articleAddress(pubkey: String, identifier: String): String =
     "$NIP23_ARTICLE_KIND:$pubkey:$identifier"
 
@@ -54,23 +47,6 @@ fun List<ArticleItem>.latestArticleVersions(): List<ArticleItem> =
         .values
         .mapNotNull { versions -> versions.maxByOrNull { it.event.createdAt } }
         .sortedWith(compareByDescending<ArticleItem> { it.sortTime }.thenByDescending { it.event.createdAt })
-
-fun List<ArticleItem>.toArticleAuthors(): List<ArticleAuthorItem> =
-    groupBy { it.event.pubkey }
-        .mapNotNull { (pubkey, items) ->
-            val latest = items.maxWithOrNull(compareBy<ArticleItem> { it.sortTime }.thenBy { it.event.createdAt })
-                ?: return@mapNotNull null
-            ArticleAuthorItem(
-                pubkey = pubkey,
-                profile = latest.authorProfile,
-                articleCount = items.size,
-                latestArticle = latest,
-            )
-        }
-        .sortedWith(
-            compareByDescending<ArticleAuthorItem> { it.latestArticle.sortTime }
-                .thenByDescending { it.latestArticle.event.createdAt },
-        )
 
 fun NostrEvent.articleIdentifier(): String? = toArticleMeta()?.identifier
 

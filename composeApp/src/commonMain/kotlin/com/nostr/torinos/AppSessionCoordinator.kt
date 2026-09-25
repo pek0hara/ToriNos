@@ -998,6 +998,7 @@ internal fun AppSessionCoordinator(
                             onArticleClick = { pubkey, identifier ->
                                 nav.navigate(ArticleRoute(pubkey, identifier))
                             },
+                            onUserClick = ::openProfileDrawer,
                         )
                     }
                     composable("journal") {

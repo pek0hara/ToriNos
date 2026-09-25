@@ -6,11 +6,9 @@ import com.nostr.torinos.model.NostrEvent
 import com.nostr.torinos.model.NostrProfile
 import com.nostr.torinos.model.articleAddress
 import com.nostr.torinos.model.latestArticleVersions
-import com.nostr.torinos.model.toArticleAuthors
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertSame
-import kotlin.test.assertTrue
 
 class ArticleDifferentialUpdateTest {
     @Test
@@ -65,52 +63,6 @@ class ArticleDifferentialUpdateTest {
             .withUpsertedArticle(a2)
 
         val fullRebuild = listOf(a1, b1, a2).latestArticleVersions()
-
-        assertEquals(fullRebuild, incremental)
-    }
-
-    @Test
-    fun withUpdatedAuthor_recomputesCountAndLatestForSinglePubkey() {
-        val old = article(pubkey = "a", identifier = "1", createdAt = 100, publishedAt = 100)
-        val updated = listOf(
-            old.copy(event = old.event.copy(createdAt = 200), meta = old.meta.copy(publishedAt = 200)),
-            article(pubkey = "a", identifier = "2", createdAt = 150, publishedAt = 150),
-        )
-        val authors = listOf(old).toArticleAuthors()
-
-        val result = authors.withUpdatedAuthor("a", updated)
-
-        assertEquals(1, result.size)
-        assertEquals(2, result.first().articleCount)
-        assertEquals(200L, result.first().latestArticle.sortTime)
-    }
-
-    @Test
-    fun withUpdatedAuthor_removesAuthorWithNoRemainingArticles() {
-        val a = article(pubkey = "a", identifier = "1", createdAt = 100, publishedAt = 100)
-        val b = article(pubkey = "b", identifier = "1", createdAt = 200, publishedAt = 200)
-        val authors = listOf(a, b).toArticleAuthors()
-
-        val result = authors.withUpdatedAuthor("a", listOf(b))
-
-        assertTrue(result.none { it.pubkey == "a" })
-        assertEquals(listOf("b"), result.map { it.pubkey })
-    }
-
-    @Test
-    fun withUpdatedAuthor_matchesFullRebuildOrdering() {
-        val articles = listOf(
-            article(pubkey = "a", identifier = "1", createdAt = 100, publishedAt = 100),
-            article(pubkey = "b", identifier = "1", createdAt = 300, publishedAt = 300),
-            article(pubkey = "a", identifier = "2", createdAt = 250, publishedAt = 250),
-        )
-
-        val incremental = emptyList<com.nostr.torinos.model.ArticleAuthorItem>()
-            .withUpdatedAuthor("a", articles.filter { it.event.pubkey == "a" })
-            .withUpdatedAuthor("b", articles)
-            .withUpdatedAuthor("a", articles)
-
-        val fullRebuild = articles.toArticleAuthors()
 
         assertEquals(fullRebuild, incremental)
     }

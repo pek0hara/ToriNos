@@ -1,7 +1,6 @@
 package com.nostr.torinos.ui.article
 
 import com.nostr.torinos.account.AccountSession
-import com.nostr.torinos.model.ArticleAuthorItem
 import com.nostr.torinos.model.ArticleItem
 import com.nostr.torinos.model.NIP23_ARTICLE_KIND
 import com.nostr.torinos.model.NostrEvent
@@ -10,7 +9,6 @@ import com.nostr.torinos.model.NostrProfile
 import com.nostr.torinos.model.articleAddress
 import com.nostr.torinos.model.latestArticleVersions
 import com.nostr.torinos.model.quotedEventIds
-import com.nostr.torinos.model.toArticleAuthors
 import com.nostr.torinos.model.toArticleMeta
 import com.nostr.torinos.network.NostrRepository
 import com.nostr.torinos.network.ProfileFetchPolicy
@@ -37,14 +35,8 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeoutOrNull
 
-enum class ArticleHubTab(val label: String) {
-    Articles("記事一覧"),
-    Users("ユーザー"),
-}
-
 data class ArticleListState(
     val articles: List<ArticleItem> = emptyList(),
-    val authors: List<ArticleAuthorItem> = emptyList(),
     val profiles: Map<String, NostrProfile> = emptyMap(),
     val isInitialLoad: Boolean = true,
     val isLoadingMore: Boolean = false,
@@ -139,9 +131,6 @@ internal data class LocalArticleDeletion(
 internal val articleDisplayOrder: Comparator<ArticleItem> =
     compareByDescending<ArticleItem> { it.sortTime }.thenByDescending { it.event.createdAt }
 
-internal val authorDisplayOrder: Comparator<ArticleAuthorItem> =
-    compareByDescending<ArticleAuthorItem> { it.latestArticle.sortTime }.thenByDescending { it.latestArticle.event.createdAt }
-
 /**
  * 対象addressだけを比較して追加/置換する(9.1: 新規イベントで全件のlatestArticleVersions()を
  * 再実行しない)。既存より古いバージョンなら変化なしとして同じリスト参照を返す。
@@ -158,26 +147,6 @@ internal fun List<ArticleItem>.withUpsertedArticle(candidate: ArticleItem): List
     val insertAt = result.indexOfFirst { articleDisplayOrder.compare(candidate, it) < 0 }
         .let { if (it < 0) result.size else it }
     result.add(insertAt, candidate)
-    return result
-}
-
-/** 指定pubkeyの著者表示モデルだけを、更新後のarticlesから再計算して差し替える。 */
-internal fun List<ArticleAuthorItem>.withUpdatedAuthor(pubkey: String, articles: List<ArticleItem>): List<ArticleAuthorItem> {
-    val itemsForAuthor = articles.filter { it.event.pubkey == pubkey }
-    val withoutExisting = filterNot { it.pubkey == pubkey }
-    if (itemsForAuthor.isEmpty()) return withoutExisting
-    val latest = itemsForAuthor.maxWith(compareBy<ArticleItem> { it.sortTime }.thenBy { it.event.createdAt })
-    val authorItem = ArticleAuthorItem(
-        pubkey = pubkey,
-        profile = latest.authorProfile,
-        articleCount = itemsForAuthor.size,
-        latestArticle = latest,
-    )
-    val insertAt = withoutExisting.indexOfFirst { authorDisplayOrder.compare(authorItem, it) < 0 }
-        .let { if (it < 0) withoutExisting.size else it }
-    val result = ArrayList<ArticleAuthorItem>(withoutExisting.size + 1)
-    result.addAll(withoutExisting)
-    result.add(insertAt, authorItem)
     return result
 }
 
@@ -225,7 +194,7 @@ class ArticleListViewModel(
             ArticleMemoryCache.articleDeletions.collect { deletion ->
                 if (!deletion.matches(relayUrl) || !query.matchesAuthor(deletion.pubkey)) return@collect
                 removeRawArticle(deletion.address)
-                applyLocalArticleDeletion(deletion.address, deletion.pubkey)
+                applyLocalArticleDeletion(deletion.address)
             }
         }
         refresh()
@@ -294,7 +263,6 @@ class ArticleListViewModel(
         ArticleMemoryCache.putArticles(relayUrl, articles)
         _state.value = _state.value.copy(
             articles = articles,
-            authors = articles.toArticleAuthors(),
             isInitialLoad = false,
             isLoadingMore = false,
             canLoadMore = lastPageSize >= ARTICLE_PAGE_SIZE,
@@ -302,7 +270,7 @@ class ArticleListViewModel(
         )
     }
 
-    /** 9.1: 単一のローカル公開イベントだけを比較し、既存のarticles/authorsに差分反映する。 */
+    /** 9.1: 単一のローカル公開イベントだけを比較し、既存のarticlesに差分反映する。 */
     private fun applyLocalArticleEvent(event: NostrEvent) {
         val meta = event.toArticleMeta() ?: return
         if (accountSession?.muteStore?.isMuted(event.pubkey) == true) return
@@ -310,21 +278,14 @@ class ArticleListViewModel(
         val articles = _state.value.articles.withUpsertedArticle(candidate)
         if (articles === _state.value.articles) return
         ArticleMemoryCache.putArticles(relayUrl, listOf(candidate))
-        _state.value = _state.value.copy(
-            articles = articles,
-            authors = _state.value.authors.withUpdatedAuthor(event.pubkey, articles),
-        )
+        _state.value = _state.value.copy(articles = articles)
     }
 
-    /** 9.1: 削除対象のaddressだけをarticles/authorsから取り除く。 */
-    private fun applyLocalArticleDeletion(address: String, pubkey: String) {
+    /** 9.1: 削除対象のaddressだけをarticlesから取り除く。 */
+    private fun applyLocalArticleDeletion(address: String) {
         val articles = _state.value.articles
         if (articles.none { it.address == address }) return
-        val updatedArticles = articles.filterNot { it.address == address }
-        _state.value = _state.value.copy(
-            articles = updatedArticles,
-            authors = _state.value.authors.withUpdatedAuthor(pubkey, updatedArticles),
-        )
+        _state.value = _state.value.copy(articles = articles.filterNot { it.address == address })
     }
 
     /**
@@ -347,7 +308,7 @@ class ArticleListViewModel(
         }
     }
 
-    /** 9.1: プロフィール変更では記事本文を再解析せず、著者表示モデルだけを差し替える。 */
+    /** 9.1: プロフィール変更では記事本文を再解析せず、著者プロフィールだけを差し替える。 */
     private fun applyProfileUpdates(newProfiles: Map<String, NostrProfile>) {
         if (newProfiles.isEmpty()) return
         _state.value = _state.value.copy(profiles = _state.value.profiles + newProfiles)
@@ -362,11 +323,7 @@ class ArticleListViewModel(
         }
         if (changedArticles.isEmpty()) return
         ArticleMemoryCache.putArticles(relayUrl, changedArticles)
-        var authors = _state.value.authors
-        changedArticles.map { it.event.pubkey }.distinct().forEach { pubkey ->
-            authors = authors.withUpdatedAuthor(pubkey, articles)
-        }
-        _state.value = _state.value.copy(articles = articles, authors = authors)
+        _state.value = _state.value.copy(articles = articles)
     }
 
     /** 著者指定の一覧では、記事が1件もなくても見出し用に著者のプロフィールを取得する。 */
