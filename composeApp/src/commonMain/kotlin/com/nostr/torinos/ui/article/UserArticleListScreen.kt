@@ -19,8 +19,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextOverflow
-import androidx.lifecycle.viewmodel.compose.viewModel
-import com.nostr.torinos.account.LocalAccountSession
+import com.nostr.torinos.account.accountSessionViewModel
 import com.nostr.torinos.network.RelayStore
 import com.nostr.torinos.ui.components.AppTopBar
 import kotlinx.coroutines.flow.distinctUntilChanged
@@ -33,7 +32,6 @@ fun UserArticleListScreen(
     onBack: () -> Unit,
     onArticleClick: (pubkey: String, identifier: String) -> Unit,
 ) {
-    val accountSession = LocalAccountSession.current
     val relays by RelayStore.relays.collectAsState(initial = emptyList())
     val selectedRelayUrl by RelayStore.selectedArticleRelayUrl.collectAsState()
     val isRelayStoreLoaded by RelayStore.isLoaded.collectAsState()
@@ -46,13 +44,13 @@ fun UserArticleListScreen(
         return
     }
 
-    val viewModel: UserArticleListViewModel = viewModel(
+    val viewModel: ArticleListViewModel = accountSessionViewModel(
         key = "user-articles-$pubkey-$activeRelayUrl",
-    ) {
-        UserArticleListViewModel(
-            pubkey = pubkey,
+    ) { session ->
+        ArticleListViewModel(
+            query = ArticleQuery.Author(pubkey),
             relayUrl = activeRelayUrl,
-            accountSession = accountSession,
+            accountSession = session,
         )
     }
     val state by viewModel.state.collectAsState()

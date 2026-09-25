@@ -134,7 +134,7 @@ Markdown描画、削除・投稿後のローカル反映を、責務ごとに分
 3. ローカルで削除した記事が、後続のページ取得で復活しない。
 4. 取得のタイムアウト・リレー未応答を「記事がありません」と区別して表示する。
 5. 削除完了などの一時的なUIイベントを、永続状態のカウンタで表さない。
-6. 記事画面のViewModelの所有者を、アカウントセッション単位に統一する。
+6. 記事画面のViewModel生成を`accountSessionViewModel`へ統一する。
 7. Markdownの解析を副作用のない純粋処理として分離し、描画と独立してテストできる。
 
 ## 2. 対象範囲
@@ -223,13 +223,16 @@ Markdown描画、削除・投稿後のローカル反映を、責務ごとに分
 - ローカル公開イベントを受け取るたびに`rawEvents`全体を走査して未取得著者を探す。
 - 取得件数が`PROFILE_FETCH_LIMIT`（200）を超えた分は、次のイベント受信まで取得されない。
 
-### 3.7 ViewModelの所有者が画面ごとに異なる
+### 3.7 ViewModelの生成方法が画面ごとに異なる
 
 `ArticleDetailScreen`と`ArticleEditorScreen`は`accountSessionViewModel`を使う一方、
 `ArticleHubScreen`と`UserArticleListScreen`は`viewModel(key = ...)`と`LocalAccountSession`を使う。
-後者のキーにはアカウントが含まれないため、アカウント切り替え後も旧アカウントの`muteStore`を保持した
-ViewModelが再利用され得る。また、リレーを切り替えるたびに旧リレー用ViewModelと最大1,000件の
-`rawEvents`がナビゲーションエントリ終了まで残る。
+ナビゲーション全体が`AccountSessionHost`の`key(sessionId)`配下で再生成されるため、どちらの方法でも
+アカウント切り替え時にViewModelは破棄される。差は書き方の不統一だけである。
+
+一方、リレーを切り替えるたびに旧リレー用ViewModelと最大1,000件の`rawEvents`が、サービス画面の
+ナビゲーションエントリが終了するまで残る。これは段階3では扱わず、ステータスタブと同様の
+可視期間に合わせた購読所有へ見直す際に対応する。
 
 ### 3.8 ローカル公開の反映先が閲覧リレーとずれる
 
@@ -267,7 +270,7 @@ ViewModelが再利用され得る。また、リレーを切り替えるたび�
 3. 取得処理は`openSubscription`の`Fetch`挙動を使い、完了／タイムアウト／未応答を結果型で返す。
 4. 生イベントの保持、削除済みaddressの記録、表示用リストの導出を分ける。
 5. プロフィールは`ProfileRepository`を唯一の情報源とし、表示直前に結合する。
-6. ViewModelの所有者はアカウントセッションに統一する。
+6. ViewModelの生成は`accountSessionViewModel`に統一する。
 7. Composableには表示状態と利用者操作だけを残す。
 8. 構造整理と仕様変更を同じ変更へ含めない。仕様が変わる箇所は段階を分けて明示する。
 
@@ -417,9 +420,10 @@ data class ArticleDetailState(
    - 未使用の`fetchEventsByIds()`を削除する。
 2. **画面ファイルの分割**（挙動変更なし、完了）
    - 5.4の表に従って移動する。`MarkdownBody`内の解析の`remember`化は段階1で実施済み。
-3. **一覧ViewModelの統合**（挙動変更なし）
+3. **一覧ViewModelの統合**（挙動変更なし、完了）
    - `ArticleListViewModel(query)`を導入し、2つの一覧ViewModelを置き換える。
-   - 生成を`accountSessionViewModel`へ統一する（3.7の修正）。
+     `ArticleQuery`は現時点では`Global`と`Author(pubkey)`の2種とし、0.2のフィルター導入時に一般化する。
+   - 生成を`accountSessionViewModel`へ統一する（3.7）。
 4. **記事ドメインパッケージの導入**（挙動変更: 同時刻バージョンの採用規則）
    - `ArticleEventCodec`、`ArticleVersionOrder`、`ArticleEventReducer`を導入し、NIP-01のタイブレークを適用する。
    - エディタのタグ生成関数を移設し、既存テストの参照先を更新する。

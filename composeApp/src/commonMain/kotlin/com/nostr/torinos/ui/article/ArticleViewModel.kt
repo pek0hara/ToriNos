@@ -181,7 +181,23 @@ internal fun List<ArticleAuthorItem>.withUpdatedAuthor(pubkey: String, articles:
     return result
 }
 
-class ArticleHubViewModel(
+/** 記事一覧の取得条件。 */
+sealed interface ArticleQuery {
+    /** 選択中リレーの全著者の記事。 */
+    data object Global : ArticleQuery
+
+    /** 指定した著者の記事。 */
+    data class Author(val pubkey: String) : ArticleQuery
+}
+
+private val ArticleQuery.authorPubkey: String?
+    get() = (this as? ArticleQuery.Author)?.pubkey
+
+private fun ArticleQuery.matchesAuthor(pubkey: String): Boolean =
+    authorPubkey == null || authorPubkey == pubkey
+
+class ArticleListViewModel(
+    private val query: ArticleQuery,
     private val relayUrl: String? = null,
     private val accountSession: AccountSession? = null,
 ) : SafeViewModel() {
@@ -199,7 +215,7 @@ class ArticleHubViewModel(
         }
         launch {
             ArticleMemoryCache.articleEvents.collect { localEvent ->
-                if (!localEvent.matches(relayUrl)) return@collect
+                if (!localEvent.matches(relayUrl) || !query.matchesAuthor(localEvent.event.pubkey)) return@collect
                 rawEvents[localEvent.event.id] = localEvent.event
                 applyLocalArticleEvent(localEvent.event)
                 fetchMissingProfiles()
@@ -207,7 +223,7 @@ class ArticleHubViewModel(
         }
         launch {
             ArticleMemoryCache.articleDeletions.collect { deletion ->
-                if (!deletion.matches(relayUrl)) return@collect
+                if (!deletion.matches(relayUrl) || !query.matchesAuthor(deletion.pubkey)) return@collect
                 removeRawArticle(deletion.address)
                 applyLocalArticleDeletion(deletion.address, deletion.pubkey)
             }
@@ -241,6 +257,7 @@ class ArticleHubViewModel(
             val events = fetchArticleEvents(
                 filter = NostrFilter(
                     kinds = listOf(NIP23_ARTICLE_KIND),
+                    authors = query.authorPubkey?.let(::listOf),
                     until = until,
                     limit = ARTICLE_PAGE_SIZE,
                 ),
@@ -352,9 +369,9 @@ class ArticleHubViewModel(
         _state.value = _state.value.copy(articles = articles, authors = authors)
     }
 
+    /** 著者指定の一覧では、記事が1件もなくても見出し用に著者のプロフィールを取得する。 */
     private suspend fun fetchMissingProfiles() {
-        val missing = rawEvents.values
-            .map { it.pubkey }
+        val missing = (listOfNotNull(query.authorPubkey) + rawEvents.values.map { it.pubkey })
             .distinct()
             .filterNot { it in _state.value.profiles }
         val cachedProfiles = ProfileRepository.getCached(missing)
@@ -366,191 +383,6 @@ class ArticleHubViewModel(
         val profiles = fetchProfiles(uncached, relayUrl)
         if (profiles.isEmpty()) return
         applyProfileUpdates(profiles)
-    }
-}
-
-class UserArticleListViewModel(
-    private val pubkey: String,
-    private val relayUrl: String? = null,
-    private val accountSession: AccountSession? = null,
-) : SafeViewModel() {
-    private val _state = MutableStateFlow(ArticleListState())
-    val state: StateFlow<ArticleListState> = _state.asStateFlow()
-
-    private val rawEvents = linkedMapOf<String, NostrEvent>()
-    private var oldestCreatedAt: Long? = null
-    private var lastPageSize = 0
-    private var loadJob: Job? = null
-
-    init {
-        launch {
-            accountSession?.muteStore?.mutedPubkeys?.drop(1)?.collect { updateStateFromEvents() }
-        }
-        launch {
-            ArticleMemoryCache.articleEvents.collect { localEvent ->
-                if (!localEvent.matches(relayUrl) || localEvent.event.pubkey != pubkey) return@collect
-                rawEvents[localEvent.event.id] = localEvent.event
-                applyLocalArticleEvent(localEvent.event)
-                fetchProfile()
-            }
-        }
-        launch {
-            ArticleMemoryCache.articleDeletions.collect { deletion ->
-                if (!deletion.matches(relayUrl) || deletion.pubkey != pubkey) return@collect
-                removeRawArticle(deletion.address)
-                applyLocalArticleDeletion(deletion.address, deletion.pubkey)
-            }
-        }
-        refresh()
-    }
-
-    fun refresh() {
-        loadJob?.cancel()
-        rawEvents.clear()
-        oldestCreatedAt = null
-        lastPageSize = 0
-        _state.value = ArticleListState()
-        loadJob = launch { loadPage(until = null, append = false) }
-    }
-
-    fun loadMore() {
-        val state = _state.value
-        if (state.isInitialLoad || state.isLoadingMore || !state.canLoadMore) return
-        val until = oldestCreatedAt?.minus(1) ?: return
-        loadJob = launch { loadPage(until = until, append = true) }
-    }
-
-    private suspend fun loadPage(until: Long?, append: Boolean) {
-        _state.value = _state.value.copy(
-            isInitialLoad = !append && _state.value.articles.isEmpty(),
-            isLoadingMore = append,
-            error = null,
-        )
-        try {
-            val events = fetchArticleEvents(
-                filter = NostrFilter(
-                    kinds = listOf(NIP23_ARTICLE_KIND),
-                    authors = listOf(pubkey),
-                    until = until,
-                    limit = ARTICLE_PAGE_SIZE,
-                ),
-                relayUrl = relayUrl,
-            )
-            lastPageSize = events.size
-            events.forEach { event ->
-                rawEvents[event.id] = event
-                oldestCreatedAt = minOf(oldestCreatedAt ?: event.createdAt, event.createdAt)
-            }
-            trimRawEventWindow()
-            updateStateFromEvents()
-            fetchProfile()
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Throwable) {
-            _state.value = _state.value.copy(
-                isInitialLoad = false,
-                isLoadingMore = false,
-                error = e.message ?: "記事を読み込めませんでした",
-            )
-        }
-    }
-
-    private fun updateStateFromEvents() {
-        val profiles = _state.value.profiles
-        val articles = rawEvents.values
-            .filterNot { accountSession?.muteStore?.isMuted(it.pubkey) == true }
-            .mapNotNull { event ->
-                val meta = event.toArticleMeta() ?: return@mapNotNull null
-                ArticleItem(event = event, meta = meta, authorProfile = profiles[event.pubkey])
-            }
-            .latestArticleVersions()
-        ArticleMemoryCache.putArticles(relayUrl, articles)
-        _state.value = _state.value.copy(
-            articles = articles,
-            authors = articles.toArticleAuthors(),
-            isInitialLoad = false,
-            isLoadingMore = false,
-            canLoadMore = lastPageSize >= ARTICLE_PAGE_SIZE,
-            error = null,
-        )
-    }
-
-    /** 9.1: 単一のローカル公開イベントだけを比較し、既存のarticles/authorsに差分反映する。 */
-    private fun applyLocalArticleEvent(event: NostrEvent) {
-        val meta = event.toArticleMeta() ?: return
-        if (accountSession?.muteStore?.isMuted(event.pubkey) == true) return
-        val candidate = ArticleItem(event = event, meta = meta, authorProfile = _state.value.profiles[event.pubkey])
-        val articles = _state.value.articles.withUpsertedArticle(candidate)
-        if (articles === _state.value.articles) return
-        ArticleMemoryCache.putArticles(relayUrl, listOf(candidate))
-        _state.value = _state.value.copy(
-            articles = articles,
-            authors = _state.value.authors.withUpdatedAuthor(event.pubkey, articles),
-        )
-    }
-
-    /** 9.1: 削除対象のaddressだけをarticles/authorsから取り除く。 */
-    private fun applyLocalArticleDeletion(address: String, pubkey: String) {
-        val articles = _state.value.articles
-        if (articles.none { it.address == address }) return
-        val updatedArticles = articles.filterNot { it.address == address }
-        _state.value = _state.value.copy(
-            articles = updatedArticles,
-            authors = _state.value.authors.withUpdatedAuthor(pubkey, updatedArticles),
-        )
-    }
-
-    /**
-     * 9.2: ページ追加のたびに増え続けるrawEventsを、直近ARTICLE_RAW_EVENT_WINDOW(1,000)件へ収める。
-     * loadMore()は現在のスクロール位置付近(末尾)へ追記する形でしか呼ばれないため、末尾側は常に
-     * 現在の閲覧アンカーを含む。先頭側(挿入が最も古い = 時系列で最も新しい = 既にスクロールし
-     * 終えた記事)から間引くことで、表示中の窓を飛ばさずに上限を維持する。
-     */
-    private fun trimRawEventWindow() {
-        while (rawEvents.size > ARTICLE_RAW_EVENT_WINDOW) {
-            val eldestKey = rawEvents.keys.firstOrNull() ?: break
-            rawEvents.remove(eldestKey)
-        }
-    }
-
-    private fun removeRawArticle(address: String) {
-        rawEvents.entries.removeAll { (_, event) ->
-            val meta = event.toArticleMeta() ?: return@removeAll false
-            articleAddress(event.pubkey, meta.identifier) == address
-        }
-    }
-
-    /** 9.1: プロフィール変更では記事本文を再解析せず、著者表示モデルだけを差し替える。 */
-    private fun applyProfileUpdates(newProfiles: Map<String, NostrProfile>) {
-        if (newProfiles.isEmpty()) return
-        _state.value = _state.value.copy(profiles = _state.value.profiles + newProfiles)
-        val changedArticles = mutableListOf<ArticleItem>()
-        val articles = _state.value.articles.map { article ->
-            val profile = newProfiles[article.event.pubkey]
-            if (profile != null && article.authorProfile != profile) {
-                article.copy(authorProfile = profile).also { changedArticles += it }
-            } else {
-                article
-            }
-        }
-        if (changedArticles.isEmpty()) return
-        ArticleMemoryCache.putArticles(relayUrl, changedArticles)
-        var authors = _state.value.authors
-        changedArticles.map { it.event.pubkey }.distinct().forEach { pubkey ->
-            authors = authors.withUpdatedAuthor(pubkey, articles)
-        }
-        _state.value = _state.value.copy(articles = articles, authors = authors)
-    }
-
-    private suspend fun fetchProfile() {
-        if (pubkey in _state.value.profiles) return
-        ProfileRepository.getCached(pubkey)?.let { cachedProfile ->
-            applyProfileUpdates(mapOf(pubkey to cachedProfile))
-            return
-        }
-        val profile = fetchProfiles(listOf(pubkey), relayUrl)
-        if (profile.isEmpty()) return
-        applyProfileUpdates(profile)
     }
 }
 

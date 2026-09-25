@@ -40,7 +40,7 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.lifecycle.viewmodel.compose.viewModel
+import com.nostr.torinos.account.accountSessionViewModel
 import com.nostr.torinos.account.LocalAccountSession
 import com.nostr.torinos.model.NostrProfile
 import com.nostr.torinos.network.RelayStore
@@ -79,8 +79,8 @@ fun ArticleHubScreen(
         return
     }
 
-    val viewModel: ArticleHubViewModel = viewModel(key = "article-hub-$activeRelayUrl") {
-        ArticleHubViewModel(relayUrl = activeRelayUrl, accountSession = accountSession)
+    val viewModel: ArticleListViewModel = accountSessionViewModel(key = "article-hub-$activeRelayUrl") { session ->
+        ArticleListViewModel(query = ArticleQuery.Global, relayUrl = activeRelayUrl, accountSession = session)
     }
     val state by viewModel.state.collectAsState()
     var selectedTab by rememberSaveable { mutableStateOf(ArticleHubTab.Articles) }
