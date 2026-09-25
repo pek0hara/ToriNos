@@ -1,12 +1,15 @@
 package com.nostr.torinos.article
 
 import com.nostr.torinos.engagement.NoteEngagementState
+import com.nostr.torinos.model.ArticleItem
 import com.nostr.torinos.model.COMMENT_EVENT_KIND
 import com.nostr.torinos.model.CustomReaction
 import com.nostr.torinos.model.NIP23_ARTICLE_KIND
 import com.nostr.torinos.model.NostrEvent
 import com.nostr.torinos.model.NostrFilter
 import com.nostr.torinos.model.ReactionOption
+import com.nostr.torinos.model.ReplyEventReference
+import com.nostr.torinos.model.ReplyTarget
 import com.nostr.torinos.model.UnicodeReaction
 import com.nostr.torinos.model.incrementedWith
 import com.nostr.torinos.model.incrementedWithUnicodeReaction
@@ -143,3 +146,17 @@ internal fun articleTopLevelComments(
     .filterNot { isMuted(it.pubkey) }
     .sortedWith(compareBy<NostrEvent> { it.createdAt }.thenBy { it.id })
     .toList()
+
+/**
+ * 記事へ直接付けるNIP-22コメントの返信先。ルートと親はどちらも記事で、
+ * addressで参照しつつ、表示中の版IDも`E`/`e`で添える。
+ */
+fun ArticleItem.commentReplyTarget(): ReplyTarget.Timeline {
+    val reference = ReplyEventReference(
+        id = event.id,
+        kind = NIP23_ARTICLE_KIND,
+        pubkey = event.pubkey,
+        address = address,
+    )
+    return ReplyTarget.Timeline(root = reference, parent = reference)
+}

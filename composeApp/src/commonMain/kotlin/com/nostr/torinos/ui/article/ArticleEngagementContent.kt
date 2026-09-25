@@ -15,6 +15,7 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -53,6 +54,7 @@ internal fun LazyListScope.articleEngagementItems(
     engagement: ArticleEngagementState,
     onUserClick: (pubkey: String) -> Unit,
     reactionActions: ArticleReactionActions?,
+    onComment: () -> Unit,
 ) {
     item(key = "engagement-divider", contentType = "divider") {
         HorizontalDivider(modifier = Modifier.padding(horizontal = 20.dp))
@@ -76,12 +78,20 @@ internal fun LazyListScope.articleEngagementItems(
                 )
             }
             item(key = "engagement-comments-header", contentType = "section-header") {
-                Text(
-                    text = "コメント ${engagement.comments.size}",
-                    style = MaterialTheme.typography.titleSmall,
-                    fontWeight = FontWeight.SemiBold,
-                    modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp),
-                )
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(start = 20.dp, end = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        text = "コメント ${engagement.comments.size}",
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.SemiBold,
+                        modifier = Modifier.weight(1f),
+                    )
+                    TextButton(onClick = onComment) {
+                        Text("コメントする")
+                    }
+                }
             }
             if (engagement.comments.isEmpty()) {
                 item(key = "engagement-comments-empty", contentType = "message") {

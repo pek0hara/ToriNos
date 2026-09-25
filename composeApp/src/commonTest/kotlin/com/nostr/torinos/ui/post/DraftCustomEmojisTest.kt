@@ -85,6 +85,40 @@ class DraftCustomEmojisTest {
     }
 
     @Test
+    fun articleCommentMemoRoundTripKeepsAddressTags() {
+        val address = "30023:author:post"
+        val payload = PostMemoPayload(
+            text = "comment",
+            replyToId = "version",
+            replyToPubkey = "author",
+            noteKind = COMMENT_EVENT_KIND,
+            replyRootId = "version",
+            replyRootKind = 30023,
+            replyRootPubkey = "author",
+            replyParentKind = 30023,
+            replyRootAddress = address,
+            replyParentAddress = address,
+            updatedAt = 10,
+        )
+        val memo = memoJson.decodeFromString<PostMemoPayload>(memoJson.encodeToString(payload))
+            .toPostMemoData()
+
+        assertEquals(
+            listOf(
+                listOf("A", address, ""),
+                listOf("E", "version", "", "author"),
+                listOf("K", "30023"),
+                listOf("P", "author"),
+                listOf("a", address, ""),
+                listOf("e", "version", "", "author"),
+                listOf("k", "30023"),
+                listOf("p", "author"),
+            ),
+            memo.restoreReplyTarget(NoteContext.Timeline)?.tags(),
+        )
+    }
+
+    @Test
     fun legacyMemoRestoresKind1ReplyButRejectsRootlessNestedReply() {
         val legacy = PostMemoData(
             text = "reply",

@@ -6,6 +6,8 @@ data class ReplyEventReference(
     val pubkey: String,
     val relayUrl: String? = null,
     val pubkeyRelayUrl: String? = null,
+    /** 記事などaddressable eventのaddress。指定時はNIP-22の`A`/`a`タグで参照する。 */
+    val address: String? = null,
 )
 
 sealed interface ReplyTarget {
@@ -20,9 +22,11 @@ sealed interface ReplyTarget {
         override val eventKind: Int = COMMENT_EVENT_KIND
 
         override fun tags(): List<List<String>> = buildList {
+            root.address?.let { add(addressTag("A", it, root)) }
             add(eventTag("E", root))
             add(listOf("K", root.kind.toString()))
             add(pubkeyTag("P", root))
+            parent.address?.let { add(addressTag("a", it, parent)) }
             add(eventTag("e", parent))
             add(listOf("k", parent.kind.toString()))
             add(pubkeyTag("p", parent))
@@ -146,6 +150,9 @@ internal fun NostrEvent.timelineRootHint(): ReplyRootHint? = when (kind) {
     }
     else -> null
 }
+
+private fun addressTag(name: String, address: String, reference: ReplyEventReference): List<String> =
+    listOf(name, address, reference.relayUrl.orEmpty())
 
 private fun eventTag(name: String, reference: ReplyEventReference): List<String> =
     listOf(name, reference.id, reference.relayUrl.orEmpty(), reference.pubkey)

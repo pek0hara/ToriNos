@@ -88,6 +88,8 @@ internal data class PostMemoPayload(
     val replyRootPubkeyRelayUrl: String? = null,
     val replyParentRelayUrl: String? = null,
     val replyParentPubkeyRelayUrl: String? = null,
+    val replyRootAddress: String? = null,
+    val replyParentAddress: String? = null,
     val updatedAt: Long,
 )
 
@@ -112,6 +114,8 @@ data class PostMemoData(
     val replyRootPubkeyRelayUrl: String? = null,
     val replyParentRelayUrl: String? = null,
     val replyParentPubkeyRelayUrl: String? = null,
+    val replyRootAddress: String? = null,
+    val replyParentAddress: String? = null,
 )
 
 internal fun PostMemoPayload.toPostMemoData(
@@ -136,6 +140,8 @@ internal fun PostMemoPayload.toPostMemoData(
         replyRootPubkeyRelayUrl = replyRootPubkeyRelayUrl,
         replyParentRelayUrl = replyParentRelayUrl,
         replyParentPubkeyRelayUrl = replyParentPubkeyRelayUrl,
+        replyRootAddress = replyRootAddress,
+        replyParentAddress = replyParentAddress,
         updatedAt = updatedAt,
         identifier = identifier,
         sourceEventId = sourceEventId,
@@ -151,6 +157,7 @@ internal fun PostMemoData.restoreReplyTarget(noteContext: NoteContext): ReplyTar
         pubkey = parentPubkey,
         relayUrl = replyParentRelayUrl,
         pubkeyRelayUrl = replyParentPubkeyRelayUrl,
+        address = replyParentAddress,
     )
     return when (noteContext) {
         // チャンネル返信では replyRootRelayUrl にチャンネルの relay hint を保存している。
@@ -163,6 +170,7 @@ internal fun PostMemoData.restoreReplyTarget(noteContext: NoteContext): ReplyTar
                     replyRootPubkey,
                     replyRootRelayUrl,
                     replyRootPubkeyRelayUrl,
+                    replyRootAddress,
                 )
             } else {
                 if (parent.kind != 1) return null
@@ -333,6 +341,8 @@ class PostViewModel(
             replyRootPubkeyRelayUrl = (replyTarget as? ReplyTarget.Timeline)?.root?.pubkeyRelayUrl,
             replyParentRelayUrl = replyTarget?.parent?.relayUrl,
             replyParentPubkeyRelayUrl = replyTarget?.parent?.pubkeyRelayUrl,
+            replyRootAddress = (replyTarget as? ReplyTarget.Timeline)?.root?.address,
+            replyParentAddress = replyTarget?.parent?.address,
             updatedAt = Clock.System.now().epochSeconds,
             identifier = editingMemoIdentifier,
             sourceEventId = editingMemoEventId,
@@ -382,6 +392,8 @@ class PostViewModel(
                 replyRootPubkeyRelayUrl = (replyTarget as? ReplyTarget.Timeline)?.root?.pubkeyRelayUrl,
                 replyParentRelayUrl = replyTarget?.parent?.relayUrl,
                 replyParentPubkeyRelayUrl = replyTarget?.parent?.pubkeyRelayUrl,
+                replyRootAddress = (replyTarget as? ReplyTarget.Timeline)?.root?.address,
+                replyParentAddress = replyTarget?.parent?.address,
                 updatedAt = updatedAt,
             )
 

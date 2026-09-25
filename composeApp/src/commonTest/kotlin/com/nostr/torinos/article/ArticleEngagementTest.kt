@@ -129,6 +129,26 @@ class ArticleEngagementTest {
         assertEquals(listOf(1), filters[3].kinds)
     }
 
+    @Test
+    fun commentReplyTargetProducesTopLevelNip22ArticleComment() {
+        val article = com.nostr.torinos.model.ArticleItem(
+            event = event("v2", kind = 30023, tags = listOf(listOf("d", "post")), pubkey = "author"),
+            meta = com.nostr.torinos.model.ArticleMeta(
+                identifier = "post",
+                title = null,
+                summary = null,
+                imageUrl = null,
+                publishedAt = null,
+                topics = emptyList(),
+            ),
+        )
+        val target = article.commentReplyTarget()
+        val comment = event("c", kind = target.eventKind, tags = target.tags())
+
+        assertEquals(1111, target.eventKind)
+        assertTrue(comment.isTopLevelArticleComment(address, versionIds))
+    }
+
     private fun reaction(
         id: String,
         pubkey: String,

@@ -74,6 +74,7 @@ import com.nostr.torinos.account.accountSessionViewModel
 import com.nostr.torinos.crypto.isWriteSupported
 import com.nostr.torinos.model.COMMENT_EVENT_KIND
 import com.nostr.torinos.model.NoteContext
+import com.nostr.torinos.model.ReplyTarget
 import com.nostr.torinos.model.NostrEvent
 import com.nostr.torinos.model.NostrProfile
 import com.nostr.torinos.model.noteContextForChannel
@@ -207,6 +208,9 @@ internal fun AppSessionCoordinator(
         // 記事タブの絞り込み。リレー切り替えでは維持し、アカウント切り替えとアプリ再起動で既定値へ戻る。
         var articleAuthorFilter by remember { mutableStateOf(ArticleAuthorFilter.All) }
         var articleTopic by remember { mutableStateOf<String?>(null) }
+        // 記事へのコメントは投稿後にスレッドへ遷移せず、記事詳細のコメント一覧を取り直す。
+        var articleCommentParentId by remember { mutableStateOf<String?>(null) }
+        var articleCommentPostedSignal by remember { mutableStateOf(0) }
         val appLifecycle = LocalLifecycleOwner.current.lifecycle
 
         LaunchedEffect(appLifecycle) {
@@ -392,6 +396,15 @@ internal fun AppSessionCoordinator(
                     composer.showPostSheet = true
                 }
                 replyResolutionJob = null
+            }
+        }
+
+        fun openArticleCommentComposer(target: ReplyTarget, preview: String) {
+            cancelPendingReplyResolution()
+            composer.prepareReply(target, preview, NoteContext.Timeline)
+            articleCommentParentId = target.parent.id
+            runWithPrivateKey(PendingKeyAction.Reply) {
+                composer.showPostSheet = true
             }
         }
 
@@ -979,6 +992,8 @@ internal fun AppSessionCoordinator(
                                     navigateTopLevelRoute("services")
                                 }
                             },
+                            onComment = ::openArticleCommentComposer,
+                            commentPostedSignal = articleCommentPostedSignal,
                         )
                     }
                     composable("article-editor") {
@@ -1277,7 +1292,9 @@ internal fun AppSessionCoordinator(
                     )
                     snackbarFailedRelays = emptyList()
                 }
-                if (postedReplyToId != null) {
+                if (postedReplyToId != null && postedReplyToId == articleCommentParentId) {
+                    articleCommentPostedSignal++
+                } else if (postedReplyToId != null) {
                     when (postedNoteContext) {
                         is NoteContext.Channel -> nav.navigate(
                             ThreadRoute(

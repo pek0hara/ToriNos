@@ -547,6 +547,13 @@ class ArticleDetailViewModel(
         }
     }
 
+    /** コメント投稿後などに、表示中の一覧を残したままリアクションとコメントを取り直す。 */
+    fun reloadEngagement() {
+        val article = _state.value.article ?: return
+        engagementJob?.cancel()
+        engagementJob = launch { loadEngagement(article) }
+    }
+
     fun like() {
         val article = _state.value.article ?: return
         runReaction(EngagementRequest.AddLike, NoteEngagementCommand.AddLike(article.reactionTarget()))

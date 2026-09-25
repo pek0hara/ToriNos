@@ -1,5 +1,7 @@
 package com.nostr.torinos.ui.article
 
+import com.nostr.torinos.article.commentReplyTarget
+import com.nostr.torinos.model.ReplyTarget
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -62,6 +64,8 @@ fun ArticleDetailScreen(
     onUserClick: (pubkey: String) -> Unit,
     onNoteClick: (eventId: String) -> Unit,
     onTopicClick: (String) -> Unit,
+    onComment: (target: ReplyTarget, preview: String) -> Unit,
+    commentPostedSignal: Int,
 ) {
     val relays by RelayStore.relays.collectAsState(initial = emptyList())
     val selectedRelayUrl by RelayStore.selectedArticleRelayUrl.collectAsState()
@@ -86,6 +90,11 @@ fun ArticleDetailScreen(
         )
     }
     val state by viewModel.state.collectAsState()
+    // 記事へのコメント投稿が完了したら、コメント一覧を取り直す。
+    val initialCommentPostedSignal = remember(viewModel) { commentPostedSignal }
+    LaunchedEffect(commentPostedSignal) {
+        if (commentPostedSignal != initialCommentPostedSignal) viewModel.reloadEngagement()
+    }
     val reactionActions = remember(viewModel) {
         if (viewModel.canReact) {
             ArticleReactionActions(
@@ -177,6 +186,7 @@ fun ArticleDetailScreen(
                         engagement = state.engagement,
                         onUserClick = onUserClick,
                         reactionActions = reactionActions,
+                        onComment = { onComment(article.commentReplyTarget(), article.displayTitle) },
                     )
                 }
             }
