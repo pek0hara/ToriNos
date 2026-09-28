@@ -26,8 +26,6 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -45,7 +43,6 @@ import androidx.compose.ui.platform.LocalClipboard
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
-import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.nostr.torinos.crypto.KeyStorage
@@ -290,30 +287,11 @@ fun KeySetupScreen(onSetupComplete: (pubkeyHex: String) -> Unit, onDismiss: (() 
                                 Text("すでに持っている鍵で始める")
                             }
                         } else {
-                            OutlinedTextField(
+                            PrivateKeyInputField(
                                 value = importKey,
                                 onValueChange = { importKey = it.trim(); error = null },
+                                error = error,
                                 modifier = Modifier.fillMaxWidth(),
-                                label = { Text("秘密鍵（nsec1... または hex）") },
-                                visualTransformation = PasswordVisualTransformation(),
-                                singleLine = true,
-                                isError = error != null,
-                                supportingText = error?.let { { Text(it) } },
-                                colors = OutlinedTextFieldDefaults.colors(
-                                    focusedTextColor = MaterialTheme.colorScheme.onSurface,
-                                    unfocusedTextColor = MaterialTheme.colorScheme.onSurface,
-                                    focusedContainerColor = MaterialTheme.colorScheme.surface,
-                                    unfocusedContainerColor = MaterialTheme.colorScheme.surface,
-                                    errorContainerColor = MaterialTheme.colorScheme.surface,
-                                    focusedLabelColor = MaterialTheme.colorScheme.primary,
-                                    unfocusedLabelColor = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    focusedBorderColor = MaterialTheme.colorScheme.primary,
-                                    unfocusedBorderColor = MaterialTheme.colorScheme.outline,
-                                    errorBorderColor = MaterialTheme.colorScheme.error,
-                                    cursorColor = MaterialTheme.colorScheme.primary,
-                                    errorCursorColor = MaterialTheme.colorScheme.error,
-                                    errorSupportingTextColor = MaterialTheme.colorScheme.error,
-                                ),
                             )
                             Spacer(modifier = Modifier.height(8.dp))
                             Button(

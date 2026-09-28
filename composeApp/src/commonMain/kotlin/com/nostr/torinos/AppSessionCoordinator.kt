@@ -70,6 +70,7 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.nostr.torinos.account.AccountSession
 import com.nostr.torinos.account.accountSessionViewModel
+import com.nostr.torinos.crypto.isWebPlatform
 import com.nostr.torinos.crypto.isWriteSupported
 import com.nostr.torinos.model.COMMENT_EVENT_KIND
 import com.nostr.torinos.model.NoteContext
@@ -1276,7 +1277,8 @@ internal fun AppSessionCoordinator(
         }
         }
 
-        if (isAgeVerificationLoaded && ageVerificationStatus != AgeVerificationAccepted) {
+        // 年齢確認はアプリストアの審査要件のため、ストアを通さない Web 版では出さない。
+        if (!isWebPlatform && isAgeVerificationLoaded && ageVerificationStatus != AgeVerificationAccepted) {
             AgeVerificationDialog(
                 blocked = ageVerificationStatus == AgeVerificationBlocked,
                 onAccept = { onAgeVerificationChanged(AgeVerificationAccepted) },

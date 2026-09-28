@@ -185,6 +185,10 @@ val wasmJsMain by getting {
   開発ビルドの webpack が `eval` を使うソースマップを出さないよう、`devtool = "source-map"` にした。
 - **文言**: `isWebPlatform` を使う箇所に、ログアウトとアカウント完全削除の確認文（「このブラウザに残ります」など）も加えた。
   保存済みアカウント削除の文言は `KeySetupScreen` と `SettingsScreen` で重複していたため `KeyStorageMessages.kt` にまとめた。
+- **年齢確認**: アプリストアの審査要件のため、Web 版では年齢確認ダイアログを出さない。
+- **秘密鍵の入力欄**: Compose の入力欄はブラウザの入力要素を持たないため、スマホで長押しの貼り付けが出ない。
+  貼り付けに使う Clipboard API も http の LAN 内では使えない。Web 版だけ `HtmlElementView` でブラウザの `<input type="password">` を使う（`PrivateKeyInputField`）。
+  同じ理由で、nsec のコピーは Clipboard API が無いとき `execCommand('copy')` で代替する。
 - **iOS の修正**: ベクタテストで、iOS の `sha256(ByteArray(0))` が範囲外アクセスで落ちることが分かったので直した（アプリ内に空データをハッシュする経路は無かった）。
 
 ### 8.2 検証
