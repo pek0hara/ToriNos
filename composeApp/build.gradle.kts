@@ -1,4 +1,5 @@
 import org.jetbrains.kotlin.gradle.ExperimentalKotlinGradlePluginApi
+import org.jetbrains.kotlin.gradle.ExperimentalWasmDsl
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 
 plugins {
@@ -44,6 +45,17 @@ kotlin {
         }
     }
 
+    @OptIn(ExperimentalWasmDsl::class)
+    wasmJs {
+        outputModuleName.set("composeApp")
+        browser {
+            commonWebpackConfig {
+                outputFileName = "composeApp.js"
+            }
+        }
+        binaries.executable()
+    }
+
     sourceSets {
         val commonMain by getting
         val mobileMain by creating {
@@ -76,6 +88,14 @@ kotlin {
         val iosSimulatorArm64Main by getting
         iosArm64Main.dependsOn(iosMain)
         iosSimulatorArm64Main.dependsOn(iosMain)
+        val wasmJsMain by getting {
+            dependencies {
+                implementation(libs.ktor.client.js)
+                // kotlinx-datetime の JS 実装は名前付きタイムゾーンの DB を同梱しない。
+                // kotlinx-datetime が使う @js-joda/core 3.x と組み合わせられる版に固定する。
+                implementation(npm("@js-joda/timezone", "2.3.0"))
+            }
+        }
         commonMain.dependencies {
             implementation(compose.runtime)
             implementation(compose.foundation)
@@ -96,6 +116,15 @@ kotlin {
             implementation(libs.coil.compose)
             implementation(libs.coil.network.ktor3)
         }
+        // runBlocking と実スレッドを前提にするテストは Wasm では動かせないため、mobileTest に置く。
+        val commonTest by getting
+        val mobileTest by creating {
+            dependsOn(commonTest)
+        }
+        val iosArm64Test by getting
+        val iosSimulatorArm64Test by getting
+        iosArm64Test.dependsOn(mobileTest)
+        iosSimulatorArm64Test.dependsOn(mobileTest)
         commonTest.dependencies {
             implementation(kotlin("test"))
             implementation(libs.kotlinx.coroutines.test)
