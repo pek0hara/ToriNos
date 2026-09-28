@@ -11,7 +11,9 @@ import com.nostr.torinos.crypto.signEvent
 import com.nostr.torinos.crypto.toHex
 import com.nostr.torinos.model.NostrEvent
 import com.nostr.torinos.network.FollowRepository
-import com.nostr.torinos.network.EmojiPreferenceSynchronizer
+import com.nostr.torinos.emoji.CustomEmojiRepository
+import com.nostr.torinos.emoji.EmojiPreferenceSync
+import com.nostr.torinos.emoji.NostrEmojiPreferenceTransport
 import com.nostr.torinos.network.MuteStore
 import com.nostr.torinos.network.NgWordStore
 import com.nostr.torinos.network.PrivateMuteListStore
@@ -25,6 +27,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -58,14 +61,27 @@ class AccountSession internal constructor(
     val muteStore = MuteStore(privateMuteListStore)
     val ngWordStore = NgWordStore(privateMuteListStore)
     val relayListSynchronizer = RelayListSynchronizer(this, followRepository, relayStore, resources.scope)
-    val emojiPreferenceSynchronizer = EmojiPreferenceSynchronizer(this, relayStore, resources.scope)
+    val customEmojis = CustomEmojiRepository(pubkey, resources.scope)
+    internal val emojiPreferenceSync = EmojiPreferenceSync(
+        pubkey = pubkey,
+        signer = signer,
+        repository = customEmojis,
+        scope = resources.scope,
+        transport = NostrEmojiPreferenceTransport(
+            sessionId = sessionId,
+            relaysLoaded = { relayStore.isLoaded.first { it } },
+            writableRelayUrls = relayStore::writableRelayUrlsSnapshot,
+        ),
+        ensureActive = ::ensureActive,
+    )
     private var repositoriesStarted = false
 
     init {
         resources.onClose(followRepository::close)
         resources.onClose(privateMuteListStore::close)
         resources.onClose(relayListSynchronizer::close)
-        resources.onClose(emojiPreferenceSynchronizer::close)
+        resources.onClose(emojiPreferenceSync::close)
+        resources.onClose(customEmojis::close)
     }
 
     internal fun ensureActive() {
@@ -78,7 +94,14 @@ class AccountSession internal constructor(
         repositoriesStarted = true
         followRepository.start()
         privateMuteListStore.start()
-        emojiPreferenceSynchronizer.start()
+        customEmojis.start()
+        emojiPreferenceSync.start()
+    }
+
+    /** アプリが前面に戻ったとき。 */
+    internal fun onAppForeground() {
+        if (!resources.lease.isActive) return
+        emojiPreferenceSync.onAppForeground()
     }
 
     internal fun onClose(action: () -> Unit) {

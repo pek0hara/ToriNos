@@ -8,8 +8,6 @@ import androidx.compose.foundation.text.appendInlineContent
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.collectAsState
-import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clipToBounds
@@ -29,7 +27,6 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.em
 import com.nostr.torinos.model.NostrProfile
 import com.nostr.torinos.model.extractNpubReferences
-import com.nostr.torinos.network.CustomEmojiStore
 import kotlin.math.roundToInt
 
 private val hashtagTextRegex = Regex("""(?<![\p{L}\p{N}_])#[\p{L}\p{N}_]+""")
@@ -51,9 +48,11 @@ fun LinkedText(
     overflow: TextOverflow = TextOverflow.Clip,
     onTextLayout: ((TextLayoutResult) -> Unit)? = null,
 ) {
-    val emojis by CustomEmojiStore.emojis.collectAsState()
+    val emojis = rememberEmojiPreferences().available
+    val openCustomEmoji = LocalCustomEmojiNavigator.current
     val emojiMap = remember(emojis, customEmojis) {
-        emojis.associate { it.shortcode to it.imageUrl } + customEmojis
+        // available は優先順なので、同じ shortcode は先頭を使う。イベントのタグがあればそちらを優先する。
+        emojis.asReversed().associate { it.shortcode to it.imageUrl } + customEmojis
     }
     val density = LocalDensity.current
     // インライン絵文字はテキストに合わせて1.2emで表示するため、デコード要求も同じ大きさに絞る。
@@ -209,10 +208,7 @@ fun LinkedText(
                                 .then(
                                     if (enableCustomEmojiLinks) {
                                         Modifier.clickable {
-                                            CustomEmojiStore.requestOpenSearch(
-                                                shortcode = emoji.shortcode,
-                                                imageUrl = emoji.imageUrl,
-                                            )
+                                            openCustomEmoji(CustomEmojiOpenRequest.of(emoji.shortcode, emoji.imageUrl))
                                         }
                                     } else {
                                         Modifier
@@ -240,7 +236,7 @@ fun LinkedText(
                                 textDecoration = TextDecoration.Underline,
                             ),
                             modifier = Modifier.clickable {
-                                CustomEmojiStore.requestOpenSearch(emoji.shortcode)
+                                openCustomEmoji(CustomEmojiOpenRequest.of(emoji.shortcode))
                             },
                         )
                     },

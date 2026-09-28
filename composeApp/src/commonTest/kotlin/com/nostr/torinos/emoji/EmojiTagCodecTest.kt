@@ -1,6 +1,5 @@
 package com.nostr.torinos.emoji
 
-import com.nostr.torinos.network.CustomEmoji
 import kotlin.test.Test
 import kotlin.test.assertEquals
 
@@ -48,9 +47,9 @@ class EmojiTagCodecTest {
             CustomEmoji("cat", "https://example.com/second.png"),
         )
 
-        // associateBy は後勝ち。S1 以降で既定解決を明示するまで現行挙動として固定する。
+        // 呼び出し側が優先順に渡すので、先に並ぶものを使う。
         assertEquals(
-            listOf(listOf("emoji", "cat", "https://example.com/second.png")),
+            listOf(listOf("emoji", "cat", "https://example.com/first.png")),
             customEmojiTagsForContent(":cat:", emojis),
         )
     }

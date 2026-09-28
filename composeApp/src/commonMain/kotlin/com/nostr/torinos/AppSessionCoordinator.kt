@@ -80,7 +80,9 @@ import com.nostr.torinos.model.noteContextForChannel
 import com.nostr.torinos.network.deleteLegacyChannelCacheDatabase
 import com.nostr.torinos.ui.channel.ChannelReplyContextBuilder
 import com.nostr.torinos.ui.channel.channelComposerRelayContext
-import com.nostr.torinos.network.CustomEmojiStore
+import com.nostr.torinos.emoji.EmojiSetAddress
+import com.nostr.torinos.ui.components.CustomEmojiOpenRequest
+import com.nostr.torinos.ui.components.LocalCustomEmojiNavigator
 import com.nostr.torinos.network.RelayPublishResult
 import com.nostr.torinos.network.RelayStore
 import com.nostr.torinos.network.resolveReplyTarget
@@ -134,6 +136,7 @@ import kotlin.time.Clock
 @Serializable data class CustomEmojiRoute(
     val query: String = "",
     val imageUrl: String = "",
+    val setAddress: String = "",
 )
 @Serializable data class ThreadRoute(
     val eventId: String,
@@ -293,18 +296,6 @@ internal fun AppSessionCoordinator(
             if (relaySettingsNavigationRequest <= 0) return@LaunchedEffect
             nav.navigate("relay-settings") {
                 launchSingleTop = true
-            }
-        }
-
-        // カスタム絵文字タップ → 絵文字設定画面（対象絵文字付き）へ遷移
-        LaunchedEffect(Unit) {
-            CustomEmojiStore.openSearchEvent.collect { request ->
-                nav.navigate(
-                    CustomEmojiRoute(
-                        query = request.shortcode,
-                        imageUrl = request.imageUrl,
-                    ),
-                )
             }
         }
 
@@ -508,6 +499,16 @@ internal fun AppSessionCoordinator(
         )
 
         CompositionLocalProvider(
+            // カスタム絵文字タップ → 絵文字設定画面（対象絵文字付き）へ遷移
+            LocalCustomEmojiNavigator provides { request: CustomEmojiOpenRequest ->
+                nav.navigate(
+                    CustomEmojiRoute(
+                        query = request.shortcode,
+                        imageUrl = request.imageUrl,
+                        setAddress = request.setAddress?.value.orEmpty(),
+                    ),
+                )
+            },
             LocalQuotePostHandler provides { event: NostrEvent ->
                 cancelPendingReplyResolution()
                 composer.prepareQuote(event)
@@ -1176,6 +1177,7 @@ internal fun AppSessionCoordinator(
                             onBack = { nav.popBackStack() },
                             initialQuery = route.query,
                             initialImageUrl = route.imageUrl,
+                            initialSetAddress = EmojiSetAddress.parse(route.setAddress),
                         )
                     }
                     composable<SearchRoute> { backStack ->

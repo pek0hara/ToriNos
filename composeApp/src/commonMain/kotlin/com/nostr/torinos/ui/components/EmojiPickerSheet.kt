@@ -37,6 +37,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -54,12 +55,9 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.lifecycle.viewmodel.compose.viewModel
 import com.nostr.torinos.model.ReactionOption
-import com.nostr.torinos.network.CustomEmoji
-import com.nostr.torinos.network.CustomEmojiStore
-import com.nostr.torinos.network.RecentReaction
-import com.nostr.torinos.ui.settings.CustomEmojiSettingsViewModel
+import com.nostr.torinos.emoji.CustomEmoji
+import com.nostr.torinos.emoji.EmojiSetDiscovery
 
 private data class EmojiPickerSection(
     val title: String,
@@ -72,15 +70,16 @@ internal fun StandardEmojiPickerSheet(
     onDismiss: () -> Unit,
     onSelect: (ReactionOption) -> Unit,
     onOpenCustomEmojiSettings: (() -> Unit)? = null,
-    discoveryViewModel: CustomEmojiSettingsViewModel = viewModel(key = "emoji-picker-discovery") {
-        CustomEmojiSettingsViewModel()
-    },
 ) {
     DismissKeyboardOnLeave()
-    val savedCustomEmojis by CustomEmojiStore.emojis.collectAsState()
-    val recentReactions by CustomEmojiStore.recentReactions.collectAsState()
-    val favoriteEmojis by CustomEmojiStore.favoriteEmojis.collectAsState()
-    val discoveryState by discoveryViewModel.state.collectAsState()
+    val emojiPreferences = rememberEmojiPreferences()
+    val savedCustomEmojis = remember(emojiPreferences.available) {
+        emojiPreferences.available.sortedBy { it.shortcode.lowercase() }
+    }
+    val recentReactions = emojiPreferences.recent
+    val favoriteEmojis = emojiPreferences.favorites
+    val discoveryState by EmojiSetDiscovery.state.collectAsState()
+    LaunchedEffect(Unit) { EmojiSetDiscovery.ensureLoaded() }
     var query by remember { mutableStateOf("") }
     var selectedCategory by remember { mutableStateOf<StandardEmojiCategory?>(null) }
     var customOnly by remember { mutableStateOf(false) }
@@ -95,14 +94,11 @@ internal fun StandardEmojiPickerSheet(
             published = discoveryState.publishedSets.flatMap { it.emojis },
         )
     }
-    val recentOptions = remember(recentReactions, savedCustomEmojis) {
-        val customEmojiMap = savedCustomEmojis.associateBy { it.shortcode }
+    val recentOptions = remember(recentReactions) {
         recentReactions
-            .asSequence()
-            .mapNotNull { recent -> recent.toReactionOption(customEmojiMap) }
+            .map { it.toReactionOption() }
             .distinctBy { it.key }
             .take(24)
-            .toList()
     }
     val favoriteOptions = remember(favoriteEmojis) {
         favoriteEmojis.map { ReactionOption.Custom(it.shortcode, it.imageUrl) }
@@ -215,7 +211,7 @@ internal fun StandardEmojiPickerSheet(
 
                 if (visibleSections.all { it.options.isEmpty() }) {
                     item(span = { GridItemSpan(maxLineSpan) }) {
-                        if (normalizedQuery.isNotBlank() && discoveryState.isLoadingPublishedSets) {
+                        if (normalizedQuery.isNotBlank() && discoveryState.isLoading) {
                             Row(
                                 modifier = Modifier.padding(vertical = 24.dp),
                                 horizontalArrangement = Arrangement.spacedBy(10.dp),
@@ -328,16 +324,6 @@ internal fun customEmojiSearchOptions(
 ): List<ReactionOption.Custom> = (registered + published)
     .distinctBy { it.shortcode to it.imageUrl }
     .map { ReactionOption.Custom(it.shortcode, it.imageUrl) }
-
-internal fun RecentReaction.toReactionOption(
-    registeredByShortcode: Map<String, CustomEmoji>,
-): ReactionOption? = when (kind) {
-    RecentReaction.UnicodeKind -> ReactionOption.Unicode(value)
-    RecentReaction.CustomKind -> imageUrl.takeIf { it.isNotBlank() }
-        ?.let { ReactionOption.Custom(value, it) }
-        ?: registeredByShortcode[value]?.let { ReactionOption.Custom(it.shortcode, it.imageUrl) }
-    else -> null
-}
 
 @Composable
 private fun EmojiPickerSectionTitle(title: String) {

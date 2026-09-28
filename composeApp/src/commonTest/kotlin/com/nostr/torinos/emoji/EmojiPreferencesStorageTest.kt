@@ -1,6 +1,5 @@
 package com.nostr.torinos.emoji
 
-import com.nostr.torinos.network.CustomEmoji
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse

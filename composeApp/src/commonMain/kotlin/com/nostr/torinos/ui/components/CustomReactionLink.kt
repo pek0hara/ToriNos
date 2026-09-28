@@ -10,7 +10,6 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.Dp
 import com.nostr.torinos.model.CustomReaction
-import com.nostr.torinos.network.CustomEmojiStore
 
 /** カスタム絵文字の表示と所属セットへの遷移を共通化する。 */
 @Composable
@@ -22,14 +21,12 @@ internal fun CustomReactionLink(
 ) {
     val density = LocalDensity.current
     val decodeSizePx = with(density) { imageSize.roundToPx() }
+    val openCustomEmoji = LocalCustomEmojiNavigator.current
     Box(
         modifier = modifier
             .size(containerSize)
             .clickable {
-                CustomEmojiStore.requestOpenSearch(
-                    shortcode = reaction.shortcode,
-                    imageUrl = reaction.imageUrl,
-                )
+                openCustomEmoji(CustomEmojiOpenRequest.of(reaction.shortcode, reaction.imageUrl))
             },
         contentAlignment = Alignment.Center,
     ) {

@@ -45,7 +45,6 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Tab
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import com.nostr.torinos.ui.components.AppTopBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -61,147 +60,88 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
-import com.nostr.torinos.network.CustomEmoji
-import com.nostr.torinos.network.CustomEmojiList
-import com.nostr.torinos.network.CustomEmojiStore
-import com.nostr.torinos.network.setAddress
-import com.nostr.torinos.network.ProfileFetchPolicy
-import com.nostr.torinos.network.ProfileRepository
-import com.nostr.torinos.ui.components.NetworkImage
-import com.nostr.torinos.ui.components.ProfileNameText
-import com.nostr.torinos.ui.profile.AvatarCircle
+import com.nostr.torinos.account.LocalAccountSession
+import com.nostr.torinos.emoji.EmojiSetAddress
+import com.nostr.torinos.emoji.EmojiSetDiscovery
+import com.nostr.torinos.ui.components.AppTopBar
+import com.nostr.torinos.ui.components.rememberEmojiPreferences
 import kotlinx.coroutines.launch
-import com.nostr.torinos.ui.components.DismissKeyboardOnLeave
 
+/** カスタム絵文字の設定画面。公開セットの検索・登録と、登録済みセットの管理を行う。 */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun CustomEmojiSettingsScreen(
     onBack: () -> Unit = {},
     initialQuery: String = "",
     initialImageUrl: String = "",
-    viewModel: CustomEmojiSettingsViewModel = viewModel { CustomEmojiSettingsViewModel() },
+    initialSetAddress: EmojiSetAddress? = null,
 ) {
-    val emojis by CustomEmojiStore.emojis.collectAsState()
-    val emojiLists by CustomEmojiStore.emojiLists.collectAsState()
-    val favoriteEmojis by CustomEmojiStore.favoriteEmojis.collectAsState()
-    val state by viewModel.state.collectAsState()
+    val repository = LocalAccountSession.current?.customEmojis
+    val preferences = rememberEmojiPreferences()
+    val discovery by EmojiSetDiscovery.state.collectAsState()
     var discoverQuery by remember { mutableStateOf(initialQuery) }
     var registeredQuery by remember { mutableStateOf("") }
     var showRegisteredOnly by remember { mutableStateOf(false) }
-    var selectedSet by remember { mutableStateOf<PublishedEmojiSet?>(null) }
-    var selectedRegisteredSet by remember { mutableStateOf<CustomEmojiList?>(null) }
-    var didOpenRequestedSet by remember(initialQuery, initialImageUrl) { mutableStateOf(false) }
+    var openedSet by remember { mutableStateOf<EmojiSetView?>(null) }
+    var didOpenRequestedSet by remember(initialQuery, initialImageUrl, initialSetAddress) { mutableStateOf(false) }
     val pagerState = rememberPagerState(pageCount = { EmojiSettingsTab.entries.size })
     val coroutineScope = rememberCoroutineScope()
     val selectedTab = EmojiSettingsTab.entries[pagerState.currentPage]
-    val savedEmojiUrls = remember(emojiLists) {
-        emojiLists.flatMap { it.emojis }.associate { it.shortcode to it.imageUrl }
+    val filteredPublishedSets = remember(discovery.publishedSets, preferences.sets, discoverQuery, showRegisteredOnly) {
+        discovery.publishedSets.filterPublishedSets(discoverQuery, showRegisteredOnly, preferences::isRegistered)
     }
-    val filteredPublishedSets = remember(state.publishedSets, savedEmojiUrls, discoverQuery, showRegisteredOnly) {
-        state.publishedSets
-            .filterByQuery(discoverQuery)
-            .filter { set ->
-                !showRegisteredOnly || set.emojis.all { savedEmojiUrls[it.shortcode] == it.imageUrl }
-            }
-    }
-    val filteredRegisteredLists = remember(emojiLists, registeredQuery) {
-        emojiLists.filterCustomEmojiListsByQuery(registeredQuery)
+    val filteredRegisteredSets = remember(preferences.sets, registeredQuery) {
+        preferences.sets.filterRegisteredSets(registeredQuery)
     }
 
-    LaunchedEffect(
-        initialQuery,
-        initialImageUrl,
-        emojiLists,
-        state.publishedSets,
-        state.isLoadingPublishedSets,
-    ) {
-        if (didOpenRequestedSet || initialQuery.isBlank() || initialImageUrl.isBlank()) {
-            return@LaunchedEffect
-        }
-        val requestedShortcode = initialQuery.trim().trim(':')
-        val requestedImageUrl = initialImageUrl.trim()
-        val registeredSet = emojiLists.firstOrNull { set ->
-            set.emojis.any { emoji ->
-                emoji.shortcode == requestedShortcode && emoji.imageUrl == requestedImageUrl
-            }
-        }
-        if (registeredSet != null) {
-            selectedRegisteredSet = registeredSet
-            didOpenRequestedSet = true
-            return@LaunchedEffect
-        }
-        val publishedSet = state.publishedSets.firstOrNull { set ->
-            set.emojis.any { emoji ->
-                emoji.shortcode == requestedShortcode && emoji.imageUrl == requestedImageUrl
-            }
-        }
-        if (publishedSet != null) {
-            selectedSet = publishedSet
-            didOpenRequestedSet = true
-            return@LaunchedEffect
-        }
+    LaunchedEffect(Unit) { EmojiSetDiscovery.ensureLoaded() }
 
-        val registeredShortcodeMatches = emojiLists.filter { set ->
-            set.emojis.any { emoji -> emoji.shortcode == requestedShortcode }
-        }
-        val publishedShortcodeMatches = state.publishedSets.filter { set ->
-            set.emojis.any { emoji -> emoji.shortcode == requestedShortcode }
-        }
-        if (
-            !state.isLoadingPublishedSets &&
-            registeredShortcodeMatches.size + publishedShortcodeMatches.size == 1
-        ) {
-            selectedRegisteredSet = registeredShortcodeMatches.singleOrNull()
-            selectedSet = publishedShortcodeMatches.singleOrNull()
-            didOpenRequestedSet = true
-        }
-    }
-
-    CustomEmojiSettingsBackHandler(
-        enabled = selectedSet != null || selectedRegisteredSet != null,
-    ) {
-        selectedSet = null
-        selectedRegisteredSet = null
-    }
-
-    selectedSet?.let { set ->
-        EmojiSetDetailScreen(
-            title = set.name,
-            emojis = set.emojis,
-            authorPubkey = set.authorPubkey,
-            initialShortcode = initialQuery,
-            initialImageUrl = initialImageUrl,
-            isRegistered = set.emojis.all { savedEmojiUrls[it.shortcode] == it.imageUrl },
-            favoriteEmojis = favoriteEmojis,
-            onRegister = {
-                CustomEmojiStore.addList(
-                    id = set.id,
-                    name = set.name,
-                    emojis = set.emojis,
-                    authorPubkey = set.authorPubkey,
-                )
-            },
-            onUnregister = { CustomEmojiStore.removeList(set.id, set.emojis) },
-            onBack = { selectedSet = null },
+    LaunchedEffect(initialQuery, initialImageUrl, initialSetAddress, preferences.sets, discovery) {
+        if (didOpenRequestedSet) return@LaunchedEffect
+        val found = findRequestedEmojiSet(
+            shortcode = initialQuery,
+            imageUrl = initialImageUrl,
+            address = initialSetAddress,
+            registered = preferences.sets,
+            published = discovery.publishedSets,
+            isPublishedLoading = discovery.isLoading,
         )
-        return
+        if (found != null) {
+            openedSet = found
+            didOpenRequestedSet = true
+        }
     }
 
-    selectedRegisteredSet?.let { set ->
+    // 公開一覧に無い古いセットは、アドレスを指定して取りに行く。
+    LaunchedEffect(initialSetAddress) {
+        val address = initialSetAddress ?: return@LaunchedEffect
+        if (repository?.preferences?.value?.isRegistered(address) == true) return@LaunchedEffect
+        val fetched = EmojiSetDiscovery.fetch(address) ?: return@LaunchedEffect
+        if (!didOpenRequestedSet) {
+            openedSet = fetched.toView()
+            didOpenRequestedSet = true
+        }
+    }
+
+    CustomEmojiSettingsBackHandler(enabled = openedSet != null) {
+        openedSet = null
+    }
+
+    openedSet?.let { set ->
+        val isRegistered = preferences.isRegistered(set.address)
         EmojiSetDetailScreen(
-            title = set.name,
+            title = set.title,
             emojis = set.emojis,
-            authorPubkey = set.authorPubkey.ifBlank { set.setAddress()?.author.orEmpty() },
+            authorPubkey = set.address.author,
             initialShortcode = initialQuery,
             initialImageUrl = initialImageUrl,
-            isRegistered = true,
-            favoriteEmojis = favoriteEmojis,
-            onUnregister = {
-                CustomEmojiStore.removeList(set.id, set.emojis)
-                selectedRegisteredSet = null
-            },
-            onRegister = {},
-            onBack = { selectedRegisteredSet = null },
+            isRegistered = isRegistered,
+            canEdit = repository != null,
+            isFavorite = preferences::isFavorite,
+            onToggleFavorite = { emoji -> repository?.toggleFavorite(emoji) },
+            onRegister = { repository?.registerSet(set.toRegisteredSet()) },
+            onUnregister = { repository?.unregisterSet(set.address) },
+            onBack = { openedSet = null },
         )
         return
     }
@@ -220,7 +160,7 @@ fun CustomEmojiSettingsScreen(
                     }
                 },
                 actions = {
-                    IconButton(onClick = viewModel::refreshPublishedSets) {
+                    IconButton(onClick = EmojiSetDiscovery::refresh) {
                         Icon(
                             Icons.Default.Refresh,
                             contentDescription = "再読み込み",
@@ -248,7 +188,7 @@ fun CustomEmojiSettingsScreen(
                             Text(
                                 when (tab) {
                                     EmojiSettingsTab.Discover -> "セットを探す"
-                                    EmojiSettingsTab.Registered -> "登録済み (${emojiLists.size})"
+                                    EmojiSettingsTab.Registered -> "登録済み (${preferences.sets.size})"
                                 },
                             )
                         },
@@ -306,7 +246,7 @@ fun CustomEmojiSettingsScreen(
                                         },
                                     )
                                     Text(
-                                        text = if (state.isLoadingPublishedSets) {
+                                        text = if (discovery.isLoading) {
                                             "読み込み中…"
                                         } else {
                                             "${filteredPublishedSets.size}件"
@@ -317,7 +257,7 @@ fun CustomEmojiSettingsScreen(
                                 }
                             }
 
-                            if (!state.isLoadingPublishedSets && filteredPublishedSets.isEmpty()) {
+                            if (!discovery.isLoading && filteredPublishedSets.isEmpty()) {
                                 item {
                                     EmptyText(
                                         if (showRegisteredOnly) {
@@ -328,21 +268,13 @@ fun CustomEmojiSettingsScreen(
                                     )
                                 }
                             } else {
-                                items(filteredPublishedSets, key = { "published-${it.id}" }) { set ->
+                                items(filteredPublishedSets, key = { "published-${it.address.value}" }) { set ->
                                     PublishedEmojiSetRow(
                                         set = set,
-                                        isRegistered = set.emojis.all {
-                                            savedEmojiUrls[it.shortcode] == it.imageUrl
-                                        },
-                                        onRegister = {
-                                            CustomEmojiStore.addList(
-                                                id = set.id,
-                                                name = set.name,
-                                                emojis = set.emojis,
-                                                authorPubkey = set.authorPubkey,
-                                            )
-                                        },
-                                        onClick = { selectedSet = set },
+                                        isRegistered = preferences.isRegistered(set.address),
+                                        canRegister = repository != null,
+                                        onRegister = { repository?.registerSet(set.toView().toRegisteredSet()) },
+                                        onClick = { openedSet = set.toView() },
                                     )
                                     HorizontalDivider()
                                 }
@@ -354,17 +286,17 @@ fun CustomEmojiSettingsScreen(
                                 SectionHeader(
                                     title = "登録済みセット",
                                     trailing = if (registeredQuery.isBlank()) {
-                                        "${emojiLists.size}件・${emojis.size}個"
+                                        "${preferences.sets.size}件・${preferences.sets.sumOf { it.emojis.size }}個"
                                     } else {
-                                        "${filteredRegisteredLists.size}/${emojiLists.size}件"
+                                        "${filteredRegisteredSets.size}/${preferences.sets.size}件"
                                     },
                                 )
                             }
 
-                            if (filteredRegisteredLists.isEmpty()) {
+                            if (filteredRegisteredSets.isEmpty()) {
                                 item {
                                     EmptyText(
-                                        if (emojiLists.isEmpty()) {
+                                        if (preferences.sets.isEmpty()) {
                                             "登録済みのセットはありません\n「セットを探す」から追加できます"
                                         } else {
                                             "登録済みセットが見つかりません"
@@ -372,10 +304,10 @@ fun CustomEmojiSettingsScreen(
                                     )
                                 }
                             } else {
-                                items(filteredRegisteredLists, key = { "registered-${it.id}" }) { set ->
+                                items(filteredRegisteredSets, key = { "registered-${it.address.value}" }) { set ->
                                     RegisteredEmojiSetRow(
                                         set = set,
-                                        onClick = { selectedRegisteredSet = set },
+                                        onClick = { openedSet = set.toView() },
                                     )
                                     HorizontalDivider()
                                 }
@@ -388,453 +320,7 @@ fun CustomEmojiSettingsScreen(
     }
 }
 
-@Composable
-private fun EmojiSearchField(
-    value: String,
-    onValueChange: (String) -> Unit,
-    placeholder: String,
-) {
-    DismissKeyboardOnLeave()
-    OutlinedTextField(
-        value = value,
-        onValueChange = onValueChange,
-        placeholder = { Text(placeholder) },
-        leadingIcon = {
-            Icon(
-                Icons.Default.Search,
-                contentDescription = null,
-            )
-        },
-        trailingIcon = if (value.isNotEmpty()) {
-            {
-                IconButton(onClick = { onValueChange("") }) {
-                    Icon(
-                        Icons.Default.Close,
-                        contentDescription = "検索語を消去",
-                    )
-                }
-            }
-        } else {
-            null
-        },
-        singleLine = true,
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 16.dp, vertical = 8.dp),
-    )
-}
-
-@Composable
-private fun SectionHeader(
-    title: String,
-    trailing: String,
-    showProgress: Boolean = false,
-) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 16.dp, vertical = 12.dp),
-        horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Text(
-            text = title,
-            style = MaterialTheme.typography.titleSmall,
-            fontWeight = FontWeight.Bold,
-        )
-        Row(
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            if (showProgress) {
-                CircularProgressIndicator(
-                    modifier = Modifier.size(16.dp),
-                    strokeWidth = 2.dp,
-                )
-            }
-            Text(
-                text = trailing,
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
-    }
-}
-
-@Composable
-private fun EmptyText(text: String) {
-    Box(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 16.dp, vertical = 24.dp),
-        contentAlignment = Alignment.Center,
-    ) {
-        Text(
-            text = text,
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-    }
-}
-
-@Composable
-private fun PublishedEmojiSetRow(
-    set: PublishedEmojiSet,
-    isRegistered: Boolean,
-    onRegister: () -> Unit,
-    onClick: () -> Unit,
-) {
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clickable(onClick = onClick)
-            .padding(horizontal = 16.dp, vertical = 10.dp),
-        verticalArrangement = Arrangement.spacedBy(8.dp),
-    ) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = set.name,
-                    style = MaterialTheme.typography.bodyMedium,
-                    fontWeight = FontWeight.Bold,
-                )
-                Text(
-                    text = "${set.emojis.size}個 / ${set.authorPubkey.take(8)}...${set.authorPubkey.takeLast(8)}",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-            if (isRegistered) {
-                Icon(
-                    imageVector = Icons.Default.CheckCircle,
-                    contentDescription = null,
-                    modifier = Modifier.size(18.dp),
-                    tint = MaterialTheme.colorScheme.primary,
-                )
-                Text(
-                    text = "登録済み",
-                    style = MaterialTheme.typography.labelLarge,
-                    color = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier.padding(start = 4.dp, end = 12.dp),
-                )
-            } else {
-                TextButton(onClick = onRegister) {
-                    Icon(
-                        imageVector = Icons.Default.Add,
-                        contentDescription = null,
-                        modifier = Modifier.size(18.dp),
-                    )
-                    Text("登録")
-                }
-            }
-        }
-        Row(
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            set.emojis.take(8).forEach { emoji ->
-                NetworkImage(
-                    url = emoji.imageUrl,
-                    contentDescription = emoji.shortcode,
-                    contentScale = ContentScale.Fit,
-                    modifier = Modifier.size(28.dp),
-                )
-            }
-            if (set.emojis.size > 8) {
-                Text(
-                    text = "+${set.emojis.size - 8}",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-        }
-    }
-}
-
-@Composable
-private fun RegisteredEmojiSetRow(
-    set: CustomEmojiList,
-    onClick: () -> Unit,
-) {
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clickable(onClick = onClick)
-            .padding(horizontal = 16.dp, vertical = 10.dp),
-        verticalArrangement = Arrangement.spacedBy(8.dp),
-    ) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = set.name,
-                    style = MaterialTheme.typography.bodyMedium,
-                    fontWeight = FontWeight.Bold,
-                )
-                Text(
-                    text = "${set.emojis.size}個",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-            Icon(
-                Icons.Default.ChevronRight,
-                contentDescription = "セットの詳細",
-                tint = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
-        EmojiPreviewRow(set.emojis)
-    }
-}
-
-@Composable
-private fun EmojiPreviewRow(emojis: List<CustomEmoji>) {
-    Row(
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        emojis.take(8).forEach { emoji ->
-            NetworkImage(
-                url = emoji.imageUrl,
-                contentDescription = emoji.shortcode,
-                contentScale = ContentScale.Fit,
-                modifier = Modifier.size(28.dp),
-            )
-        }
-        if (emojis.size > 8) {
-            Text(
-                text = "+${emojis.size - 8}",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
-    }
-}
-
 private enum class EmojiSettingsTab {
     Discover,
     Registered,
-}
-
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-private fun EmojiSetDetailScreen(
-    title: String,
-    emojis: List<CustomEmoji>,
-    authorPubkey: String,
-    initialShortcode: String = "",
-    initialImageUrl: String = "",
-    isRegistered: Boolean,
-    favoriteEmojis: List<CustomEmoji>,
-    onRegister: () -> Unit,
-    onUnregister: () -> Unit,
-    onBack: () -> Unit,
-) {
-    val authorProfile by ProfileRepository.observe(authorPubkey).collectAsState(
-        initial = ProfileRepository.getCached(authorPubkey),
-    )
-    var selectedEmoji by remember(emojis, initialShortcode, initialImageUrl) {
-        mutableStateOf(selectInitialEmoji(emojis, initialShortcode, initialImageUrl))
-    }
-    LaunchedEffect(authorPubkey) {
-        if (authorPubkey.isNotBlank()) {
-            ProfileRepository.ensureProfiles(
-                pubkeys = setOf(authorPubkey),
-                policy = ProfileFetchPolicy.CacheFirst(AuthorProfileMaxAgeMillis),
-            )
-        }
-    }
-    Scaffold(
-        contentWindowInsets = WindowInsets(0),
-        topBar = {
-            AppTopBar(
-                title = { Text(title) },
-                navigationIcon = {
-                    IconButton(onClick = onBack) {
-                        Icon(
-                            Icons.AutoMirrored.Filled.ArrowBack,
-                            contentDescription = "一覧に戻る",
-                        )
-                    }
-                },
-            )
-        },
-        bottomBar = {
-            Surface(tonalElevation = 3.dp) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(start = 16.dp, top = 8.dp, end = 16.dp, bottom = 16.dp),
-                    horizontalArrangement = Arrangement.End,
-                ) {
-                    TextButton(onClick = if (isRegistered) onUnregister else onRegister) {
-                        Icon(
-                            imageVector = if (isRegistered) Icons.Default.Delete else Icons.Default.Add,
-                            contentDescription = null,
-                            modifier = Modifier.size(18.dp),
-                        )
-                        Text(if (isRegistered) "セットを登録解除" else "登録")
-                    }
-                }
-            }
-        },
-    ) { padding ->
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(padding),
-        ) {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 12.dp),
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                Text(
-                    text = "${emojis.size}個の絵文字",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                selectedEmoji?.let { emoji ->
-                    NetworkImage(
-                        url = emoji.imageUrl,
-                        contentDescription = ":${emoji.shortcode}:",
-                        contentScale = ContentScale.Fit,
-                        modifier = Modifier.size(120.dp),
-                    )
-                    Text(
-                        text = ":${emoji.shortcode}:",
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.Bold,
-                    )
-                    val isFavorite = favoriteEmojis.any { it == emoji }
-                    FilterChip(
-                        selected = isFavorite,
-                        onClick = { CustomEmojiStore.toggleFavorite(emoji) },
-                        label = {
-                            Text(if (isFavorite) "お気に入り済み" else "お気に入りに追加")
-                        },
-                        leadingIcon = {
-                            Icon(
-                                imageVector = if (isFavorite) Icons.Default.Star else Icons.Default.StarBorder,
-                                contentDescription = null,
-                                modifier = Modifier.size(18.dp),
-                            )
-                        },
-                    )
-                }
-                if (authorPubkey.isNotBlank()) {
-                    Row(
-                        horizontalArrangement = Arrangement.spacedBy(10.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        AvatarCircle(
-                            pubkey = authorPubkey,
-                            name = authorProfile?.bestName,
-                            pictureUrl = authorProfile?.picture,
-                            size = 36,
-                        )
-                        Column {
-                            Text(
-                                text = "作成者",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                            ProfileNameText(
-                                profile = authorProfile,
-                                fallback = "名前未設定",
-                                style = MaterialTheme.typography.bodyMedium,
-                                fontWeight = FontWeight.Medium,
-                            )
-                        }
-                    }
-                } else {
-                    Text(
-                        text = "作成者不明",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-            }
-            LazyVerticalGrid(
-                columns = GridCells.Adaptive(minSize = 68.dp),
-                modifier = Modifier.fillMaxSize(),
-                contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                gridItems(
-                    items = emojis,
-                    key = { emoji -> "${emoji.shortcode}-${emoji.imageUrl}" },
-                ) { emoji ->
-                    Box(
-                        modifier = Modifier
-                            .size(68.dp)
-                            .clip(RoundedCornerShape(12.dp))
-                            .background(
-                                if (selectedEmoji == emoji) {
-                                    MaterialTheme.colorScheme.secondaryContainer
-                                } else {
-                                    MaterialTheme.colorScheme.surface
-                                },
-                            )
-                            .clickable { selectedEmoji = emoji },
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        NetworkImage(
-                            url = emoji.imageUrl,
-                            contentDescription = emoji.shortcode,
-                            contentScale = ContentScale.Fit,
-                            modifier = Modifier.size(56.dp),
-                        )
-                    }
-                }
-            }
-        }
-    }
-}
-
-internal fun selectInitialEmoji(
-    emojis: List<CustomEmoji>,
-    initialShortcode: String,
-    initialImageUrl: String,
-): CustomEmoji? {
-    val shortcode = initialShortcode.trim().trim(':')
-    val imageUrl = initialImageUrl.trim()
-    return emojis.firstOrNull { emoji ->
-        emoji.shortcode == shortcode && emoji.imageUrl == imageUrl
-    } ?: emojis.firstOrNull { emoji ->
-        emoji.shortcode == shortcode
-    } ?: emojis.firstOrNull()
-}
-
-private const val AuthorProfileMaxAgeMillis = 60L * 60L * 1_000L
-
-private fun List<PublishedEmojiSet>.filterByQuery(query: String): List<PublishedEmojiSet> {
-    val normalizedQuery = query.trim().lowercase()
-    if (normalizedQuery.isBlank()) return this
-    return filter { set ->
-        set.name.lowercase().contains(normalizedQuery) ||
-            set.authorPubkey.lowercase().contains(normalizedQuery) ||
-            set.emojis.any { it.shortcode.lowercase().contains(normalizedQuery) }
-    }
-}
-
-private fun List<CustomEmojiList>.filterCustomEmojiListsByQuery(query: String): List<CustomEmojiList> {
-    val normalizedQuery = query.trim().lowercase()
-    if (normalizedQuery.isBlank()) return this
-    return filter { set ->
-        set.name.lowercase().contains(normalizedQuery) ||
-            set.emojis.any { emoji ->
-                emoji.shortcode.lowercase().contains(normalizedQuery) ||
-                    emoji.imageUrl.lowercase().contains(normalizedQuery)
-            }
-    }
 }

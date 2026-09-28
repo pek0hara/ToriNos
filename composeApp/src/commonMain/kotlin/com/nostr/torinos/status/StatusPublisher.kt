@@ -2,8 +2,7 @@ package com.nostr.torinos.status
 
 import com.nostr.torinos.account.AccountSigner
 import com.nostr.torinos.model.NostrEvent
-import com.nostr.torinos.network.CustomEmoji
-import com.nostr.torinos.network.CustomEmojiStore
+import com.nostr.torinos.emoji.CustomEmoji
 import com.nostr.torinos.network.NostrRepository
 import kotlinx.coroutines.CancellationException
 
@@ -34,7 +33,7 @@ sealed interface StatusPublishState {
 
 class StatusPublisher internal constructor(
     private val signer: AccountSigner?,
-    private val customEmojis: () -> List<CustomEmoji> = { CustomEmojiStore.emojis.value },
+    private val customEmojis: () -> List<CustomEmoji> = { emptyList() },
     private val send: suspend (NostrEvent, StatusPublishTarget) -> Unit = { event, target ->
         when (target) {
             is StatusPublishTarget.SelectedRelay ->

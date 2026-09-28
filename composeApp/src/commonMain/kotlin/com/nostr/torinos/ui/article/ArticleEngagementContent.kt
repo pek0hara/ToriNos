@@ -1,5 +1,7 @@
 package com.nostr.torinos.ui.article
 
+import com.nostr.torinos.ui.components.recordReactionUse
+import com.nostr.torinos.account.LocalAccountSession
 import androidx.compose.material3.Icon
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.Icons
@@ -40,7 +42,6 @@ import com.nostr.torinos.engagement.NoteEngagementState
 import com.nostr.torinos.engagement.displayOwnEmojiReactionEventIds
 import com.nostr.torinos.engagement.hasOwnReaction
 import com.nostr.torinos.model.ReactionOption
-import com.nostr.torinos.network.CustomEmojiStore
 import com.nostr.torinos.model.NostrEvent
 import com.nostr.torinos.model.NostrProfile
 import com.nostr.torinos.model.stripNostrEventUris
@@ -182,14 +183,12 @@ private fun ArticleReactions(
         }
     }
     if (showStandardEmojiPicker && actions != null && !reactions.hasOwnReaction) {
+        val accountSession = LocalAccountSession.current
         StandardEmojiPickerSheet(
             onDismiss = { showStandardEmojiPicker = false },
             onSelect = { option ->
                 showStandardEmojiPicker = false
-                when (option) {
-                    is ReactionOption.Unicode -> CustomEmojiStore.markUnicodeUsed(option.value)
-                    is ReactionOption.Custom -> CustomEmojiStore.markCustomReactionUsed(option.shortcode, option.imageUrl)
-                }
+                accountSession.recordReactionUse(option)
                 actions.onReact(option)
             },
         )

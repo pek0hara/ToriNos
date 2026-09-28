@@ -8,8 +8,7 @@ import com.nostr.torinos.model.MediaMetadata
 import com.nostr.torinos.model.ReplyEventReference
 import com.nostr.torinos.model.ReplyTarget
 import com.nostr.torinos.model.extractNostrEventReferences
-import com.nostr.torinos.network.CustomEmoji
-import com.nostr.torinos.network.CustomEmojiStore
+import com.nostr.torinos.emoji.CustomEmoji
 import com.nostr.torinos.network.ImageUploader
 import com.nostr.torinos.network.NostrRepository
 import com.nostr.torinos.network.RelayPublishResult
@@ -225,13 +224,16 @@ class PostViewModel(
         }
     }
 
+    private fun registeredEmojis(): List<CustomEmoji> =
+        accountSession?.customEmojis?.preferences?.value?.available.orEmpty()
+
     private fun updateText(text: String, selectedEmoji: CustomEmoji? = null) {
         _state.value = _state.value.copy(
             text = text,
             customEmojis = resolveDraftEmojis(
                 text,
                 _state.value.customEmojis + listOfNotNull(selectedEmoji),
-                CustomEmojiStore.emojis.value,
+                registeredEmojis(),
             ),
             error = null,
             memoMessage = null,
@@ -325,7 +327,7 @@ class PostViewModel(
         editingMemoPubkey = memo.sourcePubkey
         _state.value = PostState(
             text = memo.text,
-            customEmojis = resolveDraftEmojis(memo.text, memo.customEmojis, CustomEmojiStore.emojis.value),
+            customEmojis = resolveDraftEmojis(memo.text, memo.customEmojis, registeredEmojis()),
             hasContentWarning = memo.hasContentWarning,
             images = restoredImages,
             memoMessage = message,

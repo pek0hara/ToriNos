@@ -1,7 +1,5 @@
 package com.nostr.torinos.emoji
 
-import com.nostr.torinos.network.CustomEmoji
-
 /** 同一性は (shortcode, imageUrl)。 */
 internal val CustomEmoji.identity: Pair<String, String> get() = normalizeShortcode(shortcode) to imageUrl.trim()
 

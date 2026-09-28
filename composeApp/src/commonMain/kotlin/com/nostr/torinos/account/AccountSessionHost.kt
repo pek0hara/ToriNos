@@ -7,8 +7,10 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.key
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.staticCompositionLocalOf
+import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.ViewModelStore
 import androidx.lifecycle.ViewModelStoreOwner
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.viewmodel.compose.LocalViewModelStoreOwner
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -33,6 +35,16 @@ fun AccountSessionHost(
     val owner = remember(sessionId) { SessionViewModelStoreOwner() }
     LaunchedEffect(sessionId, session) {
         session?.startRepositories()
+    }
+    val lifecycleOwner = LocalLifecycleOwner.current
+    LaunchedEffect(session, lifecycleOwner) {
+        if (session == null) return@LaunchedEffect
+        var wasStarted = false
+        lifecycleOwner.lifecycle.currentStateFlow.collect { state ->
+            val started = state.isAtLeast(Lifecycle.State.STARTED)
+            if (started && !wasStarted) session.onAppForeground()
+            wasStarted = started
+        }
     }
     DisposableEffect(owner) {
         onDispose { owner.clear() }

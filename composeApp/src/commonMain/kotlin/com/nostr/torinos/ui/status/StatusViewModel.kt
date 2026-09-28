@@ -89,7 +89,10 @@ internal class StatusViewModel(
     private val accountSession: AccountSession? = null,
     private val subscriptions: StatusSubscriptionGateway = NostrStatusSubscriptionGateway,
     private val profileGateway: StatusProfileGateway = RepositoryStatusProfileGateway,
-    private val publisher: StatusPublisher = StatusPublisher(accountSession?.signer),
+    private val publisher: StatusPublisher = StatusPublisher(
+        signer = accountSession?.signer,
+        customEmojis = { accountSession?.customEmojis?.preferences?.value?.available.orEmpty() },
+    ),
     private val nowEpochSeconds: () -> Long = { Clock.System.now().epochSeconds },
 ) : SafeViewModel() {
     private val _state = MutableStateFlow(StatusState())

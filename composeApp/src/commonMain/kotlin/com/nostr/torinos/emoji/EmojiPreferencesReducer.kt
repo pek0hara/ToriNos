@@ -1,7 +1,5 @@
 package com.nostr.torinos.emoji
 
-import com.nostr.torinos.network.CustomEmoji
-
 internal const val MAX_RECENT_REACTIONS = 24
 
 /** 同一アドレスがあれば置き換え、なければ末尾に登録する。絵文字が1つもないセットは登録しない。 */

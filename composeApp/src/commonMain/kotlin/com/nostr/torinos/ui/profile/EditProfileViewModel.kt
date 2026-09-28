@@ -6,7 +6,6 @@ import com.nostr.torinos.emoji.customEmojiTagsForContent
 import com.nostr.torinos.account.AccountSession
 import com.nostr.torinos.ui.SafeViewModel
 import com.nostr.torinos.model.NostrProfile
-import com.nostr.torinos.network.CustomEmojiStore
 import com.nostr.torinos.network.ImageUploader
 import com.nostr.torinos.network.NostrRepository
 import com.nostr.torinos.network.ProfileFetchPolicy
@@ -126,22 +125,20 @@ class EditProfileViewModel(
                 if (s.nip05.isNotBlank()) put("nip05", s.nip05.trim())
             }
 
+            val emojiTags = customEmojiTagsForContent(
+                listOf(s.name, s.displayName).joinToString(" "),
+                accountSession.customEmojis.preferences.value.available,
+            )
             runCatching {
                 val event = signer.sign(
                     Json.encodeToString(contentJson),
                     kind = 0,
-                    tags = customEmojiTagsForContent(
-                        listOf(s.name, s.displayName).joinToString(" "),
-                        CustomEmojiStore.emojis.value,
-                    ),
+                    tags = emojiTags,
                 )
                 NostrRepository.publish(event)
                 event
             }.onSuccess {
-                val customEmojis = customEmojiTagsForContent(
-                    listOf(s.name, s.displayName).joinToString(" "),
-                    CustomEmojiStore.emojis.value,
-                ).customEmojiMap()
+                val customEmojis = emojiTags.customEmojiMap()
                 val savedProfile = NostrProfile(
                     name = s.name.trim().ifBlank { null },
                     displayName = s.displayName.trim().ifBlank { null },

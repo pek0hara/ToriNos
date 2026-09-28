@@ -1,8 +1,8 @@
 package com.nostr.torinos.ui.components
 
 import com.nostr.torinos.model.ReactionOption
-import com.nostr.torinos.network.CustomEmoji
-import com.nostr.torinos.network.RecentReaction
+import com.nostr.torinos.emoji.CustomEmoji
+import com.nostr.torinos.emoji.RecentReaction
 import kotlin.test.Test
 import kotlin.test.assertEquals
 
@@ -38,27 +38,12 @@ class EmojiPickerSheetTest {
     }
 
     @Test
-    fun recentUnregisteredCustomEmojiUsesSavedHistoryUrl() {
-        val recent = RecentReaction(
-            kind = RecentReaction.CustomKind,
-            value = "unregistered",
-            imageUrl = "https://example.com/unregistered.png",
-        )
+    fun recentReactionConvertsToAndFromReactionOption() {
+        val custom = ReactionOption.Custom("unregistered", "https://example.com/unregistered.png")
+        val unicode = ReactionOption.Unicode("🎉")
 
-        assertEquals(
-            ReactionOption.Custom(recent.value, recent.imageUrl),
-            recent.toReactionOption(emptyMap()),
-        )
-    }
-
-    @Test
-    fun legacyRecentCustomEmojiFallsBackToRegisteredEmoji() {
-        val emoji = CustomEmoji("bird", "https://example.com/bird.png")
-        val recent = RecentReaction(RecentReaction.CustomKind, emoji.shortcode)
-
-        assertEquals(
-            ReactionOption.Custom(emoji.shortcode, emoji.imageUrl),
-            recent.toReactionOption(mapOf(emoji.shortcode to emoji)),
-        )
+        assertEquals(RecentReaction.Custom(CustomEmoji(custom.shortcode, custom.imageUrl)), custom.toRecentReaction())
+        assertEquals(custom, custom.toRecentReaction().toReactionOption())
+        assertEquals(unicode, unicode.toRecentReaction().toReactionOption())
     }
 }

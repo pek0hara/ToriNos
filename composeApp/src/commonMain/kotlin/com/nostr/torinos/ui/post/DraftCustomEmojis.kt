@@ -1,6 +1,6 @@
 package com.nostr.torinos.ui.post
 
-import com.nostr.torinos.network.CustomEmoji
+import com.nostr.torinos.emoji.CustomEmoji
 import com.nostr.torinos.emoji.customEmojiTagsForContent
 
 /** Resolve newly typed codes once; retain the draft's URLs for existing codes. */
@@ -8,7 +8,7 @@ internal fun resolveDraftEmojis(
     text: String,
     retained: List<CustomEmoji>,
     registered: List<CustomEmoji>,
-): List<CustomEmoji> = customEmojiTagsForContent(text, registered + retained)
+): List<CustomEmoji> = customEmojiTagsForContent(text, retained + registered)
     .map { CustomEmoji(it[1], it[2]) }
 
 /** A shortcode must refer to only one image within the same event. */

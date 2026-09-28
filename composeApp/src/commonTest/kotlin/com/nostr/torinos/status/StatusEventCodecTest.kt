@@ -1,7 +1,7 @@
 package com.nostr.torinos.status
 
 import com.nostr.torinos.model.NostrEvent
-import com.nostr.torinos.network.CustomEmoji
+import com.nostr.torinos.emoji.CustomEmoji
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNull

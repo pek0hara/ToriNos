@@ -91,6 +91,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import com.nostr.torinos.account.LocalAccountSession
 import com.nostr.torinos.model.NostrEvent
 import com.nostr.torinos.model.NostrProfile
 import com.nostr.torinos.model.MediaMetadata
@@ -103,7 +104,6 @@ import com.nostr.torinos.model.stripNostrEventUris
 import com.nostr.torinos.model.parseImetaTags
 import com.nostr.torinos.model.parseNip94Event
 import com.nostr.torinos.model.timelinePreviewUrl
-import com.nostr.torinos.network.CustomEmojiStore
 import com.nostr.torinos.network.DisplayPreferencesStore
 import com.nostr.torinos.emoji.customEmojiMap
 import com.nostr.torinos.ui.profile.AvatarCircle
@@ -650,11 +650,12 @@ fun NoteCard(
     }
 
     if (showStandardEmojiPicker && !hasOwnReaction) {
+        val accountSession = LocalAccountSession.current
         StandardEmojiPickerSheet(
             onDismiss = { showStandardEmojiPicker = false },
             onSelect = { option ->
                 showStandardEmojiPicker = false
-                markReactionUsed(option)
+                accountSession.recordReactionUse(option)
                 onEmojiReact?.invoke(option)
             },
         )
@@ -1116,6 +1117,7 @@ internal fun ReactionSummaryRow(
         ?: (totalReactionCount - emojiReactionCount).coerceAtLeast(if (isLiked) 1 else 0)
     val hasOwnReaction = isLiked || ownEmojiReactionEventIds.isNotEmpty()
     var showQuickMenu by remember { mutableStateOf(false) }
+    val openCustomEmoji = LocalCustomEmojiNavigator.current
 
     Row(
         modifier = Modifier
@@ -1158,10 +1160,7 @@ internal fun ReactionSummaryRow(
                     }
                 } else null,
                 onLongClick = {
-                    CustomEmojiStore.requestOpenSearch(
-                        shortcode = reaction.shortcode,
-                        imageUrl = reaction.imageUrl,
-                    )
+                    openCustomEmoji(CustomEmojiOpenRequest.of(reaction.shortcode, reaction.imageUrl))
                 },
                 emoji = {
                     Box(
@@ -1343,12 +1342,11 @@ internal fun QuickReactionMenu(
     onSelect: (ReactionOption) -> Unit,
     onOpenStandardEmojiPicker: () -> Unit,
 ) {
-    val savedCustomEmojis by CustomEmojiStore.emojis.collectAsState()
-    val recentReactions by CustomEmojiStore.recentReactions.collectAsState()
-    val savedEmojiMap = remember(savedCustomEmojis) { savedCustomEmojis.associateBy { it.shortcode } }
-    val recentOptions = remember(recentReactions, savedEmojiMap) {
+    val accountSession = LocalAccountSession.current
+    val recentReactions = rememberEmojiPreferences().recent
+    val recentOptions = remember(recentReactions) {
         recentReactions
-            .mapNotNull { recent -> recent.toReactionOption(savedEmojiMap) }
+            .map { it.toReactionOption() }
             .distinctBy { it.key }
             .take(16)
     }
@@ -1384,7 +1382,7 @@ internal fun QuickReactionMenu(
                             option = option,
                             selected = option.key in selectedReactionKeys,
                             onClick = {
-                                markReactionUsed(option)
+                                accountSession.recordReactionUse(option)
                                 onSelect(option)
                             },
                         )
@@ -1445,13 +1443,6 @@ private fun ReactionPickerTile(
                 modifier = Modifier.size(26.dp),
             )
         }
-    }
-}
-
-private fun markReactionUsed(option: ReactionOption) {
-    when (option) {
-        is ReactionOption.Unicode -> CustomEmojiStore.markUnicodeUsed(option.value)
-        is ReactionOption.Custom -> CustomEmojiStore.markCustomReactionUsed(option.shortcode, option.imageUrl)
     }
 }
 
@@ -1784,7 +1775,7 @@ private fun CollapsibleNoteText(
 ) {
     var expanded by remember(text) { mutableStateOf(false) }
     var hasHiddenLines by remember(text) { mutableStateOf(false) }
-    val savedCustomEmojis by CustomEmojiStore.emojis.collectAsState()
+    val savedCustomEmojis = rememberEmojiPreferences().available
     val customEmojiShortcodes = remember(savedCustomEmojis, customEmojis) {
         buildSet {
             addAll(customEmojis.keys)

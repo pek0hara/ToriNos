@@ -1,5 +1,7 @@
 package com.nostr.torinos.ui.article
 
+import com.nostr.torinos.ui.components.recordReactionUse
+import com.nostr.torinos.account.LocalAccountSession
 import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.ExperimentalFoundationApi
@@ -48,7 +50,6 @@ import com.nostr.torinos.engagement.hasOwnReaction
 import com.nostr.torinos.engagement.isReactionPending
 import com.nostr.torinos.engagement.NoteEngagementState
 import com.nostr.torinos.model.ReactionOption
-import com.nostr.torinos.network.CustomEmojiStore
 import com.nostr.torinos.ui.components.NetworkImage
 import com.nostr.torinos.ui.components.QuickReactionMenu
 import com.nostr.torinos.ui.components.StandardEmojiPickerSheet
@@ -119,11 +120,12 @@ internal fun ArticleEngagementBar(
     }
 
     if (showStandardEmojiPicker && actions != null && reactions?.hasOwnReaction == false) {
+        val accountSession = LocalAccountSession.current
         StandardEmojiPickerSheet(
             onDismiss = { showStandardEmojiPicker = false },
             onSelect = { option ->
                 showStandardEmojiPicker = false
-                markReactionUsed(option)
+                accountSession.recordReactionUse(option)
                 actions.onReact(option)
             },
         )
@@ -223,13 +225,6 @@ private fun PillLabel(label: String, count: Int?) {
         color = MaterialTheme.colorScheme.onSurfaceVariant,
         maxLines = 1,
     )
-}
-
-private fun markReactionUsed(option: ReactionOption) {
-    when (option) {
-        is ReactionOption.Unicode -> CustomEmojiStore.markUnicodeUsed(option.value)
-        is ReactionOption.Custom -> CustomEmojiStore.markCustomReactionUsed(option.shortcode, option.imageUrl)
-    }
 }
 
 /** 下部バーの高さ（ナビゲーションバーの余白を除く）。本文の下余白の計算にも使う。 */

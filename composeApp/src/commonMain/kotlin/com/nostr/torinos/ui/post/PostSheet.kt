@@ -53,7 +53,7 @@ import com.nostr.torinos.ui.channel.ComposerRelayContext
 import com.nostr.torinos.model.ReplyTarget
 import com.nostr.torinos.account.accountSessionViewModel
 import com.nostr.torinos.model.encodeNevent
-import com.nostr.torinos.network.CustomEmoji
+import com.nostr.torinos.emoji.CustomEmoji
 import com.nostr.torinos.network.RelayPublishResult
 import com.nostr.torinos.network.RelayStore
 import com.nostr.torinos.ui.components.RelayMultiSelectDialog

@@ -1,6 +1,5 @@
 package com.nostr.torinos.emoji
 
-import com.nostr.torinos.network.CustomEmoji
 import com.nostr.torinos.network.LocalSettingsStorage
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.builtins.ListSerializer

@@ -64,8 +64,9 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.compose.ui.window.PopupProperties
 import com.nostr.torinos.model.ReactionOption
-import com.nostr.torinos.network.CustomEmoji
-import com.nostr.torinos.network.CustomEmojiStore
+import com.nostr.torinos.emoji.CustomEmoji
+import com.nostr.torinos.account.LocalAccountSession
+import com.nostr.torinos.ui.components.recordReactionUse
 import com.nostr.torinos.ui.components.PreviewImage
 import com.nostr.torinos.ui.components.StandardEmojiPickerSheet
 import com.nostr.torinos.ui.components.rememberDismissKeyboard
@@ -98,6 +99,7 @@ internal fun ColumnScope.ComposerBodyEditor(
     extraMessages: @Composable () -> Unit = {},
 ) {
     var textValue by remember { mutableStateOf(TextFieldValue(state.text)) }
+    val accountSession = LocalAccountSession.current
     var showCustomEmojiPicker by remember { mutableStateOf(false) }
     var showImageSourceMenu by remember { mutableStateOf(false) }
     var expandedImageData by remember { mutableStateOf<Any?>(null) }
@@ -126,13 +128,7 @@ internal fun ColumnScope.ComposerBodyEditor(
             text = newText,
             selection = TextRange(cursor),
         )
-        when (option) {
-            is ReactionOption.Unicode -> CustomEmojiStore.markUnicodeUsed(option.value)
-            is ReactionOption.Custom -> CustomEmojiStore.markCustomReactionUsed(
-                option.shortcode,
-                option.imageUrl,
-            )
-        }
+        accountSession.recordReactionUse(option)
         if (customEmoji != null) {
             onCustomEmojiInserted(newText, customEmoji)
         } else {

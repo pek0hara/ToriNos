@@ -3,7 +3,7 @@ package com.nostr.torinos.model
 import com.nostr.torinos.emoji.normalizeShortcode
 import com.nostr.torinos.emoji.parseEmojiTag
 import com.nostr.torinos.emoji.toEmojiTag
-import com.nostr.torinos.network.CustomEmoji
+import com.nostr.torinos.emoji.CustomEmoji
 
 data class CustomReaction(
     val shortcode: String,

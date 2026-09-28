@@ -58,7 +58,10 @@ class MyProfileViewModel(
     private var generalStatusSnapshot = StatusSnapshot()
     private var hasPublishedRelayList = false
     private val linkedProfilePubkeys = linkedSetOf<String>()
-    private val statusPublisher = StatusPublisher(accountSession?.signer)
+    private val statusPublisher = StatusPublisher(
+        signer = accountSession?.signer,
+        customEmojis = { accountSession?.customEmojis?.preferences?.value?.available.orEmpty() },
+    )
 
     init {
         start()
