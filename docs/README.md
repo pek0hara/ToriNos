@@ -35,6 +35,10 @@
 
 `site/`にはGitHub Pagesで公開するHTMLとスタイルを置く。
 
+## リリース
+
+- [`ios-release.md`](./ios-release.md) — コマンドからiOSのReleaseビルドを作成し、TestFlightへアップロードする手順
+
 ## 管理方針
 
 - 現在の実装と異なる記述を見つけた場合は、実装変更と同じ変更セットで更新する。

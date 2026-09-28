@@ -28,8 +28,8 @@ android {
         applicationId = "com.nostr.torinos"
         minSdk = libs.versions.android.minSdk.get().toInt()
         targetSdk = libs.versions.android.targetSdk.get().toInt()
-        versionCode = 15
-        versionName = "1.0.9"
+        versionCode = 16
+        versionName = "1.1.0"
     }
 
     val releaseStoreFile = signingProperty("TORINOS_RELEASE_STORE_FILE")
