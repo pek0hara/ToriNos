@@ -37,6 +37,7 @@ data class ImageAttachment(
 data class PostState(
     val text: String = "",
     val customEmojis: List<CustomEmoji> = emptyList(),
+    val hasContentWarning: Boolean = false,
     val isPosting: Boolean = false,
     val isSavingMemo: Boolean = false,
     val isLoadingMemo: Boolean = false,
@@ -74,6 +75,7 @@ internal val memoJson = Json {
 internal data class PostMemoPayload(
     val text: String = "",
     val customEmojis: List<CustomEmoji> = emptyList(),
+    val hasContentWarning: Boolean = false,
     val imageUrls: List<String> = emptyList(),
     val imageMetadata: List<MediaMetadata> = emptyList(),
     val replyToId: String? = null,
@@ -116,6 +118,7 @@ data class PostMemoData(
     val replyParentPubkeyRelayUrl: String? = null,
     val replyRootAddress: String? = null,
     val replyParentAddress: String? = null,
+    val hasContentWarning: Boolean = false,
 )
 
 internal fun PostMemoPayload.toPostMemoData(
@@ -126,6 +129,7 @@ internal fun PostMemoPayload.toPostMemoData(
     PostMemoData(
         text = text,
         customEmojis = customEmojis,
+        hasContentWarning = hasContentWarning,
         imageUrls = imageUrls,
         imageMetadata = imageMetadata,
         replyToId = replyToId,
@@ -205,6 +209,21 @@ class PostViewModel(
     fun onTextChange(text: String) = updateText(text)
 
     fun onCustomEmojiInserted(text: String, emoji: CustomEmoji) = updateText(text, emoji)
+
+    fun onContentWarningChange(enabled: Boolean) {
+        _state.update {
+            it.copy(
+                hasContentWarning = enabled,
+                error = null,
+                memoMessage = null,
+                posted = false,
+                postedEventId = null,
+                publishResult = null,
+                postWarning = null,
+                draftDeleted = false,
+            )
+        }
+    }
 
     private fun updateText(text: String, selectedEmoji: CustomEmoji? = null) {
         _state.value = _state.value.copy(
@@ -307,6 +326,7 @@ class PostViewModel(
         _state.value = PostState(
             text = memo.text,
             customEmojis = resolveDraftEmojis(memo.text, memo.customEmojis, CustomEmojiStore.emojis.value),
+            hasContentWarning = memo.hasContentWarning,
             images = restoredImages,
             memoMessage = message,
         )
@@ -322,6 +342,7 @@ class PostViewModel(
         return PostMemoData(
             text = current.text,
             customEmojis = current.customEmojis,
+            hasContentWarning = current.hasContentWarning,
             imageUrls = uploadedUrls,
             imageMetadata = current.images.mapNotNull { attachment ->
                 attachment.mediaMetadata?.takeIf { metadata ->
@@ -373,6 +394,7 @@ class PostViewModel(
             val memo = PostMemoPayload(
                 text = current.text,
                 customEmojis = current.customEmojis,
+                hasContentWarning = current.hasContentWarning,
                 imageUrls = uploadedUrls,
                 imageMetadata = current.images.mapNotNull { attachment ->
                     attachment.mediaMetadata?.takeIf { metadata ->
@@ -459,6 +481,7 @@ class PostViewModel(
             val tags = buildList {
                 addAll(replyTarget?.tags().orEmpty())
                 addAll(composed.tags)
+                addAll(contentWarningTags(current.hasContentWarning))
                 add(listOf("client", "ToriNos"))
             }
 
@@ -552,6 +575,9 @@ internal fun nextMemoUpdatedAt(now: Long, previousUpdatedAt: Long?): Long =
         previousUpdatedAt == Long.MAX_VALUE -> Long.MAX_VALUE
         else -> previousUpdatedAt + 1
     }
+
+internal fun contentWarningTags(enabled: Boolean): List<List<String>> =
+    if (enabled) listOf(listOf("content-warning")) else emptyList()
 
 internal fun imetaTagsForAttachments(
     content: String,

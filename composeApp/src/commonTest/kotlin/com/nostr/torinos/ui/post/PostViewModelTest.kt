@@ -52,10 +52,17 @@ class PostViewModelTest {
     fun resetClearsPreviousComposerContent() {
         val viewModel = PostViewModel()
         viewModel.onTextChange("編集中の内容")
+        viewModel.onContentWarningChange(true)
 
         viewModel.reset()
 
         assertEquals(PostState(), viewModel.state.value)
+    }
+
+    @Test
+    fun contentWarningUsesTheNip36Tag() {
+        assertEquals(listOf(listOf("content-warning")), contentWarningTags(true))
+        assertEquals(emptyList(), contentWarningTags(false))
     }
 
     @Test
@@ -133,6 +140,7 @@ class PostViewModelTest {
         )
         val payload = PostMemoPayload(
             text = "draft",
+            hasContentWarning = true,
             imageUrls = listOf(metadata.url),
             imageMetadata = listOf(metadata),
             updatedAt = 10,
@@ -144,6 +152,8 @@ class PostViewModelTest {
         viewModel.restoreMemo(restored)
 
         assertEquals(listOf(metadata), restored.imageMetadata)
+        assertTrue(restored.hasContentWarning)
+        assertTrue(viewModel.state.value.hasContentWarning)
         assertEquals(
             listOf(
                 listOf(

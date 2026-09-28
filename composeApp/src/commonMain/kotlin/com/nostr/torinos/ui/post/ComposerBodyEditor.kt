@@ -28,6 +28,8 @@ import androidx.compose.material.icons.filled.ContentPaste
 import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.InsertEmoticon
 import androidx.compose.material.icons.filled.Public
+import androidx.compose.material.icons.filled.Warning
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -87,6 +89,7 @@ internal fun ColumnScope.ComposerBodyEditor(
     onPasteImage: () -> Unit,
     onOpenRelaySettings: (() -> Unit)?,
     onOpenCustomEmojiSettings: (() -> Unit)?,
+    onContentWarningChange: ((Boolean) -> Unit)? = null,
     onTextChange: (String) -> Unit,
     onCustomEmojiInserted: (String, CustomEmoji) -> Unit,
     textFocusRequester: FocusRequester,
@@ -334,6 +337,34 @@ internal fun ColumnScope.ComposerBodyEditor(
                     )
                     Spacer(modifier = Modifier.size(3.dp))
                     Text("リレー", maxLines = 1, style = MaterialTheme.typography.labelSmall)
+                }
+            }
+            if (onContentWarningChange != null) {
+                TextButton(
+                    onClick = {
+                        dismissKeyboard()
+                        onContentWarningChange(!state.hasContentWarning)
+                    },
+                    colors = ButtonDefaults.textButtonColors(
+                        contentColor = if (state.hasContentWarning) {
+                            MaterialTheme.colorScheme.error
+                        } else {
+                            MaterialTheme.colorScheme.primary
+                        },
+                    ),
+                    contentPadding = PaddingValues(horizontal = 4.dp),
+                ) {
+                    Icon(
+                        Icons.Default.Warning,
+                        contentDescription = null,
+                        modifier = Modifier.size(16.dp),
+                    )
+                    Spacer(modifier = Modifier.size(3.dp))
+                    Text(
+                        if (state.hasContentWarning) "閲覧注意 ON" else "閲覧注意",
+                        maxLines = 1,
+                        style = MaterialTheme.typography.labelSmall,
+                    )
                 }
             }
             Spacer(modifier = Modifier.weight(1f))
