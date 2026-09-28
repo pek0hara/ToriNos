@@ -189,10 +189,11 @@ val wasmJsMain by getting {
 - **秘密鍵の入力欄**: Compose の入力欄はブラウザの入力要素を持たないため、スマホで長押しの貼り付けが出ない。
   貼り付けに使う Clipboard API も http の LAN 内では使えない。Web 版だけ `HtmlElementView` でブラウザの `<input type="password">` を使う（`PrivateKeyInputField`）。
   同じ理由で、nsec のコピーは Clipboard API が無いとき `execCommand('copy')` で代替する。
-- **iOS Safari のキーボード**: Compose は入力欄の裏の隠し textarea へ focus() してキーボードを出すが、iOS Safari はタップ中の focus() でしかキーボードを出さない。
-  投稿画面のように開いた時点で自動フォーカスする入力欄は、textarea にフォーカスがあるのにキーボードが出ず、Compose は入力中の textarea へ focus() し直さないため、タップしても出ないままになる。
-  iOS に限り、touchend でタップ位置がアクセシビリティ DOM の `role="textbox"` に当たり、キーボードが出ていなければ、textarea を blur → focus し直す（`SoftwareKeyboardBridge.kt`）。
-  通常の入力欄（検索など）は Compose が pointerup 中に同期で focus() するため、この処理は不要で動かない。
+- **iOS Safari のキーボード**: Compose 1.12 は入力欄のタップ中に隠し textarea へ focus() した後、次のフレームでも無条件に focus() する。
+  iOS Safari 27 以降は後の focus 要求が先の要求を置き換え、タップ外の要求ではキーボードを出さないため、Compose の入力欄はすべてキーボードが出ない。
+  Compose 側は compose-multiplatform-core #3446（2026-09-25、未リリース）で直っているので、同じく「フォーカス済みの要素への focus() を呼ばない」処理を起動時に入れた（`RedundantFocusGuard.kt`）。#3446 を含む版へ上げたら削除する。
+  タップ外で自動フォーカスした入力欄はキーボードが出ないため、Web 版の投稿画面は自動フォーカスしない。自動フォーカスする入力欄（ステータス）は、タップ前からフォーカスがあってキーボードが出ていなければ touchend 中に focus し直す（`SoftwareKeyboardBridge.kt`）。
+  投稿本文をブラウザの textarea に置き換える案は、HTML 要素が Compose の描画より前面に出てダイアログやシートを隠すため採らない。
 - **iOS の修正**: ベクタテストで、iOS の `sha256(ByteArray(0))` が範囲外アクセスで落ちることが分かったので直した（アプリ内に空データをハッシュする経路は無かった）。
 
 ### 8.2 検証

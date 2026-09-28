@@ -1,6 +1,7 @@
 package com.nostr.torinos
 
 import androidx.compose.runtime.Composable
+import com.nostr.torinos.crypto.isWebPlatform
 import com.nostr.torinos.model.NoteContext
 import com.nostr.torinos.network.RelayPublishResult
 import com.nostr.torinos.ui.post.PostSheet
@@ -31,7 +32,9 @@ internal fun ComposerHost(
             } else {
                 null
             },
-            autoFocus = coordinator.replyTarget == null &&
+            // iOS Safari はタップ中の focus でしかキーボードを出さないため、Web では自動フォーカスせずタップに任せる。
+            autoFocus = !isWebPlatform &&
+                coordinator.replyTarget == null &&
                 coordinator.quoteToId == null,
             preserveLocalDraftOnNavigation = true,
             onOpenCustomEmojiSettings = { draft ->

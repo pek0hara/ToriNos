@@ -9,8 +9,10 @@ package com.nostr.torinos.ui.components
  * さらに Compose は入力中の textarea へ focus() し直さないので、その後タップしても出ないままになる。
  *
  * そこで touchend の時点で、タップ位置が Compose のアクセシビリティ DOM 上の入力欄(role="textbox")で、
- * Compose の textarea にフォーカスがあるのにキーボードが出ていなければ、タップ中に focus し直す。
+ * タップ前からフォーカスがあるのにキーボードが出ていなければ、タップ中に focus し直す。
+ * タップで新しくフォーカスした入力欄は Compose がタップ中に focus() するため、ここでは触らない。
  * Compose は textarea の blur を監視していないため、状態は変わらない。
+ * 次フレームの focus() が上書きしないよう、[installRedundantFocusGuard] と併せて使う。
  */
 internal fun installSoftwareKeyboardBridge() {
     installSoftwareKeyboardBridgeJs(TAP_SLOP_PX, KEYBOARD_MIN_HEIGHT_PX)
@@ -37,11 +39,17 @@ private fun installSoftwareKeyboardBridgeJs(tapSlop: Int, keyboardMinHeight: Int
                 return el;
             };
             const isTextboxAt = (x, y) => {
-                for (const host of document.querySelectorAll('*')) {
-                    if (!host.shadowRoot) continue;
-                    for (const box of host.shadowRoot.querySelectorAll('[role="textbox"]')) {
+                // Compose は Dialog / BottomSheet ごとに Semantics の Shadow Root を入れ子にすることがある。
+                // document 直下の Shadow Root だけでなく、すべての階層を辿って入力欄を探す。
+                const roots = [document];
+                for (let index = 0; index < roots.length; index += 1) {
+                    const root = roots[index];
+                    for (const box of root.querySelectorAll('[role="textbox"]')) {
                         const r = box.getBoundingClientRect();
                         if (x >= r.left && x <= r.right && y >= r.top && y <= r.bottom) return true;
+                    }
+                    for (const host of root.querySelectorAll('*')) {
+                        if (host.shadowRoot) roots.push(host.shadowRoot);
                     }
                 }
                 return false;
@@ -53,7 +61,7 @@ private fun installSoftwareKeyboardBridgeJs(tapSlop: Int, keyboardMinHeight: Int
             let start = null;
             document.addEventListener('touchstart', (e) => {
                 const t = e.touches[0];
-                start = e.touches.length === 1 && t ? { x: t.clientX, y: t.clientY } : null;
+                start = e.touches.length === 1 && t ? { x: t.clientX, y: t.clientY, active: deepActiveElement() } : null;
             }, { capture: true, passive: true });
 
             document.addEventListener('touchend', (e) => {
@@ -65,11 +73,11 @@ private fun installSoftwareKeyboardBridgeJs(tapSlop: Int, keyboardMinHeight: Int
                 // ブラウザ標準の入力欄(秘密鍵の入力欄など)はブラウザに任せる。
                 if (isTextInput(e.composedPath()[0])) return;
                 const active = deepActiveElement();
-                if (!isTextInput(active) || isKeyboardVisible()) return;
+                if (!isTextInput(active) || active !== from.active || isKeyboardVisible()) return;
                 if (!isTextboxAt(t.clientX, t.clientY)) return;
                 active.blur();
                 active.focus({ preventScroll: true });
-            }, { capture: true, passive: true });
+            }, { capture: false, passive: true });
         })()
         """,
     )
