@@ -94,6 +94,9 @@ kotlin {
                 // kotlinx-datetime の JS 実装は名前付きタイムゾーンの DB を同梱しない。
                 // kotlinx-datetime が使う @js-joda/core 3.x と組み合わせられる版に固定する。
                 implementation(npm("@js-joda/timezone", "2.3.0"))
+                // secp256k1 と SHA-256。secp256k1-kmp は JS / Wasm 版を配布していないため、Web はこちらを使う。
+                implementation(npm("@noble/curves", "2.4.0"))
+                implementation(npm("@noble/hashes", "2.4.0"))
             }
         }
         commonMain.dependencies {
