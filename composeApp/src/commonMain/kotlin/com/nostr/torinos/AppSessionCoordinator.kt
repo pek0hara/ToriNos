@@ -498,9 +498,10 @@ internal fun AppSessionCoordinator(
             },
         )
 
-        CompositionLocalProvider(
-            // カスタム絵文字タップ → 絵文字設定画面（対象絵文字付き）へ遷移
-            LocalCustomEmojiNavigator provides { request: CustomEmojiOpenRequest ->
+        // カスタム絵文字タップ → 絵文字設定画面（対象絵文字付き）へ遷移。
+        // 読み手（本文・リアクション）が多いので、再コンポーズのたびに値を変えない。
+        val openCustomEmoji = remember(nav) {
+            { request: CustomEmojiOpenRequest ->
                 nav.navigate(
                     CustomEmojiRoute(
                         query = request.shortcode,
@@ -508,7 +509,10 @@ internal fun AppSessionCoordinator(
                         setAddress = request.setAddress?.value.orEmpty(),
                     ),
                 )
-            },
+            }
+        }
+        CompositionLocalProvider(
+            LocalCustomEmojiNavigator provides openCustomEmoji,
             LocalQuotePostHandler provides { event: NostrEvent ->
                 cancelPendingReplyResolution()
                 composer.prepareQuote(event)
