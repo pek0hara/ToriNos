@@ -1,5 +1,6 @@
 package com.nostr.torinos.model
 
+import com.nostr.torinos.emoji.customEmojiMap
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
@@ -31,12 +32,3 @@ fun NostrEvent.toProfile(): NostrProfile? = try {
     null
 }
 
-private fun List<List<String>>.customEmojiMap(): Map<String, String> =
-    mapNotNull { tag ->
-        if (tag.firstOrNull() != "emoji") return@mapNotNull null
-        val shortcode = tag.getOrNull(1)?.trim()?.trim(':')?.takeIf { it.isNotBlank() }
-            ?: return@mapNotNull null
-        val imageUrl = tag.getOrNull(2)?.trim()?.takeIf { it.isNotBlank() }
-            ?: return@mapNotNull null
-        shortcode to imageUrl
-    }.toMap()

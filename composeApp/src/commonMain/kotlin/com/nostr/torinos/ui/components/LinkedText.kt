@@ -1,5 +1,6 @@
 package com.nostr.torinos.ui.components
 
+import com.nostr.torinos.emoji.CustomEmojiCodeRegex
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.text.InlineTextContent
@@ -32,7 +33,6 @@ import com.nostr.torinos.network.CustomEmojiStore
 import kotlin.math.roundToInt
 
 private val hashtagTextRegex = Regex("""(?<![\p{L}\p{N}_])#[\p{L}\p{N}_]+""")
-private val emojiCodeRegex = Regex(""":([a-zA-Z0-9_-]+):""")
 
 /** テキスト内のURLをクリッカブルリンクにして表示する。登録済みカスタム絵文字(:shortcode:)はインライン画像に置換する */
 @Composable
@@ -93,7 +93,7 @@ fun LinkedText(
 
     val emojiSegments = remember(text, emojiMap) {
         if (emojiMap.isEmpty()) return@remember emptyList()
-        emojiCodeRegex.findAll(text)
+        CustomEmojiCodeRegex.findAll(text)
             .mapNotNull { match ->
                 val shortcode = match.groupValues[1]
                 val imageUrl = emojiMap[shortcode] ?: return@mapNotNull null
@@ -103,7 +103,7 @@ fun LinkedText(
     }
 
     val unregisteredEmojiSegments = remember(text, emojiMap) {
-        emojiCodeRegex.findAll(text)
+        CustomEmojiCodeRegex.findAll(text)
             .filter { match -> match.groupValues[1] !in emojiMap }
             .map { match ->
                 UnregisteredEmojiSegment(match.range.first, match.range.last + 1, match.groupValues[1])

@@ -1,5 +1,6 @@
 package com.nostr.torinos.engagement
 
+import com.nostr.torinos.emoji.normalizeShortcode
 import com.nostr.torinos.model.CustomReaction
 import com.nostr.torinos.model.ReactionOption
 import com.nostr.torinos.model.UnicodeReaction
@@ -208,7 +209,7 @@ object EngagementReducer {
             is ReactionOption.Custom -> copy(
                 customReactions = if (delta > 0) {
                     customReactions.incrementedWith(
-                        CustomReaction(option.shortcode.trim().trim(':'), option.imageUrl.trim()),
+                        CustomReaction(normalizeShortcode(option.shortcode), option.imageUrl.trim()),
                     )
                 } else {
                     customReactions.decrementedWith(option)
@@ -226,7 +227,7 @@ object EngagementReducer {
 
     private fun NoteEngagementState.emojiCount(option: ReactionOption): Int = when (option) {
         is ReactionOption.Custom -> customReactions.firstOrNull {
-            it.shortcode == option.shortcode.trim().trim(':') && it.imageUrl == option.imageUrl.trim()
+            it.shortcode == normalizeShortcode(option.shortcode) && it.imageUrl == option.imageUrl.trim()
         }?.count ?: 0
         is ReactionOption.Unicode -> unicodeReactions.firstOrNull {
             it.content == option.value.trim()

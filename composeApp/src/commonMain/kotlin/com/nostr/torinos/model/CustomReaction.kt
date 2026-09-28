@@ -1,5 +1,10 @@
 package com.nostr.torinos.model
 
+import com.nostr.torinos.emoji.normalizeShortcode
+import com.nostr.torinos.emoji.parseEmojiTag
+import com.nostr.torinos.emoji.toEmojiTag
+import com.nostr.torinos.network.CustomEmoji
+
 data class CustomReaction(
     val shortcode: String,
     val imageUrl: String,
@@ -27,20 +32,20 @@ sealed interface ReactionOption {
         val imageUrl: String,
     ) : ReactionOption {
         override val key: String = customReactionKey(shortcode, imageUrl)
-        override val eventContent: String = ":${shortcode.trim().trim(':')}:"
+        override val eventContent: String = ":${normalizeShortcode(shortcode)}:"
     }
 }
 
 fun unicodeReactionKey(value: String): String = "unicode:${value.trim()}"
 
 fun customReactionKey(shortcode: String, imageUrl: String): String =
-    "custom:${shortcode.trim().trim(':')}:${imageUrl.trim()}"
+    "custom:${normalizeShortcode(shortcode)}:${imageUrl.trim()}"
 
 fun ReactionOption.eventTags(eventId: String, eventPubkey: String): List<List<String>> = buildList {
     add(listOf("e", eventId))
     add(listOf("p", eventPubkey))
     if (this@eventTags is ReactionOption.Custom) {
-        add(listOf("emoji", shortcode.trim().trim(':'), imageUrl.trim()))
+        add(CustomEmoji(shortcode, imageUrl).toEmojiTag())
     }
 }
 
@@ -50,18 +55,12 @@ fun NostrEvent.toReactionOption(): ReactionOption? =
 
 fun NostrEvent.toCustomReaction(): CustomReaction? {
     if (kind != 7) return null
-    val shortcode = content.trim().removeSurrounding(":").takeIf {
-        content.trim() == ":$it:" && it.isNotBlank()
-    } ?: return null
-    val emojiTag = tags.firstOrNull { tag ->
-        tag.firstOrNull() == "emoji" &&
-            tag.getOrNull(1)?.trim()?.trim(':') == shortcode &&
-            !tag.getOrNull(2).isNullOrBlank()
-    } ?: return null
-    return CustomReaction(
-        shortcode = shortcode,
-        imageUrl = emojiTag[2].trim(),
-    )
+    val value = content.trim()
+    if (value.length < 3 || !value.startsWith(":") || !value.endsWith(":")) return null
+    val shortcode = value.substring(1, value.length - 1).takeIf { it.isNotBlank() && ':' !in it } ?: return null
+    val emoji = tags.firstNotNullOfOrNull { tag -> parseEmojiTag(tag)?.takeIf { it.shortcode == shortcode } }
+        ?: return null
+    return CustomReaction(shortcode = shortcode, imageUrl = emoji.imageUrl)
 }
 
 fun List<CustomReaction>.incrementedWith(reaction: CustomReaction): List<CustomReaction> {
@@ -77,7 +76,7 @@ fun List<CustomReaction>.incrementedWith(reaction: CustomReaction): List<CustomR
 fun List<CustomReaction>.decrementedWith(reaction: ReactionOption.Custom): List<CustomReaction> =
     mapNotNull { current ->
         if (
-            current.shortcode == reaction.shortcode.trim().trim(':') &&
+            current.shortcode == normalizeShortcode(reaction.shortcode) &&
             current.imageUrl == reaction.imageUrl.trim()
         ) {
             current.copy(count = current.count - 1).takeIf { it.count > 0 }

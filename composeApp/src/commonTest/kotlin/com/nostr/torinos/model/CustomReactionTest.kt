@@ -32,6 +32,18 @@ class CustomReactionTest {
     }
 
     @Test
+    fun parsesHyphenatedShortcodeAndRejectsNestedColons() {
+        val tags = listOf(listOf("emoji", "blob-cat", "https://example.com/blob.webp"))
+
+        assertEquals(
+            CustomReaction("blob-cat", "https://example.com/blob.webp"),
+            reactionEvent(content = " :blob-cat: ", tags = tags).toCustomReaction(),
+        )
+        assertNull(reactionEvent(content = "::blob-cat::", tags = tags).toCustomReaction())
+        assertNull(reactionEvent(content = "::", tags = tags).toCustomReaction())
+    }
+
+    @Test
     fun aggregatesSameCustomReaction() {
         val reaction = CustomReaction("torinos", "https://example.com/torinos.webp")
 

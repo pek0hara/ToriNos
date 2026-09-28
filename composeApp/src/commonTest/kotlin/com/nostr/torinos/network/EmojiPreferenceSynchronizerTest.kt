@@ -1,5 +1,6 @@
 package com.nostr.torinos.network
 
+import com.nostr.torinos.emoji.EmojiSetAddress
 import kotlin.test.Test
 import kotlin.test.assertEquals
 
@@ -19,12 +20,12 @@ class EmojiPreferenceSynchronizerTest {
             listOf(CustomEmoji("blobcat", "https://example.com/blobcat.png")),
             result.emojis,
         )
-        assertEquals(listOf("30030:${"a".repeat(64)}:cats"), result.setReferences)
+        assertEquals(listOf(EmojiSetAddress("a".repeat(64), "cats")), result.setReferences)
     }
 
     @Test
     fun replacesEmojiPreferencesWhilePreservingUnknownTags() {
-        val reference = "30030:${"c".repeat(64)}:animals"
+        val reference = EmojiSetAddress("c".repeat(64), "animals")
         val tags = buildEmojiPreferenceTags(
             previousTags = listOf(
                 listOf("client", "another-client"),
@@ -39,7 +40,7 @@ class EmojiPreferenceSynchronizerTest {
             listOf(
                 listOf("client", "another-client"),
                 listOf("emoji", "new", "https://example.com/new.png"),
-                listOf("a", reference),
+                listOf("a", reference.value),
             ),
             tags,
         )
@@ -55,6 +56,6 @@ class EmojiPreferenceSynchronizerTest {
             authorPubkey = author,
         )
 
-        assertEquals("30030:$author:cats", list.toEmojiSetReference())
+        assertEquals(EmojiSetAddress(author, "cats"), list.setAddress())
     }
 }

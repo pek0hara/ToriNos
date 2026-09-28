@@ -1,8 +1,9 @@
 package com.nostr.torinos.ui.components
 
+import com.nostr.torinos.emoji.CustomEmojiCodeRegex
+
 private val webUrlRegex = Regex("""https?://\S+""")
 private val spotifySearchUriRegex = Regex("""spotify:search:[^\r\n]+""")
-private val customEmojiCodeRegex = Regex(""":([a-zA-Z0-9_-]+):""")
 
 data class ExtractedWebUrl(
     val url: String,
@@ -91,7 +92,7 @@ fun countTextWithCustomEmojis(
 
     var count = 0
     var cursor = 0
-    customEmojiCodeRegex.findAll(text).forEach { match ->
+    CustomEmojiCodeRegex.findAll(text).forEach { match ->
         val shortcode = match.groupValues[1]
         if (shortcode !in customEmojiShortcodes) return@forEach
 
@@ -129,7 +130,7 @@ private fun findRawEndForCustomEmojiLength(
 
     var count = 0
     var cursor = 0
-    customEmojiCodeRegex.findAll(text).forEach { match ->
+    CustomEmojiCodeRegex.findAll(text).forEach { match ->
         val shortcode = match.groupValues[1]
         if (shortcode !in customEmojiShortcodes) return@forEach
 

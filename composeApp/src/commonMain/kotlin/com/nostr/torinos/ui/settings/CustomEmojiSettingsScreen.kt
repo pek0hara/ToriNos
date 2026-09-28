@@ -64,6 +64,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.nostr.torinos.network.CustomEmoji
 import com.nostr.torinos.network.CustomEmojiList
 import com.nostr.torinos.network.CustomEmojiStore
+import com.nostr.torinos.network.setAddress
 import com.nostr.torinos.network.ProfileFetchPolicy
 import com.nostr.torinos.network.ProfileRepository
 import com.nostr.torinos.ui.components.NetworkImage
@@ -190,7 +191,7 @@ fun CustomEmojiSettingsScreen(
         EmojiSetDetailScreen(
             title = set.name,
             emojis = set.emojis,
-            authorPubkey = set.authorPubkey.ifBlank { set.id.emojiSetAuthorPubkey().orEmpty() },
+            authorPubkey = set.authorPubkey.ifBlank { set.setAddress()?.author.orEmpty() },
             initialShortcode = initialQuery,
             initialImageUrl = initialImageUrl,
             isRegistered = true,
@@ -813,11 +814,6 @@ internal fun selectInitialEmoji(
         emoji.shortcode == shortcode
     } ?: emojis.firstOrNull()
 }
-
-private fun String.emojiSetAuthorPubkey(): String? =
-    substringBefore(':').takeIf { candidate ->
-        candidate.length == 64 && candidate.all { it.isDigit() || it.lowercaseChar() in 'a'..'f' }
-    }
 
 private const val AuthorProfileMaxAgeMillis = 60L * 60L * 1_000L
 

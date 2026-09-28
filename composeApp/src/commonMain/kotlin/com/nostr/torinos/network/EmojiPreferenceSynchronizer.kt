@@ -1,6 +1,9 @@
 package com.nostr.torinos.network
 
 import com.nostr.torinos.account.AccountSession
+import com.nostr.torinos.emoji.EmojiSetAddress
+import com.nostr.torinos.emoji.emojiTags
+import com.nostr.torinos.emoji.toEmojiTag
 import com.nostr.torinos.model.NostrEvent
 import com.nostr.torinos.model.NostrFilter
 import com.nostr.torinos.util.appLog
@@ -30,7 +33,7 @@ class EmojiPreferenceSynchronizer internal constructor(
     private var pendingSnapshot: EmojiPreferenceSnapshot? = null
     private var generation = 0L
     private var latestEvent: NostrEvent? = null
-    private var unresolvedSetReferences: Set<String> = emptySet()
+    private var unresolvedSetReferences: Set<EmojiSetAddress> = emptySet()
     private var started = false
 
     internal fun start() {
@@ -93,11 +96,11 @@ class EmojiPreferenceSynchronizer internal constructor(
 
         val parsed = parseEmojiPreferenceTags(selected.tags)
         val localLists = CustomEmojiStore.emojiLists.value.mapNotNull { list ->
-            list.toEmojiSetReference()?.let { it to list }
+            list.setAddress()?.let { it to list }
         }.toMap()
         val loadedLists = fetchReferencedEmojiSets(parsed.setReferences)
         val listsById = loadedLists.mapNotNull { list ->
-            list.toEmojiSetReference()?.let { it to list }
+            list.setAddress()?.let { it to list }
         }.toMap()
         unresolvedSetReferences = parsed.setReferences.filterNot { it in listsById }.toSet()
         val resolvedLists = parsed.setReferences.mapNotNull { reference ->
@@ -110,9 +113,9 @@ class EmojiPreferenceSynchronizer internal constructor(
         session.ensureActive()
         val favorites = snapshot.favorites
         val lists = snapshot.lists
-        val references = lists.mapNotNull(CustomEmojiList::toEmojiSetReference).toSet() + unresolvedSetReferences
+        val references = lists.mapNotNull(CustomEmojiList::setAddress).toSet() + unresolvedSetReferences
         val inlineEmojis = favorites + lists
-            .filter { it.toEmojiSetReference() == null }
+            .filter { it.setAddress() == null }
             .flatMap { it.emojis }
         val tags = buildEmojiPreferenceTags(
             previousTags = latestEvent?.tags.orEmpty(),
@@ -180,17 +183,16 @@ class EmojiPreferenceSynchronizer internal constructor(
         }
     }
 
-    private suspend fun fetchReferencedEmojiSets(references: List<String>): List<CustomEmojiList> {
-        val addresses = references.mapNotNull(::parseEmojiSetReference)
+    private suspend fun fetchReferencedEmojiSets(addresses: List<EmojiSetAddress>): List<CustomEmojiList> {
         if (addresses.isEmpty()) return emptyList()
         val subId = "emoji-set-refs-${session.sessionId.takeLast(12)}-${generation++}"
         val mutex = Mutex()
-        val latest = mutableMapOf<String, NostrEvent>()
-        val expected = addresses.associateBy { it.reference }
+        val latest = mutableMapOf<EmojiSetAddress, NostrEvent>()
+        val expected = addresses.toSet()
         val collector = scope.launch {
             NostrRepository.events(subId).collect { event ->
                 val identifier = event.tags.firstOrNull { it.firstOrNull() == "d" }?.getOrNull(1) ?: return@collect
-                val reference = "$KIND_EMOJI_SET:${event.pubkey}:$identifier"
+                val reference = EmojiSetAddress.of(event.pubkey, identifier) ?: return@collect
                 if (event.kind != KIND_EMOJI_SET || reference !in expected) return@collect
                 mutex.withLock {
                     val current = latest[reference]
@@ -222,18 +224,13 @@ class EmojiPreferenceSynchronizer internal constructor(
         CustomEmojiStore.deactivateAccount(session.pubkey)
     }
 
-    private fun NostrEvent.toCustomEmojiList(reference: String): CustomEmojiList? {
+    private fun NostrEvent.toCustomEmojiList(reference: EmojiSetAddress): CustomEmojiList? {
         val identifier = tags.firstOrNull { it.firstOrNull() == "d" }?.getOrNull(1) ?: return null
         val title = tags.firstOrNull { it.firstOrNull() == "title" }?.getOrNull(1)?.trim()
             ?.takeIf { it.isNotBlank() } ?: identifier
-        val emojis = tags.mapNotNull { tag ->
-            if (tag.firstOrNull() != "emoji") return@mapNotNull null
-            val shortcode = tag.getOrNull(1)?.trim()?.trim(':')?.takeIf { it.isNotBlank() } ?: return@mapNotNull null
-            val url = tag.getOrNull(2)?.trim()?.takeIf { it.isNotBlank() } ?: return@mapNotNull null
-            CustomEmoji(shortcode, url)
-        }.distinctBy { it.shortcode }
+        val emojis = tags.emojiTags().distinctBy { it.shortcode }
         return emojis.takeIf { it.isNotEmpty() }?.let {
-            CustomEmojiList(reference.removePrefix("$KIND_EMOJI_SET:"), title, it, pubkey)
+            CustomEmojiList("${reference.author}:${reference.identifier}", title, it, reference.author)
         }
     }
 }
@@ -245,51 +242,33 @@ private data class EmojiPreferenceSnapshot(
 
 internal data class ParsedEmojiPreferences(
     val emojis: List<CustomEmoji>,
-    val setReferences: List<String>,
+    val setReferences: List<EmojiSetAddress>,
 )
 
 internal fun parseEmojiPreferenceTags(tags: List<List<String>>): ParsedEmojiPreferences =
     ParsedEmojiPreferences(
-        emojis = tags.mapNotNull { tag ->
-            if (tag.firstOrNull() != "emoji") return@mapNotNull null
-            val shortcode = tag.getOrNull(1)?.trim()?.trim(':')?.takeIf { it.isNotBlank() } ?: return@mapNotNull null
-            val url = tag.getOrNull(2)?.trim()?.takeIf { it.isNotBlank() } ?: return@mapNotNull null
-            CustomEmoji(shortcode, url)
-        }.distinct(),
+        emojis = tags.emojiTags().distinct(),
         setReferences = tags.mapNotNull { tag ->
-            tag.getOrNull(1)?.takeIf { tag.firstOrNull() == "a" && it.asEmojiSetReference() != null }
+            tag.getOrNull(1)?.takeIf { tag.firstOrNull() == "a" }?.let(EmojiSetAddress::parse)
         }.distinct(),
     )
 
 internal fun buildEmojiPreferenceTags(
     previousTags: List<List<String>>,
     emojis: List<CustomEmoji>,
-    setReferences: Collection<String>,
+    setReferences: Collection<EmojiSetAddress>,
 ): List<List<String>> = previousTags.filterNot { it.firstOrNull() == "emoji" || it.firstOrNull() == "a" } +
-    emojis.distinct().map { listOf("emoji", it.shortcode.trim().trim(':'), it.imageUrl.trim()) }
-        .filter { it[1].isNotBlank() && it[2].isNotBlank() } +
-    setReferences.mapNotNull { it.asEmojiSetReference() }.distinct().map { listOf("a", it) }
+    emojis.map { it.toEmojiTag() }
+        .filter { it[1].isNotBlank() && it[2].isNotBlank() }
+        .distinct() +
+    setReferences.distinct().map { listOf("a", it.value) }
 
-private data class EmojiSetAddress(val reference: String, val author: String, val identifier: String)
-
-private fun parseEmojiSetReference(value: String): EmojiSetAddress? {
-    val parts = value.split(':', limit = 3)
-    if (parts.size != 3 || parts[0] != KIND_EMOJI_SET.toString() || parts[1].length != 64 || parts[2].isBlank()) return null
-    return EmojiSetAddress(value, parts[1], parts[2])
-}
-
-private fun String.asEmojiSetReference(): String? = parseEmojiSetReference(this)?.reference
-
-internal fun CustomEmojiList.toEmojiSetReference(): String? {
-    id.asEmojiSetReference()?.let { return it }
+/** 登録済みリストの id から絵文字セットのアドレスを得る。旧形式（`pubkey:d`、`d`＋authorPubkey）も読む。 */
+internal fun CustomEmojiList.setAddress(): EmojiSetAddress? {
+    EmojiSetAddress.parse(id)?.let { return it }
     val storedParts = id.split(':', limit = 2)
-    if (storedParts.size == 2 && storedParts[0].length == 64 && storedParts[1].isNotBlank()) {
-        return "$KIND_EMOJI_SET:$id"
-    }
-    val author = authorPubkey.trim()
-    if (author.length == 64 && id.isNotBlank() && ':' !in id) {
-        return "$KIND_EMOJI_SET:$author:$id"
-    }
+    if (storedParts.size == 2) EmojiSetAddress.of(storedParts[0], storedParts[1])?.let { return it }
+    if (':' !in id) return EmojiSetAddress.of(authorPubkey, id)
     return null
 }
 
@@ -338,7 +317,7 @@ private object EmojiPreferenceOutbox {
 }
 
 private const val KIND_EMOJI_PREFERENCES = 10030
-private const val KIND_EMOJI_SET = 30030
+private const val KIND_EMOJI_SET = EmojiSetAddress.KIND_EMOJI_SET
 private const val FETCH_TIMEOUT_MS = 8_000L
 private const val PUBLISH_DEBOUNCE_MS = 350L
 private const val RETRY_INTERVAL_MS = 30_000L

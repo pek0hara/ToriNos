@@ -1,5 +1,6 @@
 package com.nostr.torinos.ui.settings
 
+import com.nostr.torinos.emoji.emojiTags
 import com.nostr.torinos.model.NostrEvent
 import com.nostr.torinos.model.NostrFilter
 import com.nostr.torinos.network.CustomEmoji
@@ -114,14 +115,7 @@ class CustomEmojiSettingsViewModel : SafeViewModel() {
             ?.trim()
             ?.takeIf { it.isNotBlank() }
             ?: identifier
-        val emojis = tags.mapNotNull { tag ->
-            if (tag.firstOrNull() != "emoji") return@mapNotNull null
-            val shortcode = tag.getOrNull(1)?.trim()?.trim(':')?.takeIf { it.isNotBlank() }
-                ?: return@mapNotNull null
-            val imageUrl = tag.getOrNull(2)?.trim()?.takeIf { it.isNotBlank() }
-                ?: return@mapNotNull null
-            CustomEmoji(shortcode, imageUrl)
-        }.distinctBy { it.shortcode }
+        val emojis = tags.emojiTags().distinctBy { it.shortcode }
 
         if (emojis.isEmpty()) return null
 

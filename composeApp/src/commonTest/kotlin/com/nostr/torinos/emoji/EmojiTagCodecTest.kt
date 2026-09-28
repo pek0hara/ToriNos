@@ -4,7 +4,7 @@ import com.nostr.torinos.network.CustomEmoji
 import kotlin.test.Test
 import kotlin.test.assertEquals
 
-class CustomEmojiTagsTest {
+class EmojiTagCodecTest {
     @Test
     fun customEmojiMapReadsValidTagsAndTrimsColons() {
         val tags = listOf(
@@ -53,5 +53,31 @@ class CustomEmojiTagsTest {
             listOf(listOf("emoji", "cat", "https://example.com/second.png")),
             customEmojiTagsForContent(":cat:", emojis),
         )
+    }
+
+    @Test
+    fun emojiTagsKeepTagOrderAndDuplicates() {
+        val tags = listOf(
+            listOf("emoji", "b", "https://example.com/b.png"),
+            listOf("emoji", "a", "https://example.com/a.png"),
+            listOf("emoji", "b", "https://example.com/b.png"),
+        )
+
+        assertEquals(listOf("b", "a", "b"), tags.emojiTags().map { it.shortcode })
+    }
+
+    @Test
+    fun toEmojiTagNormalizesShortcodeAndUrl() {
+        assertEquals(
+            listOf("emoji", "cat", "https://example.com/cat.png"),
+            CustomEmoji(" :cat: ", " https://example.com/cat.png ").toEmojiTag(),
+        )
+    }
+
+    @Test
+    fun shortcodeRegexAcceptsNip30CharactersOnly() {
+        val codes = CustomEmojiCodeRegex.findAll(":a-b_1: :日本: :x y:").map { it.groupValues[1] }.toList()
+
+        assertEquals(listOf("a-b_1"), codes)
     }
 }
