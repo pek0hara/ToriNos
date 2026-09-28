@@ -1,5 +1,6 @@
 package com.nostr.torinos.ui.components
 
+import androidx.compose.ui.unit.dp
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotEquals
@@ -23,6 +24,12 @@ class InlineMediaPlayerTest {
     fun aspectRatioIsClamped() {
         assertEquals(9f / 16f, inlineMediaAspectRatio(width = 100, height = 1000))
         assertEquals(2f, inlineMediaAspectRatio(width = 3000, height = 500))
+    }
+
+    @Test
+    fun playerHeightUsesAspectRatioUntilMaximumHeight() {
+        assertEquals(180.dp, inlineMediaHeight(320.dp, 16f / 9f, 360.dp))
+        assertEquals(360.dp, inlineMediaHeight(320.dp, 9f / 16f, 360.dp))
     }
 
     @Test

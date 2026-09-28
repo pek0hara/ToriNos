@@ -4,13 +4,12 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
@@ -89,6 +88,9 @@ internal fun inlineMediaAspectRatio(width: Int?, height: Int?): Float {
     return (width.toFloat() / height.toFloat()).coerceIn(MinAspectRatio, MaxAspectRatio)
 }
 
+internal fun inlineMediaHeight(containerWidth: Dp, aspectRatio: Float, maxHeight: Dp): Dp =
+    minOf(containerWidth / aspectRatio, maxHeight)
+
 @Composable
 internal fun InlineMediaPlayer(
     media: MediaMetadata,
@@ -116,92 +118,94 @@ internal fun InlineMediaPlayer(
         }
     }
 
-    val sizeModifier = if (isAudio) {
-        Modifier.height(AudioPlayerHeight)
-    } else {
-        Modifier
-            .heightIn(max = maxHeight)
-            .aspectRatio(
-                inlineMediaAspectRatio(
+    BoxWithConstraints(modifier = modifier.fillMaxWidth()) {
+        val playerHeight = if (isAudio) {
+            AudioPlayerHeight
+        } else {
+            inlineMediaHeight(
+                containerWidth = maxWidth,
+                aspectRatio = inlineMediaAspectRatio(
                     width = info?.width ?: media.width,
                     height = info?.height ?: media.height,
                 ),
+                maxHeight = maxHeight,
             )
-    }
-    Box(
-        modifier = modifier
-            .fillMaxWidth()
-            .then(sizeModifier)
-            .clip(MaterialTheme.shapes.small)
-            .background(Color.Black),
-        contentAlignment = Alignment.Center,
-    ) {
-        when {
-            isActive -> PlatformMediaPlayer(
-                url = media.url,
-                modifier = Modifier.fillMaxSize(),
-                onInfo = { info = it },
-                onError = {
-                    failed = true
-                    ActiveMediaPlayback.deactivate(key)
-                },
-            )
-            failed -> Column(
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.Center,
-                modifier = Modifier
-                    .fillMaxSize()
-                    .clickable {
-                        failed = false
-                        ActiveMediaPlayback.activate(key)
+        }
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(playerHeight)
+                .clip(MaterialTheme.shapes.small)
+                .background(Color.Black),
+            contentAlignment = Alignment.Center,
+        ) {
+            when {
+                isActive -> PlatformMediaPlayer(
+                    url = media.url,
+                    modifier = Modifier.fillMaxSize(),
+                    onInfo = { info = it },
+                    onError = {
+                        failed = true
+                        ActiveMediaPlayback.deactivate(key)
                     },
-            ) {
-                Text(
-                    text = "このメディアは再生できません",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = Color.White,
                 )
-                TextButton(onClick = { uriHandler.openUri(media.url) }) {
-                    Text("ブラウザで開く")
-                }
-            }
-            else -> Box(
-                contentAlignment = Alignment.Center,
-                modifier = Modifier
-                    .fillMaxSize()
-                    .clickable { ActiveMediaPlayback.activate(key) },
-            ) {
-                val posterUrl = media.posterUrl
-                if (!isAudio && showPoster && posterUrl != null) {
-                    NetworkImage(
-                        url = posterUrl,
-                        contentDescription = media.alt,
-                        contentScale = ContentScale.Fit,
-                        blurHash = media.blurhash,
-                        modifier = Modifier.fillMaxSize(),
-                    )
-                }
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                failed -> Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.Center,
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .clickable {
+                            failed = false
+                            ActiveMediaPlayback.activate(key)
+                        },
                 ) {
-                    if (isAudio) {
-                        Icon(
-                            imageVector = Icons.Filled.MusicNote,
-                            contentDescription = null,
-                            tint = Color.White,
-                            modifier = Modifier.size(32.dp),
+                    Text(
+                        text = "このメディアは再生できません",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = Color.White,
+                    )
+                    TextButton(onClick = { uriHandler.openUri(media.url) }) {
+                        Text("ブラウザで開く")
+                    }
+                }
+                else -> Box(
+                    contentAlignment = Alignment.Center,
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .clickable { ActiveMediaPlayback.activate(key) },
+                ) {
+                    val posterUrl = media.posterUrl
+                    if (!isAudio && showPoster && posterUrl != null) {
+                        NetworkImage(
+                            url = posterUrl,
+                            contentDescription = media.alt,
+                            contentScale = ContentScale.Fit,
+                            blurHash = media.blurhash,
+                            modifier = Modifier.fillMaxSize(),
                         )
                     }
-                    Icon(
-                        imageVector = Icons.Filled.PlayArrow,
-                        contentDescription = if (isAudio) "音声を再生" else "動画を再生",
-                        tint = Color.White,
-                        modifier = Modifier
-                            .size(56.dp)
-                            .clip(CircleShape)
-                            .background(Color.Black.copy(alpha = 0.55f)),
-                    )
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    ) {
+                        if (isAudio) {
+                            Icon(
+                                imageVector = Icons.Filled.MusicNote,
+                                contentDescription = null,
+                                tint = Color.White,
+                                modifier = Modifier.size(32.dp),
+                            )
+                        }
+                        Icon(
+                            imageVector = Icons.Filled.PlayArrow,
+                            contentDescription = if (isAudio) "音声を再生" else "動画を再生",
+                            tint = Color.White,
+                            modifier = Modifier
+                                .size(56.dp)
+                                .clip(CircleShape)
+                                .background(Color.Black.copy(alpha = 0.55f)),
+                        )
+                    }
                 }
             }
         }
