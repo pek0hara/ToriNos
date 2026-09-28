@@ -14,7 +14,8 @@ actual fun sha256(data: ByteArray): ByteArray {
     val digest = UByteArray(CC_SHA256_DIGEST_LENGTH)
     data.usePinned { pinned ->
         digest.usePinned { out ->
-            CC_SHA256(pinned.addressOf(0), data.size.toUInt(), out.addressOf(0))
+            // 空配列の addressOf(0) は範囲外になるため、長さ0のときは null を渡す。
+            CC_SHA256(if (data.isEmpty()) null else pinned.addressOf(0), data.size.toUInt(), out.addressOf(0))
         }
     }
     return digest.toByteArray()
