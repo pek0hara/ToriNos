@@ -1,6 +1,7 @@
 package com.nostr.torinos.ui.components
 
 import com.nostr.torinos.emoji.CustomEmojiCodeRegex
+import com.nostr.torinos.emoji.findStandaloneShortcodes
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.text.InlineTextContent
@@ -48,12 +49,9 @@ fun LinkedText(
     overflow: TextOverflow = TextOverflow.Clip,
     onTextLayout: ((TextLayoutResult) -> Unit)? = null,
 ) {
-    val emojis = rememberEmojiPreferences().available
     val openCustomEmoji = LocalCustomEmojiNavigator.current
-    val emojiMap = remember(emojis, customEmojis) {
-        // available は優先順なので、同じ shortcode は先頭を使う。イベントのタグがあればそちらを優先する。
-        emojis.asReversed().associate { it.shortcode to it.imageUrl } + customEmojis
-    }
+    // NIP-30: 画像にするのはイベントの emoji タグにある絵文字だけ。閲覧者の登録絵文字は使わない（決定事項 D1）。
+    val emojiMap = customEmojis
     val density = LocalDensity.current
     // インライン絵文字はテキストに合わせて1.2emで表示するため、デコード要求も同じ大きさに絞る。
     val emojiDecodeSizePx = remember(density, style.fontSize) {
@@ -101,13 +99,12 @@ fun LinkedText(
             .toList()
     }
 
-    val unregisteredEmojiSegments = remember(text, emojiMap) {
-        CustomEmojiCodeRegex.findAll(text)
-            .filter { match -> match.groupValues[1] !in emojiMap }
-            .map { match ->
-                UnregisteredEmojiSegment(match.range.first, match.range.last + 1, match.groupValues[1])
-            }
-            .toList()
+    // 画像の分からないコードは、絵文字リンクを有効にした表示でだけ設定画面への検索リンクにする。
+    val unregisteredEmojiSegments = remember(text, emojiMap, enableCustomEmojiLinks) {
+        if (!enableCustomEmojiLinks) return@remember emptyList()
+        findStandaloneShortcodes(text)
+            .filter { match -> match.shortcode !in emojiMap }
+            .map { match -> UnregisteredEmojiSegment(match.start, match.endExclusive, match.shortcode) }
     }
 
     val profileLabelKey = links.asSequence()

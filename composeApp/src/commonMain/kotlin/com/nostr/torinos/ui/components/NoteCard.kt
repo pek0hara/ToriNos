@@ -1775,13 +1775,8 @@ private fun CollapsibleNoteText(
 ) {
     var expanded by remember(text) { mutableStateOf(false) }
     var hasHiddenLines by remember(text) { mutableStateOf(false) }
-    val savedCustomEmojis = rememberEmojiPreferences().available
-    val customEmojiShortcodes = remember(savedCustomEmojis, customEmojis) {
-        buildSet {
-            addAll(customEmojis.keys)
-            savedCustomEmojis.forEach { emoji -> add(emoji.shortcode) }
-        }
-    }
+    // 画像にするのはイベントのタグにある絵文字だけなので、1文字として数えるのもそれだけ。
+    val customEmojiShortcodes = customEmojis.keys
     val collapsedTextLength = remember(text, customEmojiShortcodes) {
         countTextWithCustomEmojis(text, customEmojiShortcodes)
     }
