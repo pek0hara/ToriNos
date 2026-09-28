@@ -1,5 +1,7 @@
 package com.nostr.torinos.crypto
 
-actual val isWriteSupported: Boolean = false
+actual val isWriteSupported: Boolean = true
 
 actual val isIosPlatform: Boolean = false
+
+actual val isWebPlatform: Boolean = true

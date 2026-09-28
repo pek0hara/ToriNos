@@ -57,6 +57,7 @@ import com.nostr.torinos.crypto.generateKeyPair
 import com.nostr.torinos.crypto.hexToNpub
 import com.nostr.torinos.crypto.hexToNsec
 import com.nostr.torinos.crypto.isIosPlatform
+import com.nostr.torinos.crypto.isWebPlatform
 import com.nostr.torinos.crypto.normalizePrivateKey
 import com.nostr.torinos.crypto.rememberPasswordManagerSaver
 import com.nostr.torinos.crypto.toHex
@@ -356,13 +357,7 @@ fun KeySetupScreen(onSetupComplete: (pubkeyHex: String) -> Unit, onDismiss: (() 
             },
             title = { Text("保存済みアカウントを削除") },
             text = {
-                Text(
-                    if (isIosPlatform) {
-                        "${shortNpub(account.npub)} の秘密鍵を、この端末とiCloudキーチェーンから削除します。同じApple Accountの端末にも反映されます。Nostr上のアカウントや投稿は削除されません。"
-                    } else {
-                        "${shortNpub(account.npub)} の秘密鍵を、この端末の保存済みアカウントから削除します。Nostr上のアカウントや投稿は削除されません。"
-                    },
-                )
+                Text(storedAccountDeletionMessage(shortNpub(account.npub)))
             },
             confirmButton = {
                 Button(
@@ -423,7 +418,12 @@ private fun UsageConsentDialog(
             "• 違法な内容、権利侵害、嫌がらせ、脅迫、差別、性的または暴力的な不適切コンテンツ、その他の迷惑行為を投稿しません。ToriNos は不適切なコンテンツや迷惑ユーザーを許容しません。\n" +
             "• 不適切な投稿は通報できます。迷惑ユーザーはブロックでき、投稿は自分のフィードから直ちに非表示になります。\n" +
             "• NG ワード設定により、不適切または見たくない語句を含む投稿をフィルタできます。\n" +
-            "• 秘密鍵はアカウントの利用に必要な情報であり、自分の責任で安全に保管します。"
+            "• 秘密鍵はアカウントの利用に必要な情報であり、自分の責任で安全に保管します。" +
+            if (isWebPlatform) {
+                "\n• 秘密鍵はこのブラウザに暗号化せずに保存されます。共有のパソコンでは使わず、使い終わったらログアウトして保存済みアカウントを削除します。"
+            } else {
+                ""
+            }
     }
 
     AlertDialog(

@@ -53,7 +53,8 @@ import androidx.compose.runtime.collectAsState
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.nostr.torinos.crypto.hexToNpub
 import com.nostr.torinos.crypto.StoredAccount
-import com.nostr.torinos.crypto.isIosPlatform
+import com.nostr.torinos.ui.setup.privateKeyStorageLocation
+import com.nostr.torinos.ui.setup.storedAccountDeletionMessage
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
@@ -202,7 +203,7 @@ fun SettingsScreen(
     if (showLogoutDialog) {
         ConfirmAccountDialog(
             title = "ログアウト",
-            text = "現在のアカウントだけをログアウトします。保存済みの秘密鍵はこの端末に残ります。ほかにログイン中のアカウントがある場合は、そのアカウントへ切り替わります。",
+            text = "現在のアカウントだけをログアウトします。保存済みの秘密鍵は${privateKeyStorageLocation}に残ります。ほかにログイン中のアカウントがある場合は、そのアカウントへ切り替わります。",
             confirmText = "ログアウト",
             isProcessing = state.isAccountActionProcessing,
             onDismiss = { showLogoutDialog = false },
@@ -221,11 +222,7 @@ fun SettingsScreen(
         }
         ConfirmAccountDialog(
             title = "保存済みアカウントを削除",
-            text = if (isIosPlatform) {
-                "$shortNpub の秘密鍵を、この端末とiCloudキーチェーンから削除します。同じApple Accountの端末にも反映されます。Nostr上のアカウントや投稿は削除されません。"
-            } else {
-                "$shortNpub の秘密鍵を、この端末の保存済みアカウントから削除します。Nostr上のアカウントや投稿は削除されません。"
-            },
+            text = storedAccountDeletionMessage(shortNpub),
             confirmText = "削除",
             isProcessing = state.isAccountActionProcessing,
             error = state.accountActionError,
@@ -242,7 +239,7 @@ fun SettingsScreen(
     if (showDeleteAccountDialog) {
         ConfirmAccountDialog(
             title = "アカウントを完全に削除",
-            text = "プロフィールを削除済みの状態に更新してから、この端末に保存されている秘密鍵を削除します。この操作は取り消せません。Nostr上の投稿や、リレー・他のクライアントに保存されたデータが完全に消えることは保証されません。",
+            text = "プロフィールを削除済みの状態に更新してから、${privateKeyStorageLocation}に保存されている秘密鍵を削除します。この操作は取り消せません。Nostr上の投稿や、リレー・他のクライアントに保存されたデータが完全に消えることは保証されません。",
             confirmText = "削除する",
             isProcessing = state.isAccountActionProcessing,
             error = state.accountActionError,

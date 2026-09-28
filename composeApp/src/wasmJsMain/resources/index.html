@@ -3,6 +3,11 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <!--
+        秘密鍵を localStorage に置くため、スクリプトは自オリジンだけに限る(Worker はアプリ自身が blob から作る)。
+        リレー(wss:)と画像・NIP-05 などの取得(https:)は任意の接続先を許可する。
+    -->
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https: wss:; img-src 'self' data: blob: https:; style-src 'self' 'unsafe-inline'; font-src 'self' data:; object-src 'none'; base-uri 'none'; form-action 'none'">
     <title>ToriNos</title>
     <link rel="icon" href="data:,">
     <style>
