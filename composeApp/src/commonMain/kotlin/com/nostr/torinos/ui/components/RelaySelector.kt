@@ -3,6 +3,7 @@ package com.nostr.torinos.ui.components
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
@@ -16,6 +17,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -26,9 +28,12 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.nostr.torinos.network.NostrRepository
 import com.nostr.torinos.network.RelayConnectionState
+import com.nostr.torinos.network.RelayInformationRepository
 
 @Composable
 fun RelaySelector(
@@ -37,21 +42,47 @@ fun RelaySelector(
     onRelaySelected: (String) -> Unit,
     onOpenRelaySettings: () -> Unit,
     modifier: Modifier = Modifier,
+    selectedRelayName: String? = null,
+    selectedRelayNameFontSize: TextUnit = 16.sp,
+    showSelectedRelayUrl: Boolean = true,
 ) {
     val relayConnectionStates by NostrRepository.relayConnectionStates.collectAsState()
     var expanded by remember { mutableStateOf(false) }
+    val providedRelayName = selectedRelayName?.trim()?.takeIf(String::isNotEmpty)
+    var fetchedRelayName by remember(selectedRelayUrl) { mutableStateOf<String?>(null) }
+    LaunchedEffect(selectedRelayUrl, providedRelayName) {
+        if (providedRelayName != null || selectedRelayUrl == null) return@LaunchedEffect
+        fetchedRelayName = RelayInformationRepository.fetch(selectedRelayUrl).getOrNull()
+            ?.name
+            ?.trim()
+            ?.takeIf(String::isNotEmpty)
+    }
 
     Row(
         modifier = modifier,
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.Start,
     ) {
-        Text(
-            text = selectedRelayUrl?.relayDisplayName() ?: "—",
-            modifier = Modifier.weight(1f, fill = false),
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-        )
+        Column(modifier = Modifier.weight(1f, fill = false)) {
+            Text(
+                text = providedRelayName
+                    ?: fetchedRelayName
+                    ?: selectedRelayUrl?.relayDisplayName()
+                    ?: "—",
+                fontSize = selectedRelayNameFontSize,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            if (showSelectedRelayUrl && selectedRelayUrl != null) {
+                Text(
+                    text = selectedRelayUrl,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+        }
         IconButton(onClick = { expanded = true }) {
             Icon(
                 Icons.Default.ArrowDropDown,

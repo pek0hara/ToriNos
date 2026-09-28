@@ -53,8 +53,7 @@ import androidx.compose.foundation.layout.requiredHeight
 import androidx.compose.foundation.layout.size
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.alpha
-import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalLayoutDirection
@@ -95,6 +94,7 @@ import com.nostr.torinos.ui.channel.ChannelScreen
 import com.nostr.torinos.ui.components.AppFloatingActionButton
 import com.nostr.torinos.ui.components.LocalQuotePostHandler
 import com.nostr.torinos.ui.feed.FeedTab
+import com.nostr.torinos.ui.feed.FeedChromeState
 import com.nostr.torinos.ui.feed.FeedScreen
 import com.nostr.torinos.ui.feed.shouldResetFeedAfterBackground
 import com.nostr.torinos.ui.notification.NotificationsDrawer
@@ -190,7 +190,7 @@ internal fun AppSessionCoordinator(
         var currentFeedTab by remember { mutableStateOf(FeedTab.Following) }
         var feedScrollToTopTargetTab by remember { mutableStateOf(FeedTab.Following) }
         var feedTabChangeRequest by remember { mutableStateOf(0) }
-        var feedChromeCollapseFraction by remember { mutableStateOf(0f) }
+        val feedChromeState = remember { FeedChromeState() }
         var feedLongBackgroundResetRequest by remember { mutableStateOf(0) }
         var backgroundedAtMillis by remember { mutableStateOf<Long?>(null) }
         var showQuickSettings by remember { mutableStateOf(false) }
@@ -265,7 +265,7 @@ internal fun AppSessionCoordinator(
         }
 
         fun navigateFeedTab() {
-            feedChromeCollapseFraction = 0f
+            feedChromeState.collapseFraction = 0f
             navigateTopLevelRoute("feed")
         }
 
@@ -471,14 +471,16 @@ internal fun AppSessionCoordinator(
         val hasBottomBar = currentRoute in bottomBarRoutes || isChannelThreadRoute || isProfileRoute
         val density = LocalDensity.current
         val bottomBarHeightPx = with(density) { AppNavigationBarHeight.toPx() }.toInt()
-        val activeFeedChromeCollapseFraction = if (currentRoute == "feed") feedChromeCollapseFraction else 0f
-        val collapsedBottomBarHeightPx = (bottomBarHeightPx * (1f - activeFeedChromeCollapseFraction)).toInt()
-        val bottomBarAlpha = 1f - activeFeedChromeCollapseFraction
+        val isFeedRoute = currentRoute == "feed"
+        // フィードでは下部バーをリストに重ね、高さは変えずに下へずらして隠す。
+        // 折りたたみ量はスクロール中に毎フレーム変わるので、graphicsLayerの中でだけ読む。
+        fun activeFeedChromeCollapseFraction(): Float =
+            if (isFeedRoute) feedChromeState.collapseFraction.coerceIn(0f, 1f) else 0f
 
         LaunchedEffect(currentRoute) {
             cancelPendingReplyResolution()
             if (currentRoute != "feed") {
-                feedChromeCollapseFraction = 0f
+                feedChromeState.collapseFraction = 0f
             }
         }
 
@@ -716,17 +718,23 @@ internal fun AppSessionCoordinator(
                 floatingActionButton = {
                     if (isWriteSupported) {
                         when (currentRoute) {
-                            "feed" -> PostFloatingActionButton(
-                                onPostClick = {
-                                    cancelPendingReplyResolution()
-                                    runWithPrivateKey(PendingKeyAction.NewPost) {
-                                        composer.replyTarget = null
-                                        composer.replyToPreview = null
-                                        composer.replyNoteContext = NoteContext.Timeline
-                                        composer.showPostSheet = true
-                                    }
+                            "feed" -> Box(
+                                modifier = Modifier.graphicsLayer {
+                                    translationY = bottomBarHeightPx * activeFeedChromeCollapseFraction()
                                 },
-                            )
+                            ) {
+                                PostFloatingActionButton(
+                                    onPostClick = {
+                                        cancelPendingReplyResolution()
+                                        runWithPrivateKey(PendingKeyAction.NewPost) {
+                                            composer.replyTarget = null
+                                            composer.replyToPreview = null
+                                            composer.replyNoteContext = NoteContext.Timeline
+                                            composer.showPostSheet = true
+                                        }
+                                    },
+                                )
+                            }
                             "services" -> when (currentServiceTab) {
                                 ServiceTab.Articles -> AppFloatingActionButton(
                                     onClick = {
@@ -765,14 +773,16 @@ internal fun AppSessionCoordinator(
                     if (hasBottomBar) {
                         Box(
                             modifier = Modifier
-                                .height(with(density) { collapsedBottomBarHeightPx.toDp() })
-                                .clipToBounds()
+                                .height(AppNavigationBarHeight)
+                                .graphicsLayer {
+                                    translationY = bottomBarHeightPx * activeFeedChromeCollapseFraction()
+                                }
                                 .background(MaterialTheme.colorScheme.background),
                         ) {
                             NavigationBar(
                                 modifier = Modifier
                                     .requiredHeight(AppNavigationBarHeight)
-                                    .alpha(bottomBarAlpha),
+                                    .graphicsLayer { alpha = 1f - activeFeedChromeCollapseFraction() },
                                 containerColor = MaterialTheme.colorScheme.background,
                                 tonalElevation = 0.dp,
                             ) {
@@ -787,7 +797,7 @@ internal fun AppSessionCoordinator(
                                     selected = currentRoute == "feed",
                                     colors = appNavigationBarItemColors(),
                                     onClick = {
-                                        feedChromeCollapseFraction = 0f
+                                        feedChromeState.collapseFraction = 0f
                                         if (currentRoute == "feed") {
                                             feedScrollToTopTargetTab = currentFeedTab
                                             feedScrollToTopRequest++
@@ -849,7 +859,8 @@ internal fun AppSessionCoordinator(
                 modifier = Modifier
                     .fillMaxSize()
                     .background(MaterialTheme.colorScheme.background)
-                    .padding(bottom = padding.calculateBottomPadding()),
+                    // フィードは下部バーの裏までリストを描き、余白はリストのcontentPaddingで取る。
+                    .padding(bottom = if (currentRoute == "feed") 0.dp else padding.calculateBottomPadding()),
             ) {
                 AppNavigationGraph(
                     navController = nav,
@@ -887,8 +898,8 @@ internal fun AppSessionCoordinator(
                             globalListState = globalFeedListState,
                             hasNotifications = notificationsState?.hasUnread == true,
                             longBackgroundResetRequest = feedLongBackgroundResetRequest,
-                            chromeCollapseFraction = feedChromeCollapseFraction,
-                            onChromeCollapseFractionChange = { feedChromeCollapseFraction = it },
+                            chromeState = feedChromeState,
+                            bottomContentPadding = padding.calculateBottomPadding(),
                         )
                     }
                     composable("services") {

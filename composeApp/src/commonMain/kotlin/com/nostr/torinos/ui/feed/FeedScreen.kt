@@ -7,11 +7,10 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.requiredHeight
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.pager.HorizontalPager
@@ -29,7 +28,6 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.PrimaryTabRow
-import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Tab
@@ -48,19 +46,21 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
 import androidx.compose.ui.input.nestedscroll.NestedScrollSource
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.zIndex
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.Velocity
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.compose.runtime.collectAsState
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.lifecycle.compose.LifecycleStartEffect
@@ -68,11 +68,12 @@ import com.nostr.torinos.account.accountSessionViewModel
 import com.nostr.torinos.model.NostrEvent
 import com.nostr.torinos.model.NostrProfile
 import com.nostr.torinos.account.LocalAccountSession
+import com.nostr.torinos.network.RelayInformationRepository
 import com.nostr.torinos.network.RelayStore
 import com.nostr.torinos.ui.components.NoteTimeline
 import com.nostr.torinos.ui.components.RelaySelector
 import com.nostr.torinos.ui.profile.AvatarCircle
-import kotlinx.coroutines.delay
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -101,8 +102,10 @@ fun FeedScreen(
     globalListState: LazyListState? = null,
     hasNotifications: Boolean = false,
     longBackgroundResetRequest: Int = 0,
-    chromeCollapseFraction: Float = 0f,
-    onChromeCollapseFractionChange: (Float) -> Unit = {},
+    /** トップバーとボトムバーで共有する折りたたみ量。値はコンポーズ中に読まない。 */
+    chromeState: FeedChromeState = remember { FeedChromeState() },
+    /** 下部バーの裏までリストを描くための下側の余白。下部バーはリストに重ねて描かれる。 */
+    bottomContentPadding: Dp = 0.dp,
     /** null = グローバルフィード、非null = 特定ユーザーのポスト */
     authorPubkey: String? = null,
 ) {
@@ -202,11 +205,18 @@ fun FeedScreen(
     }
     val canSelectAllRelays = authorPubkey == null && visibleFeedTab == FeedTab.Following
     val activeRelayUrl = selectedFeedRelayUrl
+    var selectedRelayName by remember(selectedFeedRelayUrl) { mutableStateOf<String?>(null) }
+    LaunchedEffect(selectedFeedRelayUrl) {
+        selectedRelayName = selectedFeedRelayUrl
+            ?.let { RelayInformationRepository.fetch(it).getOrNull()?.name }
+            ?.trim()
+            ?.takeIf(String::isNotEmpty)
+    }
     val topBarTitle = when {
-        authorPubkey != null -> selectedFeedRelayUrl?.relayDisplayName() ?: "—"
+        authorPubkey != null -> selectedRelayName ?: selectedFeedRelayUrl?.relayDisplayName() ?: "—"
         visibleFeedTab == FeedTab.Following && followingFeedMode == FollowingFeedMode.Muted -> "ミュートフィード"
         selectedFeedRelayUrl == null && canSelectAllRelays -> "すべてのリレー"
-        else -> selectedFeedRelayUrl?.relayDisplayName() ?: "—"
+        else -> selectedRelayName ?: selectedFeedRelayUrl?.relayDisplayName() ?: "—"
     }
     val feedBackgroundColor = MaterialTheme.colorScheme.background
     val feedContentColor = MaterialTheme.colorScheme.onBackground
@@ -216,84 +226,84 @@ fun FeedScreen(
         else -> globalListState
     }
     val density = LocalDensity.current
-    val chromeCollapseDistancePx = with(density) { 112.dp.roundToPx() }
+    // クロームはリストに重ねて描き、translationYで隠す。高さを変えないのでリストの位置は動かない。
     var topBarHeightPx by remember { mutableIntStateOf(0) }
-    val collapsedTopBarHeightPx = (topBarHeightPx * (1f - chromeCollapseFraction)).toInt()
-    val chromeAlpha = 1f - chromeCollapseFraction
-    val chromeSettleAnimation = remember { Animatable(chromeCollapseFraction) }
+    val chromeVisibility: () -> Float = remember(chromeState) { { chromeState.visibility } }
+    val chromeSettleAnimation = remember { Animatable(0f) }
+    val chromeSettleJob = remember { mutableStateOf<Job?>(null) }
     var chromeBehaviorState by remember { mutableStateOf(FeedChromeBehaviorState()) }
-    var chromeSettleRequest by remember { mutableIntStateOf(0) }
-    var chromeSettleDelayMillis by remember { mutableStateOf(FeedChromeSettleDelayMillis) }
-    val currentChromeCollapseFraction = rememberUpdatedState(chromeCollapseFraction)
-    val currentOnChromeCollapseFractionChange = rememberUpdatedState(onChromeCollapseFractionChange)
-    val chromeNestedScrollConnection = remember(
-        authorPubkey,
-        activeListState,
-        chromeCollapseDistancePx,
-    ) {
+    val currentTopBarHeightPx = rememberUpdatedState(topBarHeightPx)
+
+    fun settleChrome(targetFraction: Float) {
+        chromeSettleJob.value?.cancel()
+        chromeSettleJob.value = coroutineScope.launch {
+            val fraction = chromeState.collapseFraction
+            if (fraction == targetFraction) return@launch
+            chromeSettleAnimation.snapTo(fraction)
+            chromeSettleAnimation.animateTo(
+                targetValue = targetFraction,
+                animationSpec = tween(ChromeSettleAnimationMillis),
+            ) {
+                chromeState.collapseFraction = value
+            }
+        }
+    }
+
+    val chromeNestedScrollConnection = remember(authorPubkey, activeListState, chromeState) {
         object : NestedScrollConnection {
-            override fun onPreScroll(available: Offset, source: NestedScrollSource): Offset {
-                if (authorPubkey != null || activeListState == null || source != NestedScrollSource.UserInput) {
+            override fun onPostScroll(consumed: Offset, available: Offset, source: NestedScrollSource): Offset {
+                val collapseDistancePx = currentTopBarHeightPx.value
+                if (
+                    authorPubkey != null ||
+                    activeListState == null ||
+                    collapseDistancePx <= 0 ||
+                    consumed.y == 0f
+                ) {
                     return Offset.Zero
                 }
-                val delta = -available.y
-                val decision = reduceFeedChromeUserScroll(
-                    state = chromeBehaviorState,
-                    delta = delta,
-                    currentFraction = currentChromeCollapseFraction.value,
-                    collapseDistancePx = chromeCollapseDistancePx,
+                val reduce = when (source) {
+                    NestedScrollSource.UserInput -> ::reduceFeedChromeUserScroll
+                    // 慣性中もクロームを内容と一緒に動かす。止めると途中の透明度のまま内容に重なって残る。
+                    NestedScrollSource.SideEffect -> ::reduceFeedChromeFlingScroll
+                    else -> return Offset.Zero
+                }
+                // 指が触れている間は寄せない。寄せるのはonPostFlingだけ。
+                chromeSettleJob.value?.cancel()
+                val decision = reduce(
+                    chromeBehaviorState,
+                    -consumed.y,
+                    chromeState.collapseFraction,
+                    collapseDistancePx,
+                    activeListState.chromeMaxFraction(collapseDistancePx),
+                    FeedChromeCollapseLatchEnabled,
                 )
                 chromeBehaviorState = decision.state
-                if (decision.nextFraction != currentChromeCollapseFraction.value) {
-                    currentOnChromeCollapseFractionChange.value(decision.nextFraction)
+                if (decision.nextFraction != chromeState.collapseFraction) {
+                    chromeState.collapseFraction = decision.nextFraction
                 }
-                decision.requestSettleAfterMillis?.let { delayMillis ->
-                    chromeSettleDelayMillis = delayMillis
-                    chromeSettleRequest++
-                }
-                return Offset(x = 0f, y = decision.consumedY)
+                return Offset.Zero
             }
 
             override suspend fun onPostFling(consumed: Velocity, available: Velocity): Velocity {
                 val decision = reduceFeedChromePostFling(
                     state = chromeBehaviorState,
-                    currentFraction = currentChromeCollapseFraction.value,
+                    currentFraction = chromeState.collapseFraction,
                     isAtTop = activeListState?.isAtAbsoluteTop() == true,
+                    maxFraction = activeListState?.chromeMaxFraction(currentTopBarHeightPx.value) ?: 1f,
                 )
                 chromeBehaviorState = decision.state
-                if (decision.targetFraction != null) {
-                    chromeSettleDelayMillis = decision.delayMillis
-                    chromeSettleRequest++
-                }
+                decision.targetFraction?.let(::settleChrome)
                 return Velocity.Zero
             }
         }
     }
 
-    LaunchedEffect(chromeSettleRequest) {
-        if (chromeSettleRequest <= 0) return@LaunchedEffect
-        delay(chromeSettleDelayMillis)
-
-        val fraction = currentChromeCollapseFraction.value
-        val targetFraction = feedChromeSettleTarget(
-            state = chromeBehaviorState,
-            isAtTop = activeListState?.isAtAbsoluteTop() == true,
-        )
-        if (fraction == targetFraction) return@LaunchedEffect
-
-        chromeSettleAnimation.snapTo(fraction)
-        chromeSettleAnimation.animateTo(
-            targetValue = targetFraction,
-            animationSpec = tween(ChromeSettleAnimationMillis),
-        ) {
-            currentOnChromeCollapseFractionChange.value(value)
-        }
-    }
-
     LaunchedEffect(activeListState, authorPubkey) {
+        // 旧タブで始まった寄せアニメーションが、新しいタブの上限を越えて書き込まないようにする。
+        chromeSettleJob.value?.cancel()
         chromeBehaviorState = reduceFeedChromeContextChanged(chromeBehaviorState)
         if (authorPubkey != null || activeListState == null) {
-            onChromeCollapseFractionChange(0f)
+            chromeState.collapseFraction = 0f
             return@LaunchedEffect
         }
 
@@ -302,42 +312,44 @@ fun FeedScreen(
         }.collect { atTop ->
             val decision = reduceFeedChromeAtTopChanged(
                 state = chromeBehaviorState,
-                currentFraction = currentChromeCollapseFraction.value,
+                currentFraction = chromeState.collapseFraction,
                 isAtTop = atTop,
             )
             chromeBehaviorState = decision.state
-            if (decision.targetFraction != null) {
-                chromeSettleDelayMillis = decision.delayMillis
-                chromeSettleRequest++
-            }
+            decision.targetFraction?.let(::settleChrome)
         }
     }
 
-    Scaffold(
-        contentWindowInsets = WindowInsets(0),
-        containerColor = feedBackgroundColor,
-        topBar = {
-            val topBarContainerModifier = if (topBarHeightPx > 0) {
-                Modifier.height(with(density) { collapsedTopBarHeightPx.toDp() })
-            } else {
-                Modifier
+    // 慣性や先頭移動など、指以外でリストが先頭へ近づいたときも、クロームの下に空白を出さない。
+    LaunchedEffect(activeListState, authorPubkey, topBarHeightPx) {
+        if (authorPubkey != null || activeListState == null || topBarHeightPx <= 0) return@LaunchedEffect
+        snapshotFlow { activeListState.chromeMaxFraction(topBarHeightPx) }
+            .collect { maxFraction ->
+                if (chromeState.collapseFraction > maxFraction) {
+                    chromeSettleJob.value?.cancel()
+                    chromeState.collapseFraction = maxFraction
+                }
             }
-            Box(
-                modifier = topBarContainerModifier
-                    .clipToBounds()
-                    .background(feedBackgroundColor),
-            ) {
+    }
+
+    val topBarHeight = with(density) { topBarHeightPx.toDp() }
+    val timelineContentPadding = PaddingValues(top = topBarHeight, bottom = bottomContentPadding)
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(feedBackgroundColor),
+    ) {
                 Column(
                     modifier = Modifier
-                        .then(
-                            if (topBarHeightPx > 0) {
-                                Modifier.requiredHeight(with(density) { topBarHeightPx.toDp() })
-                            } else {
-                                Modifier
-                            },
-                        )
-                        .alpha(chromeAlpha)
+                        .zIndex(1f)
+                        .fillMaxWidth()
                         .onSizeChanged { topBarHeightPx = it.height }
+                        .graphicsLayer {
+                            val fraction = chromeState.collapseFraction
+                            translationY = -size.height * fraction
+                            alpha = 1f - fraction
+                        }
                         .background(feedBackgroundColor),
                 ) {
                 AppTopBar(
@@ -347,13 +359,23 @@ fun FeedScreen(
                                 verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.Start,
                             ) {
-                                Text(
-                                    text = topBarTitle,
-                                    modifier = Modifier.weight(1f, fill = false),
-                                    color = feedContentColor,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis,
-                                )
+                                Column(modifier = Modifier.weight(1f, fill = false)) {
+                                    Text(
+                                        text = topBarTitle,
+                                        fontSize = 16.sp,
+                                        color = feedContentColor,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                    )
+                                    if (followingFeedMode == FollowingFeedMode.Following) {
+                                        Text(
+                                            text = "${relays.size}リレー",
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            maxLines = 1,
+                                        )
+                                    }
+                                }
                                 IconButton(onClick = { showRelayMenu = true }) {
                                     Icon(
                                         Icons.Default.ArrowDropDown,
@@ -415,6 +437,8 @@ fun FeedScreen(
                                 selectedRelayUrl = selectedFeedRelayUrl,
                                 onRelaySelected = RelayStore::setSelectedGlobalRelayUrl,
                                 onOpenRelaySettings = onOpenRelaySettings,
+                                selectedRelayName = selectedRelayName,
+                                showSelectedRelayUrl = true,
                             )
                         }
                     },
@@ -469,13 +493,10 @@ fun FeedScreen(
                     )
                 }
             }
-            }
-        },
-    ) { padding ->
+
         val timelineModifier = Modifier
             .background(feedBackgroundColor)
             .nestedScroll(chromeNestedScrollConnection)
-            .padding(padding)
 
         if (authorPubkey != null) {
             FeedTimelinePane(
@@ -488,7 +509,8 @@ fun FeedScreen(
                 ownPubkey = ownPubkey,
                 onUserClick = onUserClick,
                 modifier = timelineModifier,
-                topOverlayVisibility = chromeAlpha,
+                contentPadding = timelineContentPadding,
+                topOverlayVisibility = chromeVisibility,
                 onReply = onReply,
                 onOpenReplies = onOpenReplies,
                 onOpenLikes = onOpenLikes,
@@ -510,7 +532,9 @@ fun FeedScreen(
                         }
                         if (followingFeedMode == FollowingFeedMode.Following && !isFollowListLoaded) {
                             Box(
-                                modifier = Modifier.fillMaxSize(),
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .padding(timelineContentPadding),
                                 contentAlignment = Alignment.Center,
                             ) {
                                 Text(
@@ -522,8 +546,8 @@ fun FeedScreen(
                         } else {
                             val ownerKey = ownPubkey ?: "anonymous"
                             FeedTimelinePane(
-                                viewModelKey = "global-${FeedTab.Following.name}-${followingFeedMode.name}-" +
-                                    "all-$ownerKey-${followingAuthors.joinToString(separator = ",")}",
+                                // 著者一覧はキーに含めない。フォロー更新は同じViewModelへ流し込む。
+                                viewModelKey = "global-${FeedTab.Following.name}-${followingFeedMode.name}-all-$ownerKey",
                                 authorPubkey = null,
                                 authorPubkeys = followingAuthors,
                                 relayUrl = null,
@@ -533,7 +557,8 @@ fun FeedScreen(
                                 ownPubkey = ownPubkey,
                                 onUserClick = onUserClick,
                                 modifier = Modifier.fillMaxSize(),
-                                topOverlayVisibility = chromeAlpha,
+                                contentPadding = timelineContentPadding,
+                                topOverlayVisibility = chromeVisibility,
                                 onReply = onReply,
                                 onOpenReplies = onOpenReplies,
                                 onOpenLikes = onOpenLikes,
@@ -564,7 +589,8 @@ fun FeedScreen(
                             ownPubkey = ownPubkey,
                             onUserClick = onUserClick,
                             modifier = Modifier.fillMaxSize(),
-                            topOverlayVisibility = chromeAlpha,
+                            contentPadding = timelineContentPadding,
+                            topOverlayVisibility = chromeVisibility,
                             onReply = onReply,
                             onOpenReplies = onOpenReplies,
                             onOpenLikes = onOpenLikes,
@@ -614,7 +640,8 @@ private fun FeedTimelinePane(
     ownPubkey: String?,
     onUserClick: (String) -> Unit,
     modifier: Modifier,
-    topOverlayVisibility: Float,
+    contentPadding: PaddingValues,
+    topOverlayVisibility: () -> Float,
     onReply: ((event: NostrEvent, preview: String) -> Unit)?,
     onOpenReplies: (eventId: String) -> Unit,
     onOpenLikes: (eventId: String) -> Unit,
@@ -685,6 +712,7 @@ private fun FeedTimelinePane(
             onEmojiUnreact = viewModel::unreactWithEmoji,
             onDelete = viewModel::deleteEvent,
             modifier = modifier,
+            contentPadding = contentPadding,
             topOverlayVisibility = topOverlayVisibility,
             onReply = onReply,
             onOpenReplies = onOpenReplies,
@@ -711,7 +739,9 @@ private fun FeedTimelinePane(
         )
         SnackbarHost(
             hostState = snackbarHostState,
-            modifier = Modifier.align(Alignment.BottomCenter),
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .padding(bottom = contentPadding.calculateBottomPadding()),
         )
     }
 }
@@ -730,6 +760,17 @@ private const val ChromeSettleAnimationMillis = 140
 
 private fun LazyListState.isAtAbsoluteTop(): Boolean =
     firstVisibleItemIndex == 0 && firstVisibleItemScrollOffset == 0
+
+/** 先頭の項目が見えている間は、その位置からクロームを隠せる量の上限を求める。 */
+private fun LazyListState.chromeMaxFraction(collapseDistancePx: Int): Float {
+    val first = layoutInfo.visibleItemsInfo.firstOrNull()
+    val scrolledFromTopPx = when {
+        first == null -> 0
+        first.index != 0 -> null
+        else -> (-first.offset).coerceAtLeast(0)
+    }
+    return feedChromeMaxFraction(scrolledFromTopPx, collapseDistancePx)
+}
 
 private fun String.relayDisplayName(): String =
     removePrefix("wss://").removePrefix("ws://").trimEnd('/')

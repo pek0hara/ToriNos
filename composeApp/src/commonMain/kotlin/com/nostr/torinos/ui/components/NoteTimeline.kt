@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -24,6 +25,8 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
+import androidx.compose.material3.pulltorefresh.PullToRefreshDefaults
+import androidx.compose.material3.pulltorefresh.rememberPullToRefreshState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -38,8 +41,13 @@ import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.Density
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.runtime.derivedStateOf
+import androidx.compose.foundation.layout.offset
 import coil3.SingletonImageLoader
 import coil3.compose.LocalPlatformContext
 import com.nostr.torinos.model.NostrEvent
@@ -91,7 +99,13 @@ fun NoteTimeline(
     onAtTopChanged: (Boolean) -> Unit = {},
     // 状態の受け手(ViewModel)が替わったとき、リストが使い回されていても現在の先頭判定を渡し直すためのキー。
     atTopReportKey: Any? = null,
-    topOverlayVisibility: Float = 1f,
+    /**
+     * リストに重ねて描かれるトップバーの見えている割合（0〜1）。スクロール中に毎フレーム変わるため、
+     * コンポーズ中には読まず、配置・描画のラムダの中でだけ読む。
+     */
+    topOverlayVisibility: () -> Float = { 1f },
+    /** リストに重ねて描かれるバーの分の余白。上側は[topOverlayVisibility]の割合だけ見えている。 */
+    contentPadding: PaddingValues = PaddingValues(),
 ) {
     val muteStore = LocalAccountSession.current?.muteStore
     val mutedPubkeys = muteStore?.mutedPubkeys?.collectAsState()?.value.orEmpty()
@@ -289,6 +303,7 @@ fun NoteTimeline(
         LazyColumn(
             state = timelineListState,
             modifier = listModifier,
+            contentPadding = contentPadding,
         ) {
             header()
 
@@ -333,12 +348,32 @@ fun NoteTimeline(
         }
     }
 
+    // 重ねて描かれたバーのうち、いま見えている下端。インジケーターやボタンはその下に出す。
+    // 値は配置時に読み、スクロール中にこの画面を再コンポーズしない。
+    val topPadding = contentPadding.calculateTopPadding()
+    fun Density.visibleTopInsetPx(extra: Dp = 0.dp): Int =
+        (topPadding * topOverlayVisibility().coerceIn(0f, 1f) + extra).roundToPx()
+    // ボタンを出すかどうかは、見える／見えないが切り替わったときだけ再コンポーズする。
+    val isTopOverlayVisible by remember(topOverlayVisibility) {
+        derivedStateOf { topOverlayVisibility() > 0f }
+    }
     Box(modifier = modifier) {
         if (onRefresh != null) {
+            val pullToRefreshState = rememberPullToRefreshState()
             PullToRefreshBox(
                 isRefreshing = isRefreshing,
                 onRefresh = onRefresh,
                 modifier = Modifier.fillMaxSize(),
+                state = pullToRefreshState,
+                indicator = {
+                    PullToRefreshDefaults.Indicator(
+                        modifier = Modifier
+                            .align(Alignment.TopCenter)
+                            .offset { IntOffset(0, visibleTopInsetPx()) },
+                        isRefreshing = isRefreshing,
+                        state = pullToRefreshState,
+                    )
+                },
             ) {
                 TimelineList(Modifier.fillMaxSize())
             }
@@ -346,13 +381,13 @@ fun NoteTimeline(
             TimelineList(Modifier.fillMaxSize())
         }
 
-        if (state.newPostCount > 0 && topOverlayVisibility > 0f) {
+        if (state.newPostCount > 0 && isTopOverlayVisible) {
             NewPostsButton(
                 count = state.newPostCount,
                 modifier = Modifier
                     .align(Alignment.TopCenter)
-                    .alpha(topOverlayVisibility.coerceIn(0f, 1f))
-                    .padding(top = 8.dp),
+                    .offset { IntOffset(0, visibleTopInsetPx(extra = 8.dp)) }
+                    .graphicsLayer { alpha = topOverlayVisibility().coerceIn(0f, 1f) },
                 onClick = {
                     coroutineScope.launch { timelineListState.scrollToItem(0) }
                 },
