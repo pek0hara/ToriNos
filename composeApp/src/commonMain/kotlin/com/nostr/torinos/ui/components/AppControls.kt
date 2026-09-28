@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Send
+import androidx.compose.material.icons.filled.InsertEmoticon
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -18,10 +19,18 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.text.TextRange
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.unit.dp
+import com.nostr.torinos.model.ReactionOption
 
 @Composable
 fun AppFloatingActionButton(
@@ -43,6 +52,13 @@ fun AppFloatingActionButton(
     }
 }
 
+/** 絵文字を挿入した後の本文とカーソル位置。 */
+data class TextInsertion(val text: String, val cursor: Int)
+
+/**
+ * 1行入力と送信ボタン。[onInsertEmoji] を渡すと絵文字ボタンを出し、選んだ絵文字をカーソル位置へ挿入する。
+ * 挿入は呼び出し側が行い（下書きの絵文字を保持するため）、結果の本文とカーソル位置を返す。
+ */
 @Composable
 fun AppMessageComposer(
     text: String,
@@ -53,8 +69,19 @@ fun AppMessageComposer(
     enabled: Boolean = true,
     isSending: Boolean = false,
     error: String? = null,
+    onInsertEmoji: ((text: String, selectionStart: Int, selectionEnd: Int, option: ReactionOption) -> TextInsertion?)? = null,
+    onOpenCustomEmojiSettings: (() -> Unit)? = null,
 ) {
     DismissKeyboardOnLeave()
+    var value by remember { mutableStateOf(TextFieldValue(text)) }
+    var showEmojiPicker by remember { mutableStateOf(false) }
+    val dismissKeyboard = rememberDismissKeyboard()
+    // 送信後のクリアなど、外から本文が変わったときだけ追従する。
+    LaunchedEffect(text) {
+        if (value.text != text) {
+            value = TextFieldValue(text = text, selection = TextRange(text.length))
+        }
+    }
     Surface(
         modifier = modifier
             .fillMaxWidth()
@@ -72,9 +99,27 @@ fun AppMessageComposer(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
+                if (onInsertEmoji != null) {
+                    IconButton(
+                        onClick = {
+                            dismissKeyboard()
+                            showEmojiPicker = true
+                        },
+                        enabled = enabled && !isSending,
+                        modifier = Modifier.size(40.dp),
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.InsertEmoticon,
+                            contentDescription = "絵文字",
+                        )
+                    }
+                }
                 OutlinedTextField(
-                    value = text,
-                    onValueChange = onTextChange,
+                    value = value,
+                    onValueChange = { next ->
+                        value = next
+                        if (next.text != text) onTextChange(next.text)
+                    },
                     modifier = Modifier.weight(1f),
                     placeholder = { Text(placeholder) },
                     enabled = enabled && !isSending,
@@ -100,5 +145,18 @@ fun AppMessageComposer(
                 )
             } ?: Spacer(modifier = Modifier.size(0.dp))
         }
+    }
+
+    if (showEmojiPicker && onInsertEmoji != null) {
+        StandardEmojiPickerSheet(
+            onDismiss = { showEmojiPicker = false },
+            onSelect = { option ->
+                showEmojiPicker = false
+                onInsertEmoji(value.text, value.selection.start, value.selection.end, option)?.let { inserted ->
+                    value = TextFieldValue(text = inserted.text, selection = TextRange(inserted.cursor))
+                }
+            },
+            onOpenCustomEmojiSettings = onOpenCustomEmojiSettings,
+        )
     }
 }

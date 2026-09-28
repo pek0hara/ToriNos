@@ -1,5 +1,11 @@
 package com.nostr.torinos.ui.channel
 
+import com.nostr.torinos.ui.post.resolveDraftEmojis
+import com.nostr.torinos.ui.post.insertDraftEmoji
+import com.nostr.torinos.ui.post.DraftEmojiInsertion
+import com.nostr.torinos.ui.components.recordReactionUse
+import com.nostr.torinos.emoji.customEmojiTagsForContent
+import com.nostr.torinos.emoji.CustomEmoji
 import com.nostr.torinos.account.AccountSession
 import com.nostr.torinos.ui.channel.ChannelViewModel.EditThreadDialogState
 import com.nostr.torinos.ui.channel.ChannelViewModel.UiState
@@ -224,8 +230,38 @@ internal class ChannelController(
 
     fun onDraftChange(text: String) {
         val current = _state.value as? UiState.Ready ?: return
-        _state.value = current.copy(draftText = text, postError = null)
+        _state.value = current.copy(
+            draftText = text,
+            draftEmojis = resolveDraftEmojis(text, current.draftEmojis, registeredEmojis()),
+            postError = null,
+        )
     }
+
+    /** 選択範囲を絵文字で置き換え、挿入後の本文とカーソル位置を返す。 */
+    fun insertEmoji(selectionStart: Int, selectionEnd: Int, option: ReactionOption): DraftEmojiInsertion? {
+        val current = _state.value as? UiState.Ready ?: return null
+        val inserted = insertDraftEmoji(
+            text = current.draftText,
+            selectionStart = selectionStart,
+            selectionEnd = selectionEnd,
+            option = option,
+            retained = current.draftEmojis,
+        ) ?: return null
+        accountSession.recordReactionUse(option)
+        _state.value = current.copy(
+            draftText = inserted.text,
+            draftEmojis = resolveDraftEmojis(
+                inserted.text,
+                current.draftEmojis + listOfNotNull(inserted.customEmoji),
+                registeredEmojis(),
+            ),
+            postError = null,
+        )
+        return inserted
+    }
+
+    private fun registeredEmojis(): List<CustomEmoji> =
+        accountSession?.customEmojis?.preferences?.value?.available.orEmpty()
 
     fun consumeEngagementError() {
         val ready = _state.value as? UiState.Ready ?: return
@@ -250,6 +286,9 @@ internal class ChannelController(
                 content = text,
                 kind = noteContext.eventKind,
                 tags = ChannelEventTags.rootMessage(channelId, publishContext.primaryHint) +
+                    customEmojiTagsForContent(text, current.draftEmojis) { emoji ->
+                        accountSession?.customEmojis?.preferences?.value?.setAddressOf(emoji)
+                    } +
                     listOf(listOf("client", "ToriNos")),
                 relayUrls = publishContext.relayUrls,
                 // 最初の受理後に届く残りのリレーの結果。リポジトリのスコープから呼ばれるため画面側へ戻す。
@@ -269,6 +308,7 @@ internal class ChannelController(
                     // 1件以上成功なら投稿済み。一部失敗は publishState に残して案内する。
                     is SignedPublishResult.Published -> ready.copy(
                         draftText = "",
+                        draftEmojis = emptyList(),
                         isPosting = false,
                         publishState = publishState,
                     )

@@ -1,5 +1,6 @@
 package com.nostr.torinos.ui.channel
 
+import com.nostr.torinos.emoji.CustomEmoji
 import androidx.lifecycle.viewModelScope
 import com.nostr.torinos.account.AccountSession
 import com.nostr.torinos.engagement.EngagementRequest
@@ -47,6 +48,8 @@ class ChannelViewModel(
             val canLoadMore: Boolean = false,
             val history: ChannelHistoryState = ChannelHistoryState(),
             val draftText: String = "",
+            /** 下書きで使っているカスタム絵文字。選んだ画像を送信まで保持する（決定事項 D2）。 */
+            val draftEmojis: List<CustomEmoji> = emptyList(),
             val isPosting: Boolean = false,
             val postError: String? = null,
             val editDialog: EditThreadDialogState? = null,
@@ -99,6 +102,8 @@ class ChannelViewModel(
     val state: StateFlow<UiState> = controller.state
 
     fun onDraftChange(text: String) = controller.onDraftChange(text)
+    internal fun insertEmoji(selectionStart: Int, selectionEnd: Int, option: ReactionOption) =
+        controller.insertEmoji(selectionStart, selectionEnd, option)
     fun consumeEngagementError() = controller.consumeEngagementError()
     fun sendMessage() = controller.sendMessage()
     fun deleteMessage(eventId: String) = controller.deleteMessage(eventId)

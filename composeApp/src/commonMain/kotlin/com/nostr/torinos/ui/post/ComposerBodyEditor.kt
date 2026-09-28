@@ -115,24 +115,24 @@ internal fun ColumnScope.ComposerBodyEditor(
     }
 
     fun insertEmoji(option: ReactionOption) {
-        val customEmoji = (option as? ReactionOption.Custom)?.let {
-            uniqueDraftEmoji(CustomEmoji(it.shortcode, it.imageUrl), state.customEmojis, textValue.text)
-        }
-        val insertion = customEmoji?.let { ":${it.shortcode}:" } ?: option.eventContent
-        val start = minOf(textValue.selection.start, textValue.selection.end)
-        val end = maxOf(textValue.selection.start, textValue.selection.end)
-        val newText = textValue.text.replaceRange(start, end, insertion)
-        if (newText.length > MAX_POST_CHARS) return
-        val cursor = start + insertion.length
+        val inserted = insertDraftEmoji(
+            text = textValue.text,
+            selectionStart = textValue.selection.start,
+            selectionEnd = textValue.selection.end,
+            option = option,
+            retained = state.customEmojis,
+            maxLength = MAX_POST_CHARS,
+        ) ?: return
         textValue = TextFieldValue(
-            text = newText,
-            selection = TextRange(cursor),
+            text = inserted.text,
+            selection = TextRange(inserted.cursor),
         )
         accountSession.recordReactionUse(option)
+        val customEmoji = inserted.customEmoji
         if (customEmoji != null) {
-            onCustomEmojiInserted(newText, customEmoji)
+            onCustomEmojiInserted(inserted.text, customEmoji)
         } else {
-            onTextChange(newText)
+            onTextChange(inserted.text)
         }
         showCustomEmojiPicker = false
     }

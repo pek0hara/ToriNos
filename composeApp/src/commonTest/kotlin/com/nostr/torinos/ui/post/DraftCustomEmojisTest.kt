@@ -2,6 +2,7 @@ package com.nostr.torinos.ui.post
 
 import com.nostr.torinos.model.COMMENT_EVENT_KIND
 import com.nostr.torinos.model.NoteContext
+import com.nostr.torinos.model.ReactionOption
 import com.nostr.torinos.emoji.CustomEmoji
 import com.nostr.torinos.emoji.customEmojiTagsForContent
 import kotlin.test.Test
@@ -39,6 +40,20 @@ class DraftCustomEmojisTest {
         assertEquals(listOf(bird, selected), retained)
         assertEquals(selected, uniqueDraftEmoji(other, retained, ":bird: :bird_3:"))
         assertEquals(bird, uniqueDraftEmoji(bird, retained, ":bird:"))
+    }
+
+    @Test
+    fun insertingEmojiReplacesSelectionAndKeepsImagesDistinct() {
+        val first = insertDraftEmoji("hi !", 3, 3, ReactionOption.Custom(bird.shortcode, bird.imageUrl), emptyList())
+        assertEquals(DraftEmojiInsertion("hi :bird:!", 9, bird), first)
+
+        val second = insertDraftEmoji(first!!.text, 9, 10, ReactionOption.Custom(other.shortcode, other.imageUrl), listOf(bird))
+        assertEquals("hi :bird::bird_2:", second?.text)
+        assertEquals("bird_2", second?.customEmoji?.shortcode)
+
+        val unicode = insertDraftEmoji("ab", 2, 0, ReactionOption.Unicode("🎉"), emptyList())
+        assertEquals(DraftEmojiInsertion("🎉", 2, null), unicode)
+        assertNull(insertDraftEmoji("abc", 3, 3, ReactionOption.Unicode("🎉"), emptyList(), maxLength = 4))
     }
 
     @Test

@@ -1,5 +1,9 @@
 package com.nostr.torinos.ui.channel
 
+import com.nostr.torinos.model.ReactionOption
+import com.nostr.torinos.ui.components.CustomEmojiOpenRequest
+import com.nostr.torinos.ui.components.LocalCustomEmojiNavigator
+import com.nostr.torinos.ui.components.TextInsertion
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -343,6 +347,10 @@ fun ChannelScreen(
             ChannelMessageInputBar(
                 ready = ready,
                 onDraftChange = viewModel::onDraftChange,
+                onInsertEmoji = { _, selectionStart, selectionEnd, option ->
+                    viewModel.insertEmoji(selectionStart, selectionEnd, option)
+                        ?.let { TextInsertion(it.text, it.cursor) }
+                },
                 onSend = viewModel::sendMessage,
                 onOpenRelayDetails = { showRelayDetails = true },
             )
@@ -752,9 +760,11 @@ private fun ChannelDetailRelayPendingContent(
 private fun ChannelMessageInputBar(
     ready: ChannelViewModel.UiState.Ready?,
     onDraftChange: (String) -> Unit,
+    onInsertEmoji: (String, Int, Int, ReactionOption) -> TextInsertion?,
     onSend: () -> Unit,
     onOpenRelayDetails: () -> Unit,
 ) {
+    val openCustomEmoji = LocalCustomEmojiNavigator.current
     Column {
         // 投稿先の概要と一部失敗の案内(FR-10)。AppMessageComposer 自体にはチャンネル固有の表示を入れない。
         if (ready != null) {
@@ -787,6 +797,8 @@ private fun ChannelMessageInputBar(
             enabled = ready != null,
             isSending = ready?.isPosting == true,
             error = ready?.postError,
+            onInsertEmoji = onInsertEmoji.takeIf { ready != null },
+            onOpenCustomEmojiSettings = { openCustomEmoji(CustomEmojiOpenRequest.of("")) },
         )
     }
 }
