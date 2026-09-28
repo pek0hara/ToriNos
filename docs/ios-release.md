@@ -10,17 +10,7 @@ Ruby 依存関係をインストールする。
 bundle install
 ```
 
-App Store Connect の API キーを作成し、次の環境変数を設定する。秘密鍵（`.p8`）はリポジトリに追加しない。
-
-```sh
-export APP_STORE_CONNECT_API_KEY_KEY_ID="キーID"
-export APP_STORE_CONNECT_API_KEY_ISSUER_ID="Issuer ID"
-export APP_STORE_CONNECT_API_KEY_KEY_FILEPATH="/絶対パス/AuthKey_XXXXXXXXXX.p8"
-```
-
-Xcode の Accounts に Apple ID を追加し、`2F7KXC2828` チームの署名証明書を利用できる状態にしておく。Fastlane は必要な Provisioning Profile の更新を Xcode に許可してビルドする。
-
-API キーを使わない場合は、代わりに `APP_STORE_CONNECT_USERNAME` または `FASTLANE_USER` を設定する。
+Xcode の Accounts に App Store Connect へアップロードできる Apple ID を追加し、`2F7KXC2828` チームの署名証明書を利用できる状態にしておく。Fastlane は必要な Provisioning Profile の更新を Xcode に許可し、Xcode Accounts の認証でアップロードする。
 
 ## TestFlight へアップロード
 
@@ -28,12 +18,6 @@ API キーを使わない場合は、代わりに `APP_STORE_CONNECT_USERNAME` �
 
 ```sh
 bundle exec fastlane ios release
-```
-
-処理完了を待ってから終了したい場合は、次を実行する。
-
-```sh
-bundle exec fastlane ios release wait_for_processing:true
 ```
 
 IPA は `build/ios/release/ToriNos.ipa` に出力される。通常は変更が残っている状態での誤リリースを防止する。意図的に未コミットの変更を含める場合のみ `allow_dirty:true` を指定する。

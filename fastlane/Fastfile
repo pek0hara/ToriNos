@@ -60,16 +60,7 @@ platform :ios do
   lane :release do |options|
     ensure_git_status_clean unless options[:allow_dirty]
 
-    api_key = app_store_connect_api_key_from_env
-    username = ENV["APP_STORE_CONNECT_USERNAME"] || ENV["FASTLANE_USER"]
-    if api_key.nil? && username.to_s.empty?
-      UI.user_error!(
-        "App Store Connectの認証情報がありません。" \
-        "APIキーまたはAPP_STORE_CONNECT_USERNAMEを設定してください。"
-      )
-    end
-
-    ipa_path = build_app(
+    build_app(
       project: project,
       scheme: scheme,
       configuration: "Release",
@@ -85,17 +76,17 @@ platform :ios do
       output_name: "ToriNos.ipa"
     )
 
-    upload_options = {
-      ipa: ipa_path,
-      app_identifier: "com.nostr.torinos.app",
-      skip_waiting_for_build_processing: options[:wait_for_processing] != true,
-      skip_submission: true,
-      changelog: options[:what_to_test] || what_to_test
-    }
-    upload_options[:api_key] = api_key if api_key
-    upload_options[:username] = username unless username.to_s.empty?
+    archive_path = lane_context[SharedValues::XCODEBUILD_ARCHIVE]
+    UI.user_error!("作成したXcodeアーカイブを取得できませんでした。") unless archive_path
 
-    upload_to_testflight(upload_options)
+    sh(
+      "xcodebuild",
+      "-exportArchive",
+      "-archivePath", archive_path,
+      "-exportPath", File.expand_path("../build/ios/upload", __dir__),
+      "-exportOptionsPlist", File.expand_path("ExportOptions.plist", __dir__),
+      "-allowProvisioningUpdates"
+    )
   end
 
   desc "Upload TestFlight metadata and optionally distribute to external testers"
