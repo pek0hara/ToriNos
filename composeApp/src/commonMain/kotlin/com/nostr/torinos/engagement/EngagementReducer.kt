@@ -151,6 +151,54 @@ object EngagementReducer {
         return rolledBack.copy(pendingOperations = rolledBack.pendingOperations - entry.key)
     }
 
+    /**
+     * リレーから取り直した[fetched]へ、送信中の[pending]を載せ直す。
+     * 取得結果に操作の結果がすでに含まれていれば差分は足さず、その操作の取り消し時にも引かない。
+     * 含まれていなければ差分を足し直し、取り消し時に引いても実際の件数に戻るようにする。
+     */
+    fun rebase(
+        fetched: NoteEngagementState,
+        pending: Map<EngagementSlot, PendingEngagementOperation>,
+    ): NoteEngagementState {
+        var state = fetched.copy(pendingOperations = emptyMap())
+        val rebased = mutableMapOf<EngagementSlot, PendingEngagementOperation>()
+        pending.forEach { (slot, operation) ->
+            val request = operation.request
+            val reflected = when (request) {
+                EngagementRequest.AddLike -> fetched.ownLikeEventId != null
+                is EngagementRequest.AddEmoji -> request.option.key in fetched.ownEmojiReactionEventIds
+                EngagementRequest.AddRepost -> fetched.ownRepostEventId != null
+                EngagementRequest.RemoveLike -> fetched.ownLikeEventId != operation.removedEventId
+                is EngagementRequest.RemoveEmoji ->
+                    fetched.ownEmojiReactionEventIds[request.option.key] != operation.removedEventId
+                EngagementRequest.RemoveRepost -> fetched.ownRepostEventId != operation.removedEventId
+            }
+            if (reflected) {
+                rebased[slot] = operation.copy(appliedDelta = EngagementDelta())
+                return@forEach
+            }
+            val delta = operation.appliedDelta
+            state = state.applyEmojiDelta(delta.emojiOption, delta.emojiCount).copy(
+                reactionCount = maxOf(0, state.reactionCount + delta.reactionCount),
+                likeReactionCount = maxOf(0, state.likeReactionCount + delta.likeReactionCount),
+                repostCount = maxOf(0, state.repostCount + delta.repostCount),
+            )
+            state = when (request) {
+                EngagementRequest.RemoveLike -> state.copy(ownLikeEventId = null)
+                is EngagementRequest.RemoveEmoji -> state.copy(
+                    ownEmojiReactionEventIds = state.ownEmojiReactionEventIds - request.option.key,
+                )
+                EngagementRequest.RemoveRepost -> state.copy(ownRepostEventId = null)
+                EngagementRequest.AddLike,
+                is EngagementRequest.AddEmoji,
+                EngagementRequest.AddRepost,
+                -> state
+            }
+            rebased[slot] = operation
+        }
+        return state.copy(pendingOperations = rebased)
+    }
+
     private fun NoteEngagementState.applyEmojiDelta(
         option: ReactionOption?,
         delta: Int,

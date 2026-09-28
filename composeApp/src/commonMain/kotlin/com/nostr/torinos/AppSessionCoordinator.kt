@@ -1050,7 +1050,6 @@ internal fun AppSessionCoordinator(
                                 openReplyComposer(event, preview, NoteContext.Timeline)
                             },
                             onUserClick = ::openProfileDrawer,
-                            onOpenArticle = { pubkey, identifier -> nav.navigate(ArticleRoute(pubkey, identifier)) },
                             ownPubkey = ownPubkey,
                             ownProfile = ownProfile,
                             onOpenRelaySettings = {
@@ -1245,7 +1244,6 @@ internal fun AppSessionCoordinator(
                                 openReplyComposer(event, preview, NoteContext.Timeline)
                             },
                             onUserClick = ::openProfileDrawer,
-                            onOpenArticle = { pubkey, identifier -> nav.navigate(ArticleRoute(pubkey, identifier)) },
                             ownPubkey = ownPubkey,
                             ownProfile = ownProfile,
                             onOpenRelaySettings = {

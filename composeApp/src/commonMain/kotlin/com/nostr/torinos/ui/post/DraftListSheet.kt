@@ -42,18 +42,18 @@ import com.nostr.torinos.ui.components.formatTimestamp
 internal fun DraftListSheet(
     onDismiss: () -> Unit,
     onDraftClick: (PostMemoData) -> Unit,
-    viewModel: JournalViewModel = accountSessionViewModel(
+    viewModel: DraftListViewModel = accountSessionViewModel(
         key = "post-draft-list",
-    ) { accountSession -> JournalViewModel(accountSession = accountSession) },
+    ) { accountSession -> DraftListViewModel(accountSession) },
 ) {
     val state by viewModel.state.collectAsState()
     val relays by RelayStore.relays.collectAsState(initial = emptyList())
     val selectedRelayUrl by RelayStore.selectedMemoRelayUrl.collectAsState()
-    val drafts = state.memos.sortedByDescending { it.displayTime }
+    val drafts = state.drafts
 
     LaunchedEffect(relays, selectedRelayUrl) {
         if (relays.isNotEmpty()) {
-            viewModel.loadAllMemos(selectedRelayUrl?.takeIf { it in relays } ?: relays.first())
+            viewModel.load(selectedRelayUrl?.takeIf { it in relays } ?: relays.first())
         }
     }
 
@@ -131,7 +131,7 @@ internal fun DraftListSheet(
             },
             confirmButton = {
                 TextButton(
-                    onClick = viewModel::deleteSelectedMemo,
+                    onClick = viewModel::deleteSelected,
                     enabled = !dialog.isDeleting,
                 ) {
                     if (dialog.isDeleting) {
@@ -153,7 +153,7 @@ internal fun DraftListSheet(
 
 @Composable
 private fun DraftRow(
-    item: JournalItem,
+    item: DraftMemo,
     onClick: () -> Unit,
     onDelete: () -> Unit,
 ) {

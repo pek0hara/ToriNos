@@ -1,558 +1,212 @@
 package com.nostr.torinos.ui.post
 
 import com.nostr.torinos.account.AccountSession
-import com.nostr.torinos.account.AccountSigner
-import com.nostr.torinos.engagement.EngagementAction
 import com.nostr.torinos.engagement.EngagementOperationId
-import com.nostr.torinos.engagement.EngagementReducer
 import com.nostr.torinos.engagement.EngagementRequest
-import com.nostr.torinos.engagement.EngagementSlot
 import com.nostr.torinos.engagement.NoteEngagementCommand
 import com.nostr.torinos.engagement.NoteEngagementState
 import com.nostr.torinos.engagement.NoteTarget
-import com.nostr.torinos.engagement.PendingEngagementOperation
-import com.nostr.torinos.engagement.displayOwnEmojiReactionEventIds
+import com.nostr.torinos.journal.JournalActivity
+import com.nostr.torinos.journal.JournalActivityClassifier
+import com.nostr.torinos.journal.JournalActivityKind
+import com.nostr.torinos.journal.JournalClock
+import com.nostr.torinos.journal.JournalCoverage
+import com.nostr.torinos.journal.JournalDateNavigator
+import com.nostr.torinos.journal.JournalEngagementAggregator
+import com.nostr.torinos.journal.JournalEngagementSource
+import com.nostr.torinos.journal.JournalEventSource
+import com.nostr.torinos.journal.JournalFetchPlanner
+import com.nostr.torinos.journal.JournalFetchRequest
+import com.nostr.torinos.journal.JournalFetchResult
+import com.nostr.torinos.journal.JournalOwner
+import com.nostr.torinos.journal.JournalTimeline
+import com.nostr.torinos.journal.NostrJournalEngagementSource
+import com.nostr.torinos.journal.NostrJournalEventSource
+import com.nostr.torinos.journal.daysOfMonthUntil
+import com.nostr.torinos.journal.effectiveJournalKinds
+import com.nostr.torinos.journal.isSameMonth
+import com.nostr.torinos.journal.journalReferencedEventIds
+import com.nostr.torinos.journal.mergeProgressive
+import com.nostr.torinos.journal.monthStart
+import com.nostr.torinos.journal.nextMonth
+import com.nostr.torinos.journal.previousMonth
+import com.nostr.torinos.journal.replaceCompleted
 import com.nostr.torinos.model.COMMENT_EVENT_KIND
 import com.nostr.torinos.model.NostrEvent
-import com.nostr.torinos.model.NostrFilter
 import com.nostr.torinos.model.NostrProfile
-import com.nostr.torinos.model.NIP23_ARTICLE_KIND
-import com.nostr.torinos.model.CustomReaction
 import com.nostr.torinos.model.ReactionOption
-import com.nostr.torinos.model.UnicodeReaction
-import com.nostr.torinos.model.incrementedWith
-import com.nostr.torinos.model.incrementedWithUnicodeReaction
-import com.nostr.torinos.model.isSupportedTimelineComment
-import com.nostr.torinos.model.quotedEventIds
-import com.nostr.torinos.model.replyTargetId
-import com.nostr.torinos.model.toCustomReaction
-import com.nostr.torinos.model.toUnicodeReaction
-import com.nostr.torinos.model.toReactionOption
-import com.nostr.torinos.model.toProfile
-import com.nostr.torinos.network.NostrRepository
+import com.nostr.torinos.network.EventByIdFetcher
 import com.nostr.torinos.network.ProfileFetchPolicy
 import com.nostr.torinos.network.ProfileRepository
 import com.nostr.torinos.network.ReactionEventStore
-import com.nostr.torinos.network.RelayOutcome
-import com.nostr.torinos.network.RelayTarget
-import com.nostr.torinos.network.SubscriptionBehavior
-import com.nostr.torinos.network.SubscriptionSignal
-import com.nostr.torinos.network.SubscriptionSpec
+import com.nostr.torinos.network.TargetEventFetcher
 import com.nostr.torinos.ui.SafeCoroutineLauncher
-import com.nostr.torinos.util.appLog
-import com.nostr.torinos.ui.timeline.NoteEngagementCoordinator
 import com.nostr.torinos.ui.timeline.NoteDeletionResult
 import com.nostr.torinos.ui.timeline.NoteDeletionService
+import com.nostr.torinos.ui.timeline.NoteEngagementCoordinator
 import com.nostr.torinos.ui.timeline.StateStore
-import com.nostr.torinos.ui.timeline.SignedEventPublisher
-import com.nostr.torinos.ui.timeline.SignedPublishResult
-import kotlin.time.Clock
-import kotlin.time.Instant
+import com.nostr.torinos.util.journalTraceLog
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
-import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.first
-import kotlinx.coroutines.flow.map
-import kotlinx.coroutines.flow.merge
-import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withLock
-import kotlinx.coroutines.withTimeoutOrNull
-import kotlinx.serialization.json.Json
 import kotlinx.datetime.LocalDate
-import kotlinx.datetime.TimeZone
-import kotlinx.datetime.atStartOfDayIn
-import kotlinx.datetime.toLocalDateTime
-import kotlin.random.Random
 
-data class JournalItem(
-    val eventId: String,
-    val pubkey: String,
-    val tags: List<List<String>>,
-    val memo: PostMemoData,
-    val createdAt: Long,
-) {
-    val displayTime: Long get() = memo.updatedAt.takeIf { it > 0 } ?: createdAt
-}
+/** プロフィールの取得と監視。テストではネットワークを使わない実装に差し替える。 */
+internal interface JournalProfileSource {
+    fun cached(pubkeys: Set<String>): Map<String, NostrProfile>
+    fun observe(pubkeys: Set<String>): Flow<Map<String, NostrProfile>>
+    suspend fun ensure(pubkeys: Set<String>, relayHint: String?)
 
-sealed class JournalEntry {
-    data class Memo(val item: JournalItem) : JournalEntry()
-    data class Note(val event: NostrEvent) : JournalEntry()
-
-    val displayTime: Long get() = when (this) {
-        is Memo -> item.displayTime
-        is Note -> event.createdAt
+    object Repository : JournalProfileSource {
+        override fun cached(pubkeys: Set<String>) = ProfileRepository.getCached(pubkeys)
+        override fun observe(pubkeys: Set<String>) = ProfileRepository.observe(pubkeys)
+        override suspend fun ensure(pubkeys: Set<String>, relayHint: String?) =
+            ProfileRepository.ensureProfiles(pubkeys, ProfileFetchPolicy.CacheFirst(PROFILE_MAX_AGE_MS), relayHint)
     }
 }
 
 /**
- * 投稿本体から作る不変の月索引。
- * リアクションや画面表示状態の更新では作り直さない。
+ * ジャーナル画面の取得と状態遷移。
+ * 種類の判定・取得計画・取得済み範囲・日付索引・日付移動・エンゲージメント集計は`journal`パッケージの純粋処理に任せ、
+ * ここではジョブの取り消し、世代の確認、状態の更新だけを行う。
  */
-data class JournalContent(
-    val memos: List<JournalItem> = emptyList(),
-    val notes: List<NostrEvent> = emptyList(),
-) {
-    private val entriesByDate: Map<LocalDate, List<JournalEntry>>
-    private val entriesByMonth: Map<LocalDate, List<JournalEntry>>
-
-    val entryCountsByDate: Map<LocalDate, Int>
-
-    init {
-        val entries = buildList {
-            memos.forEach { add(JournalEntry.Memo(it)) }
-            notes.forEach { add(JournalEntry.Note(it)) }
-        }
-        entriesByDate = entries
-            .groupBy { dateOfEpochSeconds(it.displayTime) }
-            .mapValues { (_, values) -> values.sortedBy { it.displayTime } }
-        entriesByMonth = entries
-            .groupBy { dateOfEpochSeconds(it.displayTime).monthStart() }
-            .mapValues { (_, values) -> values.sortedBy { it.displayTime } }
-        entryCountsByDate = entriesByDate.mapValues { (_, values) -> values.size }
-    }
-
-    fun entriesForDate(date: LocalDate): List<JournalEntry> = entriesByDate[date].orEmpty()
-
-    fun entriesForMonth(month: LocalDate): List<JournalEntry> =
-        entriesByMonth[month.monthStart()].orEmpty()
-}
-
-enum class JournalLoadKind {
-    Post,
-    Reply,
-    Repost,
-    Like,
-    ReceivedLike,
-    Memo,
-    Article,
-}
-
-data class JournalDeleteDialogState(
-    val item: JournalItem,
-    val isDeleting: Boolean = false,
-    val error: String? = null,
-)
-
-data class JournalNoteDeleteDialogState(
-    val event: NostrEvent,
-    val isDeleting: Boolean = false,
-    val error: String? = null,
-)
-
-data class JournalState(
-    val selectedMonth: LocalDate = currentMonth(),
-    val selectedDate: LocalDate = currentDate(),
-    val showCalendar: Boolean = true,
-    val content: JournalContent = JournalContent(),
-    val profiles: Map<String, NostrProfile> = emptyMap(),
-    val quotedEvents: Map<String, NostrEvent> = emptyMap(),
-    val reactionCounts: Map<String, Int> = emptyMap(),
-    val likeReactionCounts: Map<String, Int> = emptyMap(),
-    val customReactions: Map<String, List<CustomReaction>> = emptyMap(),
-    val unicodeReactions: Map<String, List<UnicodeReaction>> = emptyMap(),
-    val reactionEvents: Map<String, List<NostrEvent>> = emptyMap(),
-    val replyCounts: Map<String, Int> = emptyMap(),
-    val replies: Map<String, List<NostrEvent>> = emptyMap(),
-    val repostCounts: Map<String, Int> = emptyMap(),
-    val repostPubkeys: Map<String, List<String>> = emptyMap(),
-    val likedReactions: Map<String, String> = emptyMap(),
-    val ownEmojiReactionEventIds: Map<String, Map<String, String>> = emptyMap(),
-    val pendingEngagementOperations: Map<String, Map<EngagementSlot, PendingEngagementOperation>> = emptyMap(),
-    val engagementError: String? = null,
-    val loadedDates: Set<LocalDate> = emptySet(),
-    val loadedKindsByDate: Map<LocalDate, Set<JournalLoadKind>> = emptyMap(),
-    val isLoading: Boolean = false,
-    val deleteDialog: JournalDeleteDialogState? = null,
-    val noteDeleteDialog: JournalNoteDeleteDialogState? = null,
-    val error: String? = null,
-) {
-    val memos: List<JournalItem> get() = content.memos
-    val notes: List<NostrEvent> get() = content.notes
-
-    fun isLiked(eventId: String): Boolean = likedReactions.containsKey(eventId) ||
-        pendingEngagementOperations[eventId]?.get(EngagementSlot.Reaction)?.request is EngagementRequest.AddLike
-
-    fun displayOwnEmojiReactionEventIds(eventId: String): Map<String, String> =
-        noteEngagement(eventId).displayOwnEmojiReactionEventIds
-
-    val entryCountsByDate: Map<LocalDate, Int> get() = content.entryCountsByDate
-    val selectedEntries: List<JournalEntry> get() = content.entriesForDate(selectedDate)
-    val monthEntries: List<JournalEntry> get() = content.entriesForMonth(selectedMonth)
-
-    val canGoNextMonth: Boolean get() = selectedMonth < currentMonth()
-    val canGoNextDate: Boolean get() = selectedDate < currentDate()
-}
-
-private fun JournalState.withContent(
-    memos: List<JournalItem> = this.memos,
-    notes: List<NostrEvent> = this.notes,
-): JournalState = copy(content = JournalContent(memos = memos, notes = notes))
-
-private fun JournalState.noteEngagement(eventId: String): NoteEngagementState = NoteEngagementState(
-    reactionCount = reactionCounts[eventId] ?: 0,
-    likeReactionCount = likeReactionCounts[eventId] ?: 0,
-    customReactions = customReactions[eventId].orEmpty(),
-    unicodeReactions = unicodeReactions[eventId].orEmpty(),
-    ownLikeEventId = likedReactions[eventId],
-    ownEmojiReactionEventIds = ownEmojiReactionEventIds[eventId].orEmpty(),
-    repostCount = repostCounts[eventId] ?: 0,
-    pendingOperations = pendingEngagementOperations[eventId].orEmpty(),
-)
-
-private fun JournalState.withEngagement(
-    eventId: String,
-    engagement: NoteEngagementState,
-): JournalState = copy(
-    reactionCounts = reactionCounts + (eventId to engagement.reactionCount),
-    likeReactionCounts = likeReactionCounts + (eventId to engagement.likeReactionCount),
-    customReactions = customReactions.putListOrRemove(eventId, engagement.customReactions),
-    unicodeReactions = unicodeReactions.putListOrRemove(eventId, engagement.unicodeReactions),
-    likedReactions = likedReactions.putOrRemove(eventId, engagement.ownLikeEventId),
-    ownEmojiReactionEventIds = ownEmojiReactionEventIds.putMapOrRemove(
-        eventId,
-        engagement.ownEmojiReactionEventIds,
-    ),
-    pendingEngagementOperations = pendingEngagementOperations.putMapOrRemove(
-        eventId,
-        engagement.pendingOperations,
-    ),
-)
-
-private fun <K, V> Map<K, V>.putOrRemove(key: K, value: V?): Map<K, V> =
-    if (value == null) this - key else this + (key to value)
-
-private fun <K, V> Map<K, List<V>>.putListOrRemove(key: K, value: List<V>): Map<K, List<V>> =
-    if (value.isEmpty()) this - key else this + (key to value)
-
-private fun <K, K2, V2> Map<K, Map<K2, V2>>.putMapOrRemove(
-    key: K,
-    value: Map<K2, V2>,
-): Map<K, Map<K2, V2>> = if (value.isEmpty()) this - key else this + (key to value)
-
-internal data class JournalEngagementSnapshot(
-    val reactionCounts: Map<String, Int> = emptyMap(),
-    val likeReactionCounts: Map<String, Int> = emptyMap(),
-    val customReactions: Map<String, List<CustomReaction>> = emptyMap(),
-    val unicodeReactions: Map<String, List<UnicodeReaction>> = emptyMap(),
-    val reactionEvents: Map<String, List<NostrEvent>> = emptyMap(),
-    val replyCounts: Map<String, Int> = emptyMap(),
-    val replies: Map<String, List<NostrEvent>> = emptyMap(),
-    val repostCounts: Map<String, Int> = emptyMap(),
-    val repostPubkeys: Map<String, List<String>> = emptyMap(),
-    val likedReactions: Map<String, String> = emptyMap(),
-    val ownEmojiReactionEventIds: Map<String, Map<String, String>> = emptyMap(),
-)
-
-private data class JournalEventFetch(
-    val memoEvents: List<NostrEvent> = emptyList(),
-    val noteEvents: List<NostrEvent> = emptyList(),
-    val completedKinds: Set<JournalLoadKind> = emptySet(),
-)
-
-private data class JournalEventGroupFetch(
-    val events: List<NostrEvent> = emptyList(),
-    val complete: Boolean = false,
-)
-
-internal fun JournalState.withProgressiveJournalEngagement(
-    snapshot: JournalEngagementSnapshot,
-): JournalState = copy(
-    reactionCounts = reactionCounts.withMaxCounts(snapshot.reactionCounts),
-    likeReactionCounts = likeReactionCounts.withMaxCounts(snapshot.likeReactionCounts),
-    customReactions = customReactions.withMaxCustomReactionCounts(snapshot.customReactions),
-    unicodeReactions = unicodeReactions.withMaxUnicodeReactionCounts(snapshot.unicodeReactions),
-    reactionEvents = reactionEvents.withMergedEventLists(snapshot.reactionEvents),
-    replyCounts = replyCounts.withMaxCounts(snapshot.replyCounts),
-    replies = replies.withMergedReplies(snapshot.replies),
-    repostCounts = repostCounts.withMaxCounts(snapshot.repostCounts),
-    repostPubkeys = repostPubkeys.withMergedStringLists(snapshot.repostPubkeys),
-    likedReactions = likedReactions + snapshot.likedReactions,
-    ownEmojiReactionEventIds = ownEmojiReactionEventIds.withMergedReactionEventIds(
-        snapshot.ownEmojiReactionEventIds,
-    ),
-)
-
-internal fun JournalState.withCompletedJournalEngagement(
-    noteIds: Set<String>,
-    snapshot: JournalEngagementSnapshot,
-): JournalState = copy(
-    reactionCounts = (reactionCounts - noteIds) + snapshot.reactionCounts,
-    likeReactionCounts = (likeReactionCounts - noteIds) + snapshot.likeReactionCounts,
-    customReactions = (customReactions - noteIds) + snapshot.customReactions,
-    unicodeReactions = (unicodeReactions - noteIds) + snapshot.unicodeReactions,
-    reactionEvents = (reactionEvents - noteIds) + snapshot.reactionEvents,
-    replyCounts = (replyCounts - noteIds) + snapshot.replyCounts,
-    replies = (replies - noteIds) + snapshot.replies,
-    repostCounts = (repostCounts - noteIds) + snapshot.repostCounts,
-    repostPubkeys = (repostPubkeys - noteIds) + snapshot.repostPubkeys,
-    likedReactions = (likedReactions - noteIds) + snapshot.likedReactions,
-    ownEmojiReactionEventIds =
-        (ownEmojiReactionEventIds - noteIds) + snapshot.ownEmojiReactionEventIds,
-)
-
-private fun Map<String, Int>.withMaxCounts(updates: Map<String, Int>): Map<String, Int> =
-    updates.entries.fold(this) { result, (eventId, count) ->
-        result + (eventId to maxOf(result[eventId] ?: 0, count))
-    }
-
-private fun Map<String, List<CustomReaction>>.withMaxCustomReactionCounts(
-    updates: Map<String, List<CustomReaction>>,
-): Map<String, List<CustomReaction>> = updates.entries.fold(this) { result, (eventId, reactions) ->
-    val merged = (result[eventId].orEmpty() + reactions)
-        .groupBy { it.shortcode to it.imageUrl }
-        .values
-        .map { sameReaction -> sameReaction.maxBy { it.count } }
-    result + (eventId to merged)
-}
-
-private fun Map<String, List<UnicodeReaction>>.withMaxUnicodeReactionCounts(
-    updates: Map<String, List<UnicodeReaction>>,
-): Map<String, List<UnicodeReaction>> = updates.entries.fold(this) { result, (eventId, reactions) ->
-    val merged = (result[eventId].orEmpty() + reactions)
-        .groupBy { it.content }
-        .values
-        .map { sameReaction -> sameReaction.maxBy { it.count } }
-    result + (eventId to merged)
-}
-
-private fun Map<String, List<NostrEvent>>.withMergedReplies(
-    updates: Map<String, List<NostrEvent>>,
-): Map<String, List<NostrEvent>> = updates.entries.fold(this) { result, (eventId, newReplies) ->
-    result + (
-        eventId to (result[eventId].orEmpty() + newReplies)
-            .distinctBy { it.id }
-            .sortedBy { it.createdAt }
-    )
-}
-
-private fun Map<String, List<NostrEvent>>.withMergedEventLists(
-    updates: Map<String, List<NostrEvent>>,
-): Map<String, List<NostrEvent>> = updates.entries.fold(this) { result, (eventId, events) ->
-    result + (eventId to (result[eventId].orEmpty() + events).distinctBy { it.id })
-}
-
-private fun Map<String, List<String>>.withMergedStringLists(
-    updates: Map<String, List<String>>,
-): Map<String, List<String>> = updates.entries.fold(this) { result, (eventId, values) ->
-    result + (eventId to (result[eventId].orEmpty() + values).distinct())
-}
-
-private fun Map<String, Map<String, String>>.withMergedReactionEventIds(
-    updates: Map<String, Map<String, String>>,
-): Map<String, Map<String, String>> = updates.entries.fold(this) { result, (eventId, eventIds) ->
-    result + (eventId to (result[eventId].orEmpty() + eventIds))
-}
-
 internal class JournalController(
-    private val targetPubkey: String? = null,
-    private val accountSession: AccountSession? = null,
-    private val scope: CoroutineScope,
+    targetPubkey: String? = null,
+    accountSession: AccountSession? = null,
+    scope: CoroutineScope,
+    private val clock: JournalClock = JournalClock(),
+    private val eventSource: JournalEventSource = NostrJournalEventSource(),
+    private val engagementSource: JournalEngagementSource = NostrJournalEngagementSource(),
+    private val referenceFetcher: TargetEventFetcher = EventByIdFetcher(),
+    private val profileSource: JournalProfileSource = JournalProfileSource.Repository,
+    private val cachedReceivedLikes: (pubkey: String, since: Long, until: Long) -> List<NostrEvent> =
+        ReactionEventStore::receivedReactions,
 ) {
-    private val safeCoroutineLauncher = SafeCoroutineLauncher(scope, "JournalController")
-    private fun launch(block: suspend CoroutineScope.() -> Unit): Job =
-        safeCoroutineLauncher.launch(block = block)
-    private val _state = StateStore(JournalState())
-    val state: StateFlow<JournalState> = _state.state
+    private val isSelf = targetPubkey == null
+    private val ownPubkey = accountSession?.signer?.pubkey
+    private val owner: JournalOwner? = (targetPubkey ?: ownPubkey)?.let { JournalOwner(it, isSelf) }
+
+    private val launcher = SafeCoroutineLauncher(scope, "JournalController")
+    private val store = StateStore(JournalState.initial(isSelf, clock).withDerived())
+    val state: StateFlow<JournalState> = store.state
+
+    private val engagementCoordinator = NoteEngagementCoordinator(accountSession?.signer)
+    private val noteDeletionService = NoteDeletionService(accountSession?.signer, accountSession?.sessionId)
+
     private var loadJob: Job? = null
-    private var monthBackfillJob: Job? = null
+    private var backfillJob: Job? = null
     private var engagementJob: Job? = null
-    private var referencedContentJob: Job? = null
+    private var profileObserverJob: Job? = null
     private var relayUrl: String? = null
     private var hasConfiguredRelayUrl = false
-    private var ownPublicKeyHex: String? = null
-    private var subscriptionSequence = 0L
-    private var monthLoadGeneration = 0L
-    private var activeLoadKinds: Set<JournalLoadKind> = defaultJournalLoadKinds()
+    private var monthGeneration = 0L
     private var visibleNoteIds: Set<String> = emptySet()
     private val loadedEngagementNoteIds = mutableSetOf<String>()
-    private val engagementCoordinator = NoteEngagementCoordinator(accountSession?.signer)
-    private val signedEventPublisher = SignedEventPublisher(accountSession?.signer)
-    private val noteDeletionService = NoteDeletionService(accountSession?.signer, accountSession?.sessionId)
+    private val watchedPubkeys = mutableSetOf<String>()
     private var nextEngagementOperationId = 0L
 
-    fun consumeEngagementError() {
-        _state.value = _state.value.copy(engagementError = null)
-    }
+    private data class LoadToken(val generation: Long, val month: LocalDate)
 
-    fun setLoadKinds(kinds: Set<JournalLoadKind>) {
-        val normalized = kinds.ifEmpty { defaultJournalLoadKinds() }
-        if (activeLoadKinds == normalized) return
-        activeLoadKinds = normalized
-        loadMonth(_state.value.selectedMonth)
+    /** ログの先頭に付ける識別子。自分のジャーナルと他人のジャーナルを見分ける。 */
+    private val logTag = if (isSelf) "self" else "user:${targetPubkey?.take(8)}"
+
+    private fun log(message: () -> String) = journalTraceLog { "$logTag ${message()}" }
+
+    fun consumeEngagementError() = update { it.copy(engagementError = null) }
+
+    /** 画面で明示的に選んだ種類。空なら既定の種類を表示する。 */
+    fun setKinds(selected: Set<JournalActivityKind>) {
+        val effective = effectiveJournalKinds(selected, isSelf)
+        if (effective == store.value.kinds) return
+        log { "setKinds selected=$selected effective=$effective" }
+        update { it.copy(kinds = effective) }
+        loadMonth(store.value.selectedMonth)
     }
 
     fun selectDate(date: LocalDate) {
-        _state.value = JournalCalendarReducer.reduce(_state.value, JournalCalendarAction.SelectDate(date))
+        update { JournalCalendarReducer.reduce(it, JournalCalendarAction.SelectDate(date)) }
         loadDate(date)
     }
 
     fun previousDate() {
-        _state.value.previousJournalDate(activeLoadKinds, includeLikes = targetPubkey == null)
-            ?.let { navigateDate(it) }
+        val current = store.value
+        navigateDate(JournalDateNavigator.previous(current.selectedDate, current::datesWithEntries))
     }
 
     fun nextDate() {
-        _state.value.nextJournalDate(activeLoadKinds, includeLikes = targetPubkey == null)
-            ?.let { navigateDate(it) }
+        val current = store.value
+        JournalDateNavigator.next(current.selectedDate, clock.today(), current::datesWithEntries)
+            ?.let(::navigateDate)
     }
 
-    fun toggleCalendar() {
-        val showCalendar = !_state.value.showCalendar
-        _state.value = JournalCalendarReducer.reduce(
-            _state.value,
-            JournalCalendarAction.SetCalendarVisibility(showCalendar),
-        )
-    }
+    fun toggleCalendar() = setCalendarVisible(!store.value.showCalendar)
 
-    fun setVisibleNoteIds(noteIds: Set<String>) {
-        val availableIds = _state.value.notes.asSequence()
-            .filter { it.kind == 1 || it.kind == COMMENT_EVENT_KIND }
-            .map { it.id }
-            .toHashSet()
-        val normalized = noteIds.intersect(availableIds)
-        val missingIds = normalized - loadedEngagementNoteIds
-        if (normalized == visibleNoteIds) return
-        visibleNoteIds = normalized
-        if (missingIds.isNotEmpty()) {
-            fetchEngagement(missingIds.toList(), ownPublicKeyHex)
-        }
-    }
-
-    fun showCalendar() {
-        if (!_state.value.showCalendar) {
-            _state.value = JournalCalendarReducer.reduce(
-                _state.value,
-                JournalCalendarAction.SetCalendarVisibility(true),
-            )
-        }
-    }
+    fun showCalendar() = setCalendarVisible(true)
 
     fun previousMonth() {
-        val previous = _state.value.selectedMonth.previousMonth()
+        val current = store.value
+        val previous = current.selectedMonth.previousMonth()
         loadMonth(
             previous,
-            selectedDate = _state.value.lastJournalDateInMonthOrEnd(
-                monthStart = previous,
-                loadKinds = activeLoadKinds,
-                includeLikes = targetPubkey == null,
-            ),
+            selectedDate = JournalDateNavigator.lastInMonthOrEnd(previous, clock.today(), current::datesWithEntries),
         )
     }
 
     fun nextMonth() {
-        val next = _state.value.selectedMonth.nextMonth()
-        if (next <= currentMonth()) {
-            loadMonth(
-                next,
-                selectedDate = _state.value.firstJournalDateInMonthOrStart(
-                    monthStart = next,
-                    loadKinds = activeLoadKinds,
-                    includeLikes = targetPubkey == null,
-                ),
-            )
-        }
-    }
-
-    fun selectMonth(year: Int, month: Int) {
-        if (year <= 0 || month !in 1..12) return
-        val requestedMonth = LocalDate(year, month, 1)
-        val targetMonth = minOf(requestedMonth, currentMonth())
-        loadMonth(targetMonth)
-    }
-
-    fun refreshToday() {
-        val today = currentDate()
-        loadDate(today, forceRefresh = true)
+        val current = store.value
+        val next = current.selectedMonth.nextMonth()
+        val today = clock.today()
+        if (next > today.monthStart()) return
+        loadMonth(next, selectedDate = JournalDateNavigator.firstInMonthOrStart(next, today, current::datesWithEntries))
     }
 
     fun refresh() {
-        if (_state.value.showCalendar) {
-            loadDate(_state.value.selectedDate, forceRefresh = true)
+        val current = store.value
+        if (current.showCalendar) {
+            loadDate(current.selectedDate, force = true)
         } else {
-            loadMonth(_state.value.selectedMonth, refreshMonth = true)
+            loadMonth(current.selectedMonth, refresh = true)
         }
     }
 
     fun setRelayUrl(url: String?) {
         if (hasConfiguredRelayUrl && relayUrl == url) {
-            if (_state.value.isLoading) {
-                loadMonth(_state.value.selectedMonth)
-            }
+            log { "setRelayUrl unchanged url=$url isLoading=${store.value.isLoading}" }
+            if (store.value.isLoading) loadMonth(store.value.selectedMonth)
             return
         }
+        log { "setRelayUrl url=$url (previous=$relayUrl) -> reset" }
         hasConfiguredRelayUrl = true
         relayUrl = url
-        loadMonth(_state.value.selectedMonth, resetCache = true)
+        loadMonth(store.value.selectedMonth, reset = true)
     }
 
-    /** 下書き一覧用に、保存日の範囲を限定せずポストメモだけを取得する。 */
-    fun loadAllMemos(relayUrl: String?) {
-        loadJob?.cancel()
-        monthBackfillJob?.cancel()
-        referencedContentJob?.cancel()
-        monthLoadGeneration++
-        hasConfiguredRelayUrl = true
-        this.relayUrl = relayUrl
-        _state.value = _state.value.copy(isLoading = true, error = null)
-        loadJob = launch {
-            try {
-                val context = resolveLoadContext() ?: return@launch
-                val fetched = fetchJournalEventGroup(
-                    filters = listOf(
-                        NostrFilter(
-                            kinds = listOf(MEMO_EVENT_KIND),
-                            authors = listOf(context.publicKeyHex),
-                            limit = JOURNAL_ALL_MEMO_LIMIT,
-                        ),
-                    ),
-                    target = relayUrl?.let(RelayTarget::Single) ?: RelayTarget.AllEnabled,
-                )
-                val memos = decodeMemoEvents(fetched.events, context)
-                _state.value = _state.value.withContent(memos = memos).copy(
-                    isLoading = false,
-                    error = null,
-                )
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Throwable) {
-                _state.value = _state.value.copy(
-                    isLoading = false,
-                    error = e.message ?: "下書きの読み込みに失敗しました",
-                )
-            }
+    fun setVisibleNoteIds(noteIds: Set<String>) {
+        val timeline = store.value.timeline
+        val available = noteIds.filterTo(mutableSetOf()) { id ->
+            timeline[id]?.event?.kind.let { it == 1 || it == COMMENT_EVENT_KIND }
         }
+        if (available == visibleNoteIds) return
+        visibleNoteIds = available
+        val missing = available - loadedEngagementNoteIds
+        log { "visibleNotes requested=${noteIds.size} available=${available.size} needEngagement=${missing.size}" }
+        if (missing.isNotEmpty()) fetchEngagement(missing)
     }
 
-    fun close() {
-        loadJob?.cancel()
-        monthBackfillJob?.cancel()
-        engagementJob?.cancel()
-        referencedContentJob?.cancel()
-    }
-
-    private fun navigateDate(date: LocalDate) {
-        if (isSameMonth(date, _state.value.selectedMonth)) {
-            selectDate(date)
-        } else {
-            loadMonth(date.monthStart(), selectedDate = date)
-        }
-    }
-
-    fun react(eventId: String, eventPubkey: String) {
-        runEngagementOperation(
-            eventId,
-            EngagementRequest.AddLike,
-            NoteEngagementCommand.AddLike(NoteTarget(eventId, eventPubkey)),
-            "リアクションの送信に失敗しました",
-        )
-    }
+    fun react(eventId: String, eventPubkey: String) = runEngagementOperation(
+        eventId,
+        EngagementRequest.AddLike,
+        NoteEngagementCommand.AddLike(NoteTarget(eventId, eventPubkey)),
+        "リアクションの送信に失敗しました",
+    )
 
     fun unreact(eventId: String) {
-        val reactionEventId = _state.value.likedReactions[eventId] ?: return
+        val reactionEventId = store.value.engagementOf(eventId).summary.ownLikeEventId ?: return
         runEngagementOperation(
             eventId,
             EngagementRequest.RemoveLike,
@@ -561,23 +215,418 @@ internal class JournalController(
         )
     }
 
-    fun reactWithEmoji(eventId: String, eventPubkey: String, option: ReactionOption) {
-        runEngagementOperation(
-            eventId,
-            EngagementRequest.AddEmoji(option),
-            NoteEngagementCommand.AddEmoji(NoteTarget(eventId, eventPubkey), option),
-            "リアクションの送信に失敗しました",
-        )
-    }
+    fun reactWithEmoji(eventId: String, eventPubkey: String, option: ReactionOption) = runEngagementOperation(
+        eventId,
+        EngagementRequest.AddEmoji(option),
+        NoteEngagementCommand.AddEmoji(NoteTarget(eventId, eventPubkey), option),
+        "リアクションの送信に失敗しました",
+    )
 
     fun unreactWithEmoji(eventId: String, option: ReactionOption) {
-        val reactionEventId = _state.value.ownEmojiReactionEventIds[eventId]?.get(option.key) ?: return
+        val reactionEventId = store.value.engagementOf(eventId).summary.ownEmojiReactionEventIds[option.key] ?: return
         runEngagementOperation(
             eventId,
             EngagementRequest.RemoveEmoji(option),
             NoteEngagementCommand.RemoveReaction(reactionEventId),
             "リアクションの解除に失敗しました",
         )
+    }
+
+    fun showNoteDeleteDialog(event: NostrEvent) =
+        update { it.copy(noteDeleteDialog = JournalNoteDeleteDialogState(event)) }
+
+    fun dismissNoteDeleteDialog() =
+        update { if (it.noteDeleteDialog?.isDeleting == true) it else it.copy(noteDeleteDialog = null) }
+
+    fun deleteSelectedNote() {
+        val dialog = store.value.noteDeleteDialog ?: return
+        if (dialog.isDeleting) return
+        update { it.copy(noteDeleteDialog = dialog.copy(isDeleting = true, error = null)) }
+        launcher.launch {
+            val result = noteDeletionService.delete(dialog.event)
+            log { "deleteNote id=${dialog.event.id.take(8)} result=${result::class.simpleName}" }
+            update { current ->
+                when (result) {
+                    NoteDeletionResult.Deleted -> current.copy(
+                        timeline = current.timeline.remove(dialog.event.id),
+                        noteDeleteDialog = null,
+                    )
+                    NoteDeletionResult.MissingSigner -> current.withDeleteError("秘密鍵が設定されていません")
+                    NoteDeletionResult.NotOwner -> current.withDeleteError("自分の投稿だけ削除できます")
+                    is NoteDeletionResult.Failed -> current.withDeleteError(
+                        result.cause.message ?: "投稿の削除要求を送信できませんでした",
+                    )
+                }
+            }
+        }
+    }
+
+    fun close() {
+        loadJob?.cancel()
+        backfillJob?.cancel()
+        engagementJob?.cancel()
+        profileObserverJob?.cancel()
+    }
+
+    private fun setCalendarVisible(visible: Boolean) {
+        if (store.value.showCalendar == visible) return
+        update { JournalCalendarReducer.reduce(it, JournalCalendarAction.SetCalendarVisibility(visible)) }
+    }
+
+    private fun navigateDate(date: LocalDate) {
+        if (date.isSameMonth(store.value.selectedMonth)) {
+            selectDate(date)
+        } else {
+            loadMonth(date.monthStart(), selectedDate = date)
+        }
+    }
+
+    /**
+     * 月を開く。選択日を先に取り、続けて月の残りの日を裏で取る。
+     * [refresh]はその月を取り直す。取得が完了した日だけ結果で置き換え、失敗した日は既存を残す。
+     * [reset]はリレー切り替えで、取得由来の状態をすべて捨てる。
+     */
+    private fun loadMonth(
+        month: LocalDate,
+        selectedDate: LocalDate? = null,
+        refresh: Boolean = false,
+        reset: Boolean = false,
+    ) {
+        loadJob?.cancel()
+        backfillJob?.cancel()
+        engagementJob?.cancel()
+        visibleNoteIds = emptySet()
+        monthGeneration += 1
+        val monthStart = month.monthStart()
+        val token = LoadToken(monthGeneration, monthStart)
+        val today = clock.today()
+        val current = store.value
+        val nextSelectedDate = selectedDate?.takeIf { it.isSameMonth(monthStart) }
+            ?: current.selectedDate.takeIf { it.isSameMonth(monthStart) }
+            ?: monthStart
+
+        log {
+            "loadMonth month=$monthStart selected=$nextSelectedDate refresh=$refresh reset=$reset " +
+                "generation=$monthGeneration kinds=${current.kinds}"
+        }
+        val owner = owner
+        if (owner == null) {
+            log { "loadMonth aborted: no signer" }
+            update {
+                it.copy(
+                    selectedMonth = monthStart,
+                    selectedDate = nextSelectedDate,
+                    timeline = JournalTimeline.Empty,
+                    coverage = JournalCoverage(),
+                    isLoading = false,
+                    error = "秘密鍵が設定されていません",
+                )
+            }
+            return
+        }
+        if (reset) loadedEngagementNoteIds.clear()
+        if (refresh) loadedEngagementNoteIds -= current.timeline.eventIdsOn(monthStart.daysOfMonthUntil(today))
+
+        update { state ->
+            var next = if (reset) {
+                state.copy(
+                    timeline = JournalTimeline.Empty,
+                    coverage = JournalCoverage(),
+                    referencedEvents = emptyMap(),
+                    engagement = emptyMap(),
+                )
+            } else {
+                state
+            }
+            if (refresh) next = next.copy(coverage = next.coverage.forgetMonth(monthStart))
+            next.withCachedReceivedLikes(owner, monthStart, today).copy(
+                selectedMonth = monthStart,
+                selectedDate = nextSelectedDate,
+                error = null,
+            )
+        }
+        val kinds = store.value.kinds
+        if (!hasConfiguredRelayUrl) {
+            log { "loadMonth skipped: relay not configured yet" }
+            update { it.copy(isLoading = false) }
+            return
+        }
+        if (store.value.coverage.hasLoadedMonth(monthStart, kinds, today)) {
+            log { "loadMonth cached: $monthStart already loaded for $kinds ${store.value.summary()}" }
+            update { it.copy(isLoading = false) }
+            return
+        }
+
+        update { it.copy(isLoading = true) }
+        val initialJob = launcher.launch {
+            try {
+                val coverage = store.value.coverage
+                val monthReceivedLikes = JournalFetchPlanner.willFetchMonthReceivedLikes(monthStart, today, kinds, coverage)
+                val initialKinds = coverage.missing(nextSelectedDate, kinds).let { missing ->
+                    if (monthReceivedLikes) missing - JournalActivityKind.ReceivedLike else missing
+                }
+                val results = fetchAll(
+                    JournalFetchPlanner.forDate(nextSelectedDate, initialKinds, owner, relayUrl, clock),
+                )
+                if (!isCurrent(token)) return@launch logStale("initial", token)
+                val accepted = applyResults(results, owner, replace = refresh)
+                update { it.copy(isLoading = false) }
+                log { "initial done date=$nextSelectedDate ${store.value.summary()}" }
+                fetchReferences(accepted)
+                watchProfiles(setOf(owner.pubkey))
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                log { "initial failed: ${e::class.simpleName}: ${e.message}" }
+                if (isCurrent(token)) {
+                    update { it.copy(isLoading = false, error = e.message ?: "ジャーナルの読み込みに失敗しました") }
+                }
+            }
+        }
+        loadJob = initialJob
+        backfillJob = launcher.launch {
+            // 選択日の取得（または、その間に選び直した日の取得）と取り合わないよう、初回取得の後に始める。
+            initialJob.join()
+            backfillMonth(token, owner, kinds, today, replace = refresh)
+        }
+    }
+
+    private suspend fun backfillMonth(
+        token: LoadToken,
+        owner: JournalOwner,
+        kinds: Set<JournalActivityKind>,
+        today: LocalDate,
+        replace: Boolean,
+    ) {
+        log { "backfill start month=${token.month}" }
+        try {
+            JournalFetchPlanner.monthReceivedLikes(token.month, today, kinds, store.value.coverage, owner, clock)
+                ?.let { request ->
+                    val results = fetchAll(listOf(request))
+                    if (!isCurrent(token)) return logStale("backfill receivedLikes", token)
+                    fetchReferences(applyResults(results, owner, replace))
+                }
+            for (date in token.month.daysOfMonthUntil(today)) {
+                if (!isCurrent(token)) return logStale("backfill $date", token)
+                val missing = store.value.coverage.missing(date, kinds) - JournalActivityKind.ReceivedLike
+                if (missing.isEmpty()) continue
+                val results = fetchAll(JournalFetchPlanner.forDate(date, missing, owner, relayUrl, clock))
+                if (!isCurrent(token)) return logStale("backfill $date", token)
+                fetchReferences(applyResults(results, owner, replace))
+            }
+            log { "backfill done month=${token.month} ${store.value.summary()}" }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Throwable) {
+            log { "backfill failed: ${e::class.simpleName}: ${e.message}" }
+            if (isCurrent(token)) {
+                update { it.copy(isLoading = false, error = e.message ?: "ジャーナルの月間データの読み込みに失敗しました") }
+            }
+        }
+    }
+
+    /** 選択中の月の1日を開く。[force]なら取得済みでも取り直し、完了した分だけ結果で置き換える。 */
+    private fun loadDate(date: LocalDate, force: Boolean = false) {
+        loadJob?.cancel()
+        engagementJob?.cancel()
+        visibleNoteIds = emptySet()
+        val current = store.value
+        if (force) loadedEngagementNoteIds -= current.timeline.eventIdsOn(listOf(date))
+        update { it.copy(selectedMonth = date.monthStart(), selectedDate = date, error = null) }
+        val owner = owner ?: return
+        val token = LoadToken(monthGeneration, date.monthStart())
+        val missing = if (force) current.kinds else current.coverage.missing(date, current.kinds)
+        log { "loadDate date=$date force=$force missing=$missing" }
+        if (missing.isEmpty() || !hasConfiguredRelayUrl) {
+            update { it.copy(isLoading = false) }
+            loadJob = launcher.launch {
+                fetchReferences(store.value.timeline.entries(date, current.kinds).map { it.event })
+            }
+            return
+        }
+        update { it.copy(isLoading = true) }
+        loadJob = launcher.launch {
+            try {
+                val results = fetchAll(JournalFetchPlanner.forDate(date, missing, owner, relayUrl, clock))
+                if (!isCurrent(token)) return@launch logStale("date $date", token)
+                val accepted = applyResults(results, owner, replace = force)
+                update { it.copy(isLoading = false) }
+                log { "loadDate done date=$date entries=${store.value.visibleEntries.size} ${store.value.summary()}" }
+                fetchReferences(accepted)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                log { "loadDate failed: ${e::class.simpleName}: ${e.message}" }
+                if (isCurrent(token)) {
+                    update { it.copy(isLoading = false, error = e.message ?: "この日の投稿の読み込みに失敗しました") }
+                }
+            }
+        }
+    }
+
+    private fun isCurrent(token: LoadToken): Boolean =
+        monthGeneration == token.generation && store.value.selectedMonth == token.month
+
+    private suspend fun fetchAll(requests: List<JournalFetchRequest>): List<JournalFetchResult> =
+        coroutineScope {
+            requests.map { request ->
+                async {
+                    eventSource.fetch(request).also { result ->
+                        log {
+                            val dates = request.dates.let { if (it.size == 1) "${it.single()}" else "${it.first()}..${it.last()}(${it.size}d)" }
+                            "fetch dates=$dates kinds=${request.kinds} target=${request.target} " +
+                                "eventKinds=${request.filters.map { it.kinds }} events=${result.events.size} complete=${result.complete}"
+                        }
+                    }
+                }
+            }.awaitAll()
+        }
+
+    private fun logStale(stage: String, token: LoadToken) = log {
+        "dropped stale result stage=$stage token=${token.generation}/${token.month} " +
+            "current=$monthGeneration/${store.value.selectedMonth}"
+    }
+
+    /**
+     * 取得結果を日付索引と取得済み範囲へ反映し、採用したイベントを返す。
+     * [replace]なら、全リレーが完了した取得の日付・種類だけを結果で置き換える。
+     */
+    private fun applyResults(
+        results: List<JournalFetchResult>,
+        owner: JournalOwner,
+        replace: Boolean,
+    ): List<NostrEvent> {
+        // 分類は状態更新の外で1回だけ行う（更新関数は競合時に再実行されるため）。
+        val accepted = results.map { result -> result to result.acceptedActivities(owner) }
+        update { state ->
+            var timeline = state.timeline
+            var coverage = state.coverage
+            accepted.forEach { (result, activities) ->
+                val request = result.request
+                if (replace && result.complete) {
+                    request.dates.forEach { date -> timeline = timeline.removeMatching(date, request.kinds) }
+                }
+                timeline = timeline.upsert(activities)
+                if (result.complete) coverage = coverage.markLoaded(request.dates, request.kinds)
+            }
+            state.copy(timeline = timeline, coverage = coverage)
+        }
+        log {
+            val acceptedCount = accepted.sumOf { (_, activities) -> activities.size }
+            val received = accepted.sumOf { (result, _) -> result.events.size }
+            "apply accepted=$acceptedCount/$received replace=$replace ${store.value.summary()}"
+        }
+        return accepted.flatMap { (_, activities) -> activities.map { it.event } }
+    }
+
+    private fun JournalFetchResult.acceptedActivities(owner: JournalOwner): List<JournalActivity> =
+        events.mapNotNull { event ->
+            val kinds = JournalActivityClassifier.classify(event, owner)
+            if (request.accepts(kinds)) JournalActivity(event, clock.dateOf(event.createdAt), kinds) else null
+        }
+
+    /** `ReactionEventStore`にある、その月のもらったいいねを通信前に表示する。 */
+    private fun JournalState.withCachedReceivedLikes(
+        owner: JournalOwner,
+        monthStart: LocalDate,
+        today: LocalDate,
+    ): JournalState {
+        if (JournalActivityKind.ReceivedLike !in kinds) return this
+        val days = monthStart.daysOfMonthUntil(today)
+        if (days.isEmpty()) return this
+        val activities = cachedReceivedLikes(owner.pubkey, clock.startOfDay(days.first()), clock.endOfDay(days.last()))
+            .mapNotNull { event ->
+                val kinds = JournalActivityClassifier.classify(event, owner)
+                if (JournalActivityKind.ReceivedLike in kinds) {
+                    JournalActivity(event, clock.dateOf(event.createdAt), kinds)
+                } else {
+                    null
+                }
+            }
+        return if (activities.isEmpty()) this else copy(timeline = timeline.upsert(activities))
+    }
+
+    private fun fetchEngagement(noteIds: Set<String>) {
+        engagementJob?.cancel()
+        engagementJob = launcher.launch {
+            val aggregator = JournalEngagementAggregator(noteIds, ownPubkey)
+            val dirty = mutableSetOf<String>()
+            var lastEmission = 0L
+
+            fun emitProgress(force: Boolean) {
+                if (dirty.isEmpty()) return
+                val now = clock.nowMillis()
+                if (!force && now - lastEmission < ENGAGEMENT_STATE_BATCH_MS) return
+                val progress = aggregator.snapshot(dirty.toSet())
+                update { it.copy(engagement = it.engagement.mergeProgressive(progress)) }
+                dirty.clear()
+                lastEmission = now
+            }
+
+            var received = 0
+            val complete = engagementSource.fetch(noteIds, relayUrl) { event ->
+                received += 1
+                dirty += aggregator.add(event)
+                emitProgress(force = false)
+            }
+            val snapshot = aggregator.snapshot()
+            log {
+                "engagement notes=${noteIds.size} events=$received withData=${snapshot.size} complete=$complete " +
+                    "cachedNotes=${store.value.engagement.size}"
+            }
+            if (complete) {
+                update { it.copy(engagement = it.engagement.replaceCompleted(noteIds, snapshot)) }
+                loadedEngagementNoteIds += noteIds
+                dirty.clear()
+            } else {
+                emitProgress(force = true)
+            }
+            fetchReferences(snapshot.values.flatMap { it.replies })
+            watchProfiles(
+                snapshot.values.flatMapTo(mutableSetOf()) { engagement ->
+                    engagement.reactionEvents.map { it.pubkey } + engagement.repostPubkeys
+                },
+            )
+        }
+    }
+
+    /** 行の表示に必要な参照先を取得し、作者と参照先の作者のプロフィールを監視に加える。 */
+    private suspend fun fetchReferences(events: Collection<NostrEvent>) {
+        if (events.isEmpty()) return
+        val known = store.value.referencedEvents
+        val ids = events.flatMapTo(mutableSetOf()) { it.journalReferencedEventIds() } - known.keys
+        val fetched = mutableListOf<NostrEvent>()
+        if (ids.isNotEmpty()) {
+            try {
+                referenceFetcher.fetch(ids) { event -> fetched += event }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Throwable) {
+                // 取得できなかった参照先は行の側で「読み込み中」と表示する。
+            }
+            if (fetched.isNotEmpty()) {
+                update { it.copy(referencedEvents = it.referencedEvents + fetched.associateBy(NostrEvent::id)) }
+            }
+            log { "references requested=${ids.size} fetched=${fetched.size} cached=${store.value.referencedEvents.size}" }
+        }
+        watchProfiles(events.mapTo(mutableSetOf()) { it.pubkey } + fetched.map { it.pubkey })
+    }
+
+    private fun watchProfiles(pubkeys: Set<String>) {
+        val added = pubkeys - watchedPubkeys
+        if (added.isEmpty()) return
+        watchedPubkeys += added
+        val watched = watchedPubkeys.toSet()
+        val cached = profileSource.cached(added)
+        log { "profiles added=${added.size} cachedHit=${cached.size} watched=${watched.size}" }
+        if (cached.isNotEmpty()) update { it.copy(profiles = it.profiles + cached) }
+        profileObserverJob?.cancel()
+        profileObserverJob = launcher.launch {
+            profileSource.observe(watched).collect { profiles ->
+                update { it.copy(profiles = it.profiles + profiles) }
+            }
+        }
+        launcher.launch { profileSource.ensure(added, relayUrl) }
     }
 
     private fun runEngagementOperation(
@@ -587,19 +636,21 @@ internal class JournalController(
         failureMessage: String,
     ) {
         val operationId = EngagementOperationId("journal-${++nextEngagementOperationId}")
-        val before = _state.value.noteEngagement(eventId)
-        val optimistic = engagementCoordinator.begin(before, operationId, request)
-        if (optimistic == before) return
-        _state.value = _state.value.withEngagement(eventId, optimistic).copy(engagementError = null)
-        launch {
+        val before = store.value.engagementOf(eventId)
+        val optimistic = engagementCoordinator.begin(before.summary, operationId, request)
+        if (optimistic == before.summary) return
+        update { it.withSummary(eventId, optimistic).copy(engagementError = null) }
+        launcher.launch {
             var committed = false
             var failure: Throwable? = null
             try {
                 val published = engagementCoordinator.execute(command).getOrThrow()
-                _state.value = _state.value.withEngagement(
-                    eventId,
-                    engagementCoordinator.commit(_state.value.noteEngagement(eventId), operationId, published.id),
-                )
+                update {
+                    it.withSummary(
+                        eventId,
+                        engagementCoordinator.commit(it.engagementOf(eventId).summary, operationId, published.id),
+                    )
+                }
                 committed = true
             } catch (cancelled: CancellationException) {
                 throw cancelled
@@ -607,1232 +658,42 @@ internal class JournalController(
                 failure = error
             } finally {
                 if (!committed) {
-                    _state.value = _state.value.withEngagement(
-                        eventId,
-                        engagementCoordinator.rollback(_state.value.noteEngagement(eventId), operationId),
-                    )
-                }
-            }
-            if (failure != null) _state.value = _state.value.copy(engagementError = failureMessage)
-        }
-    }
-
-    fun showDeleteDialog(item: JournalItem) {
-        _state.value = _state.value.copy(
-            deleteDialog = JournalDeleteDialogState(item = item),
-        )
-    }
-
-    fun dismissDeleteDialog() {
-        if (_state.value.deleteDialog?.isDeleting == true) return
-        _state.value = _state.value.copy(deleteDialog = null)
-    }
-
-    fun deleteSelectedMemo() {
-        val dialog = _state.value.deleteDialog ?: return
-        _state.value = _state.value.copy(
-            deleteDialog = dialog.copy(isDeleting = true, error = null),
-        )
-        launch {
-            val result = signedEventPublisher.publish(
-                "",
-                5,
-                buildList {
-                    add(listOf("e", dialog.item.eventId))
-                    dialog.item.addressTagValue()?.let { add(listOf("a", it)) }
-                    add(listOf("k", MEMO_EVENT_KIND.toString()))
-                    add(listOf("client", "ToriNos"))
-                },
-            )
-            _state.value = when (result) {
-                is SignedPublishResult.Published -> _state.value
-                    .withContent(
-                        memos = _state.value.memos.filterNot { it.eventId == dialog.item.eventId },
-                    )
-                    .copy(deleteDialog = null)
-                SignedPublishResult.MissingSigner -> _state.value.copy(
-                    deleteDialog = _state.value.deleteDialog?.copy(
-                        isDeleting = false,
-                        error = "秘密鍵が設定されていません",
-                    ),
-                )
-                is SignedPublishResult.Failed -> _state.value.copy(
-                    deleteDialog = _state.value.deleteDialog?.copy(
-                        isDeleting = false,
-                        error = result.cause.message ?: "ポストメモの削除要求を送信できませんでした",
-                    ),
-                )
-            }
-        }
-    }
-
-    fun showNoteDeleteDialog(event: NostrEvent) {
-        _state.value = _state.value.copy(
-            noteDeleteDialog = JournalNoteDeleteDialogState(event = event),
-        )
-    }
-
-    fun dismissNoteDeleteDialog() {
-        if (_state.value.noteDeleteDialog?.isDeleting == true) return
-        _state.value = _state.value.copy(noteDeleteDialog = null)
-    }
-
-    fun deleteSelectedNote() {
-        val dialog = _state.value.noteDeleteDialog ?: return
-        _state.value = _state.value.copy(
-            noteDeleteDialog = dialog.copy(isDeleting = true, error = null),
-        )
-        launch {
-            _state.value = when (val result = noteDeletionService.delete(dialog.event)) {
-                NoteDeletionResult.Deleted -> _state.value
-                    .withContent(
-                        notes = _state.value.notes.filterNot { it.id == dialog.event.id },
-                    )
-                    .copy(noteDeleteDialog = null)
-                NoteDeletionResult.MissingSigner -> _state.value.copy(
-                    noteDeleteDialog = _state.value.noteDeleteDialog?.copy(
-                        isDeleting = false,
-                        error = "秘密鍵が設定されていません",
-                    ),
-                )
-                NoteDeletionResult.NotOwner -> _state.value.copy(
-                    noteDeleteDialog = _state.value.noteDeleteDialog?.copy(
-                        isDeleting = false,
-                        error = "自分の投稿だけ削除できます",
-                    ),
-                )
-                is NoteDeletionResult.Failed -> _state.value.copy(
-                    noteDeleteDialog = _state.value.noteDeleteDialog?.copy(
-                        isDeleting = false,
-                        error = result.cause.message ?: "投稿の削除要求を送信できませんでした",
-                    ),
-                )
-            }
-        }
-    }
-
-    private fun loadMonth(
-        month: LocalDate,
-        selectedDate: LocalDate? = null,
-        refreshMonth: Boolean = false,
-        resetCache: Boolean = false,
-    ) {
-        referencedContentJob?.cancel()
-        engagementJob?.cancel()
-        monthBackfillJob?.cancel()
-        loadJob?.cancel()
-        visibleNoteIds = emptySet()
-        monthLoadGeneration += 1
-        val loadGeneration = monthLoadGeneration
-
-        val monthStart = month.monthStart()
-        val nextSelectedDate = selectedDate
-            ?.takeIf { it.year == monthStart.year && it.month == monthStart.month }
-            ?: _state.value.selectedDate
-            .takeIf { it.year == monthStart.year && it.month == monthStart.month }
-            ?: monthStart
-        val cachedReceivedLikes = if (JournalLoadKind.ReceivedLike in activeLoadKinds) {
-            (targetPubkey ?: accountSession?.signer?.pubkey)?.let { pubkey ->
-                ReactionEventStore.receivedReactions(
-                    pubkey = pubkey,
-                    since = monthStart.startOfDayEpochSeconds(),
-                    until = minOf(monthStart.nextMonth().minusDays(1), currentDate())
-                        .plusDays(1)
-                        .startOfDayEpochSeconds() - 1,
-                )
-            }.orEmpty()
-        } else {
-            emptyList()
-        }
-        val currentState = if (cachedReceivedLikes.isEmpty()) {
-            _state.value
-        } else {
-            _state.value.withContent(
-                notes = mergeNotes(_state.value.notes, cachedReceivedLikes),
-            )
-        }
-        val shouldBackfillReceivedLikes = JournalLoadKind.ReceivedLike in activeLoadKinds &&
-            (
-                resetCache ||
-                    refreshMonth ||
-                    !currentState.hasLoadedMonth(monthStart, setOf(JournalLoadKind.ReceivedLike))
-            )
-        if (
-            !resetCache &&
-            !refreshMonth &&
-            currentState.hasLoadedMonth(monthStart, activeLoadKinds)
-        ) {
-            _state.value = currentState.copy(
-                selectedMonth = monthStart,
-                selectedDate = nextSelectedDate,
-                isLoading = false,
-                error = null,
-            )
-            return
-        }
-        if (resetCache) {
-            loadedEngagementNoteIds.clear()
-        } else if (refreshMonth) {
-            loadedEngagementNoteIds.removeAll(
-                currentState.notes
-                    .filter { isSameMonth(dateOfEpochSeconds(it.createdAt), monthStart) }
-                    .map { it.id }
-                    .toSet(),
-            )
-        }
-        val retainedMemos = when {
-            resetCache -> emptyList()
-            refreshMonth -> currentState.memos.filterNot { isSameMonth(dateOfEpochSeconds(it.displayTime), monthStart) }
-            else -> currentState.memos
-        }
-        val retainedNotes = when {
-            resetCache -> emptyList()
-            refreshMonth -> currentState.notes.filterNot { isSameMonth(dateOfEpochSeconds(it.createdAt), monthStart) }
-            else -> currentState.notes
-        }
-        val retainedLoadedDates = when {
-            resetCache -> emptySet()
-            refreshMonth -> currentState.loadedDates.filterNot { isSameMonth(it, monthStart) }.toSet()
-            else -> currentState.loadedDates
-        }
-        val retainedLoadedKindsByDate = when {
-            resetCache -> emptyMap()
-            refreshMonth -> currentState.loadedKindsByDate.filterKeys { !isSameMonth(it, monthStart) }
-            else -> currentState.loadedKindsByDate
-        }
-        _state.value = currentState.copy(
-            selectedMonth = monthStart,
-            selectedDate = nextSelectedDate,
-            isLoading = true,
-            content = JournalContent(
-                memos = retainedMemos,
-                notes = mergeNotes(retainedNotes, cachedReceivedLikes),
-            ),
-            quotedEvents = if (resetCache) emptyMap() else currentState.quotedEvents,
-            reactionCounts = if (resetCache) emptyMap() else currentState.reactionCounts,
-            likeReactionCounts = if (resetCache) emptyMap() else currentState.likeReactionCounts,
-            customReactions = if (resetCache) emptyMap() else currentState.customReactions,
-            unicodeReactions = if (resetCache) emptyMap() else currentState.unicodeReactions,
-            replyCounts = if (resetCache) emptyMap() else currentState.replyCounts,
-            replies = if (resetCache) emptyMap() else currentState.replies,
-            repostCounts = if (resetCache) emptyMap() else currentState.repostCounts,
-            likedReactions = if (resetCache) emptyMap() else currentState.likedReactions,
-            ownEmojiReactionEventIds = if (resetCache) {
-                emptyMap()
-            } else {
-                currentState.ownEmojiReactionEventIds
-            },
-            loadedDates = retainedLoadedDates,
-            loadedKindsByDate = retainedLoadedKindsByDate,
-            error = null,
-        )
-
-        loadJob = launch {
-            try {
-                val context = resolveLoadContext() ?: return@launch
-                val loadKinds = activeLoadKinds
-                val missingKinds = missingLoadKinds(nextSelectedDate, loadKinds)
-                val initialLoadKinds = if (shouldBackfillReceivedLikes) {
-                    missingKinds - JournalLoadKind.ReceivedLike
-                } else {
-                    missingKinds
-                }
-                val fetched = if (initialLoadKinds.isEmpty()) {
-                    JournalEventFetch()
-                } else {
-                    fetchEvents(
-                        pubkey = context.publicKeyHex,
-                        since = nextSelectedDate.startOfDayEpochSeconds(),
-                        until = nextSelectedDate.plusDays(1).startOfDayEpochSeconds() - 1,
-                        relayUrl = relayUrl,
-                        loadKinds = initialLoadKinds,
-                        limit = JOURNAL_DATE_LIMIT,
-                    )
-                }
-                val memoEvents = fetched.memoEvents
-                val noteEvents = fetched.noteEvents
-                val memos = decodeMemoEvents(memoEvents, context)
-                val notes = noteEvents.sortedByDescending { it.createdAt }
-                if (!isCurrentMonthLoad(monthStart, loadGeneration)) return@launch
-
-                _state.dispatch { latestState ->
-                    if (
-                        monthLoadGeneration != loadGeneration ||
-                        latestState.selectedMonth != monthStart
-                    ) {
-                        latestState
-                    } else {
-                        val contentState = if (memos.isEmpty() && notes.isEmpty()) {
-                            latestState
-                        } else {
-                            latestState.withContent(
-                                memos = mergeJournalMemos(latestState.memos, memos),
-                                notes = mergeNotes(latestState.notes, notes),
-                            )
-                        }
-                        contentState.copy(
-                            isLoading = false,
-                            loadedDates = if (fetched.completedKinds.isNotEmpty()) {
-                                latestState.loadedDates + nextSelectedDate
-                            } else {
-                                latestState.loadedDates
-                            },
-                            loadedKindsByDate = latestState.loadedKindsByDate + (
-                                nextSelectedDate to (
-                                    latestState.loadedKindsByDate[nextSelectedDate].orEmpty() + fetched.completedKinds
-                                )
-                            ),
-                            error = null,
+                    update {
+                        it.withSummary(
+                            eventId,
+                            engagementCoordinator.rollback(it.engagementOf(eventId).summary, operationId),
                         )
                     }
                 }
-                if (!isCurrentMonthLoad(monthStart, loadGeneration)) return@launch
-
-                fetchReferencedContentNow(notes, memos, relayUrl)
-                backfillMonthEntries(
-                    context = context,
-                    monthStart = monthStart,
-                    loadKinds = loadKinds,
-                    loadGeneration = loadGeneration,
-                )
-                if (!_state.value.profiles.containsKey(context.publicKeyHex)) {
-                    fetchProfile(context.publicKeyHex, relayUrl)?.let { profile ->
-                        if (isCurrentMonthLoad(monthStart, loadGeneration)) {
-                            _state.value = _state.value.copy(
-                                profiles = _state.value.profiles + (context.publicKeyHex to profile),
-                            )
-                        }
-                    }
-                }
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Throwable) {
-                _state.value = _state.value.copy(
-                    isLoading = false,
-                    error = e.message ?: "ポストメモの読み込みに失敗しました",
-                )
             }
+            if (failure != null) update { it.copy(engagementError = failureMessage) }
         }
     }
 
-    private fun backfillMonthEntries(
-        context: JournalLoadContext,
-        monthStart: LocalDate,
-        loadKinds: Set<JournalLoadKind>,
-        loadGeneration: Long,
-    ) {
-        monthBackfillJob?.cancel()
-        monthBackfillJob = launch {
-            try {
-                val lastDay = minOf(monthStart.nextMonth().minusDays(1), currentDate())
-                val dates = generateSequence(monthStart) { it.plusDays(1) }
-                    .takeWhile { it <= lastDay }
-                    .toList()
-
-                val receivedLikeDates = if (JournalLoadKind.ReceivedLike in loadKinds) {
-                    dates.filter { date ->
-                        JournalLoadKind.ReceivedLike in missingLoadKinds(date, loadKinds)
-                    }
-                } else {
-                    emptyList()
-                }
-                if (receivedLikeDates.isNotEmpty()) {
-                    val receivedLikes = fetchJournalEventGroup(
-                        filters = listOf(
-                            NostrFilter(
-                                kinds = listOf(7),
-                                pTags = listOf(context.publicKeyHex),
-                                since = monthStart.startOfDayEpochSeconds(),
-                                until = lastDay.plusDays(1).startOfDayEpochSeconds() - 1,
-                                limit = JOURNAL_MONTH_ACTIVITY_LIMIT,
-                            ),
-                        ),
-                        target = RelayTarget.AllEnabled,
-                    )
-                    if (!isCurrentMonthLoad(monthStart, loadGeneration)) return@launch
-                    val receivedLikeEvents = receivedLikes.events
-                        .filter { it.isReceivedLikeForJournal(context.publicKeyHex) }
-                    _state.dispatch { latestState ->
-                        if (
-                            monthLoadGeneration != loadGeneration ||
-                            latestState.selectedMonth != monthStart
-                        ) {
-                            latestState
-                        } else {
-                            latestState.withContent(
-                                notes = mergeNotes(latestState.notes, receivedLikeEvents),
-                            ).copy(
-                                isLoading = false,
-                                loadedDates = if (receivedLikes.complete) {
-                                    latestState.loadedDates + receivedLikeDates
-                                } else {
-                                    latestState.loadedDates
-                                },
-                                loadedKindsByDate = if (receivedLikes.complete) {
-                                    receivedLikeDates.fold(latestState.loadedKindsByDate) { loaded, date ->
-                                        loaded + (
-                                            date to (
-                                                loaded[date].orEmpty() + JournalLoadKind.ReceivedLike
-                                            )
-                                        )
-                                    }
-                                } else {
-                                    latestState.loadedKindsByDate
-                                },
-                            )
-                        }
-                    }
-                    fetchReferencedContentNow(receivedLikeEvents, emptyList(), relayUrl = null)
-                }
-
-                for (date in dates) {
-                    if (!isCurrentMonthLoad(monthStart, loadGeneration)) return@launch
-                    val missingKinds = missingLoadKinds(date, loadKinds) - JournalLoadKind.ReceivedLike
-                    if (missingKinds.isEmpty()) continue
-
-                    val fetched = fetchEvents(
-                        pubkey = context.publicKeyHex,
-                        since = date.startOfDayEpochSeconds(),
-                        until = date.plusDays(1).startOfDayEpochSeconds() - 1,
-                        relayUrl = relayUrl,
-                        loadKinds = missingKinds,
-                        limit = JOURNAL_DATE_LIMIT,
-                    )
-                    val memoEvents = fetched.memoEvents
-                    val noteEvents = fetched.noteEvents
-                    if (!isCurrentMonthLoad(monthStart, loadGeneration)) return@launch
-
-                    val memos = decodeMemoEvents(memoEvents, context)
-                    _state.dispatch { latestState ->
-                        if (
-                            monthLoadGeneration != loadGeneration ||
-                            latestState.selectedMonth != monthStart
-                        ) {
-                            latestState
-                        } else {
-                            latestState.withContent(
-                                memos = mergeJournalMemos(latestState.memos, memos),
-                                notes = mergeNotes(latestState.notes, noteEvents),
-                            ).copy(
-                                loadedDates = if (fetched.completedKinds.isNotEmpty()) {
-                                    latestState.loadedDates + date
-                                } else {
-                                    latestState.loadedDates
-                                },
-                                loadedKindsByDate = latestState.loadedKindsByDate + (
-                                    date to (latestState.loadedKindsByDate[date].orEmpty() + fetched.completedKinds)
-                                ),
-                            )
-                        }
-                    }
-                    fetchReferencedContentNow(noteEvents, memos, relayUrl)
-                }
-                if (isCurrentMonthLoad(monthStart, loadGeneration)) {
-                    _state.value = _state.value.copy(isLoading = false)
-                }
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Throwable) {
-                if (isCurrentMonthLoad(monthStart, loadGeneration)) {
-                    _state.value = _state.value.copy(
-                        isLoading = false,
-                        error = e.message ?: "ジャーナルの月間データの読み込みに失敗しました",
-                    )
-                }
-            }
+    private fun update(transform: (JournalState) -> JournalState) {
+        store.dispatch { previous ->
+            val today = clock.today()
+            val next = transform(previous).let { if (it.today == today) it else it.copy(today = today) }
+            if (needsDerivedUpdate(previous, next)) next.withDerived() else next
         }
     }
-
-    private fun isCurrentMonthLoad(monthStart: LocalDate, loadGeneration: Long): Boolean =
-        monthLoadGeneration == loadGeneration && _state.value.selectedMonth == monthStart
-
-    private fun loadDate(date: LocalDate, forceRefresh: Boolean = false) {
-        referencedContentJob?.cancel()
-        engagementJob?.cancel()
-        loadJob?.cancel()
-        visibleNoteIds = emptySet()
-        if (forceRefresh) {
-            loadedEngagementNoteIds.removeAll(notesForDate(date).map { it.id }.toSet())
-        }
-        val loadKinds = activeLoadKinds
-        val missingKinds = if (forceRefresh) loadKinds else missingLoadKinds(date, loadKinds)
-        if (missingKinds.isEmpty()) {
-            val notes = notesForDate(date)
-            val memos = memosForDate(date)
-            _state.value = _state.value.copy(
-                selectedMonth = date.monthStart(),
-                selectedDate = date,
-                isLoading = false,
-                error = null,
-            )
-            fetchReferencedContent(notes, memos, relayUrl)
-            return
-        }
-        loadJob = launch {
-            try {
-                val context = resolveLoadContext() ?: return@launch
-                _state.value = _state.value.copy(
-                    selectedMonth = date.monthStart(),
-                    selectedDate = date,
-                    isLoading = true,
-                    error = null,
-                )
-                val fetched = fetchEvents(
-                    pubkey = context.publicKeyHex,
-                    since = date.startOfDayEpochSeconds(),
-                    until = date.plusDays(1).startOfDayEpochSeconds() - 1,
-                    relayUrl = relayUrl,
-                    loadKinds = missingKinds,
-                    limit = JOURNAL_DATE_LIMIT,
-                )
-                val memoEvents = fetched.memoEvents
-                val noteEvents = fetched.noteEvents
-                val memos = decodeMemoEvents(memoEvents, context)
-                val notes = noteEvents.sortedByDescending { it.createdAt }
-                _state.value = _state.value.withContent(
-                    memos = mergeJournalMemos(_state.value.memos, memos),
-                    notes = mergeNotes(_state.value.notes, notes),
-                ).copy(
-                    isLoading = false,
-                    loadedDates = if (fetched.completedKinds.isNotEmpty()) {
-                        _state.value.loadedDates + date
-                    } else {
-                        _state.value.loadedDates
-                    },
-                    loadedKindsByDate = markLoadedKinds(date, fetched.completedKinds),
-                    error = null,
-                )
-
-                fetchReferencedContent(notes, memos, relayUrl)
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Throwable) {
-                _state.value = _state.value.copy(
-                    isLoading = false,
-                    error = e.message ?: "この日の投稿の読み込みに失敗しました",
-                )
-            }
-        }
-    }
-
-    private suspend fun fetchEvents(
-        pubkey: String,
-        since: Long,
-        until: Long,
-        relayUrl: String? = null,
-        loadKinds: Set<JournalLoadKind> = defaultJournalLoadKinds(),
-        limit: Int = JOURNAL_DATE_LIMIT,
-    ): JournalEventFetch = coroutineScope {
-        val includeMemos = targetPubkey == null && JournalLoadKind.Memo in loadKinds
-        val includeReceivedLikes = JournalLoadKind.ReceivedLike in loadKinds
-        val noteKinds = noteKindsForLoadKinds(loadKinds, targetPubkey == null)
-        val kinds = if (includeMemos) listOf(MEMO_EVENT_KIND) + noteKinds else noteKinds
-        val regularFilters = buildList {
-            val regularKinds = kinds.filter { it != COMMENT_EVENT_KIND }
-            if (regularKinds.isNotEmpty()) {
-                add(
-                    NostrFilter(
-                        kinds = regularKinds,
-                        authors = listOf(pubkey),
-                        since = since,
-                        until = until,
-                        limit = limit,
-                    ),
-                )
-            }
-            if (COMMENT_EVENT_KIND in kinds) {
-                add(
-                    NostrFilter(
-                        kinds = listOf(COMMENT_EVENT_KIND),
-                        authors = listOf(pubkey),
-                        rootKindTags = listOf("1"),
-                        since = since,
-                        until = until,
-                        limit = limit,
-                    ),
-                )
-            }
-        }
-        val receivedLikeFilters = if (includeReceivedLikes) {
-            listOf(
-                NostrFilter(
-                    kinds = listOf(7),
-                    pTags = listOf(pubkey),
-                    since = since,
-                    until = until,
-                    limit = limit,
-                ),
-            )
-        } else {
-            emptyList()
-        }
-
-        val regularDeferred = async {
-            fetchJournalEventGroup(
-                filters = regularFilters,
-                target = relayUrl?.let(RelayTarget::Single) ?: RelayTarget.AllEnabled,
-            )
-        }
-        val receivedLikesDeferred = async {
-            fetchJournalEventGroup(
-                filters = receivedLikeFilters,
-                target = RelayTarget.AllEnabled,
-            )
-        }
-        val regular = regularDeferred.await()
-        val receivedLikes = receivedLikesDeferred.await()
-        val memoEvents = regular.events.filter { includeMemos && it.kind == MEMO_EVENT_KIND && it.pubkey == pubkey }
-        val noteEvents = buildList {
-            addAll(
-                regular.events.filter { event ->
-                    event.pubkey == pubkey && event.matchesLoadKinds(loadKinds, targetPubkey == null)
-                },
-            )
-            addAll(receivedLikes.events.filter { it.isReceivedLikeForJournal(pubkey) })
-        }.distinctBy { it.id }
-        val regularLoadKinds = loadKinds - JournalLoadKind.ReceivedLike
-        val completedKinds = buildSet {
-            if (regular.complete) addAll(regularLoadKinds)
-            if (receivedLikes.complete && includeReceivedLikes) add(JournalLoadKind.ReceivedLike)
-        }
-        JournalEventFetch(
-            memoEvents = memoEvents.distinctBy { it.id },
-            noteEvents = noteEvents,
-            completedKinds = completedKinds,
-        )
-    }
-
-    private suspend fun fetchJournalEventGroup(
-        filters: List<NostrFilter>,
-        target: RelayTarget,
-    ): JournalEventGroupFetch {
-        if (filters.isEmpty()) return JournalEventGroupFetch(complete = true)
-        val session = NostrRepository.openSubscription(
-            SubscriptionSpec(
-                id = nextSubscriptionId("journal"),
-                filters = filters,
-                target = target,
-                behavior = SubscriptionBehavior.Fetch(MEMO_FETCH_TIMEOUT_MS),
-            ),
-        )
-        val events = linkedMapOf<String, NostrEvent>()
-        var completion: SubscriptionSignal.FetchCompleted? = null
-        try {
-            session.signals.collect { signal ->
-                when (signal) {
-                    is SubscriptionSignal.Event -> events[signal.event.id] = signal.event
-                    is SubscriptionSignal.FetchCompleted -> completion = signal
-                    else -> Unit
-                }
-            }
-        } finally {
-            runCatching { session.close() }
-        }
-        return JournalEventGroupFetch(
-            events = events.values.toList(),
-            complete = completion?.let(::shouldCommitJournalFetch) == true,
-        )
-    }
-
-    private suspend fun fetchProfile(
-        pubkey: String,
-        relayUrl: String? = null,
-    ): NostrProfile? = ProfileRepository.awaitProfiles(
-        pubkeys = setOf(pubkey),
-        policy = ProfileFetchPolicy.CacheFirst(15 * 60 * 1_000L),
-        relayHint = relayUrl,
-        timeoutMillis = 5_000L,
-    )[pubkey]
-
-    private fun fetchEngagement(noteIds: List<String>, ownPubkey: String?) {
-        engagementJob?.cancel()
-        engagementJob = launch {
-            val subId = nextSubscriptionId("memo-engage")
-            val noteIdSet = noteIds.toHashSet()
-            val reactionCounts = mutableMapOf<String, Int>()
-            val likeReactionCounts = mutableMapOf<String, Int>()
-            val customReactions = mutableMapOf<String, List<CustomReaction>>()
-            val unicodeReactions = mutableMapOf<String, List<UnicodeReaction>>()
-            val reactionEvents = mutableMapOf<String, List<NostrEvent>>()
-            val replyCounts = mutableMapOf<String, Int>()
-            val replies = mutableMapOf<String, List<NostrEvent>>()
-            val repostCounts = mutableMapOf<String, Int>()
-            val repostPubkeys = mutableMapOf<String, List<String>>()
-            val likedReactions = mutableMapOf<String, String>()
-            val ownEmojiReactionEventIds = mutableMapOf<String, Map<String, String>>()
-            val dirtyNoteIds = mutableSetOf<String>()
-            var lastProgressEmission = 0L
-
-            fun currentSnapshot(ids: Set<String> = noteIdSet) = JournalEngagementSnapshot(
-                reactionCounts = reactionCounts.filterKeys { it in ids },
-                likeReactionCounts = likeReactionCounts.filterKeys { it in ids },
-                customReactions = customReactions.filterKeys { it in ids },
-                unicodeReactions = unicodeReactions.filterKeys { it in ids },
-                reactionEvents = reactionEvents.filterKeys { it in ids },
-                replyCounts = replyCounts.filterKeys { it in ids },
-                replies = replies.filterKeys { it in ids },
-                repostCounts = repostCounts.filterKeys { it in ids },
-                repostPubkeys = repostPubkeys.filterKeys { it in ids },
-                likedReactions = likedReactions.filterKeys { it in ids },
-                ownEmojiReactionEventIds = ownEmojiReactionEventIds.filterKeys { it in ids },
-            )
-
-            fun emitProgressIfDue(force: Boolean = false) {
-                if (dirtyNoteIds.isEmpty()) return
-                val now = Clock.System.now().toEpochMilliseconds()
-                if (!force && now - lastProgressEmission < ENGAGEMENT_STATE_BATCH_MS) return
-                _state.value = _state.value.withProgressiveJournalEngagement(
-                    currentSnapshot(dirtyNoteIds),
-                )
-                dirtyNoteIds.clear()
-                lastProgressEmission = now
-            }
-            val session = NostrRepository.openSubscription(
-                SubscriptionSpec(
-                    id = subId,
-                    filters = listOf(
-                        NostrFilter(kinds = listOf(1, 6, 7), eTags = noteIds, limit = 500),
-                        NostrFilter(
-                            kinds = listOf(COMMENT_EVENT_KIND),
-                            rootKindTags = listOf("1"),
-                            eTags = noteIds,
-                            limit = 500,
-                        ),
-                        NostrFilter(
-                            kinds = listOf(COMMENT_EVENT_KIND),
-                            rootKindTags = listOf("1"),
-                            rootEventTags = noteIds,
-                            limit = 500,
-                        ),
-                        NostrFilter(kinds = listOf(1), qTags = noteIds, limit = 500),
-                    ),
-                    target = relayUrl?.let(RelayTarget::Single) ?: RelayTarget.AllEnabled,
-                    behavior = SubscriptionBehavior.Fetch(ENGAGEMENT_FETCH_TIMEOUT_MS),
-                ),
-            )
-            try {
-                var completed: SubscriptionSignal.FetchCompleted? = null
-                session.signals.collect { signal ->
-                    when (signal) {
-                        is SubscriptionSignal.Event -> {
-                            val event = signal.event
-                            if (event.kind == COMMENT_EVENT_KIND && !event.isSupportedTimelineComment()) {
-                                return@collect
-                            }
-                            val targetId = if (event.kind == COMMENT_EVENT_KIND) {
-                                event.replyTargetId()
-                            } else {
-                                event.tags.lastOrNull { it.firstOrNull() == "e" }?.getOrNull(1)
-                            }
-                                ?.takeIf { it in noteIdSet }
-                            if (targetId != null) {
-                                dirtyNoteIds += targetId
-                                when (event.kind) {
-                                    7 -> {
-                                        reactionCounts[targetId] = (reactionCounts[targetId] ?: 0) + 1
-                                        reactionEvents[targetId] = reactionEvents[targetId]
-                                            .orEmpty()
-                                            .plus(event)
-                                            .distinctBy { it.id }
-                                        if (event.content.trim() == "+") {
-                                            likeReactionCounts[targetId] =
-                                                (likeReactionCounts[targetId] ?: 0) + 1
-                                        }
-                                        event.toCustomReaction()?.let { reaction ->
-                                            customReactions[targetId] = customReactions[targetId]
-                                                .orEmpty()
-                                                .incrementedWith(reaction)
-                                        }
-                                        event.toUnicodeReaction()?.let { reaction ->
-                                            unicodeReactions[targetId] = unicodeReactions[targetId]
-                                                .orEmpty()
-                                                .incrementedWithUnicodeReaction(reaction)
-                                        }
-                                        if (
-                                            event.pubkey == ownPubkey &&
-                                            event.content.trim() == "+" &&
-                                            !likedReactions.containsKey(targetId)
-                                        ) {
-                                            likedReactions[targetId] = event.id
-                                        }
-                                        if (event.pubkey == ownPubkey) {
-                                            event.toReactionOption()?.let { option ->
-                                                ownEmojiReactionEventIds[targetId] =
-                                                    ownEmojiReactionEventIds[targetId].orEmpty() +
-                                                        (option.key to event.id)
-                                            }
-                                        }
-                                    }
-                                    1, COMMENT_EVENT_KIND -> {
-                                        replyCounts[targetId] = (replyCounts[targetId] ?: 0) + 1
-                                        replies[targetId] = (replies[targetId].orEmpty() + event)
-                                            .distinctBy { it.id }
-                                            .sortedBy { it.createdAt }
-                                    }
-                                    6 -> {
-                                        repostCounts[targetId] = (repostCounts[targetId] ?: 0) + 1
-                                        repostPubkeys[targetId] = repostPubkeys[targetId]
-                                            .orEmpty()
-                                            .plus(event.pubkey)
-                                            .distinct()
-                                    }
-                                }
-                            }
-                            if (event.kind == 1) {
-                                event.tags
-                                    .filter { it.firstOrNull() == "q" }
-                                    .mapNotNull { it.getOrNull(1) }
-                                    .distinct()
-                                    .filter { it in noteIdSet }
-                                    .forEach { quotedId ->
-                                        repostCounts[quotedId] = (repostCounts[quotedId] ?: 0) + 1
-                                        repostPubkeys[quotedId] = repostPubkeys[quotedId]
-                                            .orEmpty()
-                                            .plus(event.pubkey)
-                                            .distinct()
-                                        dirtyNoteIds += quotedId
-                                    }
-                            }
-                            emitProgressIfDue()
-                        }
-                        is SubscriptionSignal.FetchCompleted -> {
-                            completed = signal
-                            return@collect
-                        }
-                        else -> Unit
-                    }
-                }
-
-                val completion = completed
-                if (completion != null && shouldCommitJournalEngagement(completion)) {
-                    _state.value = _state.value.withCompletedJournalEngagement(
-                        noteIds = noteIdSet,
-                        snapshot = currentSnapshot(),
-                    )
-                    loadedEngagementNoteIds += noteIdSet
-                    dirtyNoteIds.clear()
-                } else {
-                    emitProgressIfDue(force = true)
-                }
-                val replyEvents = replies.values.flatten()
-                if (replyEvents.isNotEmpty()) {
-                    fetchReferencedContentNow(replyEvents, emptyList(), relayUrl)
-                }
-                val engagementPubkeys = buildSet {
-                    reactionEvents.values.flatten().forEach { add(it.pubkey) }
-                    repostPubkeys.values.flatten().forEach(::add)
-                }.filterNot { _state.value.profiles.containsKey(it) }
-                if (engagementPubkeys.isNotEmpty()) {
-                    val profiles = ProfileRepository.awaitProfiles(
-                        pubkeys = engagementPubkeys.toSet(),
-                        policy = ProfileFetchPolicy.CacheFirst(15 * 60 * 1_000L),
-                        relayHint = relayUrl,
-                        timeoutMillis = 5_000L,
-                    )
-                    if (profiles.isNotEmpty()) {
-                        _state.value = _state.value.copy(profiles = _state.value.profiles + profiles)
-                    }
-                }
-            } catch (e: CancellationException) {
-                throw e
-            } finally {
-                runCatching { session.close() }
-            }
-        }
-    }
-
-    private data class JournalLoadContext(
-        val signer: AccountSigner?,
-        val publicKeyHex: String,
-    )
-
-    private suspend fun resolveLoadContext(): JournalLoadContext? {
-        val signer = if (targetPubkey == null) {
-            accountSession?.signer ?: run {
-                _state.value = _state.value.withContent(
-                    memos = emptyList(),
-                    notes = emptyList(),
-                ).copy(
-                    isLoading = false,
-                    error = "秘密鍵が設定されていません",
-                )
-                return null
-            }
-        } else {
-            null
-        }
-        val publicKeyHex = targetPubkey ?: signer!!.pubkey
-        ownPublicKeyHex = signer?.pubkey
-        return JournalLoadContext(signer = signer, publicKeyHex = publicKeyHex)
-    }
-
-    private fun decodeMemoEvents(
-        events: List<NostrEvent>,
-        context: JournalLoadContext,
-    ): List<JournalItem> {
-        val signer = context.signer ?: return emptyList()
-        return events.mapNotNull { event ->
-            decodeMemo(event, signer, context.publicKeyHex)?.let { memo ->
-                JournalItem(
-                    eventId = event.id,
-                    pubkey = event.pubkey,
-                    tags = event.tags,
-                    memo = memo.toPostMemoData(
-                        identifier = event.memoIdentifier(),
-                        sourceEventId = event.id,
-                        sourcePubkey = event.pubkey,
-                    ),
-                    createdAt = event.createdAt,
-                )
-            }
-        }.sortedByDescending { it.displayTime }
-    }
-
-    private fun mergeNotes(
-        current: List<NostrEvent>,
-        additions: List<NostrEvent>,
-    ): List<NostrEvent> =
-        (current + additions)
-            .distinctBy { it.id }
-            .sortedByDescending { it.createdAt }
-
-    private fun memosForDate(date: LocalDate): List<JournalItem> =
-        _state.value.memos.filter { dateOfEpochSeconds(it.displayTime) == date }
-
-    private fun notesForDate(date: LocalDate): List<NostrEvent> =
-        _state.value.notes.filter { dateOfEpochSeconds(it.createdAt) == date }
-
-    private fun missingLoadKinds(date: LocalDate, requestedKinds: Set<JournalLoadKind>): Set<JournalLoadKind> =
-        requestedKinds - _state.value.loadedKindsByDate[date].orEmpty()
-
-    private fun markLoadedKinds(date: LocalDate, loadedKinds: Set<JournalLoadKind>): Map<LocalDate, Set<JournalLoadKind>> =
-        if (loadedKinds.isEmpty()) {
-            _state.value.loadedKindsByDate
-        } else {
-            _state.value.loadedKindsByDate + (date to (_state.value.loadedKindsByDate[date].orEmpty() + loadedKinds))
-        }
-
-    private fun nextSubscriptionId(prefix: String): String {
-        subscriptionSequence += 1
-        return "$prefix-${Clock.System.now().toEpochMilliseconds()}-${subscriptionSequence}-${Random.nextInt()}"
-    }
-
-    private suspend fun awaitSubscriptionEnd(subId: String, timeoutMillis: Long) {
-        withTimeoutOrNull(timeoutMillis) {
-            merge(
-                NostrRepository.endOfStoredEvents(subId),
-                NostrRepository.closedMessages(subId).map { closed ->
-                    appLog("[Journal] CLOSED subId=$subId reason=${closed.message}")
-                    Unit
-                },
-            ).first()
-        }
-    }
-
-    private fun fetchReferencedContent(notes: List<NostrEvent>, memos: List<JournalItem>, relayUrl: String?) {
-        referencedContentJob?.cancel()
-        referencedContentJob = launch {
-            try {
-                fetchReferencedContentNow(notes, memos, relayUrl)
-            } catch (e: CancellationException) {
-                throw e
-            }
-        }
-    }
-
-    private suspend fun fetchReferencedContentNow(notes: List<NostrEvent>, memos: List<JournalItem>, relayUrl: String?) = coroutineScope {
-        val eventIdsToFetch = buildSet {
-            notes.forEach { event ->
-                event.replyTargetId()?.let { add(it) }
-                addAll(quotedEventIds(event))
-                event.activityTargetId()?.let { add(it) }
-            }
-        }.filterNot { _state.value.quotedEvents.containsKey(it) }
-            .toSet()
-        val memoPubkeys = memos.mapNotNull { it.memo.replyToPubkey }.toHashSet()
-
-        val fetchedEvents = mutableListOf<NostrEvent>()
-
-        if (eventIdsToFetch.isNotEmpty()) {
-            val subId = nextSubscriptionId("memo-refs")
-            val mutex = Mutex()
-            var collector: Job? = null
-            try {
-                collector = launch {
-                    NostrRepository.events(subId).collect { event ->
-                        if (event.id in eventIdsToFetch) {
-                            mutex.withLock { fetchedEvents += event }
-                        }
-                    }
-                }
-                NostrRepository.subscribe(
-                    subId,
-                    NostrFilter(ids = eventIdsToFetch.toList(), limit = eventIdsToFetch.size),
-                    relayUrl = relayUrl,
-                )
-                awaitSubscriptionEnd(subId, 5_000L)
-                _state.value = _state.value.copy(
-                    quotedEvents = _state.value.quotedEvents + fetchedEvents.associateBy { it.id },
-                )
-            } finally {
-                runCatching { NostrRepository.close(subId) }
-                collector?.cancelAndJoin()
-            }
-        }
-
-        val referencedEvents = fetchedEvents + eventIdsToFetch.mapNotNull { _state.value.quotedEvents[it] }
-        val pubkeysToFetch = buildSet {
-            addAll(memoPubkeys)
-            notes.forEach { add(it.pubkey) }
-            referencedEvents.forEach { add(it.pubkey) }
-        }.filterNot { _state.value.profiles.containsKey(it) }
-
-        if (pubkeysToFetch.isNotEmpty()) {
-            val newProfiles = ProfileRepository.awaitProfiles(
-                pubkeys = pubkeysToFetch.toSet(),
-                policy = ProfileFetchPolicy.CacheFirst(15 * 60 * 1_000L),
-                relayHint = relayUrl,
-                timeoutMillis = 5_000L,
-            )
-            if (newProfiles.isNotEmpty()) {
-                _state.value = _state.value.copy(
-                    profiles = _state.value.profiles + newProfiles,
-                )
-            }
-        }
-    }
-
-    private fun decodeMemo(
-        event: NostrEvent,
-        signer: AccountSigner,
-        publicKeyHex: String,
-    ): PostMemoPayload? =
-        runCatching {
-            memoJson.decodeFromString<PostMemoPayload>(
-                signer.decrypt(event.content, publicKeyHex),
-            )
-        }.getOrNull()
 }
 
-private fun NostrEvent.memoIdentifier(): String? =
-    tags.firstOrNull { it.firstOrNull() == "d" }?.getOrNull(1)
+/** ログ用の状態の要約。保持量の増え方を追えるよう件数だけを出す。 */
+private fun JournalState.summary(): String =
+    "timeline=${timeline.size} coveredDays=${coverage.byDate.size} refs=${referencedEvents.size} " +
+        "engagement=${engagement.size} profiles=${profiles.size} month=$selectedMonth selected=$selectedDate"
 
-internal fun mergeJournalMemos(
-    current: List<JournalItem>,
-    additions: List<JournalItem>,
-): List<JournalItem> {
-    val latestByAddress = linkedMapOf<String, JournalItem>()
-    (current + additions).forEach { item ->
-        val address = item.memo.identifier
-            ?.let { identifier -> "${item.pubkey}:$identifier" }
-            ?: "event:${item.eventId}"
-        val existing = latestByAddress[address]
-        val shouldReplace = existing == null ||
-            item.createdAt > existing.createdAt ||
-            (item.createdAt == existing.createdAt && item.eventId < existing.eventId)
-        if (shouldReplace) {
-            latestByAddress[address] = item
-        }
-    }
-    return latestByAddress.values.sortedByDescending { it.displayTime }
-}
+private fun JournalState.datesWithEntries(month: LocalDate): List<LocalDate> =
+    timeline.datesWithEntries(month, kinds)
 
-private fun NostrEvent.activityTargetId(): String? =
-    tags.lastOrNull { it.firstOrNull() == "e" }?.getOrNull(1)
-        ?: embeddedRepostTarget()?.id
+private fun JournalState.withSummary(
+    eventId: String,
+    summary: NoteEngagementState,
+): JournalState = copy(engagement = engagement + (eventId to engagementOf(eventId).copy(summary = summary)))
 
-private fun NostrEvent.matchesLoadKinds(loadKinds: Set<JournalLoadKind>, includeLikes: Boolean): Boolean =
-    when (kind) {
-        1 -> if (replyTargetId() != null) JournalLoadKind.Reply in loadKinds else JournalLoadKind.Post in loadKinds
-        COMMENT_EVENT_KIND -> JournalLoadKind.Reply in loadKinds && isSupportedTimelineComment()
-        6 -> JournalLoadKind.Repost in loadKinds
-        7 -> includeLikes && JournalLoadKind.Like in loadKinds
-        NIP23_ARTICLE_KIND -> JournalLoadKind.Article in loadKinds
-        else -> false
-    }
+private fun JournalState.withDeleteError(message: String): JournalState =
+    copy(noteDeleteDialog = noteDeleteDialog?.copy(isDeleting = false, error = message))
 
-internal fun NostrEvent.isReceivedLikeForJournal(pubkey: String): Boolean =
-    kind == 7 &&
-        content.trim() != "-" &&
-        ReactionEventStore.isAddressedTo(this, pubkey)
-
-private fun NostrEvent.embeddedRepostTarget(): NostrEvent? {
-    if (kind != 6 || content.isBlank()) return null
-    return runCatching {
-        Json.decodeFromString(NostrEvent.serializer(), content)
-    }.getOrNull()
-}
-
-private fun noteKindsForLoadKinds(loadKinds: Set<JournalLoadKind>, includeLikes: Boolean): List<Int> =
-    buildList {
-        if (JournalLoadKind.Post in loadKinds || JournalLoadKind.Reply in loadKinds) add(1)
-        if (JournalLoadKind.Reply in loadKinds) add(COMMENT_EVENT_KIND)
-        if (JournalLoadKind.Repost in loadKinds) add(6)
-        if (includeLikes && JournalLoadKind.Like in loadKinds) add(7)
-        if (JournalLoadKind.Article in loadKinds) add(NIP23_ARTICLE_KIND)
-    }
-
-private fun defaultJournalLoadKinds(): Set<JournalLoadKind> =
-    setOf(JournalLoadKind.Post)
-
-private fun JournalItem.addressTagValue(): String? {
-    val d = memo.identifier
-        ?: return null
-    return "$MEMO_EVENT_KIND:$pubkey:$d"
-}
-
-private fun isSameMonth(date: LocalDate, monthStart: LocalDate): Boolean =
-    date.year == monthStart.year && date.month == monthStart.month
-
-internal fun JournalState.hasLoadedMonth(
-    month: LocalDate,
-    requestedKinds: Set<JournalLoadKind>,
-    today: LocalDate = currentDate(),
-): Boolean {
-    val monthStart = month.monthStart()
-    if (monthStart > today.monthStart()) return false
-    val lastDay = minOf(monthEnd(monthStart), today)
-    return generateSequence(monthStart) { it.plusDays(1) }
-        .takeWhile { it <= lastDay }
-        .all { date -> loadedKindsByDate[date].orEmpty().containsAll(requestedKinds) }
-}
-
-private fun JournalState.previousJournalDate(
-    loadKinds: Set<JournalLoadKind>,
-    includeLikes: Boolean,
-): LocalDate? {
-    val currentMonthStart = selectedDate.monthStart()
-    journalEntryDatesInMonth(currentMonthStart, loadKinds, includeLikes)
-        .filter { it < selectedDate }
-        .maxOrNull()
-        ?.let { return it }
-
-    if (selectedDate > currentMonthStart) return currentMonthStart
-
-    val previousMonthStart = currentMonthStart.previousMonth()
-    val previousMonthEnd = monthEnd(previousMonthStart)
-    return journalEntryDatesInMonth(previousMonthStart, loadKinds, includeLikes)
-        .filter { it <= previousMonthEnd }
-        .maxOrNull()
-        ?: previousMonthEnd
-}
-
-private fun JournalState.nextJournalDate(
-    loadKinds: Set<JournalLoadKind>,
-    includeLikes: Boolean,
-): LocalDate? {
-    val today = currentDate()
-    val currentMonthStart = selectedDate.monthStart()
-    val currentMonthEnd = minOf(monthEnd(currentMonthStart), today)
-    journalEntryDatesInMonth(currentMonthStart, loadKinds, includeLikes)
-        .filter { it > selectedDate && it <= today }
-        .minOrNull()
-        ?.let { return it }
-
-    if (selectedDate < currentMonthEnd) return currentMonthEnd
-    if (currentMonthEnd == today) return null
-
-    val nextMonthStart = currentMonthStart.nextMonth()
-    val nextMonthEnd = minOf(monthEnd(nextMonthStart), today)
-    return journalEntryDatesInMonth(nextMonthStart, loadKinds, includeLikes)
-        .filter { it <= nextMonthEnd }
-        .minOrNull()
-        ?: nextMonthStart
-}
-
-private fun JournalState.firstJournalDateInMonthOrStart(
-    monthStart: LocalDate,
-    loadKinds: Set<JournalLoadKind>,
-    includeLikes: Boolean,
-): LocalDate =
-    journalEntryDatesInMonth(monthStart, loadKinds, includeLikes)
-        .filter { it <= minOf(monthEnd(monthStart), currentDate()) }
-        .minOrNull()
-        ?: monthStart
-
-private fun JournalState.lastJournalDateInMonthOrEnd(
-    monthStart: LocalDate,
-    loadKinds: Set<JournalLoadKind>,
-    includeLikes: Boolean,
-): LocalDate {
-    val end = minOf(monthEnd(monthStart), currentDate())
-    return journalEntryDatesInMonth(monthStart, loadKinds, includeLikes)
-        .filter { it <= end }
-        .maxOrNull()
-        ?: end
-}
-
-private fun JournalState.journalEntryDatesInMonth(
-    monthStart: LocalDate,
-    loadKinds: Set<JournalLoadKind>,
-    includeLikes: Boolean,
-): List<LocalDate> =
-    buildSet {
-        if (JournalLoadKind.Memo in loadKinds) {
-            memos
-                .map { dateOfEpochSeconds(it.displayTime) }
-                .filterTo(this) { isSameMonth(it, monthStart) }
-        }
-        notes
-            .filter { event ->
-                event.matchesLoadKinds(loadKinds, includeLikes) ||
-                    (JournalLoadKind.ReceivedLike in loadKinds && event.kind == 7)
-            }
-            .map { dateOfEpochSeconds(it.createdAt) }
-            .filterTo(this) { isSameMonth(it, monthStart) }
-    }
-        .sorted()
-
-private fun monthEnd(monthStart: LocalDate): LocalDate =
-    monthStart.nextMonth().minusDays(1)
-
-internal fun shouldCommitJournalEngagement(
-    completion: SubscriptionSignal.FetchCompleted,
-): Boolean = shouldCommitJournalFetch(completion)
-
-internal fun shouldCommitJournalFetch(
-    completion: SubscriptionSignal.FetchCompleted,
-): Boolean = !completion.timedOut &&
-    completion.outcomes.isNotEmpty() &&
-    completion.outcomes.values.all { it is RelayOutcome.Eose }
-
-internal fun currentDate(): LocalDate =
-    Clock.System.now().toLocalDateTime(TimeZone.currentSystemDefault()).date
-
-internal fun currentMonth(): LocalDate =
-    currentDate().monthStart()
-
-internal fun currentFourWeekStart(): LocalDate =
-    currentDate().weekStart().minusDays(21)
-
-internal fun dateOfEpochSeconds(epochSeconds: Long): LocalDate =
-    Instant.fromEpochSeconds(epochSeconds)
-        .toLocalDateTime(TimeZone.currentSystemDefault())
-        .date
-
-internal fun LocalDate.monthStart(): LocalDate =
-    LocalDate(year, month, 1)
-
-internal fun LocalDate.nextMonth(): LocalDate =
-    if (month.ordinal == 11) LocalDate(year + 1, 1, 1) else LocalDate(year, month.ordinal + 2, 1)
-
-internal fun LocalDate.previousMonth(): LocalDate =
-    if (month.ordinal == 0) LocalDate(year - 1, 12, 1) else LocalDate(year, month.ordinal, 1)
-
-internal fun LocalDate.weekStart(): LocalDate =
-    minusDays((dayOfWeek.ordinal + 1) % 7)
-
-internal fun LocalDate.plusDays(days: Int): LocalDate =
-    dateOfEpochSeconds(startOfDayEpochSeconds() + days * 86_400L)
-
-internal fun LocalDate.minusDays(days: Int): LocalDate =
-    plusDays(-days)
-
-internal fun LocalDate.startOfDayEpochSeconds(): Long =
-    atStartOfDayIn(TimeZone.currentSystemDefault()).epochSeconds
-
-private const val JOURNAL_DATE_LIMIT = 500
-private const val JOURNAL_MONTH_ACTIVITY_LIMIT = 5_000
-private const val JOURNAL_ALL_MEMO_LIMIT = 5_000
-private const val ENGAGEMENT_FETCH_TIMEOUT_MS = 8_000L
 private const val ENGAGEMENT_STATE_BATCH_MS = 100L
+private const val PROFILE_MAX_AGE_MS = 15 * 60 * 1_000L

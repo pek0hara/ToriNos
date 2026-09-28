@@ -1,42 +1,23 @@
 package com.nostr.torinos.ui.post
 
-import androidx.compose.foundation.background
-import androidx.compose.foundation.border
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.PaddingValues
-import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.automirrored.filled.ArrowForward
-import androidx.compose.material.icons.automirrored.filled.Article
 import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.Favorite
-import androidx.compose.material.icons.filled.NorthEast
-import androidx.compose.material.icons.filled.SouthWest
 import androidx.compose.material.icons.filled.FilterList
-import androidx.compose.material.icons.filled.MailOutline
-import androidx.compose.material.icons.filled.PostAdd
-import androidx.compose.material.icons.filled.Repeat
 import androidx.compose.material.icons.filled.Today
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.FilterChip
-import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -45,9 +26,6 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
-import com.nostr.torinos.ui.components.AppTopBar
-import com.nostr.torinos.ui.components.AppFloatingActionButton
-import com.nostr.torinos.ui.components.DeleteNoteDialog
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -55,52 +33,40 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.lerp
-import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.semantics.contentDescription
-import androidx.compose.ui.semantics.semantics
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
-import androidx.lifecycle.viewmodel.compose.viewModel
 import com.nostr.torinos.account.accountSessionViewModel
+import com.nostr.torinos.engagement.EngagementRequest
+import com.nostr.torinos.engagement.EngagementSlot
+import com.nostr.torinos.engagement.displayOwnEmojiReactionEventIds
+import com.nostr.torinos.journal.JournalActivity
+import com.nostr.torinos.journal.JournalActivityKind
+import com.nostr.torinos.journal.activityTargetId
+import com.nostr.torinos.journal.availableJournalKinds
+import com.nostr.torinos.journal.defaultJournalKinds
+import com.nostr.torinos.journal.embeddedRepostTarget
 import com.nostr.torinos.model.COMMENT_EVENT_KIND
 import com.nostr.torinos.model.NostrEvent
 import com.nostr.torinos.model.NostrProfile
-import com.nostr.torinos.model.NIP23_ARTICLE_KIND
-import com.nostr.torinos.model.markdownPreview
 import com.nostr.torinos.model.quotedEventIds
 import com.nostr.torinos.model.replyTargetId
-import com.nostr.torinos.model.stripNostrEventUris
-import com.nostr.torinos.model.toArticleMeta
-import com.nostr.torinos.model.toCustomReaction
-import com.nostr.torinos.model.toUnicodeReaction
 import com.nostr.torinos.network.RelayStore
-import com.nostr.torinos.ui.components.LinkedText
-import com.nostr.torinos.ui.components.NetworkImage
+import com.nostr.torinos.ui.components.AppFloatingActionButton
+import com.nostr.torinos.ui.components.AppTopBar
+import com.nostr.torinos.ui.components.DeleteNoteDialog
 import com.nostr.torinos.ui.components.NoteCard
-import com.nostr.torinos.ui.components.ProfileNameText
 import com.nostr.torinos.ui.components.QuotedEvent
 import com.nostr.torinos.ui.components.RelaySelector
-import com.nostr.torinos.ui.components.formatTimestamp
-import com.nostr.torinos.ui.components.stripImageUrls
 import com.nostr.torinos.ui.profile.AvatarCircle
-import com.nostr.torinos.emoji.customEmojiMap
-import kotlinx.datetime.LocalDate
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collectLatest
-import kotlinx.serialization.json.Json
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -112,7 +78,6 @@ fun JournalScreen(
     onOpenThread: (eventId: String) -> Unit = {},
     onReply: ((event: NostrEvent, preview: String) -> Unit)? = null,
     onUserClick: (pubkey: String) -> Unit = {},
-    onOpenArticle: (pubkey: String, identifier: String) -> Unit = { _, _ -> },
     ownPubkey: String? = null,
     accountKey: String? = ownPubkey,
     ownProfile: NostrProfile? = null,
@@ -129,41 +94,17 @@ fun JournalScreen(
     val relays by RelayStore.relays.collectAsState(initial = emptyList())
     val selectedRelayUrl by RelayStore.selectedMemoRelayUrl.collectAsState()
     var showFilterHeader by rememberSaveable(accountKey, targetPubkey) { mutableStateOf(true) }
-    var selectedFilterNames by rememberSaveable(accountKey, targetPubkey) {
+    var selectedKindNames by rememberSaveable(accountKey, targetPubkey) {
         mutableStateOf(emptyList<String>())
     }
     val isUserJournal = targetPubkey != null
-    val journalPubkey = targetPubkey ?: ownPubkey
-    val availableFilters = remember(isUserJournal) {
-        JournalEntryFilter.entries.filter {
-            it != JournalEntryFilter.Article &&
-                (!isUserJournal || it != JournalEntryFilter.Like)
-        }
+    val availableKinds = remember(isUserJournal) { availableJournalKinds(isSelf = !isUserJournal) }
+    val explicitlySelectedKinds = remember(selectedKindNames, availableKinds) {
+        journalKindsFromNames(selectedKindNames, availableKinds)
     }
-    val explicitlySelectedFilters = remember(selectedFilterNames, availableFilters) {
-        selectedFilterNames
-            .mapNotNull { name -> JournalEntryFilter.entries.firstOrNull { it.name == name } }
-            .filter { it in availableFilters }
-            .toSet()
-    }
-    val selectedFilters = remember(explicitlySelectedFilters) {
-        effectiveJournalEntryFilters(explicitlySelectedFilters)
-    }
-    val baseEntries = if (state.showCalendar) state.selectedEntries else state.monthEntries
-    val visibleEntries = remember(baseEntries, selectedFilters, journalPubkey) {
-        baseEntries
-            .filterIsInstance<JournalEntry.Note>()
-            .filter { it.matchesAny(selectedFilters, journalPubkey) }
-    }
-    val filteredEntryCountsByDate = remember(
-        state.monthEntries,
-        selectedFilters,
-        journalPubkey,
-    ) {
-        filteredEntryCountsByDate(state, selectedFilters, journalPubkey)
-    }
+    val visibleEntries = state.visibleEntries
     val journalListState = rememberLazyListState()
-    val isPullRefreshing = state.isLoading && (state.memos.isNotEmpty() || state.notes.isNotEmpty())
+    val isPullRefreshing = state.isLoading && !state.timeline.isEmpty()
 
     LaunchedEffect(visibleEntries, journalListState) {
         if (visibleEntries.isEmpty()) {
@@ -209,11 +150,10 @@ fun JournalScreen(
         viewModel.setRelayUrl(active)
     }
 
-    LaunchedEffect(selectedFilters) {
-        viewModel.setLoadKinds(selectedFilters.mapTo(mutableSetOf()) { it.loadKind })
+    LaunchedEffect(explicitlySelectedKinds) {
+        viewModel.setKinds(explicitlySelectedKinds)
     }
 
-    val headerBackgroundColor = MaterialTheme.colorScheme.background
     val headerContentColor = MaterialTheme.colorScheme.onBackground
 
     Scaffold(
@@ -287,33 +227,30 @@ fun JournalScreen(
                     onNext = if (state.showCalendar) viewModel::nextDate else viewModel::nextMonth,
                 ),
         ) {
-            MemoCalendarHeader(
+            JournalCalendarHeader(
                 state = state,
                 onPreviousMonth = viewModel::previousMonth,
                 onNextMonth = viewModel::nextMonth,
                 onToggleCalendar = viewModel::toggleCalendar,
             )
             if (state.showCalendar) {
-                MemoCalendarGrid(
+                JournalCalendarGrid(
                     state = state,
-                    entryCountsByDate = filteredEntryCountsByDate,
                     onSelectDate = viewModel::selectDate,
                 )
             }
             if (showFilterHeader) {
                 JournalFilterHeader(
-                    filters = availableFilters,
-                    selectedFilters = explicitlySelectedFilters,
-                    defaultFilters = defaultJournalEntryFilters(),
-                    onToggle = { filter ->
-                        val nextFilters = if (filter in explicitlySelectedFilters) {
-                            explicitlySelectedFilters - filter
+                    kinds = JournalActivityKind.entries.filter { it in availableKinds },
+                    selectedKinds = explicitlySelectedKinds,
+                    defaultKinds = defaultJournalKinds(),
+                    onToggle = { kind ->
+                        val nextKinds = if (kind in explicitlySelectedKinds) {
+                            explicitlySelectedKinds - kind
                         } else {
-                            explicitlySelectedFilters + filter
+                            explicitlySelectedKinds + kind
                         }
-                        selectedFilterNames = nextFilters
-                            .sortedBy { JournalEntryFilter.entries.indexOf(it) }
-                            .map { it.name }
+                        selectedKindNames = nextKinds.sortedBy { it.ordinal }.map { it.name }
                     },
                 )
             }
@@ -328,7 +265,7 @@ fun JournalScreen(
                 modifier = Modifier.fillMaxSize(),
             ) {
                 when {
-                    state.isLoading && state.memos.isEmpty() && state.notes.isEmpty() -> {
+                    state.isLoading && state.timeline.isEmpty() -> {
                         CircularProgressIndicator(modifier = Modifier.align(Alignment.Center))
                     }
                     state.isLoading && visibleEntries.isEmpty() -> {
@@ -344,152 +281,37 @@ fun JournalScreen(
                             )
                         }
                     }
-                    state.error != null -> {
-                        LazyColumn(modifier = Modifier.fillMaxSize()) {
-                            item(contentType = "message") {
-                                Box(
-                                    modifier = Modifier
-                                        .fillParentMaxSize()
-                                        .padding(horizontal = 32.dp),
-                                    contentAlignment = Alignment.Center,
-                                ) {
-                                    Text(
-                                        text = state.error.orEmpty(),
-                                        color = MaterialTheme.colorScheme.error,
-                                        textAlign = TextAlign.Center,
-                                    )
-                                }
-                            }
-                        }
-                    }
-                    visibleEntries.isEmpty() -> {
-                        LazyColumn(modifier = Modifier.fillMaxSize()) {
-                            item(contentType = "message") {
-                                Box(
-                                    modifier = Modifier
-                                        .fillParentMaxSize()
-                                        .padding(horizontal = 32.dp),
-                                    contentAlignment = Alignment.Center,
-                                ) {
-                                    Text(
-                                        text = when {
-                                            JournalEntryFilter.ReceivedLike in selectedFilters ->
-                                                "被いいねされた投稿はありません"
-                                            state.showCalendar -> "この日の投稿はありません"
-                                            else -> "この月の投稿はありません"
-                                        },
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                        textAlign = TextAlign.Center,
-                                    )
-                                }
-                            }
-                        }
-                    }
-                    else -> {
-                        LazyColumn(
-                            state = journalListState,
-                            modifier = Modifier.fillMaxSize(),
-                        ) {
-                            items(
-                                items = visibleEntries,
-                                key = { entry -> "note-${entry.event.id}" },
-                                contentType = { "note" },
-                            ) { entry ->
-                                when (entry.event.kind) {
-                                        1, COMMENT_EVENT_KIND -> NoteCard(
-                                            event = entry.event,
-                                            profile = state.profiles[entry.event.pubkey],
-                                            profiles = state.profiles,
-                                            replyParent = run {
-                                                val parentId = entry.event.replyTargetId() ?: return@run null
-                                                val parentEvent = state.quotedEvents[parentId] ?: return@run null
-                                                QuotedEvent(event = parentEvent, profile = state.profiles[parentEvent.pubkey])
-                                            },
-                                            quotedEvents = run {
-                                                val replyParentId = entry.event.replyTargetId()
-                                                quotedEventIds(entry.event)
-                                                    .filter { it != replyParentId }
-                                                    .mapNotNull { id ->
-                                                        state.quotedEvents[id]?.let { ev ->
-                                                            QuotedEvent(event = ev, profile = state.profiles[ev.pubkey])
-                                                        }
-                                                    }
-                                            },
-                                            replyCount = state.replyCounts[entry.event.id] ?: 0,
-                                            replies = state.replies[entry.event.id].orEmpty(),
-                                            reactionCount = state.reactionCounts[entry.event.id] ?: 0,
-                                            likeReactionCount =
-                                                state.likeReactionCounts[entry.event.id] ?: 0,
-                                            customReactions = state.customReactions[entry.event.id].orEmpty(),
-                                            unicodeReactions = state.unicodeReactions[entry.event.id].orEmpty(),
-                                            reactionEvents = state.reactionEvents[entry.event.id].orEmpty(),
-                                            repostCount = state.repostCounts[entry.event.id] ?: 0,
-                                            repostPubkeys = state.repostPubkeys[entry.event.id].orEmpty(),
-                                            isLiked = state.isLiked(entry.event.id),
-                                            ownEmojiReactionEventIds =
-                                                state.displayOwnEmojiReactionEventIds(entry.event.id),
-                                            onUserClick = onUserClick,
-                                            ownPubkey = ownPubkey,
-                                            onDelete = if (entry.event.pubkey == ownPubkey) {
-                                                { viewModel.showNoteDeleteDialog(entry.event) }
-                                            } else null,
-                                            onLike = if (ownPubkey != null) {
-                                                {
-                                                    if (state.isLiked(entry.event.id)) {
-                                                        viewModel.unreact(entry.event.id)
-                                                    } else {
-                                                        viewModel.react(entry.event.id, entry.event.pubkey)
-                                                    }
-                                                }
-                                            } else null,
-                                            onEmojiReact = if (ownPubkey != null) {
-                                                { option ->
-                                                    viewModel.reactWithEmoji(
-                                                        entry.event.id,
-                                                        entry.event.pubkey,
-                                                        option,
-                                                    )
-                                                }
-                                            } else null,
-                                            onEmojiUnreact = if (ownPubkey != null) {
-                                                { option ->
-                                                    viewModel.unreactWithEmoji(entry.event.id, option)
-                                                }
-                                            } else null,
-                                            onReply = if (ownPubkey != null && onReply != null) {
-                                                {
-                                                    onReply(
-                                                        entry.event,
-                                                        entry.event.content.take(100),
-                                                    )
-                                                }
-                                            } else null,
-                                            onOpenReplies = { onOpenThread(entry.event.id) },
-                                            onNoteClick = { onOpenThread(entry.event.id) },
-                                        )
-                                        6, 7 -> JournalActivityRow(
-                                            event = entry.event,
-                                            profile = state.profiles[entry.event.pubkey],
-                                            targetEvent = entry.event.activityTargetId()?.let { state.quotedEvents[it] }
-                                                ?: entry.event.embeddedRepostTarget(),
-                                            targetProfile = entry.event.activityTargetId()
-                                                ?.let { state.quotedEvents[it] }
-                                                ?.let { state.profiles[it.pubkey] },
-                                            onUserClick = onUserClick,
-                                            onOpenThread = { targetId ->
-                                                onOpenThread(targetId)
-                                            },
-                                        )
-                                        NIP23_ARTICLE_KIND -> JournalArticleRow(
-                                            event = entry.event,
-                                            profile = state.profiles[entry.event.pubkey],
-                                            onUserClick = onUserClick,
-                                            onOpenArticle = onOpenArticle,
-                                        )
-                                    else -> Unit
-                                }
-                                HorizontalDivider()
-                            }
+                    state.error != null -> JournalMessage(
+                        text = state.error.orEmpty(),
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                    visibleEntries.isEmpty() -> JournalMessage(
+                        text = when {
+                            JournalActivityKind.ReceivedLike in state.kinds -> "被いいねされた投稿はありません"
+                            state.showCalendar -> "この日の投稿はありません"
+                            else -> "この月の投稿はありません"
+                        },
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    else -> LazyColumn(
+                        state = journalListState,
+                        modifier = Modifier.fillMaxSize(),
+                    ) {
+                        items(
+                            items = visibleEntries,
+                            key = { entry -> "note-${entry.event.id}" },
+                            contentType = { "note" },
+                        ) { entry ->
+                            JournalEntryRow(
+                                entry = entry,
+                                state = state,
+                                viewModel = viewModel,
+                                ownPubkey = ownPubkey,
+                                onOpenThread = onOpenThread,
+                                onReply = onReply,
+                                onUserClick = onUserClick,
+                            )
+                            HorizontalDivider()
                         }
                     }
                 }
@@ -506,57 +328,103 @@ fun JournalScreen(
             onConfirm = viewModel::deleteSelectedNote,
         )
     }
-
 }
 
-internal enum class JournalEntryFilter(val label: String, val icon: ImageVector) {
-    Post("ポスト", Icons.Default.PostAdd),
-    Repost("リポスト", Icons.Default.Repeat),
-    Reply("返信", Icons.Default.MailOutline),
-    Like("したいいね", Icons.Default.Favorite),
-    ReceivedLike("もらったいいね", Icons.Default.Favorite),
-    Article("記事", Icons.AutoMirrored.Filled.Article),
+@Composable
+private fun JournalEntryRow(
+    entry: JournalActivity,
+    state: JournalState,
+    viewModel: JournalViewModel,
+    ownPubkey: String?,
+    onOpenThread: (String) -> Unit,
+    onReply: ((event: NostrEvent, preview: String) -> Unit)?,
+    onUserClick: (String) -> Unit,
+) {
+    val event = entry.event
+    when (event.kind) {
+        1, COMMENT_EVENT_KIND -> {
+            val engagement = state.engagementOf(event.id)
+            val summary = engagement.summary
+            val isLiked = summary.ownLikeEventId != null ||
+                summary.pendingOperations[EngagementSlot.Reaction]?.request is EngagementRequest.AddLike
+            val replyParentId = event.replyTargetId()
+            NoteCard(
+                event = event,
+                profile = state.profiles[event.pubkey],
+                profiles = state.profiles,
+                replyParent = replyParentId
+                    ?.let { state.referencedEvents[it] }
+                    ?.let { QuotedEvent(event = it, profile = state.profiles[it.pubkey]) },
+                quotedEvents = quotedEventIds(event)
+                    .filter { it != replyParentId }
+                    .mapNotNull { id ->
+                        state.referencedEvents[id]?.let { QuotedEvent(event = it, profile = state.profiles[it.pubkey]) }
+                    },
+                replyCount = engagement.replyCount,
+                replies = engagement.replies,
+                reactionCount = summary.reactionCount,
+                likeReactionCount = summary.likeReactionCount,
+                customReactions = summary.customReactions,
+                unicodeReactions = summary.unicodeReactions,
+                reactionEvents = engagement.reactionEvents,
+                repostCount = summary.repostCount,
+                repostPubkeys = engagement.repostPubkeys,
+                isLiked = isLiked,
+                ownEmojiReactionEventIds = summary.displayOwnEmojiReactionEventIds,
+                onUserClick = onUserClick,
+                ownPubkey = ownPubkey,
+                onDelete = if (event.pubkey == ownPubkey) {
+                    { viewModel.showNoteDeleteDialog(event) }
+                } else null,
+                onLike = if (ownPubkey != null) {
+                    {
+                        if (isLiked) viewModel.unreact(event.id) else viewModel.react(event.id, event.pubkey)
+                    }
+                } else null,
+                onEmojiReact = if (ownPubkey != null) {
+                    { option -> viewModel.reactWithEmoji(event.id, event.pubkey, option) }
+                } else null,
+                onEmojiUnreact = if (ownPubkey != null) {
+                    { option -> viewModel.unreactWithEmoji(event.id, option) }
+                } else null,
+                onReply = if (ownPubkey != null && onReply != null) {
+                    { onReply(event, event.content.take(100)) }
+                } else null,
+                onOpenReplies = { onOpenThread(event.id) },
+                onNoteClick = { onOpenThread(event.id) },
+            )
+        }
+        6, 7 -> {
+            val target = event.activityTargetId()?.let { state.referencedEvents[it] }
+            JournalActivityRow(
+                event = event,
+                profile = state.profiles[event.pubkey],
+                targetEvent = target ?: event.embeddedRepostTarget(),
+                targetProfile = target?.let { state.profiles[it.pubkey] },
+                onUserClick = onUserClick,
+                onOpenThread = onOpenThread,
+            )
+        }
+        else -> Unit
+    }
 }
 
-private val JournalEntryFilter.loadKind: JournalLoadKind
-    get() = when (this) {
-        JournalEntryFilter.Post -> JournalLoadKind.Post
-        JournalEntryFilter.Reply -> JournalLoadKind.Reply
-        JournalEntryFilter.Repost -> JournalLoadKind.Repost
-        JournalEntryFilter.Like -> JournalLoadKind.Like
-        JournalEntryFilter.ReceivedLike -> JournalLoadKind.ReceivedLike
-        JournalEntryFilter.Article -> JournalLoadKind.Article
-    }
-
-internal fun defaultJournalEntryFilters(): Set<JournalEntryFilter> =
-    setOf(
-        JournalEntryFilter.Post,
-        JournalEntryFilter.Repost,
-        JournalEntryFilter.Reply,
-    )
-
-internal fun effectiveJournalEntryFilters(
-    explicitlySelectedFilters: Set<JournalEntryFilter>,
-): Set<JournalEntryFilter> = explicitlySelectedFilters.ifEmpty { defaultJournalEntryFilters() }
-
-private val JournalEntry.Note.journalFilter: JournalEntryFilter
-    get() = when (event.kind) {
-        6 -> JournalEntryFilter.Repost
-        7 -> JournalEntryFilter.Like
-        NIP23_ARTICLE_KIND -> JournalEntryFilter.Article
-        else -> if (event.replyTargetId() != null) JournalEntryFilter.Reply else JournalEntryFilter.Post
-    }
-
-private fun JournalEntry.Note.matchesAny(
-    filters: Set<JournalEntryFilter>,
-    journalPubkey: String?,
-): Boolean {
-    return filters.any { filter ->
-        when (filter) {
-            JournalEntryFilter.ReceivedLike ->
-                journalPubkey != null && event.isReceivedLikeForJournal(journalPubkey)
-            JournalEntryFilter.Like -> journalFilter == filter && event.pubkey == journalPubkey
-            else -> journalFilter == filter
+@Composable
+private fun JournalMessage(text: String, color: Color) {
+    LazyColumn(modifier = Modifier.fillMaxSize()) {
+        item(contentType = "message") {
+            Box(
+                modifier = Modifier
+                    .fillParentMaxSize()
+                    .padding(horizontal = 32.dp),
+                contentAlignment = Alignment.Center,
+            ) {
+                Text(
+                    text = text,
+                    color = color,
+                    textAlign = TextAlign.Center,
+                )
+            }
         }
     }
 }
@@ -584,498 +452,7 @@ private fun Modifier.journalHorizontalSwipe(
     )
 }
 
-@Composable
-private fun JournalFilterHeader(
-    filters: List<JournalEntryFilter>,
-    selectedFilters: Set<JournalEntryFilter>,
-    defaultFilters: Set<JournalEntryFilter>,
-    onToggle: (JournalEntryFilter) -> Unit,
-) {
-    val hasExplicitSelection = selectedFilters.isNotEmpty()
-    val primary = MaterialTheme.colorScheme.primary
-    LazyRow(
-        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
-    ) {
-        items(filters) { filter ->
-            val isImplicitlyShown = !hasExplicitSelection && filter in defaultFilters
-            FilterChip(
-                selected = filter in selectedFilters,
-                onClick = { onToggle(filter) },
-                modifier = Modifier.semantics { contentDescription = filter.label },
-                colors = FilterChipDefaults.filterChipColors(
-                    containerColor = if (isImplicitlyShown) {
-                        primary.copy(alpha = 0.12f)
-                    } else {
-                        Color.Transparent
-                    },
-                    labelColor = if (isImplicitlyShown) {
-                        primary.copy(alpha = 0.72f)
-                    } else {
-                        MaterialTheme.colorScheme.onSurfaceVariant
-                    },
-                    selectedContainerColor = primary,
-                    selectedLabelColor = MaterialTheme.colorScheme.onPrimary,
-                ),
-                label = {
-                    Box(
-                        modifier = Modifier.size(36.dp, 24.dp),
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        if (filter == JournalEntryFilter.Like || filter == JournalEntryFilter.ReceivedLike) {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Icon(
-                                    imageVector = Icons.Default.Favorite,
-                                    contentDescription = null,
-                                    modifier = Modifier.size(20.dp),
-                                )
-                                Icon(
-                                    imageVector = if (filter == JournalEntryFilter.Like) {
-                                        Icons.Default.NorthEast
-                                    } else {
-                                        Icons.Default.SouthWest
-                                    },
-                                    contentDescription = null,
-                                    modifier = Modifier.size(16.dp),
-                                )
-                            }
-                        } else {
-                            Icon(
-                                imageVector = filter.icon,
-                                contentDescription = null,
-                                modifier = Modifier.size(20.dp),
-                            )
-                        }
-                    }
-                },
-            )
-        }
-    }
-}
-
-@Composable
-private fun MemoCalendarHeader(
-    state: JournalState,
-    onPreviousMonth: () -> Unit,
-    onNextMonth: () -> Unit,
-    onToggleCalendar: () -> Unit,
-) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 8.dp, vertical = 4.dp),
-        horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        IconButton(onClick = onPreviousMonth) {
-            Icon(
-                Icons.AutoMirrored.Filled.ArrowBack,
-                contentDescription = "前月",
-            )
-        }
-        Text(
-            text = "${state.selectedMonth.year}年${state.selectedMonth.month.ordinal + 1}月",
-            modifier = Modifier.clickable(onClick = onToggleCalendar),
-            style = MaterialTheme.typography.titleMedium,
-            fontWeight = FontWeight.SemiBold,
-        )
-        IconButton(
-            onClick = onNextMonth,
-            enabled = state.canGoNextMonth,
-        ) {
-            Icon(
-                Icons.AutoMirrored.Filled.ArrowForward,
-                contentDescription = "翌月",
-            )
-        }
-    }
-}
-
-@Composable
-private fun MemoCalendarGrid(
-    state: JournalState,
-    entryCountsByDate: Map<LocalDate, Int>,
-    onSelectDate: (LocalDate) -> Unit,
-) {
-    val weekRows = remember(state.selectedMonth) { calendarWeeks(state.selectedMonth) }
-
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 8.dp, vertical = 4.dp),
-        verticalArrangement = Arrangement.spacedBy(2.dp),
-    ) {
-        Row(modifier = Modifier.fillMaxWidth()) {
-            listOf("日", "月", "火", "水", "木", "金", "土").forEach { label ->
-                Text(
-                    text = label,
-                    modifier = Modifier.weight(1f),
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    style = MaterialTheme.typography.labelSmall,
-                    textAlign = TextAlign.Center,
-                )
-            }
-        }
-
-        weekRows.forEach { week ->
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(2.dp),
-            ) {
-                week.forEach { date ->
-                    if (date == null) {
-                        Box(modifier = Modifier.weight(1f).height(32.dp))
-                    } else {
-                        MemoCalendarDay(
-                            date = date,
-                            selected = date == state.selectedDate,
-                            entryCount = entryCountsByDate[date] ?: 0,
-                            onClick = { onSelectDate(date) },
-                            modifier = Modifier.weight(1f),
-                        )
-                    }
-                }
-                repeat(7 - week.size) {
-                    Box(modifier = Modifier.weight(1f).height(32.dp))
-                }
-            }
-        }
-    }
-}
-
-private fun calendarWeeks(month: LocalDate): List<List<LocalDate?>> {
-    val leadingBlankDays = (month.dayOfWeek.ordinal + 1) % 7
-    val days = (1..daysInMonth(month.year, month.month.ordinal + 1)).map { day ->
-        LocalDate(month.year, month.month, day)
-    }
-    val cells = List(leadingBlankDays) { null } + days
-    return cells.chunked(7)
-}
-
-@Composable
-private fun MemoCalendarDay(
-    date: LocalDate,
-    selected: Boolean,
-    entryCount: Int,
-    onClick: () -> Unit,
-    modifier: Modifier = Modifier,
-) {
-    val shape = MaterialTheme.shapes.small
-    val colorScheme = MaterialTheme.colorScheme
-    val entryIntensity = calendarEntryIntensity(entryCount)
-    val isToday = date == currentDate()
-    // 選択はヒートマップと同系色だと埋もれるため、背景色ではなく太い枠と太字で示す
-    val backgroundColor = if (entryCount == 0) {
-        colorScheme.surface
-    } else {
-        lerp(colorScheme.surface, colorScheme.primary, entryIntensity)
-    }
-    val borderColor = if (selected) colorScheme.onSurfaceVariant else colorScheme.outlineVariant
-    val contentColor = when {
-        entryIntensity >= CalendarEntryHighContrastThreshold -> colorScheme.onPrimary
-        isToday -> colorScheme.primary
-        else -> colorScheme.onSurface
-    }
-
-    Box(
-        modifier = modifier
-            .height(32.dp)
-            .clip(shape)
-            .background(backgroundColor)
-            .border(1.dp, borderColor, shape)
-            .clickable(onClick = onClick)
-            .padding(horizontal = 2.dp, vertical = 2.dp),
-        contentAlignment = Alignment.Center,
-    ) {
-        Text(
-            text = date.day.toString(),
-            style = MaterialTheme.typography.bodySmall,
-            fontWeight = if (selected || isToday) FontWeight.Bold else null,
-            color = contentColor,
-        )
-        if (isToday) {
-            // 今日は枠ではなく数字下のドットで示し、選択枠と競合させない
-            Box(
-                modifier = Modifier
-                    .align(Alignment.BottomCenter)
-                    .size(4.dp)
-                    .clip(CircleShape)
-                    .background(contentColor),
-            )
-        }
-    }
-}
-
-private fun calendarEntryIntensity(entryCount: Int): Float {
-    if (entryCount <= 0) return 0f
-    val clampedCount = entryCount.coerceIn(1, CalendarEntryMaxGradientCount)
-    val step = (clampedCount - 1).toFloat() / (CalendarEntryMaxGradientCount - 1)
-    return CalendarEntryMinIntensity + (CalendarEntryMaxIntensity - CalendarEntryMinIntensity) * step
-}
-
-@Composable
-private fun JournalActivityRow(
-    event: NostrEvent,
-    profile: NostrProfile?,
-    targetEvent: NostrEvent?,
-    targetProfile: NostrProfile?,
-    onUserClick: (String) -> Unit,
-    onOpenThread: (String) -> Unit,
-) {
-    val type = if (event.kind == 6) JournalEntryFilter.Repost else JournalEntryFilter.Like
-    val targetId = event.activityTargetId()
-    val accent = if (type == JournalEntryFilter.Repost) Color(0xFF2BAE66) else Color(0xFFE17055)
-
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clickable(enabled = targetId != null) { targetId?.let(onOpenThread) }
-            .padding(horizontal = 16.dp, vertical = 12.dp),
-        horizontalArrangement = Arrangement.spacedBy(12.dp),
-    ) {
-        AvatarCircle(
-            pubkey = event.pubkey,
-            name = profile?.bestName,
-            pictureUrl = profile?.picture,
-            size = 40,
-            modifier = Modifier.clickable { onUserClick(event.pubkey) },
-        )
-        Column(modifier = Modifier.weight(1f)) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Row(
-                    modifier = Modifier.weight(1f),
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    JournalReactionIcon(event = event, type = type, tint = accent)
-                    ProfileNameText(
-                        profile = profile,
-                        fallback = event.shortPubkey,
-                        style = MaterialTheme.typography.labelMedium,
-                        fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.primary,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.weight(1f, fill = false),
-                    )
-                    Text(
-                        text = if (type == JournalEntryFilter.Repost) "がリポスト" else "がいいね",
-                        style = MaterialTheme.typography.labelMedium,
-                        fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.primary,
-                    )
-                }
-                Text(
-                    text = formatTimestamp(event.createdAt),
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-
-            LinkedText(
-                text = targetPreviewText(targetEvent, targetProfile),
-                modifier = Modifier.padding(top = 6.dp),
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                customEmojis = targetEvent?.tags?.customEmojiMap().orEmpty(),
-                maxLines = 3,
-                overflow = TextOverflow.Ellipsis,
-            )
-        }
-    }
-}
-
-@Composable
-private fun JournalArticleRow(
-    event: NostrEvent,
-    profile: NostrProfile?,
-    onUserClick: (String) -> Unit,
-    onOpenArticle: (String, String) -> Unit,
-) {
-    val meta = event.toArticleMeta() ?: return
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clickable { onOpenArticle(event.pubkey, meta.identifier) }
-            .padding(horizontal = 16.dp, vertical = 12.dp),
-        horizontalArrangement = Arrangement.spacedBy(12.dp),
-        verticalAlignment = Alignment.Top,
-    ) {
-        AvatarCircle(
-            pubkey = event.pubkey,
-            name = profile?.bestName,
-            pictureUrl = profile?.picture,
-            size = 40,
-            modifier = Modifier.clickable { onUserClick(event.pubkey) },
-        )
-        Column(
-            modifier = Modifier.weight(1f),
-            verticalArrangement = Arrangement.spacedBy(4.dp),
-        ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Row(
-                    modifier = Modifier.weight(1f),
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    JournalActivityIcon(
-                        icon = JournalEntryFilter.Article.icon,
-                        tint = MaterialTheme.colorScheme.primary,
-                    )
-                    ProfileNameText(
-                        profile = profile,
-                        fallback = event.shortPubkey,
-                        style = MaterialTheme.typography.labelMedium,
-                        fontWeight = FontWeight.Bold,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                }
-                Text(
-                    text = formatTimestamp(meta.publishedAt ?: event.createdAt),
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-            Text(
-                text = meta.title?.takeIf { it.isNotBlank() } ?: markdownPreview(event.content).ifBlank { "無題の記事" },
-                style = MaterialTheme.typography.titleSmall,
-                fontWeight = FontWeight.SemiBold,
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis,
-            )
-            Text(
-                text = meta.summary?.takeIf { it.isNotBlank() } ?: markdownPreview(event.content),
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 3,
-                overflow = TextOverflow.Ellipsis,
-            )
-        }
-    }
-}
-
-@Composable
-private fun JournalReactionIcon(
-    event: NostrEvent,
-    type: JournalEntryFilter,
-    tint: Color,
-) {
-    if (type == JournalEntryFilter.Repost) {
-        Icon(
-            imageVector = Icons.Default.Repeat,
-            contentDescription = null,
-            modifier = Modifier.size(18.dp),
-            tint = tint,
-        )
-        return
-    }
-
-    val customReaction = event.toCustomReaction()
-    val unicodeReaction = event.toUnicodeReaction()
-    when {
-        customReaction != null -> NetworkImage(
-            url = customReaction.imageUrl,
-            contentDescription = null,
-            contentScale = ContentScale.Fit,
-            modifier = Modifier.size(18.dp),
-        )
-        unicodeReaction != null -> Box(
-            modifier = Modifier.size(18.dp),
-            contentAlignment = Alignment.Center,
-        ) {
-            Text(
-                text = unicodeReaction.content,
-                fontSize = 16.sp,
-                lineHeight = 18.sp,
-                maxLines = 1,
-            )
-        }
-        else -> Icon(
-            imageVector = Icons.Default.Favorite,
-            contentDescription = null,
-            modifier = Modifier.size(18.dp),
-            tint = tint,
-        )
-    }
-}
-
-@Composable
-private fun JournalActivityIcon(icon: ImageVector, tint: Color) {
-    Icon(
-        imageVector = icon,
-        contentDescription = null,
-        modifier = Modifier.size(18.dp),
-        tint = tint,
-    )
-}
-
-private fun filteredEntryCountsByDate(
-    state: JournalState,
-    selectedFilters: Set<JournalEntryFilter>,
-    journalPubkey: String?,
-): Map<LocalDate, Int> =
-    state.monthEntries
-        .asSequence()
-        .filterIsInstance<JournalEntry.Note>()
-        .filter { entry -> entry.matchesAny(selectedFilters, journalPubkey) }
-        .groupingBy { dateOfEpochSeconds(it.displayTime) }
-        .eachCount()
-
-private fun NostrEvent.activityTargetId(): String? =
-    tags.lastOrNull { it.firstOrNull() == "e" }?.getOrNull(1)
-        ?: embeddedRepostTarget()?.id
-
-private fun NostrEvent.embeddedRepostTarget(): NostrEvent? {
-    if (kind != 6 || content.isBlank()) return null
-    return runCatching {
-        Json.decodeFromString(NostrEvent.serializer(), content)
-    }.getOrNull()
-}
-
-private fun targetPreviewText(event: NostrEvent?, profile: NostrProfile?): String {
-    if (event == null) return "対象ポストを読み込み中"
-    val author = profile?.bestName ?: event.shortPubkey
-    val body = event.content.previewText()
-    return if (body.isBlank()) {
-        "$author のポスト"
-    } else {
-        "$author: $body"
-    }
-}
-
-private fun String.previewText(): String =
-    stripImageUrls(stripNostrEventUris(this))
-        .lineSequence()
-        .map { it.trim() }
-        .filter { it.isNotEmpty() }
-        .joinToString(" ")
-        .take(140)
-
-private fun daysInMonth(year: Int, month: Int): Int =
-    when (month) {
-        1, 3, 5, 7, 8, 10, 12 -> 31
-        4, 6, 9, 11 -> 30
-        2 -> if (isLeapYear(year)) 29 else 28
-        else -> 30
-    }
-
-private fun isLeapYear(year: Int): Boolean =
-    year % 4 == 0 && (year % 100 != 0 || year % 400 == 0)
-
 private const val SwipeThresholdPx = 80f
 private const val JournalInitialLoadDelayMs = 200L
 private const val JournalVisibleEngagementDelayMs = 150L
 private const val JournalEngagementPrefetchItems = 6
-private const val CalendarEntryMaxGradientCount = 10
-private const val CalendarEntryMinIntensity = 0.16f
-private const val CalendarEntryMaxIntensity = 0.82f
-private const val CalendarEntryHighContrastThreshold = 0.62f

@@ -22,3 +22,12 @@ internal inline fun cacheTraceLog(message: () -> String) {
         platformLog(message())
     }
 }
+
+/** trueにするとジャーナルの取得計画・取得結果・状態の変化をログ出力する。動作確認用。 */
+private const val ENABLE_JOURNAL_TRACE_LOGS = true
+
+internal inline fun journalTraceLog(message: () -> String) {
+    if (ENABLE_JOURNAL_TRACE_LOGS) {
+        platformLog("[Journal] ${message()}")
+    }
+}
