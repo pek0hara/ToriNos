@@ -228,7 +228,10 @@ internal fun StatusComposerSheet(
     }
 
     Dialog(
-        onDismissRequest = { if (!isPublishing) onDismiss() },
+        // 接続待ちを理由にモーダルから出られなくすると、コルーチン自体は停止して
+        // いなくてもアプリ全体がフリーズしたように見える。送信はViewModelで継続し、
+        // 戻る操作だけは常に許可する。入力・再送信は引き続き下の各controlで禁止する。
+        onDismissRequest = onDismiss,
         properties = DialogProperties(
             usePlatformDefaultWidth = false,
             dismissOnBackPress = true,
@@ -254,9 +257,11 @@ internal fun StatusComposerSheet(
                 ) {
                     IconButton(
                         onClick = onDismiss,
-                        enabled = !isPublishing,
                     ) {
-                        Icon(Icons.Default.Close, contentDescription = "キャンセル")
+                        Icon(
+                            Icons.Default.Close,
+                            contentDescription = if (isPublishing) "閉じる" else "キャンセル",
+                        )
                     }
                     Text(
                         text = title,
