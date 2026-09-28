@@ -1,7 +1,7 @@
 # Web 版（Kotlin/Wasm）秘密鍵ログイン・投稿 設計
 
 作成日: 2026-09-28
-状態: 設計
+状態: W1〜W3 を実装済み（2026-09-28）。実リレーへの投稿は未確認。実装で設計から変えた点は8章。
 
 ## 0. 現状
 
@@ -170,3 +170,43 @@ val wasmJsMain by getting {
 
 - NIP-07 対応: `AccountSigner` を suspend にしたうえで、`window.nostr` に委譲する実装を追加する。
   秘密鍵をブラウザに保存しないで済むので、Web 版の既定のログイン方法にする候補。
+
+## 8. 実装で設計から変えた点と検証
+
+### 8.1 変更点
+
+- **W1 の確認範囲**: `RelayMessage` が受信イベントをすべて `isValidEvent` で検証するため、暗号が未実装の W1 ではフィードが空になる。フィード表示の確認は W2 へ移した。
+- **テストの置き場所**: `runBlocking` と実スレッドを前提にするテスト8件（`AccountSessionManagerTest` など）は Wasm でコンパイルできない。
+  挙動を変えないよう書き換えずに、Android / iOS 用の中間ソースセット `mobileTest` へ移した（iOS シミュレータでは従来どおり実行される）。
+- **タイムゾーン**: kotlinx-datetime の Wasm 実装は名前付きタイムゾーンの DB を同梱しないため、`@js-joda/timezone` 2.3.0 を追加した
+  （kotlinx-datetime が使う `@js-joda/core` 3.2.0 に合う版）。無いと `Asia/Tokyo` などで例外になる。
+- **画像ローダー**: `ImageLoaderConfig.kt` を `mobileMain` へ移した。Web は Coil の既定シングルトンを使う。
+- **CSP**: Coil などが blob URL から Worker を作るため `worker-src 'self' blob:` を追加した。
+  開発ビルドの webpack が `eval` を使うソースマップを出さないよう、`devtool = "source-map"` にした。
+- **文言**: `isWebPlatform` を使う箇所に、ログアウトとアカウント完全削除の確認文（「このブラウザに残ります」など）も加えた。
+  保存済みアカウント削除の文言は `KeySetupScreen` と `SettingsScreen` で重複していたため `KeyStorageMessages.kt` にまとめた。
+- **iOS の修正**: ベクタテストで、iOS の `sha256(ByteArray(0))` が範囲外アクセスで落ちることが分かったので直した（アプリ内に空データをハッシュする経路は無かった）。
+
+### 8.2 検証
+
+次のコマンドが成功した（iOS シミュレータ 819件、wasmJs（ChromeHeadless）798件）。
+
+```text
+./gradlew :composeApp:allTests \
+  :composeApp:compileAndroidMain \
+  :composeApp:compileKotlinIosSimulatorArm64 \
+  :composeApp:wasmJsBrowserDistribution
+```
+
+追加したテスト: `CryptoVectorsTest`（共通。BIP340・NIP-44 のベクタ、`signEvent` の往復）、`BrowserKeyStoreTest`（wasmJs）。
+
+ヘッドレス Chrome で本番ビルドを操作し、次を確認した。クライアントが送る `EVENT` は検証スクリプトの WebSocket 中継で止め、実リレーには送っていない。
+
+- 匿名でグローバルフィードが表示される（受信イベントの署名検証が通る）。
+- 鍵の生成、nsec のコピー、生成した鍵でのログイン。同意ダイアログに Web 向けの注意が出る。
+- 既存 nsec のインポートでログインし、期待どおりの公開鍵がアクティブになる。
+- 再読み込み後もログインが続く。ログアウトすると鍵を残したままログアウト済みになり、保存済みアカウントの削除で `torinos_web_*` がすべて消える。
+- 投稿画面から送った kind 1 イベントを捕捉し、id と署名が正しいことを Node + noble で別途検算した。
+- 開発サーバー（`wasmJsBrowserDevelopmentRun`）でも CSP に止められずに起動する。
+
+未確認: 実リレーへの投稿と、他クライアントでの表示。Safari / Firefox での動作。複数タブで同時にアカウントを切り替えたときの挙動（タブ間の同期はしない）。

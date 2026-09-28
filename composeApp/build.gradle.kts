@@ -51,6 +51,8 @@ kotlin {
         browser {
             commonWebpackConfig {
                 outputFileName = "composeApp.js"
+                // index.html の CSP は eval を許可しないため、開発ビルドでも eval を使うソースマップにしない。
+                devtool = "source-map"
             }
         }
         binaries.executable()

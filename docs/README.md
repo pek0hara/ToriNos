@@ -26,6 +26,7 @@
 - [`search-performance-fix-plan.md`](./search-performance-fix-plan.md) — 検索性能の設計と導入状況、キャッシュ・購読・WebSocketのライフサイクル
 - [`notification-target-resolution-design.md`](./notification-target-resolution-design.md) — 通知対象のKind非依存取得、取得状態とKind別表示・遷移の境界
 - [`post-auto-translation-design.md`](./post-auto-translation-design.md) — OS機能を使う投稿言語判定、自動翻訳、言語モデル準備と安全なフォールバック
+- [`web-private-key-login-design.md`](./web-private-key-login-design.md) — Web版(Kotlin/Wasm)の署名実装、ブラウザでの秘密鍵保存、未対応機能とテスト方針
 
 ## 将来計画
 
