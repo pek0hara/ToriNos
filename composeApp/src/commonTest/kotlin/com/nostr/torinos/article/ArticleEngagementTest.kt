@@ -122,6 +122,8 @@ class ArticleEngagementTest {
     @Test
     fun engagementFiltersQueryByAddressAndVersionIds() {
         val filters = articleEngagementFilters(address, listOf("v1", "v1", "v2"), limit = 100)
+        assertEquals(4, filters.size)
+        assertEquals(listOf(5), articleEngagementFilters(address, listOf("v1"), 100, ownPubkey = "me").last().kinds)
 
         assertEquals(listOf(address), filters[0].aTags)
         assertEquals(listOf("v1", "v2"), filters[1].eTags)
@@ -147,6 +149,21 @@ class ArticleEngagementTest {
 
         assertEquals(1111, target.eventKind)
         assertTrue(comment.isTopLevelArticleComment(address, versionIds))
+    }
+
+    @Test
+    fun deletedOwnReactionIsExcludedOnlyWhenDeletedByItsAuthor() {
+        val mine = reaction("mine", pubkey = "me", content = "+")
+        val others = reaction("others", pubkey = "alice", content = "+")
+        val deletions = listOf(
+            event("d1", kind = 5, pubkey = "me", tags = listOf(listOf("e", "mine"))),
+            event("d2", kind = 5, pubkey = "me", tags = listOf(listOf("e", "others"))),
+        )
+
+        assertEquals(listOf("others"), withoutDeletedEvents(listOf(mine, others), deletions).map { it.id })
+        val filter = ownRecentDeletionsFilter("me")
+        assertEquals(listOf(5), filter.kinds)
+        assertEquals(listOf("me"), filter.authors)
     }
 
     private fun reaction(

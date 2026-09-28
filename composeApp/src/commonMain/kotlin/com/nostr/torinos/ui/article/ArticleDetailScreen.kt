@@ -31,6 +31,8 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -118,6 +120,15 @@ fun ArticleDetailScreen(
     }
     var showDeleteDialog by rememberSaveable(pubkey, identifier) { mutableStateOf(false) }
     var showCommentsSheet by rememberSaveable(pubkey, identifier) { mutableStateOf(false) }
+    // リアクションの送信・取り消しの失敗は、下部バーからも分かるようにスナックバーで知らせる。
+    val snackbarHostState = remember { SnackbarHostState() }
+    val reactionError = (state.engagement as? ArticleEngagementState.Loaded)?.reactionError
+    LaunchedEffect(reactionError) {
+        if (reactionError != null) {
+            snackbarHostState.showSnackbar(reactionError)
+            viewModel.consumeReactionError()
+        }
+    }
     // 本文を下へ読み進めている間は下部バーを隠し、上へ戻すと再表示する。
     var isEngagementBarVisible by remember { mutableStateOf(true) }
     val barScrollConnection = remember {
@@ -141,6 +152,7 @@ fun ArticleDetailScreen(
 
     Scaffold(
         contentWindowInsets = WindowInsets(0),
+        snackbarHost = { SnackbarHost(snackbarHostState) },
         topBar = {
             AppTopBar(
                 navigationIcon = {
@@ -221,7 +233,6 @@ fun ArticleDetailScreen(
                             engagement = state.engagement,
                             actions = reactionActions,
                             onOpenComments = { showCommentsSheet = true },
-                            onComment = { onComment(article.commentReplyTarget(), article.displayTitle) },
                         )
                     }
                 }

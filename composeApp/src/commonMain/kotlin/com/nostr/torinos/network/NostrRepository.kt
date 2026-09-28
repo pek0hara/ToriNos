@@ -696,11 +696,18 @@ object NostrRepository {
     suspend fun publishUntilFirstSuccess(event: NostrEvent): RelayPublishResult {
         val targets = RelayStore.writableRelayUrlsSnapshot()
         check(targets.isNotEmpty()) { "書き込み可能なリレーがありません" }
-        val result = publishToRelaysUntilFirstSuccess(event, targets)
+        val result = publishToRelaysUntilFirstSuccess(
+            event = event,
+            relayUrls = targets,
+            onRelayResult = { relayResult ->
+                if (relayResult.succeededRelays.isNotEmpty()) {
+                    ReactionEventStore.observe(event, relayResult.succeededRelays)
+                }
+            },
+        )
         check(result.succeededRelays.isNotEmpty()) {
             "すべてのリレーへの送信に失敗しました: ${result.failedRelays.keys.joinToString()}"
         }
-        ReactionEventStore.observe(event, result.succeededRelays)
         return result
     }
 

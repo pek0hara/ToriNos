@@ -125,6 +125,8 @@ fun UserArticleListScreen(
                     onArticleClick = onArticleClick,
                     onAuthorClick = null,
                     onTopicClick = { topic = it },
+                    engagementFor = viewModel::engagementFlow,
+                    onVisibleArticlesChanged = viewModel::onVisibleArticlesChanged,
                     contentPadding = PaddingValues(
                         top = articleFloatingFiltersHeight(hasAuthorFilter = false, hasTopic = topic != null),
                     ),

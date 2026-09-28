@@ -9,10 +9,15 @@ import com.nostr.torinos.engagement.NoteEngagementCommand
 import com.nostr.torinos.engagement.NoteEngagementService
 import com.nostr.torinos.engagement.NoteEngagementState
 import com.nostr.torinos.model.NostrEvent
+import com.nostr.torinos.network.NostrRepository
+import com.nostr.torinos.network.RelayPublishResult
 
 /** 楽観更新と署名送信の共通境界。画面Stateそのものは所有しない。 */
-internal class NoteEngagementCoordinator(signer: AccountSigner?) {
-    private val service = NoteEngagementService(signer)
+internal class NoteEngagementCoordinator(
+    signer: AccountSigner?,
+    publisher: suspend (NostrEvent) -> RelayPublishResult = NostrRepository::publish,
+) {
+    private val service = NoteEngagementService(signer, publisher)
 
     fun begin(
         current: NoteEngagementState,

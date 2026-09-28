@@ -142,6 +142,8 @@ fun ArticleHubScreen(
                 onArticleClick = onArticleClick,
                 onAuthorClick = onAuthorClick,
                 onTopicClick = onTopicChange,
+                engagementFor = viewModel::engagementFlow,
+                onVisibleArticlesChanged = viewModel::onVisibleArticlesChanged,
                 contentPadding = PaddingValues(
                     top = articleFloatingFiltersHeight(
                         hasAuthorFilter = showAuthorFilter,

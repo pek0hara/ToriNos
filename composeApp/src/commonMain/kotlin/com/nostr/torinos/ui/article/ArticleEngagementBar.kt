@@ -1,51 +1,52 @@
 package com.nostr.torinos.ui.article
 
-import androidx.compose.foundation.clickable
+import androidx.compose.foundation.background
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Favorite
-import androidx.compose.material.icons.filled.MailOutline
+import androidx.compose.material.icons.filled.FavoriteBorder
+import androidx.compose.material.icons.Icons
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
-import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
-import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.nostr.torinos.article.reactionOptionForKey
+import com.nostr.torinos.engagement.displayOwnEmojiReactionEventIds
 import com.nostr.torinos.engagement.EngagementRequest
 import com.nostr.torinos.engagement.EngagementSlot
-import com.nostr.torinos.engagement.NoteEngagementState
-import com.nostr.torinos.engagement.displayOwnEmojiReactionEventIds
 import com.nostr.torinos.engagement.hasOwnReaction
+import com.nostr.torinos.engagement.isReactionPending
+import com.nostr.torinos.engagement.NoteEngagementState
 import com.nostr.torinos.model.ReactionOption
 import com.nostr.torinos.network.CustomEmojiStore
 import com.nostr.torinos.ui.components.NetworkImage
@@ -53,15 +54,14 @@ import com.nostr.torinos.ui.components.QuickReactionMenu
 import com.nostr.torinos.ui.components.StandardEmojiPickerSheet
 
 /**
- * 記事詳細の下部に常に出すリアクションとコメントのバー。
- * [actions]がnull（未ログイン）なら件数の表示だけを行う。
+ * 記事詳細の下部に常に出す「いいね」と「コメント」の2つのボタン。
+ * いいねの長押しで絵文字リアクションを選べる。[actions]がnull（未ログイン）なら件数の表示だけを行う。
  */
 @Composable
 internal fun ArticleEngagementBar(
     engagement: ArticleEngagementState,
     actions: ArticleReactionActions?,
     onOpenComments: () -> Unit,
-    onComment: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val loaded = engagement as? ArticleEngagementState.Loaded
@@ -81,20 +81,17 @@ internal fun ArticleEngagementBar(
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(EngagementBarHeight)
-                    .padding(start = 8.dp, end = 4.dp),
+                    .padding(horizontal = 16.dp),
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
             ) {
-                ArticleReactionButton(reactions = reactions, actions = actions)
-                if (actions != null && reactions != null && !reactions.hasOwnReaction) {
-                    Box {
-                        IconButton(onClick = { showQuickMenu = true }) {
-                            Icon(
-                                Icons.Default.Add,
-                                contentDescription = "リアクションを追加",
-                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                        }
+                Box(modifier = Modifier.weight(1f)) {
+                    ArticleLikeButton(
+                        reactions = reactions,
+                        actions = actions,
+                        onLongPress = { showQuickMenu = true },
+                    )
+                    if (actions != null && reactions != null) {
                         QuickReactionMenu(
                             expanded = showQuickMenu,
                             selectedReactionKeys = reactions.displayOwnEmojiReactionEventIds.keys,
@@ -110,21 +107,12 @@ internal fun ArticleEngagementBar(
                         )
                     }
                 }
-                BarCount(
+                BarPillButton(
                     onClick = onOpenComments,
-                    contentDescription = "コメントを見る",
+                    modifier = Modifier.weight(1f),
                 ) {
-                    Icon(
-                        Icons.Default.MailOutline,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.size(20.dp),
-                    )
-                    CountText(loaded?.comments?.size)
-                }
-                Spacer(modifier = Modifier.weight(1f))
-                TextButton(onClick = onComment) {
-                    Text("コメントする")
+                    Text(text = "💬", fontSize = 16.sp)
+                    PillLabel(label = "コメント", count = loaded?.comments?.size)
                 }
             }
         }
@@ -143,94 +131,98 @@ internal fun ArticleEngagementBar(
 }
 
 /**
- * いいねの切り替えとリアクション合計。自分が絵文字でリアクション済みならその絵文字を出し、
- * タップで取り消す。
+ * いいねボタン。タップでいいねの切り替え、長押しで絵文字メニュー。自分が絵文字でリアクション済みなら
+ * その絵文字を出し、タップで取り消す。送信中は次の操作を受け付けないため薄く表示する。
  */
 @Composable
-private fun ArticleReactionButton(
+private fun ArticleLikeButton(
     reactions: NoteEngagementState?,
     actions: ArticleReactionActions?,
+    onLongPress: () -> Unit,
 ) {
-    val ownEmoji = reactions?.displayOwnEmojiReactionEventIds?.keys?.firstOrNull()?.let(::reactionOptionFromKey)
+    val ownEmoji = reactions?.displayOwnEmojiReactionEventIds?.keys?.firstOrNull()?.let(::reactionOptionForKey)
     val isLiked = reactions != null && (
         reactions.ownLikeEventId != null ||
             reactions.pendingOperations[EngagementSlot.Reaction]?.request == EngagementRequest.AddLike
         )
+    val isPending = reactions?.isReactionPending == true
+    val canOperate = actions != null && reactions != null && !isPending
     val onClick: (() -> Unit)? = when {
-        actions == null || reactions == null -> null
+        !canOperate || actions == null || reactions == null -> null
         ownEmoji != null -> { { actions.onUnreact(ownEmoji) } }
         isLiked -> actions.onUnlike
         reactions.hasOwnReaction -> null
         else -> actions.onLike
     }
-    BarCount(
+    val onLongClick: (() -> Unit)? = if (canOperate && reactions?.hasOwnReaction == false) onLongPress else null
+    BarPillButton(
         onClick = onClick,
-        contentDescription = when {
-            ownEmoji != null || isLiked -> "リアクションを解除"
-            else -> "いいね"
-        },
+        onLongClick = onLongClick,
+        selected = ownEmoji != null || isLiked,
+        modifier = Modifier.fillMaxWidth().alpha(if (isPending) PendingAlpha else 1f),
     ) {
         when (ownEmoji) {
             is ReactionOption.Custom -> NetworkImage(
                 url = ownEmoji.imageUrl,
                 contentDescription = null,
                 contentScale = ContentScale.Fit,
-                modifier = Modifier.size(20.dp),
+                modifier = Modifier.size(18.dp),
             )
-            is ReactionOption.Unicode -> Text(text = ownEmoji.value, fontSize = 18.sp, maxLines = 1)
+            is ReactionOption.Unicode -> Text(text = ownEmoji.value, fontSize = 16.sp, maxLines = 1)
             null -> Icon(
-                Icons.Default.Favorite,
+                if (isLiked) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
                 contentDescription = null,
                 tint = if (isLiked) OwnReactionColor else MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.size(20.dp),
+                modifier = Modifier.size(18.dp),
             )
         }
-        CountText(reactions?.reactionCount)
+        PillLabel(label = "いいね", count = reactions?.reactionCount)
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun BarCount(
+private fun BarPillButton(
     onClick: (() -> Unit)?,
-    contentDescription: String,
+    modifier: Modifier = Modifier,
+    onLongClick: (() -> Unit)? = null,
+    selected: Boolean = false,
     content: @Composable () -> Unit,
 ) {
+    val shape = RoundedCornerShape(20.dp)
     Row(
-        modifier = Modifier
-            .widthIn(min = 56.dp)
+        modifier = modifier
             .height(40.dp)
-            .let { base ->
-                if (onClick != null) {
-                    base.clickable(onClickLabel = contentDescription, onClick = onClick)
+            .clip(shape)
+            .background(
+                if (selected) {
+                    MaterialTheme.colorScheme.primaryContainer
                 } else {
-                    base
-                }
-            }
-            .padding(horizontal = 8.dp),
+                    MaterialTheme.colorScheme.surfaceVariant
+                },
+            )
+            .combinedClickable(
+                enabled = onClick != null || onLongClick != null,
+                onClick = { onClick?.invoke() },
+                onLongClick = onLongClick,
+            )
+            .padding(horizontal = 14.dp),
         verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(6.dp),
+        horizontalArrangement = Arrangement.spacedBy(6.dp, Alignment.CenterHorizontally),
     ) {
         content()
     }
 }
 
-/** 取得前（null）は空欄にし、件数が届いてもバーの高さは変わらない。 */
+/** ラベルと件数。取得前（null）は件数を出さず、届いてもボタンの大きさは変わらない。 */
 @Composable
-private fun CountText(count: Int?) {
+private fun PillLabel(label: String, count: Int?) {
     Text(
-        text = count?.toString().orEmpty(),
+        text = if (count == null) label else "$label $count",
         style = MaterialTheme.typography.labelLarge,
         color = MaterialTheme.colorScheme.onSurfaceVariant,
+        maxLines = 1,
     )
-}
-
-/** リアクションのキー（`unicode:…`/`custom:shortcode:url`）から表示用の選択肢を復元する。 */
-internal fun reactionOptionFromKey(key: String): ReactionOption? = when {
-    key.startsWith("unicode:") -> ReactionOption.Unicode(key.removePrefix("unicode:"))
-    key.startsWith("custom:") -> key.removePrefix("custom:").split(":", limit = 2)
-        .takeIf { it.size == 2 }
-        ?.let { (shortcode, url) -> ReactionOption.Custom(shortcode, url) }
-    else -> null
 }
 
 private fun markReactionUsed(option: ReactionOption) {
@@ -242,6 +234,8 @@ private fun markReactionUsed(option: ReactionOption) {
 
 /** 下部バーの高さ（ナビゲーションバーの余白を除く）。本文の下余白の計算にも使う。 */
 internal val EngagementBarHeight = 52.dp
+
+private const val PendingAlpha = 0.45f
 
 /** 投稿カードで自分のリアクションを示す色と同じ。 */
 private val OwnReactionColor = Color(0xFFE17055)

@@ -1,5 +1,10 @@
 package com.nostr.torinos.ui.article
 
+import androidx.compose.material3.Icon
+import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.Icons
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -95,7 +100,13 @@ internal fun LazyListScope.articleEngagementItems(
                         modifier = Modifier.weight(1f),
                     )
                     TextButton(onClick = onComment) {
-                        Text("コメントする")
+                        Icon(
+                            Icons.Default.Edit,
+                            contentDescription = null,
+                            modifier = Modifier.size(16.dp),
+                        )
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text("コメントを書く")
                     }
                 }
             }

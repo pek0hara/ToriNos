@@ -38,11 +38,13 @@ internal fun articleEngagementFilters(
     address: String,
     articleEventIds: Collection<String>,
     limit: Int,
-): List<NostrFilter> = listOf(
+    ownPubkey: String? = null,
+): List<NostrFilter> = listOfNotNull(
     NostrFilter(kinds = listOf(REACTION_KIND), aTags = listOf(address), limit = limit),
     NostrFilter(kinds = listOf(REACTION_KIND), eTags = articleEventIds.distinct(), limit = limit),
     NostrFilter(kinds = listOf(COMMENT_EVENT_KIND), rootAddressTags = listOf(address), limit = limit),
     NostrFilter(kinds = listOf(TEXT_NOTE_KIND), aTags = listOf(address), limit = limit),
+    ownPubkey?.let(::ownRecentDeletionsFilter),
 )
 
 /** [event]が記事（address、またはいずれかの版ID）へのリアクションか。 */
@@ -110,6 +112,37 @@ internal fun ArticleReactionSummary.toEngagementState(): NoteEngagementState = N
 
 private fun Map<String, String>.withOwn(isOwn: Boolean, option: ReactionOption, eventId: String): Map<String, String> =
     if (isOwn) this + (option.key to eventId) else this
+
+private const val DELETION_KIND = 5
+
+/**
+ * 自分の最近の取り消し（kind 5）。リアクションやコメントと同じ問い合わせに含め、
+ * 取り消したリアクションの確認のために往復を増やさない。
+ */
+internal fun ownRecentDeletionsFilter(ownPubkey: String): NostrFilter =
+    NostrFilter(kinds = listOf(DELETION_KIND), authors = listOf(ownPubkey), limit = OWN_RECENT_DELETIONS_LIMIT)
+
+private const val OWN_RECENT_DELETIONS_LIMIT = 200
+
+/**
+ * 取り消し済みのイベントを除く。NIP-09に従い、削除イベントの作成者と対象の作成者が
+ * 同じ場合だけ有効とする。削除に対応していないリレーが返した古いリアクションを数えないために使う。
+ */
+internal fun withoutDeletedEvents(
+    events: Collection<NostrEvent>,
+    deletions: Collection<NostrEvent>,
+): List<NostrEvent> {
+    val deletedByAuthor = deletions
+        .filter { it.kind == DELETION_KIND }
+        .flatMap { deletion ->
+            deletion.tags
+                .filter { it.firstOrNull() == "e" }
+                .mapNotNull { it.getOrNull(1) }
+                .map { targetId -> targetId to deletion.pubkey }
+        }
+        .toSet()
+    return events.filterNot { (it.id to it.pubkey) in deletedByAuthor }
+}
 
 /**
  * 記事へ直接付いたコメントか。

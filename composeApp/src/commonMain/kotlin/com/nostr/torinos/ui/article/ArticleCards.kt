@@ -1,5 +1,16 @@
 package com.nostr.torinos.ui.article
 
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Favorite
+import androidx.compose.material.icons.filled.MailOutline
+import androidx.compose.material3.Icon
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.ui.unit.sp
+import com.nostr.torinos.article.ArticleEngagementSummary
+import com.nostr.torinos.article.OwnArticleReaction
+import com.nostr.torinos.model.ReactionOption
+import kotlinx.coroutines.flow.StateFlow
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -36,6 +47,7 @@ internal fun ArticleCard(
     onClick: () -> Unit,
     onAuthorClick: (() -> Unit)?,
     onTopicClick: ((String) -> Unit)?,
+    engagement: StateFlow<ArticleEngagementSummary?>? = null,
 ) {
     val imageUrl = article.meta.imageUrl?.takeIf { it.isNotBlank() }
     Column(
@@ -102,7 +114,19 @@ internal fun ArticleCard(
                 overflow = TextOverflow.Ellipsis,
             )
         }
-        ArticleAuthorLine(article = article, onUserClick = onAuthorClick)
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            // 件数を右端に必要な幅だけ置き、残りの幅を著者行に渡す。著者行のタップ範囲は中身の幅に留める。
+            Box(modifier = Modifier.weight(1f)) {
+                ArticleAuthorLine(article = article, onUserClick = onAuthorClick)
+            }
+            if (engagement != null) {
+                ArticleCardEngagement(engagement)
+            }
+        }
         if (article.meta.topics.isNotEmpty()) {
             ArticleTopics(
                 topics = article.meta.topics.take(5),
@@ -117,9 +141,10 @@ internal fun ArticleCard(
 internal fun ArticleAuthorLine(
     article: ArticleItem,
     onUserClick: (() -> Unit)?,
+    modifier: Modifier = Modifier,
 ) {
     Row(
-        modifier = if (onUserClick != null) Modifier.clickable(onClick = onUserClick) else Modifier,
+        modifier = if (onUserClick != null) modifier.clickable(onClick = onUserClick) else modifier,
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(8.dp),
     ) {
@@ -129,17 +154,87 @@ internal fun ArticleAuthorLine(
             pictureUrl = article.authorProfile?.picture,
             size = 24,
         )
+        // 名前が長い場合は名前を省略し、日時は折り返さない。
         ProfileNameText(
             profile = article.authorProfile,
             fallback = article.event.shortPubkey,
             style = MaterialTheme.typography.labelMedium,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f, fill = false),
         )
         Text(
             text = formatTimestamp(article.sortTime),
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 1,
+            softWrap = false,
         )
     }
 }
+
+/**
+ * カード右端のリアクション数とコメント数。自分の記事の件数だけを購読し、
+ * 件数が届いても行の高さを変えない。タップはカード本体（記事詳細）に任せる。
+ */
+@Composable
+private fun ArticleCardEngagement(engagement: StateFlow<ArticleEngagementSummary?>) {
+    val summary by engagement.collectAsState()
+    val current = summary ?: return
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        if (current.reactionCount > 0 || current.ownReaction != null) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(3.dp),
+            ) {
+                when (val own = current.ownReaction) {
+                    is OwnArticleReaction.Emoji -> when (val option = own.option) {
+                        is ReactionOption.Custom -> NetworkImage(
+                            url = option.imageUrl,
+                            contentDescription = null,
+                            contentScale = ContentScale.Fit,
+                            modifier = Modifier.size(14.dp),
+                        )
+                        is ReactionOption.Unicode -> Text(text = option.value, fontSize = 12.sp, maxLines = 1)
+                    }
+                    else -> Icon(
+                        Icons.Default.Favorite,
+                        contentDescription = null,
+                        tint = if (own == OwnArticleReaction.Like) OwnReactionTint else MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(14.dp),
+                    )
+                }
+                EngagementCountText(current.reactionCount, current.isReactionLowerBound)
+            }
+        }
+        if (current.commentCount > 0) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(3.dp),
+            ) {
+                Icon(
+                    Icons.Default.MailOutline,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(14.dp),
+                )
+                EngagementCountText(current.commentCount, current.isCommentLowerBound)
+            }
+        }
+    }
+}
+
+@Composable
+private fun EngagementCountText(count: Int, isLowerBound: Boolean) {
+    Text(
+        text = if (isLowerBound) "$count+" else count.toString(),
+        style = MaterialTheme.typography.labelSmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
+}
+
+/** 投稿カードで自分のリアクションを示す色と同じ。 */
+private val OwnReactionTint = Color(0xFFE17055)

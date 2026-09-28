@@ -28,5 +28,9 @@ internal class BoundedLruCache<K, V>(
 
     fun remove(key: K): V? = entries.remove(key)
 
+    fun clear() {
+        entries.clear()
+    }
+
     internal val size: Int get() = entries.size
 }

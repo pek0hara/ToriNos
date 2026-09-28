@@ -9,7 +9,15 @@ import com.nostr.torinos.engagement.NoteEngagementState
 import com.nostr.torinos.engagement.NoteTarget
 import com.nostr.torinos.model.ReactionOption
 import com.nostr.torinos.ui.timeline.NoteEngagementCoordinator
+import com.nostr.torinos.article.ArticleEngagementSummary
+import com.nostr.torinos.article.ArticleEngagementSummaryStore
+import com.nostr.torinos.article.ArticleEngagementTarget
 import com.nostr.torinos.article.articleEngagementFilters
+import com.nostr.torinos.article.articleEngagementSummaryOf
+import com.nostr.torinos.article.withoutDeletedEvents
+import com.nostr.torinos.article.articleListEngagementFilters
+import com.nostr.torinos.article.selectArticleEngagementBatches
+import com.nostr.torinos.article.summarizeArticleEngagementBatch
 import com.nostr.torinos.article.articleTopLevelComments
 import com.nostr.torinos.article.summarizeArticleReactions
 import com.nostr.torinos.model.ArticleItem
@@ -34,6 +42,7 @@ import kotlin.random.Random
 import kotlin.time.Clock
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.awaitCancellation
@@ -191,6 +200,10 @@ class ArticleListViewModel(
     private val accountSession: AccountSession? = null,
 ) : SafeViewModel() {
     private var query = initialQuery
+    private val engagementAccountKey = accountSession?.signer?.pubkey
+    private var visibleEngagementTargets: List<ArticleEngagementTarget> = emptyList()
+    private val inFlightEngagementAddresses = mutableSetOf<String>()
+    private var engagementJob: Job? = null
     private val _state = MutableStateFlow(ArticleListState())
     val state: StateFlow<ArticleListState> = _state.asStateFlow()
 
@@ -233,7 +246,63 @@ class ArticleListViewModel(
         refresh()
     }
 
+    /** カードが自分の記事の件数だけを購読するための[StateFlow]。 */
+    fun engagementFlow(address: String): StateFlow<ArticleEngagementSummary?> =
+        ArticleEngagementSummaryStore.flow(engagementAccountKey, address)
+
+    /**
+     * 画面に見えている記事（と直後の数件）を受け取り、未取得・期限切れの分だけを
+     * 20件ずつ直列に取得する。空リストを渡すと待機中の取得をやめる。
+     */
+    fun onVisibleArticlesChanged(targets: List<ArticleEngagementTarget>) {
+        visibleEngagementTargets = targets
+        if (engagementJob?.isActive == true || targets.isEmpty()) return
+        engagementJob = launch { drainEngagementRequests() }
+    }
+
+    private suspend fun drainEngagementRequests() {
+        while (true) {
+            val now = Clock.System.now().toEpochMilliseconds()
+            val batch = selectArticleEngagementBatches(
+                candidates = visibleEngagementTargets,
+                isFresh = { ArticleEngagementSummaryStore.isFresh(engagementAccountKey, it, now) },
+                inFlight = inFlightEngagementAddresses,
+                batchSize = ARTICLE_LIST_ENGAGEMENT_BATCH_SIZE,
+            ).firstOrNull() ?: return
+            val addresses = batch.map { it.address }
+            inFlightEngagementAddresses += addresses
+            try {
+                // 応答の早いリレーの分から件数を出し、遅いリレーの分は届き次第更新する。
+                fetchEventsProgressively(
+                    articleListEngagementFilters(addresses, engagementAccountKey, ARTICLE_LIST_ENGAGEMENT_LIMIT),
+                ) { events, _ ->
+                    val summaries = withContext(Dispatchers.Default) {
+                        summarizeArticleEngagementBatch(
+                            events = events,
+                            targets = batch,
+                            ownPubkey = engagementAccountKey,
+                            limit = ARTICLE_LIST_ENGAGEMENT_LIMIT,
+                            nowMillis = Clock.System.now().toEpochMilliseconds(),
+                            isMuted = { accountSession?.muteStore?.isMuted(it) == true },
+                        )
+                    }
+                    summaries.forEach { (address, summary) ->
+                        ArticleEngagementSummaryStore.put(engagementAccountKey, address, summary)
+                    }
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Throwable) {
+                // 件数は補助表示のため、失敗しても一覧は止めない。次に見えたときに取り直す。
+                return
+            } finally {
+                inFlightEngagementAddresses -= addresses.toSet()
+            }
+        }
+    }
+
     fun refresh() {
+        ArticleEngagementSummaryStore.markStale(engagementAccountKey, _state.value.articles.map { it.address })
         loadJob?.cancel()
         rawEvents.clear()
         oldestCreatedAt = null
@@ -442,7 +511,11 @@ class ArticleDetailViewModel(
     private var loadJob: Job? = null
     private var quoteJob: Job? = null
     private var engagementJob: Job? = null
-    private val engagementCoordinator = NoteEngagementCoordinator(accountSession?.signer)
+    // 最初の1リレーへ届いた時点で完了扱いにし、遅いリレーが次の操作（取り消しなど）を塞がないようにする。
+    private val engagementCoordinator = NoteEngagementCoordinator(
+        signer = accountSession?.signer,
+        publisher = NostrRepository::publishUntilFirstSuccess,
+    )
     private var nextEngagementOperationId = 0L
 
     /** ログイン中（署名できる）ときだけリアクションを送れる。 */
@@ -554,6 +627,12 @@ class ArticleDetailViewModel(
         engagementJob = launch { loadEngagement(article) }
     }
 
+    fun consumeReactionError() {
+        val loaded = loadedEngagement() ?: return
+        if (loaded.reactionError == null) return
+        _state.value = _state.value.copy(engagement = loaded.copy(reactionError = null))
+    }
+
     fun like() {
         val article = _state.value.article ?: return
         runReaction(EngagementRequest.AddLike, NoteEngagementCommand.AddLike(article.reactionTarget()))
@@ -583,6 +662,22 @@ class ArticleDetailViewModel(
     private fun updateLoadedEngagement(transform: (ArticleEngagementState.Loaded) -> ArticleEngagementState.Loaded) {
         val loaded = loadedEngagement() ?: return
         _state.value = _state.value.copy(engagement = transform(loaded))
+        publishListSummary()
+    }
+
+    /** 詳細で得た正確な件数を一覧カード用のキャッシュへ書き戻し、一覧へ戻ったときに反映させる。 */
+    private fun publishListSummary() {
+        val article = _state.value.article ?: return
+        val loaded = loadedEngagement() ?: return
+        ArticleEngagementSummaryStore.put(
+            accountSession?.signer?.pubkey,
+            article.address,
+            articleEngagementSummaryOf(
+                reactions = loaded.reactions,
+                commentCount = loaded.comments.size,
+                nowMillis = Clock.System.now().toEpochMilliseconds(),
+            ),
+        )
     }
 
     /** 楽観的に集計へ反映してから送信し、失敗したら巻き戻す。 */
@@ -628,33 +723,65 @@ class ArticleDetailViewModel(
         val ownPubkey = accountSession?.signer?.pubkey
         val isMuted: (String) -> Boolean = { accountSession?.muteStore?.isMuted(it) == true }
         try {
-            val events = fetchEventsOnce(
-                articleEngagementFilters(article.address, articleEventIds, ARTICLE_ENGAGEMENT_LIMIT),
-            )
-            val comments = articleTopLevelComments(events, article.address, articleEventIds, isMuted)
-            val reactions = summarizeArticleReactions(events, article.address, articleEventIds, ownPubkey, isMuted)
-            val commenters = comments.map { it.pubkey }.distinct()
-            _state.value = _state.value.copy(
-                engagement = ArticleEngagementState.Loaded(
-                    reactions = reactions.toEngagementState(),
-                    comments = comments,
-                    commentProfiles = ProfileRepository.getCached(commenters),
-                ),
-            )
-            val missing = commenters.filterNot { it in ProfileRepository.getCached(commenters) }
-            if (missing.isEmpty()) return
-            val fetched = fetchProfiles(missing, relayUrl)
-            val loaded = _state.value.engagement as? ArticleEngagementState.Loaded ?: return
-            _state.value = _state.value.copy(
-                engagement = loaded.copy(commentProfiles = loaded.commentProfiles + fetched),
-            )
+            // 応答の早いリレーの分から表示し、遅いリレーの分は届き次第更新する。
+            fetchEventsProgressively(
+                articleEngagementFilters(article.address, articleEventIds, ARTICLE_ENGAGEMENT_LIMIT, ownPubkey),
+            ) { received, isComplete ->
+                val (reactions, comments) = withContext(Dispatchers.Default) {
+                    val events = withoutDeletedEvents(received, received)
+                    summarizeArticleReactions(events, article.address, articleEventIds, ownPubkey, isMuted)
+                        .toEngagementState() to
+                        articleTopLevelComments(events, article.address, articleEventIds, isMuted)
+                }
+                applyEngagementSnapshot(reactions, comments)
+                if (isComplete) fetchCommentProfiles()
+            }
         } catch (e: CancellationException) {
             throw e
         } catch (e: Throwable) {
-            _state.value = _state.value.copy(
-                engagement = ArticleEngagementState.Failed(e.message ?: "リアクションとコメントを読み込めませんでした"),
-            )
+            if (loadedEngagement() == null) {
+                _state.value = _state.value.copy(
+                    engagement = ArticleEngagementState.Failed(e.message ?: "リアクションとコメントを読み込めませんでした"),
+                )
+            }
         }
+    }
+
+    /**
+     * 取得途中の集計を反映する。リアクションの送信中は楽観表示を上書きしないよう、
+     * コメントだけを更新する。
+     */
+    private fun applyEngagementSnapshot(reactions: NoteEngagementState, comments: List<NostrEvent>) {
+        val current = loadedEngagement()
+        val commenters = comments.map { it.pubkey }.distinct()
+        val profiles = (current?.commentProfiles.orEmpty()) + ProfileRepository.getCached(commenters)
+        _state.value = _state.value.copy(
+            engagement = when {
+                current == null -> ArticleEngagementState.Loaded(
+                    reactions = reactions,
+                    comments = comments,
+                    commentProfiles = profiles,
+                )
+                current.reactions.pendingOperations.isNotEmpty() -> current.copy(
+                    comments = comments,
+                    commentProfiles = profiles,
+                )
+                else -> current.copy(
+                    reactions = reactions,
+                    comments = comments,
+                    commentProfiles = profiles,
+                )
+            },
+        )
+        publishListSummary()
+    }
+
+    private suspend fun fetchCommentProfiles() {
+        val loaded = loadedEngagement() ?: return
+        val missing = loaded.comments.map { it.pubkey }.distinct().filterNot { it in loaded.commentProfiles }
+        if (missing.isEmpty()) return
+        val fetched = fetchProfiles(missing, relayUrl)
+        updateLoadedEngagement { it.copy(commentProfiles = it.commentProfiles + fetched) }
     }
 
     private suspend fun fetchAuthorProfile() {
@@ -771,9 +898,16 @@ private suspend fun fetchArticleEvents(
     }
 }
 
-/** 有効な全リレーへ有限購読し、全リレーの完了またはタイムアウトまでに届いたイベントを返す。 */
-private suspend fun fetchEventsOnce(filters: List<NostrFilter>): List<NostrEvent> {
+/**
+ * 有効な全リレーへ有限購読し、リレーごとの取得完了（EOSE）のたびに、それまでに届いたイベントを渡す。
+ * 最後に全リレーの完了またはタイムアウトで`isComplete = true`として渡す。
+ */
+private suspend fun fetchEventsProgressively(
+    filters: List<NostrFilter>,
+    onSnapshot: suspend (events: List<NostrEvent>, isComplete: Boolean) -> Unit,
+) {
     val events = linkedMapOf<String, NostrEvent>()
+    var deliveredCount = -1
     val session = NostrRepository.openSubscription(
         SubscriptionSpec(
             id = articleSubscriptionId("article-engagement", filters),
@@ -783,13 +917,20 @@ private suspend fun fetchEventsOnce(filters: List<NostrFilter>): List<NostrEvent
     )
     try {
         session.signals.takeWhile { signal ->
-            if (signal is SubscriptionSignal.Event) events[signal.event.id] = signal.event
+            when (signal) {
+                is SubscriptionSignal.Event -> events[signal.event.id] = signal.event
+                is SubscriptionSignal.Eose -> if (events.size != deliveredCount) {
+                    deliveredCount = events.size
+                    onSnapshot(events.values.toList(), false)
+                }
+                is SubscriptionSignal.FetchCompleted -> onSnapshot(events.values.toList(), true)
+                else -> Unit
+            }
             signal !is SubscriptionSignal.FetchCompleted
         }.collect { }
     } finally {
         withContext(NonCancellable) { session.close() }
     }
-    return events.values.toList()
 }
 
 private suspend fun fetchProfiles(
@@ -811,6 +952,8 @@ private const val ARTICLE_RAW_EVENT_WINDOW = 1_000
 private const val ARTICLE_DETAIL_AUTHOR_FALLBACK_LIMIT = 100
 private const val ARTICLE_FETCH_TIMEOUT_MS = 8_000L
 private const val ARTICLE_ENGAGEMENT_LIMIT = 500
+private const val ARTICLE_LIST_ENGAGEMENT_LIMIT = 500
+private const val ARTICLE_LIST_ENGAGEMENT_BATCH_SIZE = 20
 private const val PROFILE_FETCH_TIMEOUT_MS = 5_000L
 private const val PROFILE_FETCH_LIMIT = 200
 private const val PROFILE_MAX_AGE_MS = 15 * 60 * 1_000L
