@@ -105,6 +105,7 @@ class FeedViewModel(
     fun refresh() = controller.refresh()
     fun refreshReactions(eventId: String) = controller.refreshReactions(eventId)
     fun resetToLatest(request: Int): Boolean = controller.resetToLatest(request)
+    fun updateAuthors(authors: List<String>?): Boolean = controller.updateAuthors(authors)
     fun setAtTop(value: Boolean) = controller.setAtTop(value)
     fun startSubscriptions() = controller.startSubscriptions()
     fun stopSubscriptions(clearRefreshing: Boolean = true) = controller.stopSubscriptions(clearRefreshing)

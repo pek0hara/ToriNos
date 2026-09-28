@@ -1391,6 +1391,79 @@ class FeedControllerAsyncRegressionTest {
         controller.close()
     }
 
+    @Test
+    fun updatingAuthorsRestartsFeedWithNewAuthorsInSameController() = runTest {
+        val gateway = FakeGateway()
+        val controller = FeedController(
+            computeDispatcher = Dispatchers.Unconfined,
+            authorPubkeys = listOf("alice"),
+            scope = backgroundScope,
+            subscriptions = gateway,
+        )
+        runCurrent()
+        gateway.liveSessions.single().event(event("from-alice", 10, pubkey = "alice"))
+        advanceTimeBy(151)
+        runCurrent()
+        assertEquals(listOf("from-alice"), controller.state.value.events.map { it.id })
+        val sessionsBefore = gateway.sessions.toList()
+
+        assertTrue(controller.updateAuthors(listOf("alice", "bob")))
+        runCurrent()
+
+        assertTrue(controller.state.value.events.isEmpty())
+        assertTrue(controller.state.value.isInitialLoad)
+        assertTrue(sessionsBefore.all { it.closed })
+        val newFeedSessions = gateway.sessions.filter { it !in sessionsBefore && it.id.startsWith("feed-") }
+        assertTrue(newFeedSessions.isNotEmpty())
+        assertTrue(newFeedSessions.all { session -> session.filters.all { it.authors == listOf("alice", "bob") } })
+        controller.close()
+    }
+
+    @Test
+    fun updatingAuthorsWithSameListIsNoOp() = runTest {
+        val gateway = FakeGateway()
+        val controller = FeedController(
+            computeDispatcher = Dispatchers.Unconfined,
+            authorPubkeys = listOf("alice"),
+            scope = backgroundScope,
+            subscriptions = gateway,
+        )
+        runCurrent()
+        val sessionCount = gateway.sessions.size
+
+        assertFalse(controller.updateAuthors(listOf("alice")))
+        runCurrent()
+
+        assertEquals(sessionCount, gateway.sessions.size)
+        assertTrue(gateway.sessions.none { it.closed })
+        controller.close()
+    }
+
+    @Test
+    fun updatingAuthorsWhileStoppedDefersSubscriptionUntilStart() = runTest {
+        val gateway = FakeGateway()
+        val controller = FeedController(
+            computeDispatcher = Dispatchers.Unconfined,
+            authorPubkeys = listOf("alice"),
+            scope = backgroundScope,
+            subscriptions = gateway,
+        )
+        runCurrent()
+        controller.stopSubscriptions()
+        runCurrent()
+        val sessionCount = gateway.sessions.size
+
+        assertTrue(controller.updateAuthors(listOf("bob")))
+        runCurrent()
+        assertEquals(sessionCount, gateway.sessions.size)
+
+        controller.startSubscriptions()
+        runCurrent()
+        val restarted = gateway.feedFetchSessions.last()
+        assertTrue(restarted.filters.all { it.authors == listOf("bob") })
+        controller.close()
+    }
+
     private class FakeGateway(initialRelayUrls: Set<String> = setOf("relay")) : FeedSubscriptionGateway {
         val relayUrls = MutableStateFlow(initialRelayUrls)
         var targetRelayUrlsOverride: Set<String>? = null

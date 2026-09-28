@@ -647,6 +647,13 @@ private fun FeedTimelinePane(
         mutableStateOf(viewModel.state.value.isInitialLoad)
     }
 
+    LaunchedEffect(viewModel, authorPubkeys) {
+        if (viewModel.updateAuthors(authorPubkeys)) {
+            shouldStageInitialEvents = true
+            resetToTopRequest++
+        }
+    }
+
     LaunchedEffect(state.engagementError) {
         val error = state.engagementError ?: return@LaunchedEffect
         snackbarHostState.showSnackbar(error)

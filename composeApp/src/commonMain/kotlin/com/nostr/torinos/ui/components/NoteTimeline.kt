@@ -117,11 +117,8 @@ fun NoteTimeline(
     var isEmptyMessageVisible by remember(emptyStateDelayMillis) {
         mutableStateOf(emptyStateDelayMillis <= 0L)
     }
-    var isInitialEventContentComposed by remember(resetToTopRequest, stageInitialEvents) {
-        mutableStateOf(!stageInitialEvents)
-    }
-    var isEventContentVisible by remember(resetToTopRequest, stageInitialEvents) {
-        mutableStateOf(!stageInitialEvents)
+    val initialReveal = remember(resetToTopRequest, stageInitialEvents) {
+        InitialEventReveal(staged = stageInitialEvents)
     }
     var hasInitialEventBatchStarted by remember(resetToTopRequest, stageInitialEvents) {
         mutableStateOf(false)
@@ -152,7 +149,7 @@ fun NoteTimeline(
     ) {
         if (
             !stageInitialEvents ||
-            isInitialEventContentComposed ||
+            initialReveal.isContentComposed ||
             state.initialFeedState == FeedViewModel.InitialFeedState.Loading ||
             state.events.isNotEmpty()
         ) {
@@ -161,8 +158,7 @@ fun NoteTimeline(
         if (state.initialFeedState == FeedViewModel.InitialFeedState.Empty) {
             delay(emptyStateDelayMillis)
         }
-        isInitialEventContentComposed = true
-        isEventContentVisible = true
+        initialReveal.showNow()
     }
 
     LaunchedEffect(
@@ -171,7 +167,7 @@ fun NoteTimeline(
         resetToTopRequest,
         stageInitialEvents,
     ) {
-        if (!stageInitialEvents || isInitialEventContentComposed || state.events.isEmpty()) {
+        if (!stageInitialEvents || initialReveal.isContentComposed || state.events.isEmpty()) {
             return@LaunchedEffect
         }
         hasInitialEventBatchStarted = true
@@ -184,21 +180,20 @@ fun NoteTimeline(
         resetToTopRequest,
         stageInitialEvents,
     ) {
-        if (!stageInitialEvents || !hasInitialEventBatchStarted || isInitialEventContentComposed) {
+        if (!stageInitialEvents || !hasInitialEventBatchStarted || initialReveal.isContentComposed) {
             return@LaunchedEffect
         }
         delay(initialEventMaxWaitMillis)
-        initialEventRevealRequest++
+        if (!initialReveal.isContentComposed) initialEventRevealRequest++
     }
 
     LaunchedEffect(initialEventRevealRequest, resetToTopRequest, stageInitialEvents) {
-        if (!stageInitialEvents || initialEventRevealRequest <= 0 || isInitialEventContentComposed) {
-            return@LaunchedEffect
+        if (!stageInitialEvents || initialEventRevealRequest <= 0) return@LaunchedEffect
+        // 合図の重複や、スクロールがユーザー操作で打ち切られても、表示は必ず完了させる。
+        initialReveal.reveal {
+            withFrameNanos { }
+            timelineListState.scrollToItem(0)
         }
-        isInitialEventContentComposed = true
-        withFrameNanos { }
-        timelineListState.scrollToItem(0)
-        isEventContentVisible = true
     }
 
     LaunchedEffect(
@@ -277,7 +272,7 @@ fun NoteTimeline(
     @Composable
     fun TimelineList(listModifier: Modifier) {
         val presentedState = when {
-            !isInitialEventContentComposed -> state.copy(
+            !initialReveal.isContentComposed -> state.copy(
                 events = emptyList(),
                 isInitialLoad = true,
                 initialFeedState = FeedViewModel.InitialFeedState.Loading,
@@ -331,7 +326,7 @@ fun NoteTimeline(
                         EmptyTimelineMessage(emptyText)
                     }
                 },
-                eventContentVisible = isEventContentVisible,
+                eventContentVisible = initialReveal.isContentVisible,
                 eventEnterFadeMillis = eventEnterFadeMillis,
                 deferWebViewLoad = !isScrollSettled,
             )

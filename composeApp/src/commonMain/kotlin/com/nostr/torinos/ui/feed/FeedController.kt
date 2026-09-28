@@ -107,7 +107,7 @@ private object RepositoryFeedSubscriptionGateway : FeedSubscriptionGateway {
 internal class FeedController(
     private val accountSession: AccountSession? = null,
     private val authorPubkey: String? = null,
-    private val authorPubkeys: List<String>? = authorPubkey?.let { listOf(it) },
+    authorPubkeys: List<String>? = authorPubkey?.let { listOf(it) },
     private val relayUrl: String? = null,
     private val autoStart: Boolean = true,
     private val includeRepostsInFeed: Boolean = false,
@@ -120,6 +120,8 @@ internal class FeedController(
     private val computeDispatcher: CoroutineDispatcher = Dispatchers.Default,
 ) {
     private val safeCoroutineLauncher = SafeCoroutineLauncher(scope, "FeedController")
+    /** フォロー一覧の更新で差し替わる。購読フィルタは都度ここから組み立てる。 */
+    private var authorPubkeys: List<String>? = authorPubkeys
     private val feedItemMapper = FeedItemMapper()
     private val mentionedPubkeysCache = MentionedPubkeysCache()
     /** UI から「先頭にいるか」の境界値だけを受け取る。高頻度なスクロール位置そのものは渡さない。 */
@@ -561,7 +563,24 @@ internal class FeedController(
         if (closed) return false
         if (request <= 0 || request <= handledLatestResetRequest) return false
         handledLatestResetRequest = request
+        resetFeedState()
+        return true
+    }
 
+    /**
+     * 対象著者を差し替え、フィードを最初から取り直す。購読中なら新しい著者で再開する。
+     * フォロー一覧の更新ごとに ViewModel を作り直さずに済ませるための入口。
+     */
+    fun updateAuthors(authors: List<String>?): Boolean {
+        if (closed || authors == authorPubkeys) return false
+        val wasStarted = subscriptionsStarted
+        authorPubkeys = authors
+        resetFeedState()
+        if (wasStarted) startSubscriptions()
+        return true
+    }
+
+    private fun resetFeedState() {
         stopSubscriptions()
         timelineBatchJob?.cancel()
         timelineBatchJob = null
@@ -623,7 +642,6 @@ internal class FeedController(
         pendingFeedState = UiState()
         _state.value = pendingFeedState
         isAtTop = true
-        return true
     }
 
     fun startSubscriptions() {
