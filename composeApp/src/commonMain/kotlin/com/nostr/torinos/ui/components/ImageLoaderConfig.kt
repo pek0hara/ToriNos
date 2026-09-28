@@ -5,17 +5,8 @@ import coil3.ImageLoader
 import coil3.PlatformContext
 import coil3.SingletonImageLoader
 import coil3.decode.DataSource
-import coil3.decode.Decoder
 import coil3.disk.DiskCache
-import coil3.fetch.FetchResult
-import coil3.fetch.Fetcher
-import coil3.fetch.ImageFetchResult
-import coil3.fetch.SourceFetchResult
 import coil3.memory.MemoryCache
-import coil3.request.ErrorResult
-import coil3.request.ImageRequest
-import coil3.request.Options
-import coil3.request.SuccessResult
 import com.nostr.torinos.util.SynchronousLock
 import com.nostr.torinos.util.cacheTraceLog
 import com.nostr.torinos.util.withLock
@@ -72,7 +63,7 @@ private fun createAppImageLoader(context: PlatformContext): ImageLoader {
  * 「プリフェッチ後に表示されなかった件数」は、プリフェッチ要求と表示要求を紐付ける仕組みが
  * 別途必要なため今回のスコープ外とし、次の課題として残す。
  */
-private object ImageLoaderMetrics {
+internal object ImageLoaderMetrics {
     private val lock = SynchronousLock()
     private var imageLoader: ImageLoader? = null
     private var memoryHits = 0L
@@ -120,39 +111,7 @@ private object ImageLoaderMetrics {
 }
 
 /** fetch/decodeの発生有無から、メモリキャッシュ命中と各データソースからの取得を判定する。 */
-private class MetricsEventListener : EventListener() {
-    private var fetchInvoked = false
-    private var decodeInvoked = false
-
-    override fun fetchStart(request: ImageRequest, fetcher: Fetcher, options: Options) {
-        fetchInvoked = true
-    }
-
-    override fun fetchEnd(
-        request: ImageRequest,
-        fetcher: Fetcher,
-        options: Options,
-        result: FetchResult?,
-    ) {
-        when (val dataSource = (result as? SourceFetchResult)?.dataSource ?: (result as? ImageFetchResult)?.dataSource) {
-            null -> Unit
-            else -> ImageLoaderMetrics.recordFetch(dataSource)
-        }
-    }
-
-    override fun decodeStart(request: ImageRequest, decoder: Decoder, options: Options) {
-        decodeInvoked = true
-    }
-
-    override fun onSuccess(request: ImageRequest, result: SuccessResult) {
-        // fetchStartが一度も呼ばれていなければ、フルパイプラインを経由しないメモリキャッシュ命中。
-        if (!fetchInvoked) ImageLoaderMetrics.recordMemoryHit()
-    }
-
-    override fun onError(request: ImageRequest, result: ErrorResult) {
-        ImageLoaderMetrics.recordError(decodeAttempted = decodeInvoked)
-    }
-}
+internal expect class MetricsEventListener() : EventListener
 
 /**
  * 端末の利用可能メモリに相当する推定値(Androidは`ActivityManager`のmemoryClass、iOSは
