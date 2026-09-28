@@ -1,7 +1,7 @@
 # カスタム絵文字 リファクタ設計
 
 作成日: 2026-09-28
-状態: 設計のみ（未着手）。構造整理（S0〜S7）と挙動修正（F1〜F11）を段階に分ける。未確定事項はすべて決定済み（8.1）。
+状態: S0〜S7、F1〜F11 を実装済み（2026-09-28）。実装で設計から変えた点は9章。
 
 ## 0. 仕様整理
 
@@ -245,4 +245,51 @@ S の各段階の後、独立したコミットで行う。
 
 ## 9. 実装で設計から変えた点
 
-（実装時に記入）
+### 9.1 段階のまとめ方
+
+| コミット | 含む段階 |
+| --- | --- |
+| 現行挙動の固定テスト | S0 |
+| 絵文字タグの解析とセットアドレスを1か所にまとめる | S1、S2 |
+| 設定を不変データと純粋な更新関数にする | S3、S4、F1（旧手動登録リストをお気に入りへ統合）、F8（同名の絵文字を両方使える） |
+| アカウントセッションが所有する構成へ移す | S5、S6、S7、F2（登録判定・解除をアドレスで行う）、F3（送信時の書き戻し廃止と競合規則）、F4（ログアウト時の状態破棄）、F5（購読の共有） |
+| セットアドレスを読み書きする | F6、F7 |
+| 本文の絵文字はイベントのタグだけで画像にする | F9、F10 |
+| チャンネルの入力欄に絵文字ピッカーを付ける | F11 |
+
+F2〜F5・F8 は、新しい構造（アドレスを持つ `RegisteredEmojiSet`、セッション所有のリポジトリ、送信処理の書き直し）に移した時点で旧挙動が再現できなくなるため、構造整理と同じコミットに含めた。
+
+### 9.2 構成
+
+- `CustomEmojiRepository` は `Mutex` ではなく、変更を `Channel` で受けて1本のコルーチンが順に適用する。読み込み前に受けた変更もこの順番待ちに入るので、起動直後の操作が読み込みで消えない。UI への反映は数ミリ秒遅れる。
+- 保存は `StateFlow` に最新状態を置き、1本のコルーチンが順に書く（conflate）。セッション終了の直前に受けた変更は、保存前にスコープが止まると失われることがある（旧実装のグローバルスコープでの保存と違う点）。
+- `EmojiSetDiscovery` はセッション所有ではなく、アプリ全体で1つのオブジェクトにした。公開セットはアカウントに依存せず、ログイン前でも設定画面・絵文字タップの遷移で使うため。一覧の購読は同時に1本で、最初の EOSE（またはタイムアウト）で読み込み中を解除し、遅いリレーの結果も20秒は受け取る。前回の取得から5分以内は取り直さない（再読み込みボタンは常に取り直す）。
+- 設定画面は `CustomEmojiSettingsScreen`（一覧）、`CustomEmojiSetDetailScreen`、`CustomEmojiSetRows`、`CustomEmojiSettingsLogic`（純粋処理）に分けた。パッケージは `ui/settings` のまま。
+- `CustomEmojiNavigator` は関数型の `LocalCustomEmojiNavigator`（`compositionLocalOf`）にした。`CustomEmojiRoute` に `setAddress` を追加した。
+- 一時的な取得（kind 10030、参照先の kind 30030、アドレス指定の kind 30030）は `fetchEventsUntilEose` にまとめ、購読要求より先に受信と EOSE の待ち受けを始めるようにした。
+- 前面復帰の検知は `AccountSessionHost` でライフサイクルが STARTED になったときに行う。
+
+### 9.3 挙動
+
+- `CustomEmoji` には `setAddress` を持たせなかった。等価比較や下書き（kind 31234）の保存形式に影響するため。送信タグの4要素目は、送信時点で登録済みのセットから `EmojiPreferences.setAddressOf` で引く。アドレスは `ReactionOption.Custom` と `CustomReaction` にだけ持たせ、`key` には含めない。
+- ピッカーの検索で公開セット（未登録）から選んだ絵文字は、リアクションではセットのアドレスを付けるが、本文の下書きに挿入した場合は付かない（下書きは `CustomEmoji` だけを保持するため）。
+- 本文中の絵文字（`LinkedText`）のタップでは4要素目を使わず、shortcode と画像の一致で所属セットを探す。表示用の `customEmojis` が shortcode → URL のマップのため。
+- `customEmojiTagsForContent` は、同じ shortcode が複数あれば先に並ぶものを使う（旧実装は後勝ち）。呼び出し側は「下書きで選んだもの → お気に入り → 登録順のセット」の優先順で渡す。
+- 画像の分からないコードの検索リンクは、前後が半角英数字のときだけ除外する。日本語は区切りなしで `こんにちは:wave:` と書くことが多いため、全角文字の隣は候補に残す。
+- 画像の分からないコード（URL なし）をタップしたときは、shortcode だけで一致するセットがあっても自動では開かず、検索語として一覧を出す（旧実装と同じ）。
+- ログインしていないときは設定画面を閲覧専用にした（登録・お気に入りボタンを無効化）。旧実装ではアカウントに属さないグローバルな保存先へ登録できたが、同期もされず、次にログインしたアカウントへ移されるだけだった。
+- チャンネルの入力欄（`AppMessageComposer`）は、絵文字の挿入のためにカーソル位置を持つ `TextFieldValue` を内部で保持する。外から本文が変わったとき（送信後のクリアなど）だけ追従する。スレッドの返信欄も同じ部品だが、絵文字ボタンは出していない（返信の `emoji` タグ付与は本設計の範囲外）。
+
+### 9.4 自動検証
+
+次のコマンドが成功した（iOS シミュレータでの common test を含む）。
+
+```text
+./gradlew :composeApp:allTests \
+  :composeApp:compileAndroidMain \
+  :composeApp:compileKotlinIosSimulatorArm64
+```
+
+追加・更新したテスト: `EmojiTagCodecTest`、`EmojiShortcodeTest`、`EmojiSetAddressTest`、`EmojiPreferencesReducerTest`、`EmojiPreferencesStorageTest`、`EmojiPreferenceSyncTest`、`EmojiSetDiscoveryTest`、`CustomReactionTest`、`CustomEmojiSelectionTest`、`EmojiPickerSheetTest`、`DraftCustomEmojisTest`。
+
+実機・シミュレータでの画面操作（登録・解除、絵文字タップの遷移、チャンネルでの絵文字入力、他クライアントとの kind 10030 同期）は未確認。
