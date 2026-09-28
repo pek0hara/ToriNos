@@ -26,7 +26,7 @@ internal fun CustomReactionLink(
         modifier = modifier
             .size(containerSize)
             .clickable {
-                openCustomEmoji(CustomEmojiOpenRequest.of(reaction.shortcode, reaction.imageUrl))
+                openCustomEmoji(CustomEmojiOpenRequest.of(reaction.shortcode, reaction.imageUrl, reaction.setAddress))
             },
         contentAlignment = Alignment.Center,
     ) {

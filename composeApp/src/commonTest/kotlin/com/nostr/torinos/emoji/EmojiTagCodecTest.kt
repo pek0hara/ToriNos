@@ -79,4 +79,20 @@ class EmojiTagCodecTest {
 
         assertEquals(listOf("a-b_1"), codes)
     }
+
+    @Test
+    fun setAddressIsWrittenAndReadAsFourthElement() {
+        val address = EmojiSetAddress("a".repeat(64), "cats")
+        val cat = CustomEmoji("cat", "https://example.com/cat.png")
+
+        val tag = cat.toEmojiTag(address)
+
+        assertEquals(listOf("emoji", "cat", cat.imageUrl, address.value), tag)
+        assertEquals(address, emojiTagSetAddress(tag))
+        assertEquals(cat, parseEmojiTag(tag))
+        assertEquals(
+            listOf(tag),
+            customEmojiTagsForContent(":cat:", listOf(cat)) { address },
+        )
+    }
 }

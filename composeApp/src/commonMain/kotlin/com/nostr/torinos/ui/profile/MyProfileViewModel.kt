@@ -61,6 +61,7 @@ class MyProfileViewModel(
     private val statusPublisher = StatusPublisher(
         signer = accountSession?.signer,
         customEmojis = { accountSession?.customEmojis?.preferences?.value?.available.orEmpty() },
+        setAddressOf = { accountSession?.customEmojis?.preferences?.value?.setAddressOf(it) },
     )
 
     init {

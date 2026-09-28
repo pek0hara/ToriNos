@@ -60,5 +60,9 @@ data class EmojiPreferences(
 
     fun isRegistered(address: EmojiSetAddress): Boolean = sets.any { it.address == address }
 
+    /** 絵文字が含まれる登録済みセットのアドレス（登録順で最初のもの）。送信タグの4要素目に使う。 */
+    fun setAddressOf(emoji: CustomEmoji): EmojiSetAddress? =
+        sets.firstOrNull { set -> set.emojis.any { it.sameEmojiAs(emoji) } }?.address
+
     fun isFavorite(emoji: CustomEmoji): Boolean = favorites.any { it.sameEmojiAs(emoji) }
 }

@@ -1,5 +1,6 @@
 package com.nostr.torinos.status
 
+import com.nostr.torinos.emoji.EmojiSetAddress
 import com.nostr.torinos.emoji.customEmojiMap
 import com.nostr.torinos.emoji.customEmojiTagsForContent
 import com.nostr.torinos.model.NostrEvent
@@ -40,10 +41,11 @@ object StatusEventCodec {
         expiration: Long?,
         explicitReferenceUrl: String?,
         customEmojis: List<CustomEmoji>,
+        setAddressOf: (CustomEmoji) -> EmojiSetAddress? = { null },
     ): List<List<String>> = buildList {
         add(listOf("d", identifier.trim().ifBlank { GENERAL_STATUS_IDENTIFIER }))
         if (expiration != null) add(listOf("expiration", expiration.toString()))
-        addAll(customEmojiTagsForContent(content, customEmojis))
+        addAll(customEmojiTagsForContent(content, customEmojis, setAddressOf))
         val explicitUrl = explicitReferenceUrl?.trim()?.takeIf(String::isNotBlank)
         (listOfNotNull(explicitUrl) + extractWebUrls(content)).distinct().forEach { url ->
             add(listOf("r", url))

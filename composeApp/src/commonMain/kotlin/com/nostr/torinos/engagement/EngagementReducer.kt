@@ -209,7 +209,7 @@ object EngagementReducer {
             is ReactionOption.Custom -> copy(
                 customReactions = if (delta > 0) {
                     customReactions.incrementedWith(
-                        CustomReaction(normalizeShortcode(option.shortcode), option.imageUrl.trim()),
+                        CustomReaction(normalizeShortcode(option.shortcode), option.imageUrl.trim(), setAddress = option.setAddress),
                     )
                 } else {
                     customReactions.decrementedWith(option)

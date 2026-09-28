@@ -25,9 +25,11 @@ internal fun ReactionOption.toRecentReaction(): RecentReaction = when (this) {
     is ReactionOption.Custom -> RecentReaction.Custom(CustomEmoji(shortcode, imageUrl))
 }
 
-internal fun RecentReaction.toReactionOption(): ReactionOption = when (this) {
+internal fun RecentReaction.toReactionOption(
+    setAddressOf: (CustomEmoji) -> EmojiSetAddress? = { null },
+): ReactionOption = when (this) {
     is RecentReaction.Unicode -> ReactionOption.Unicode(value)
-    is RecentReaction.Custom -> ReactionOption.Custom(emoji.shortcode, emoji.imageUrl)
+    is RecentReaction.Custom -> ReactionOption.Custom(emoji.shortcode, emoji.imageUrl, setAddressOf(emoji))
 }
 
 /** リアクションや絵文字の入力に使った項目を「最近使った」に記録する。 */

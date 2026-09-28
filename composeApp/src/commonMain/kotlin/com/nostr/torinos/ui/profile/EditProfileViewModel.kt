@@ -128,6 +128,7 @@ class EditProfileViewModel(
             val emojiTags = customEmojiTagsForContent(
                 listOf(s.name, s.displayName).joinToString(" "),
                 accountSession.customEmojis.preferences.value.available,
+                accountSession.customEmojis.preferences.value::setAddressOf,
             )
             runCatching {
                 val event = signer.sign(

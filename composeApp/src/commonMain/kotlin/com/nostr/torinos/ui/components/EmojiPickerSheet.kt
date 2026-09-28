@@ -1,5 +1,8 @@
 package com.nostr.torinos.ui.components
 
+import com.nostr.torinos.emoji.PublishedEmojiSet
+import com.nostr.torinos.emoji.EmojiSetAddress
+import com.nostr.torinos.emoji.EmojiPreferences
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
@@ -85,23 +88,24 @@ internal fun StandardEmojiPickerSheet(
     var customOnly by remember { mutableStateOf(false) }
     var favoriteOnly by remember { mutableStateOf(false) }
     val normalizedQuery = query.trim().trim(':').lowercase()
-    val customOptions = remember(savedCustomEmojis) {
-        savedCustomEmojis.map { ReactionOption.Custom(it.shortcode, it.imageUrl) }
+    val customOptions = remember(emojiPreferences, savedCustomEmojis) {
+        savedCustomEmojis.map { emojiPreferences.toReactionOption(it) }
     }
-    val searchableCustomOptions = remember(savedCustomEmojis, discoveryState.publishedSets) {
+    val searchableCustomOptions = remember(emojiPreferences, savedCustomEmojis, discoveryState.publishedSets) {
         customEmojiSearchOptions(
             registered = savedCustomEmojis,
-            published = discoveryState.publishedSets.flatMap { it.emojis },
+            published = discoveryState.publishedSets,
+            setAddressOf = emojiPreferences::setAddressOf,
         )
     }
-    val recentOptions = remember(recentReactions) {
+    val recentOptions = remember(emojiPreferences, recentReactions) {
         recentReactions
-            .map { it.toReactionOption() }
+            .map { it.toReactionOption(emojiPreferences::setAddressOf) }
             .distinctBy { it.key }
             .take(24)
     }
-    val favoriteOptions = remember(favoriteEmojis) {
-        favoriteEmojis.map { ReactionOption.Custom(it.shortcode, it.imageUrl) }
+    val favoriteOptions = remember(emojiPreferences, favoriteEmojis) {
+        favoriteEmojis.map { emojiPreferences.toReactionOption(it) }
     }
     val visibleSections = remember(
         normalizedQuery,
@@ -318,12 +322,20 @@ internal fun StandardEmojiPickerSheet(
     }
 }
 
+/** 検索候補。登録済み → 公開セットの順で、同じ絵文字は1つにする。セットのアドレスも付ける。 */
 internal fun customEmojiSearchOptions(
     registered: List<CustomEmoji>,
-    published: List<CustomEmoji>,
-): List<ReactionOption.Custom> = (registered + published)
-    .distinctBy { it.shortcode to it.imageUrl }
-    .map { ReactionOption.Custom(it.shortcode, it.imageUrl) }
+    published: List<PublishedEmojiSet>,
+    setAddressOf: (CustomEmoji) -> EmojiSetAddress? = { null },
+): List<ReactionOption.Custom> =
+    (
+        registered.map { ReactionOption.Custom(it.shortcode, it.imageUrl, setAddressOf(it)) } +
+            published.flatMap { set -> set.emojis.map { ReactionOption.Custom(it.shortcode, it.imageUrl, set.address) } }
+        )
+        .distinctBy { it.key }
+
+private fun EmojiPreferences.toReactionOption(emoji: CustomEmoji) =
+    ReactionOption.Custom(emoji.shortcode, emoji.imageUrl, setAddressOf(emoji))
 
 @Composable
 private fun EmojiPickerSectionTitle(title: String) {

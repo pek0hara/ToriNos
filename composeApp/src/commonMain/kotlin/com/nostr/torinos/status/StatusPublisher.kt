@@ -1,5 +1,6 @@
 package com.nostr.torinos.status
 
+import com.nostr.torinos.emoji.EmojiSetAddress
 import com.nostr.torinos.account.AccountSigner
 import com.nostr.torinos.model.NostrEvent
 import com.nostr.torinos.emoji.CustomEmoji
@@ -34,6 +35,7 @@ sealed interface StatusPublishState {
 class StatusPublisher internal constructor(
     private val signer: AccountSigner?,
     private val customEmojis: () -> List<CustomEmoji> = { emptyList() },
+    private val setAddressOf: (CustomEmoji) -> EmojiSetAddress? = { null },
     private val send: suspend (NostrEvent, StatusPublishTarget) -> Unit = { event, target ->
         when (target) {
             is StatusPublishTarget.SelectedRelay ->
@@ -61,6 +63,7 @@ class StatusPublisher internal constructor(
                     expiration = command.expiration,
                     explicitReferenceUrl = command.referenceUrl,
                     customEmojis = customEmojis(),
+                    setAddressOf = setAddressOf,
                 ),
             )
             send(event, target)

@@ -1144,7 +1144,7 @@ internal fun ReactionSummaryRow(
             )
         }
         customReactions.forEach { reaction ->
-            val option = ReactionOption.Custom(reaction.shortcode, reaction.imageUrl)
+            val option = ReactionOption.Custom(reaction.shortcode, reaction.imageUrl, reaction.setAddress)
             val selected = ownEmojiReactionEventIds.containsKey(option.key)
             ReactionChip(
                 selected = selected,
@@ -1160,7 +1160,7 @@ internal fun ReactionSummaryRow(
                     }
                 } else null,
                 onLongClick = {
-                    openCustomEmoji(CustomEmojiOpenRequest.of(reaction.shortcode, reaction.imageUrl))
+                    openCustomEmoji(CustomEmojiOpenRequest.of(reaction.shortcode, reaction.imageUrl, reaction.setAddress))
                 },
                 emoji = {
                     Box(
@@ -1343,10 +1343,10 @@ internal fun QuickReactionMenu(
     onOpenStandardEmojiPicker: () -> Unit,
 ) {
     val accountSession = LocalAccountSession.current
-    val recentReactions = rememberEmojiPreferences().recent
-    val recentOptions = remember(recentReactions) {
-        recentReactions
-            .map { it.toReactionOption() }
+    val emojiPreferences = rememberEmojiPreferences()
+    val recentOptions = remember(emojiPreferences) {
+        emojiPreferences.recent
+            .map { it.toReactionOption(emojiPreferences::setAddressOf) }
             .distinctBy { it.key }
             .take(16)
     }

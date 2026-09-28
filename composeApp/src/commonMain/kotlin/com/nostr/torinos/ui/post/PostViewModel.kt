@@ -1,5 +1,6 @@
 package com.nostr.torinos.ui.post
 
+import com.nostr.torinos.emoji.EmojiSetAddress
 import com.nostr.torinos.ui.SafeViewModel
 import com.nostr.torinos.account.AccountSession
 import com.nostr.torinos.account.AccountSigner
@@ -226,6 +227,10 @@ class PostViewModel(
 
     private fun registeredEmojis(): List<CustomEmoji> =
         accountSession?.customEmojis?.preferences?.value?.available.orEmpty()
+
+    /** 送信時点で登録済みのセットに含まれていれば、そのアドレスを NIP-30 の4要素目に付ける。 */
+    internal fun setAddressOf(emoji: CustomEmoji): EmojiSetAddress? =
+        accountSession?.customEmojis?.preferences?.value?.setAddressOf(emoji)
 
     private fun updateText(text: String, selectedEmoji: CustomEmoji? = null) {
         _state.value = _state.value.copy(
@@ -461,7 +466,13 @@ class PostViewModel(
         relayUrls: Collection<String>? = null,
     ) {
         val current = _state.value
-        val composed = composeNoteContent(current.text, current.images, current.customEmojis, quoteReference)
+        val composed = composeNoteContent(
+            text = current.text,
+            images = current.images,
+            customEmojis = current.customEmojis,
+            quoteReference = quoteReference,
+            setAddressOf = ::setAddressOf,
+        )
             ?: return
         val text = composed.content
         val targetRelayUrls = relayUrls
@@ -607,6 +618,7 @@ internal fun composeNoteContent(
     images: List<ImageAttachment>,
     customEmojis: List<CustomEmoji>,
     quoteReference: String? = null,
+    setAddressOf: (CustomEmoji) -> EmojiSetAddress? = { null },
 ): ComposedNote? {
     val body = text.trim()
     val attachments = buildList {
@@ -620,7 +632,7 @@ internal fun composeNoteContent(
     }
     if (content.isBlank()) return null
     val tags = buildList {
-        addAll(customEmojiTagsForContent(content, customEmojis))
+        addAll(customEmojiTagsForContent(content, customEmojis, setAddressOf))
         extractNostrEventReferences(content).forEach { reference ->
             add(
                 buildList {

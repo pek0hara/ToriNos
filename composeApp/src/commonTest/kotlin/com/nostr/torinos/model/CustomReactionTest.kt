@@ -44,6 +44,17 @@ class CustomReactionTest {
     }
 
     @Test
+    fun readsAndWritesEmojiSetAddress() {
+        val address = com.nostr.torinos.emoji.EmojiSetAddress("a".repeat(64), "cats")
+        val option = ReactionOption.Custom("cat", "https://example.com/cat.webp", address)
+        val tags = option.eventTags("post-id", "author")
+
+        assertEquals(listOf("emoji", "cat", "https://example.com/cat.webp", address.value), tags.last())
+        assertEquals(option.key, ReactionOption.Custom("cat", "https://example.com/cat.webp").key)
+        assertEquals(address, reactionEvent(content = ":cat:", tags = tags).toCustomReaction()?.setAddress)
+    }
+
+    @Test
     fun aggregatesSameCustomReaction() {
         val reaction = CustomReaction("torinos", "https://example.com/torinos.webp")
 

@@ -1,5 +1,7 @@
 package com.nostr.torinos.model
 
+import com.nostr.torinos.emoji.emojiTagSetAddress
+import com.nostr.torinos.emoji.EmojiSetAddress
 import com.nostr.torinos.emoji.normalizeShortcode
 import com.nostr.torinos.emoji.parseEmojiTag
 import com.nostr.torinos.emoji.toEmojiTag
@@ -9,6 +11,8 @@ data class CustomReaction(
     val shortcode: String,
     val imageUrl: String,
     val count: Int = 1,
+    /** リアクションの `emoji` タグの4要素目（NIP-30）。タップで所属セットを開くのに使う。 */
+    val setAddress: EmojiSetAddress? = null,
 )
 
 data class UnicodeReaction(
@@ -27,9 +31,11 @@ sealed interface ReactionOption {
         override val eventContent: String = value
     }
 
+    /** [setAddress] は送信タグの4要素目。同一性（[key]）には含めない。 */
     data class Custom(
         val shortcode: String,
         val imageUrl: String,
+        val setAddress: EmojiSetAddress? = null,
     ) : ReactionOption {
         override val key: String = customReactionKey(shortcode, imageUrl)
         override val eventContent: String = ":${normalizeShortcode(shortcode)}:"
@@ -45,12 +51,12 @@ fun ReactionOption.eventTags(eventId: String, eventPubkey: String): List<List<St
     add(listOf("e", eventId))
     add(listOf("p", eventPubkey))
     if (this@eventTags is ReactionOption.Custom) {
-        add(CustomEmoji(shortcode, imageUrl).toEmojiTag())
+        add(CustomEmoji(shortcode, imageUrl).toEmojiTag(setAddress))
     }
 }
 
 fun NostrEvent.toReactionOption(): ReactionOption? =
-    toCustomReaction()?.let { ReactionOption.Custom(it.shortcode, it.imageUrl) }
+    toCustomReaction()?.let { ReactionOption.Custom(it.shortcode, it.imageUrl, it.setAddress) }
         ?: toUnicodeReaction()?.let { ReactionOption.Unicode(it.content) }
 
 fun NostrEvent.toCustomReaction(): CustomReaction? {
@@ -58,9 +64,9 @@ fun NostrEvent.toCustomReaction(): CustomReaction? {
     val value = content.trim()
     if (value.length < 3 || !value.startsWith(":") || !value.endsWith(":")) return null
     val shortcode = value.substring(1, value.length - 1).takeIf { it.isNotBlank() && ':' !in it } ?: return null
-    val emoji = tags.firstNotNullOfOrNull { tag -> parseEmojiTag(tag)?.takeIf { it.shortcode == shortcode } }
-        ?: return null
-    return CustomReaction(shortcode = shortcode, imageUrl = emoji.imageUrl)
+    val tag = tags.firstOrNull { tag -> parseEmojiTag(tag)?.shortcode == shortcode } ?: return null
+    val emoji = parseEmojiTag(tag) ?: return null
+    return CustomReaction(shortcode = shortcode, imageUrl = emoji.imageUrl, setAddress = emojiTagSetAddress(tag))
 }
 
 fun List<CustomReaction>.incrementedWith(reaction: CustomReaction): List<CustomReaction> {
@@ -69,7 +75,11 @@ fun List<CustomReaction>.incrementedWith(reaction: CustomReaction): List<CustomR
     }
     if (existingIndex < 0) return this + reaction
     return mapIndexed { index, current ->
-        if (index == existingIndex) current.copy(count = current.count + reaction.count) else current
+        if (index == existingIndex) {
+            current.copy(count = current.count + reaction.count, setAddress = current.setAddress ?: reaction.setAddress)
+        } else {
+            current
+        }
     }
 }
 

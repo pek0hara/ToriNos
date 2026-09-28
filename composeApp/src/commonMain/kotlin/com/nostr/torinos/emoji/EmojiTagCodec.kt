@@ -17,18 +17,27 @@ internal fun List<List<String>>.emojiTags(): List<CustomEmoji> = mapNotNull(::pa
 internal fun List<List<String>>.customEmojiMap(): Map<String, String> =
     emojiTags().associate { it.shortcode to it.imageUrl }
 
-internal fun CustomEmoji.toEmojiTag(): List<String> =
-    listOf(EMOJI_TAG, normalizeShortcode(shortcode), imageUrl.trim())
+/** 4要素目の絵文字セットアドレス（NIP-30）。無いか読めなければ null。 */
+internal fun emojiTagSetAddress(tag: List<String>): EmojiSetAddress? =
+    tag.getOrNull(3)?.let(EmojiSetAddress::parse)
+
+/** [setAddress] があれば NIP-30 の4要素目に付ける。 */
+internal fun CustomEmoji.toEmojiTag(setAddress: EmojiSetAddress? = null): List<String> =
+    listOfNotNull(EMOJI_TAG, normalizeShortcode(shortcode), imageUrl.trim(), setAddress?.value)
 
 /**
  * 本文に現れる `:shortcode:` のうち、[emojis] にあるものだけを出現順・重複なしでタグにする。
  * 同じ shortcode が複数あれば [emojis] の先に並ぶものを使うので、呼び出し側は優先順に渡す。
  */
-internal fun customEmojiTagsForContent(content: String, emojis: List<CustomEmoji>): List<List<String>> {
+internal fun customEmojiTagsForContent(
+    content: String,
+    emojis: List<CustomEmoji>,
+    setAddressOf: (CustomEmoji) -> EmojiSetAddress? = { null },
+): List<List<String>> {
     val emojiMap = LinkedHashMap<String, CustomEmoji>()
     emojis.forEach { emoji -> emojiMap.getOrPut(normalizeShortcode(emoji.shortcode)) { emoji } }
     return CustomEmojiCodeRegex.findAll(content)
-        .mapNotNull { match -> emojiMap[match.groupValues[1]]?.toEmojiTag() }
+        .mapNotNull { match -> emojiMap[match.groupValues[1]]?.let { it.toEmojiTag(setAddressOf(it)) } }
         .distinct()
         .toList()
 }

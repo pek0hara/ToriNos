@@ -117,4 +117,15 @@ class EmojiPreferencesReducerTest {
         assertEquals(sent.revision, synced.syncedRevision)
         assertTrue(synced.hasUnsyncedChanges)
     }
+
+    @Test
+    fun setAddressOfFindsFirstRegisteredSetContainingEmoji() {
+        val preferences = EmojiPreferences().registerSet(cats).registerSet(dogs).toggleFavorite(dog)
+
+        assertEquals(catsAddress, preferences.setAddressOf(kusaA))
+        assertEquals(dogsAddress, preferences.setAddressOf(kusaB))
+        assertEquals(null, preferences.setAddressOf(dog))
+    }
+
+    private val dog = CustomEmoji("dog", "https://example.com/dog.png")
 }

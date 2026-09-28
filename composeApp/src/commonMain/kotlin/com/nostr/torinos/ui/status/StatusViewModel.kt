@@ -92,6 +92,7 @@ internal class StatusViewModel(
     private val publisher: StatusPublisher = StatusPublisher(
         signer = accountSession?.signer,
         customEmojis = { accountSession?.customEmojis?.preferences?.value?.available.orEmpty() },
+        setAddressOf = { accountSession?.customEmojis?.preferences?.value?.setAddressOf(it) },
     ),
     private val nowEpochSeconds: () -> Long = { Clock.System.now().epochSeconds },
 ) : SafeViewModel() {

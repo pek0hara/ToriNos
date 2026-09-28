@@ -157,7 +157,14 @@ internal fun ChannelCreateSheet(
                     Button(
                         onClick = {
                             dismissKeyboard()
-                            onSubmit(composeNoteContent(body.text, body.images, body.customEmojis))
+                            onSubmit(
+                                composeNoteContent(
+                                    text = body.text,
+                                    images = body.images,
+                                    customEmojis = body.customEmojis,
+                                    setAddressOf = bodyViewModel::setAddressOf,
+                                ),
+                            )
                         },
                         enabled = dialog.canSubmit && !body.isUploadingAny && !body.hasFailedUpload &&
                             (!dialog.isRetryingFirstPost || body.canPost),
