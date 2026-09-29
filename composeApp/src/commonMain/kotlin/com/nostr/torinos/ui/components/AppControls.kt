@@ -189,6 +189,8 @@ fun AppMessageComposer(
                     modifier = Modifier
                         .weight(1f)
                         .focusRequester(textFocusRequester)
+                        // iOSで入力欄を閉じた後にスクロールが重くなり続けるのを防ぐ（詳細は関数のコメント）。
+                        .avoidStaleAccessibilityFocus()
                         .onFocusChanged { focus ->
                             if (
                                 shouldHideKeyboardOnFocusChange(
