@@ -68,7 +68,8 @@
 
 | expect | Web の実装 |
 | --- | --- |
-| `rememberImagePickerLauncher` / `rememberOptimizedImagePickerLauncher` / `rememberClipboardImageReader` | 何もしない（画像添付は未対応） |
+| `rememberImagePickerLauncher` | ブラウザのファイル選択（`<input type=file accept=image/*>`）で選んだ画像をそのまま返す。プロフィール画像・バナー・記事の画像で使う（2026-09-29追加） |
+| `rememberOptimizedImagePickerLauncher` / `rememberClipboardImageReader` | 何もしない（投稿・チャンネルの画像添付は未対応） |
 | `readImageDimensions` / `cropImageForUpload` | null / 入力をそのまま返す |
 | `PlatformMediaPlayer` / `XPostEmbed` | 何も表示しない（呼び出し側のリンク表示が残る） |
 | `rememberPasswordManagerSaver` | 何もしない（生成画面の nsec 表示とコピーで保管してもらう） |
@@ -157,7 +158,10 @@ val wasmJsMain by getting {
 ## 5. 範囲外
 
 - NIP-07 / NIP-46 による外部署名。
-- 画像添付・アップロード、動画再生、X 埋め込み、パスワードマネージャ連携。
+- 投稿・チャンネルへの画像添付、動画再生、X 埋め込み、パスワードマネージャ連携。
+  プロフィール画像・バナー・記事の画像のアップロードは2026-09-29に対応した。アップロード先の nostr.build は
+  CORS で `https://` と `http://localhost` のオリジンだけを許可するため、`http://<IPアドレス>` で配信した開発版からは
+  アップロードできない。
 - Web 版の公開（ホスティング、ドメイン、CI）。
 - プッシュ通知。
 
