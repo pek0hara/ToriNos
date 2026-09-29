@@ -54,7 +54,6 @@ import com.nostr.torinos.model.ReplyTarget
 import com.nostr.torinos.account.accountSessionViewModel
 import com.nostr.torinos.model.encodeNevent
 import com.nostr.torinos.emoji.CustomEmoji
-import com.nostr.torinos.network.RelayPublishResult
 import com.nostr.torinos.network.RelayStore
 import com.nostr.torinos.ui.components.RelayMultiSelectDialog
 import com.nostr.torinos.ui.components.rememberDismissKeyboard
@@ -65,6 +64,18 @@ import kotlinx.coroutines.delay
 import com.nostr.torinos.ui.components.DismissKeyboardOnLeave
 
 private const val KEYBOARD_DISMISS_DELAY_MS = 300L
+
+/** `PostSheet` を開く時点で、共有 `PostViewModel` の入力状態をどう扱うか。 */
+enum class PostSheetInitialState {
+    /** 新規の投稿。入力状態を空にする（返信・引用・新規シートの通常起動）。 */
+    Reset,
+
+    /** 簡易コンポーザーからの展開。入力中の本文をそのまま引き継ぐ。 */
+    KeepCurrent,
+
+    /** ローカル下書きの復元。`initialMemo` があればそれを復元する。 */
+    RestoreMemo,
+}
 
 @Composable
 fun PostSheet(
@@ -80,16 +91,10 @@ fun PostSheet(
     relayContext: ComposerRelayContext? = null,
     initialMemo: PostMemoData? = null,
     initialMemoRestoreMessage: String? = null,
+    initialState: PostSheetInitialState = PostSheetInitialState.Reset,
     autoFocus: Boolean = false,
     preserveLocalDraftOnNavigation: Boolean = true,
     onOpenCustomEmojiSettings: (PostMemoData?) -> Unit = {},
-    onPosted: (
-        eventId: String,
-        replyToId: String?,
-        noteContext: NoteContext,
-        publishResult: RelayPublishResult,
-        warning: String?,
-    ) -> Unit = { _, _, _, _, _ -> },
     viewModel: PostViewModel? = null,
 ) {
     val postViewModel = viewModel ?: accountSessionViewModel(
@@ -117,7 +122,6 @@ fun PostSheet(
     } else {
         replyTarget ?: initialMemo?.restoreReplyTarget(noteContext)
     }
-    val replyToId = activeReplyTarget?.parent?.id
     val quoteReference = remember(quoteToId, quoteToPubkey, selectedDraft) {
         quoteToId?.takeIf { selectedDraft == null }?.let {
             "nostr:${encodeNevent(eventId = it, authorPubkey = quoteToPubkey)}"
@@ -179,30 +183,14 @@ fun PostSheet(
         }
     }
 
-    LaunchedEffect(
-        state.posted,
-        state.postedEventId,
-        state.publishResult,
-        state.postWarning,
-    ) {
-        val postedEventId = state.postedEventId
-        val publishResult = state.publishResult
-        if (state.posted && postedEventId != null && publishResult != null) {
-            postViewModel.clearPosted()
-            closeOverlay {
-                onDismiss()
-                onPosted(
-                    postedEventId,
-                    replyToId,
-                    activeNoteContext,
-                    publishResult,
-                    state.postWarning,
-                )
-            }
-        }
-    }
-
+    // KeepCurrent は最初の一回だけ初期化を飛ばす。シート内で下書き一覧から選んだ場合は復元する。
+    var initialStateApplied by remember { mutableStateOf(false) }
     LaunchedEffect(activeMemo, activeReplyTarget, activeNoteContext) {
+        val keepCurrent = initialState == PostSheetInitialState.KeepCurrent &&
+            !initialStateApplied &&
+            selectedDraft == null
+        initialStateApplied = true
+        if (keepCurrent) return@LaunchedEffect
         if (activeMemo != null) {
             postViewModel.restoreMemo(
                 activeMemo,

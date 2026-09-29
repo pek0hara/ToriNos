@@ -9,11 +9,28 @@ import androidx.compose.runtime.DisposableEffect
 @Composable
 fun rememberDismissKeyboard(): () -> Unit {
     val focusManager = LocalFocusManager.current
-    val keyboardController = LocalSoftwareKeyboardController.current
+    val hideKeyboard = rememberHideKeyboard()
 
-    return remember(focusManager, keyboardController) {
+    return remember(focusManager, hideKeyboard) {
         {
             focusManager.clearFocus(force = true)
+            hideKeyboard()
+        }
+    }
+}
+
+/**
+ * フォーカスは変えず、ソフトウェアキーボードだけを閉じる。
+ *
+ * `LocalSoftwareKeyboardController.hide()` だけではiOSの入力セッションが終わらないので、
+ * [dismissPlatformKeyboard] も併せて呼ぶ。フォーカス喪失をきっかけに閉じる場合に使う。
+ */
+@Composable
+fun rememberHideKeyboard(): () -> Unit {
+    val keyboardController = LocalSoftwareKeyboardController.current
+
+    return remember(keyboardController) {
+        {
             keyboardController?.hide()
             dismissPlatformKeyboard()
         }
@@ -38,3 +55,12 @@ fun DismissKeyboardOnLeave() {
 }
 
 internal expect fun dismissPlatformKeyboard()
+
+/**
+ * ソフトウェアキーボードが表示中か。
+ *
+ * iOSはキーボード分だけ画面全体が縮むため `WindowInsets.ime` が0のままになる。
+ * キーボード表示中にホームインジケーター分の余白を外す判定に使う。
+ */
+@Composable
+internal expect fun rememberSoftwareKeyboardVisible(): Boolean

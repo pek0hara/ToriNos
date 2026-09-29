@@ -87,6 +87,7 @@ fun SettingsScreen(
     var nsecClipboardCopied by remember { mutableStateOf(false) }
     val showImagePreviews by DisplayPreferencesStore.showImagePreviews.collectAsState()
     val showXPreviews by DisplayPreferencesStore.showXPreviews.collectAsState()
+    val useFooterComposer by DisplayPreferencesStore.useFooterComposer.collectAsState()
 
     LaunchedEffect(accountViewModel) {
         accountViewModel?.secretKeyEvent?.collect { nsec = it }
@@ -141,6 +142,8 @@ fun SettingsScreen(
                     showXPreviews = showXPreviews,
                     onShowImagePreviewsChange = DisplayPreferencesStore::setShowImagePreviews,
                     onShowXPreviewsChange = DisplayPreferencesStore::setShowXPreviews,
+                    useFooterComposer = useFooterComposer,
+                    onUseFooterComposerChange = DisplayPreferencesStore::setUseFooterComposer,
                 )
                 HorizontalDivider()
             }
@@ -646,6 +649,8 @@ private fun DisplaySection(
     showXPreviews: Boolean,
     onShowImagePreviewsChange: (Boolean) -> Unit,
     onShowXPreviewsChange: (Boolean) -> Unit,
+    useFooterComposer: Boolean,
+    onUseFooterComposerChange: (Boolean) -> Unit,
 ) {
     Column(
         modifier = Modifier
@@ -668,6 +673,11 @@ private fun DisplaySection(
             label = "X投稿プレビュー",
             checked = showXPreviews,
             onCheckedChange = onShowXPreviewsChange,
+        )
+        DisplayToggleRow(
+            label = "フッターから投稿",
+            checked = useFooterComposer,
+            onCheckedChange = onUseFooterComposerChange,
         )
     }
 }

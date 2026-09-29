@@ -14,6 +14,8 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Apps
 import androidx.compose.material.icons.filled.Home
+import androidx.compose.material.icons.filled.KeyboardArrowUp
+import androidx.compose.material.icons.filled.MoreHoriz
 import androidx.compose.material.icons.filled.Sms
 import androidx.compose.material.icons.filled.Today
 import androidx.compose.material3.AlertDialog
@@ -85,6 +87,7 @@ import com.nostr.torinos.emoji.EmojiSetAddress
 import com.nostr.torinos.ui.components.CustomEmojiOpenRequest
 import com.nostr.torinos.ui.components.LocalCustomEmojiNavigator
 import com.nostr.torinos.network.RelayPublishResult
+import com.nostr.torinos.network.DisplayPreferencesStore
 import com.nostr.torinos.network.RelayStore
 import com.nostr.torinos.network.resolveReplyTarget
 import com.nostr.torinos.ui.article.ArticleDetailScreen
@@ -105,7 +108,12 @@ import com.nostr.torinos.ui.notification.NotificationsViewModel
 import com.nostr.torinos.ui.notification.NotificationTargetDestination
 import com.nostr.torinos.ui.settings.MuteListScreen
 import com.nostr.torinos.ui.settings.NgWordScreen
+import com.nostr.torinos.ui.components.rememberDismissKeyboard
+import com.nostr.torinos.ui.post.FeedInlineComposerBackHandler
+import com.nostr.torinos.ui.post.FeedInlinePostComposer
 import com.nostr.torinos.ui.post.JournalScreen
+import com.nostr.torinos.ui.post.PostViewModel
+import com.nostr.torinos.ui.post.postFromFeedInline
 import com.nostr.torinos.ui.profile.FollowListMode
 import com.nostr.torinos.ui.profile.FollowListScreen
 import com.nostr.torinos.ui.profile.MyProfileScreen
@@ -163,11 +171,19 @@ internal fun AppSessionCoordinator(
     ageVerificationStatus: String?,
     isAgeVerificationLoaded: Boolean,
     onAgeVerificationChanged: (String?) -> Unit,
+    pendingComposerRequests: PendingComposerRequestHolder,
 ) {
         val nav = rememberNavController()
         val backStackEntry by nav.currentBackStackEntryAsState()
         val currentRoute = backStackEntry?.destination?.route
-        val composer = remember { ComposerCoordinator() }
+        val composer = remember { ComposerCoordinator(pendingComposerRequests) }
+        // 簡易コンポーザーと PostSheet が同じ入力状態・送信処理を共有する。
+        val postViewModel = accountSessionViewModel<PostViewModel>(
+            key = "post-composer",
+        ) { session -> PostViewModel(session) }
+        val postState by postViewModel.state.collectAsState()
+        val useFooterComposer by DisplayPreferencesStore.useFooterComposer.collectAsState()
+        val dismissInlineKeyboard = rememberDismissKeyboard()
         val scope = rememberCoroutineScope()
         val snackbarHostState = remember { SnackbarHostState() }
         var snackbarFailedRelays by remember { mutableStateOf<List<String>>(emptyList()) }
@@ -325,6 +341,10 @@ internal fun AppSessionCoordinator(
                 onAvailable(pubkey)
             } else {
                 composer.pendingKeyAction = missingAction
+                // 鍵設定の完了でセッションごと作り直されるので、再開要求はセッションの外側に残す。
+                if (missingAction == PendingKeyAction.NewPost) {
+                    composer.pendingRequests.requestNewPost()
+                }
                 composer.showKeySetup = true
             }
         }
@@ -358,7 +378,7 @@ internal fun AppSessionCoordinator(
                     }
                     composer.prepareReply(target, preview, noteContext, relayContext)
                     runWithPrivateKey(PendingKeyAction.Reply) {
-                        composer.showPostSheet = true
+                        composer.openFullScreen()
                     }
                 }
                 return
@@ -370,7 +390,7 @@ internal fun AppSessionCoordinator(
                 composer.prepareReply(event, preview, noteContext)
             ) {
                 runWithPrivateKey(PendingKeyAction.Reply) {
-                    composer.showPostSheet = true
+                    composer.openFullScreen()
                 }
                 return
             }
@@ -385,7 +405,7 @@ internal fun AppSessionCoordinator(
                 }
                 composer.prepareReply(target, preview, noteContext)
                 runWithPrivateKey(PendingKeyAction.Reply) {
-                    composer.showPostSheet = true
+                    composer.openFullScreen()
                 }
                 replyResolutionJob = null
             }
@@ -396,7 +416,7 @@ internal fun AppSessionCoordinator(
             composer.prepareReply(target, preview, NoteContext.Timeline)
             articleCommentParentId = target.parent.id
             runWithPrivateKey(PendingKeyAction.Reply) {
-                composer.showPostSheet = true
+                composer.openFullScreen()
             }
         }
 
@@ -476,6 +496,58 @@ internal fun AppSessionCoordinator(
             }
         }
 
+        // フィード以外へ遷移したら簡易コンポーザーを閉じ、新規投稿状態を破棄する。
+        // フィードタブ（フォロー／グローバル）の切り替えはルートが変わらないので閉じない。
+        LaunchedEffect(currentRoute) {
+            if (currentRoute != null && currentRoute != "feed") {
+                composer.closeInline(
+                    isPosting = postViewModel.state.value.isPosting,
+                    resetPost = postViewModel::reset,
+                )
+            }
+        }
+
+        // 設定でフッター投稿をオフにしたら、開いている簡易投稿欄と「…」で保持中の入力を破棄する。
+        LaunchedEffect(useFooterComposer) {
+            if (!useFooterComposer) {
+                composer.closeInline(
+                    isPosting = postViewModel.state.value.isPosting,
+                    resetPost = postViewModel::reset,
+                )
+            }
+        }
+
+        // 鍵設定の完了でセッションが作り直された後、フィードの＋からの新規投稿を一度だけ再開する。
+        LaunchedEffect(ownPubkey) {
+            if (ownPubkey != null && composer.pendingRequests.consumeNewPost()) {
+                feedChromeState.collapseFraction = 0f
+                composer.openNewPost(useFooterComposer, postViewModel::reset)
+            }
+        }
+
+        // 送信中に「…」でフッターメニューへ切り替えた後の失敗は、簡易欄が見えないのでSnackbarで知らせる。
+        // 本文とエラーは保持しているので、＋で開き直せばそのまま再送できる。
+        LaunchedEffect(postViewModel) {
+            var wasPosting = false
+            postViewModel.state.collect { state ->
+                val error = state.error
+                if (wasPosting && !state.isPosting && error != null && composer.hasHeldInlineDraft) {
+                    scope.launch {
+                        snackbarHostState.currentSnackbarData?.dismiss()
+                        snackbarHostState.showSnackbar(message = error, duration = SnackbarDuration.Long)
+                    }
+                }
+                wasPosting = state.isPosting
+            }
+        }
+
+        // キーボードが閉じている状態のBackは、FABの「…」と同じく入力を保持してフッターメニューへ戻す。
+        // キーボード表示中の最初のBackはシステムがキーボードを閉じる。
+        FeedInlineComposerBackHandler(
+            enabled = composer.presentation == ComposerPresentation.FeedInline,
+            onBack = composer::switchInlineToMenu,
+        )
+
         QuickSettingsDialogs(
             open = showQuickSettings,
             ownPubkey = ownPubkey,
@@ -518,7 +590,7 @@ internal fun AppSessionCoordinator(
                 cancelPendingReplyResolution()
                 composer.prepareQuote(event)
                 runWithPrivateKey(PendingKeyAction.Quote) {
-                    composer.showPostSheet = true
+                    composer.openFullScreen()
                 }
             },
         ) {
@@ -724,22 +796,44 @@ internal fun AppSessionCoordinator(
                 floatingActionButton = {
                     if (isWriteSupported) {
                         when (currentRoute) {
-                            "feed" -> Box(
-                                modifier = Modifier.graphicsLayer {
-                                    translationY = bottomBarHeightPx * activeFeedChromeCollapseFraction()
-                                },
-                            ) {
-                                PostFloatingActionButton(
-                                    onPostClick = {
-                                        cancelPendingReplyResolution()
-                                        runWithPrivateKey(PendingKeyAction.NewPost) {
-                                            composer.replyTarget = null
-                                            composer.replyToPreview = null
-                                            composer.replyNoteContext = NoteContext.Timeline
-                                            composer.showPostSheet = true
-                                        }
+                            // 簡易コンポーザー表示中は「…」でフッターメニューへ切り替える。シート表示中はFABを出さない。
+                            "feed" -> when (composer.presentation) {
+                                ComposerPresentation.Hidden -> Box(
+                                    modifier = Modifier.graphicsLayer {
+                                        translationY = bottomBarHeightPx * activeFeedChromeCollapseFraction()
                                     },
-                                )
+                                ) {
+                                    PostFloatingActionButton(
+                                        onPostClick = {
+                                            cancelPendingReplyResolution()
+                                            runWithPrivateKey(PendingKeyAction.NewPost) {
+                                                // 下部バーが一部隠れたまま簡易欄が開かないよう、先に表示状態へ戻す。
+                                                feedChromeState.collapseFraction = 0f
+                                                composer.openNewPost(useFooterComposer, postViewModel::reset)
+                                            }
+                                        },
+                                    )
+                                }
+                                // ネイティブは△で投稿シートへ展開する（閉じるのは簡易欄左端の▼）。
+                                // Webは展開しないので「…」でフッターメニューへ戻す。
+                                ComposerPresentation.FeedInline -> if (isWebPlatform) {
+                                    AppFloatingActionButton(
+                                        onClick = composer::switchInlineToMenu,
+                                        icon = Icons.Default.MoreHoriz,
+                                        contentDescription = "メニューを表示",
+                                    )
+                                } else {
+                                    AppFloatingActionButton(
+                                        onClick = {
+                                            // キーボードを閉じてから全画面の投稿シートへ切り替える。
+                                            dismissInlineKeyboard()
+                                            composer.expandInline()
+                                        },
+                                        icon = Icons.Default.KeyboardArrowUp,
+                                        contentDescription = "詳細な投稿画面を開く",
+                                    )
+                                }
+                                ComposerPresentation.FullScreen -> Unit
                             }
                             "services" -> when (currentServiceTab) {
                                 ServiceTab.Articles -> AppFloatingActionButton(
@@ -776,7 +870,19 @@ internal fun AppSessionCoordinator(
                     }
                 },
                 bottomBar = {
-                    if (hasBottomBar) {
+                    // 簡易コンポーザーはフッターメニューと入れ替えて表示する（FABの「…」で切り替え）。
+                    if (isFeedRoute && composer.presentation == ComposerPresentation.FeedInline) {
+                        FeedInlinePostComposer(
+                            state = postState,
+                            onTextChange = postViewModel::onTextChange,
+                            onSend = postViewModel::postFromFeedInline,
+                            // Web版では展開ボタンを出さない。フィードからの新規投稿はテキストのみとする。
+                            // ネイティブは左端の▼で入力を保持したままフッターメニューへ戻す。Webは「…」FABで戻す。
+                            onClose = if (isWebPlatform) null else composer::switchInlineToMenu,
+                            // iOS Safari はタップ中の focus でしかキーボードを出さないため、Web では自動フォーカスしない。
+                            autoFocus = !isWebPlatform,
+                        )
+                    } else if (hasBottomBar) {
                         Box(
                             modifier = Modifier
                                 .height(AppNavigationBarHeight)
@@ -906,6 +1012,8 @@ internal fun AppSessionCoordinator(
                             longBackgroundResetRequest = feedLongBackgroundResetRequest,
                             chromeState = feedChromeState,
                             bottomContentPadding = padding.calculateBottomPadding(),
+                            // 簡易投稿欄が開いている間は、下部クロームを表示状態に固定する。
+                            chromeCollapseEnabled = composer.presentation != ComposerPresentation.FeedInline,
                         )
                     }
                     composable("services") {
@@ -1057,10 +1165,7 @@ internal fun AppSessionCoordinator(
                             accountKey = accountSession?.sessionId.orEmpty(),
                             onNewPost = {
                                 cancelPendingReplyResolution()
-                                composer.replyTarget = null
-                                composer.replyToPreview = null
-                                composer.replyNoteContext = NoteContext.Timeline
-                                composer.showPostSheet = true
+                                composer.openNewPostSheet()
                             },
                             onOpenThread = { eventId -> nav.navigate(ThreadRoute(eventId)) },
                             onReply = { event, preview ->
@@ -1289,13 +1394,25 @@ internal fun AppSessionCoordinator(
 
         ComposerHost(
             coordinator = composer,
+            postViewModel = postViewModel,
             onDraftSaved = {
                 scope.launch {
                     snackbarHostState.showSnackbar("下書きを保存しました")
                 }
             },
             onOpenCustomEmojiSettings = { nav.navigate(CustomEmojiRoute()) },
-            onPosted = { eventId, postedReplyToId, postedNoteContext, publishResult, warning ->
+            onBackgroundPostFailed = { message ->
+                scope.launch {
+                    snackbarHostState.currentSnackbarData?.dismiss()
+                    snackbarHostState.showSnackbar(message = message, duration = SnackbarDuration.Long)
+                }
+            },
+            onPosted = { completion ->
+                val eventId = completion.eventId
+                val postedReplyToId = completion.replyToId
+                val postedNoteContext = completion.noteContext
+                val publishResult = completion.publishResult
+                val warning = completion.warning
                 scope.launch {
                     snackbarHostState.currentSnackbarData?.dismiss()
                     snackbarFailedRelays = publishResult.failedRelays.keys.toList()

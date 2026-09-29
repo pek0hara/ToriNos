@@ -617,6 +617,7 @@ private fun ThreadReplyInputBar(
         placeholder = "返信を追加…",
         isSending = isPosting,
         error = error,
+        dismissKeyboardOnFocusLoss = true,
     )
 }
 

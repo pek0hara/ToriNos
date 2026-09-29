@@ -34,6 +34,24 @@ data class ImageAttachment(
     val mediaMetadata: MediaMetadata? = null,
 )
 
+/**
+ * 投稿の完了結果。送信時に `post()` が実際に受け取った返信先と [NoteContext] を確定値として持つので、
+ * ホストは `PostSheet` のローカル状態（下書き一覧から選んだ返信先など）を推測せずに遷移先を決められる。
+ */
+data class PostCompletion(
+    val eventId: String,
+    val replyToId: String?,
+    val noteContext: NoteContext,
+    val publishResult: RelayPublishResult,
+    val warning: String?,
+    /**
+     * 送信を始めた入力状態が、完了時点でも現在の入力状態であるとき true。
+     * 送信中に `reset()` された場合（簡易コンポーザーを閉じた等）は false で、
+     * ホストは投稿UIを閉じず、通知と遷移だけを行う。
+     */
+    val fromCurrentDraft: Boolean = true,
+)
+
 data class PostState(
     val text: String = "",
     val customEmojis: List<CustomEmoji> = emptyList(),
@@ -44,11 +62,10 @@ data class PostState(
     val images: List<ImageAttachment> = emptyList(),
     val error: String? = null,
     val memoMessage: String? = null,
-    val posted: Boolean = false,
-    val postedEventId: String? = null,
-    val publishResult: RelayPublishResult? = null,
-    val postWarning: String? = null,
-    val draftDeleted: Boolean = false,
+    /** 未消費の投稿完了。ホストが `consumeCompletion()` で一度だけ取り出す。 */
+    val completion: PostCompletion? = null,
+    /** 送信中に入力状態が破棄された後で失敗した場合の通知。現在の入力欄のエラーとは別に扱う。 */
+    val staleFailure: String? = null,
 ) {
     val isUploadingAny: Boolean get() = images.any { it.isUploading }
     val hasFailedUpload: Boolean get() = images.any { !it.isUploading && it.uploadedUrl == null }
@@ -203,7 +220,11 @@ class PostViewModel(
         editingMemoUpdatedAt = null
         editingMemoEventId = null
         editingMemoPubkey = null
-        _state.value = PostState()
+        // 未消費の完了・失敗通知は、入力状態の破棄で失わない。
+        _state.value = PostState(
+            completion = _state.value.completion,
+            staleFailure = _state.value.staleFailure,
+        )
     }
 
     fun onTextChange(text: String) = updateText(text)
@@ -216,11 +237,6 @@ class PostViewModel(
                 hasContentWarning = enabled,
                 error = null,
                 memoMessage = null,
-                posted = false,
-                postedEventId = null,
-                publishResult = null,
-                postWarning = null,
-                draftDeleted = false,
             )
         }
     }
@@ -242,11 +258,6 @@ class PostViewModel(
             ),
             error = null,
             memoMessage = null,
-            posted = false,
-            postedEventId = null,
-            publishResult = null,
-            postWarning = null,
-            draftDeleted = false,
         )
     }
 
@@ -311,6 +322,11 @@ class PostViewModel(
         _state.update { it.copy(error = "クリップボードに貼り付け可能な画像がありません") }
     }
 
+    /** 呼び出し側の事前検証エラーを、送信失敗と同じ場所に表示する。 */
+    fun showError(message: String) {
+        _state.update { it.copy(error = message) }
+    }
+
     fun restoreMemo(memo: PostMemoData, message: String? = null) {
         draftGeneration++
         val metadataByUrl = memo.imageMetadata.associateBy { it.url }
@@ -336,6 +352,8 @@ class PostViewModel(
             hasContentWarning = memo.hasContentWarning,
             images = restoredImages,
             memoMessage = message,
+            completion = _state.value.completion,
+            staleFailure = _state.value.staleFailure,
         )
     }
 
@@ -466,6 +484,12 @@ class PostViewModel(
         relayUrls: Collection<String>? = null,
     ) {
         val current = _state.value
+        if (current.isPosting) return
+        // 入力欄が上限を守るので通常は到達しない。導線ごとの差を残さないための最後の防御。
+        if (current.text.length > MAX_POST_CHARS) {
+            _state.value = current.copy(error = "本文は${MAX_POST_CHARS}文字以内にしてください")
+            return
+        }
         val composed = composeNoteContent(
             text = current.text,
             images = current.images,
@@ -484,10 +508,18 @@ class PostViewModel(
             return
         }
 
+        // 送信中に reset()/restoreMemo() されたら、結果を新しい入力状態へ書き込まない。
+        val generation = draftGeneration
+        val restoredMemo = EditingMemoRef(editingMemoEventId, editingMemoPubkey, editingMemoIdentifier)
         _state.value = _state.value.copy(isPosting = true, error = null)
         launch {
+            fun failPost(message: String) {
+                val isCurrent = generation == draftGeneration
+                _state.update { reducePostFailure(it, isCurrent, message) }
+            }
+
             val signer = accountSession?.signer ?: run {
-                _state.value = _state.value.copy(isPosting = false, error = "秘密鍵が設定されていません")
+                failPost("秘密鍵が設定されていません")
                 return@launch
             }
 
@@ -512,34 +544,55 @@ class PostViewModel(
                 }
                 event to publishResult
             }.onSuccess { (event, publishResult) ->
-                val hadRestoredMemo = editingMemoEventId != null
-                val deletionWarning = deleteRestoredMemoAfterPost(signer)
-                _state.value = PostState(
-                    posted = true,
-                    postedEventId = event.id,
+                val deletionWarning = deleteRestoredMemoAfterPost(signer, restoredMemo)
+                val isCurrent = generation == draftGeneration
+                val completion = PostCompletion(
+                    eventId = event.id,
+                    replyToId = replyTarget?.parent?.id,
+                    noteContext = noteContext,
                     publishResult = publishResult,
-                    postWarning = deletionWarning,
-                    draftDeleted = hadRestoredMemo && deletionWarning == null,
+                    warning = deletionWarning,
+                    fromCurrentDraft = isCurrent,
                 )
+                if (isCurrent && deletionWarning == null) clearEditingMemo()
+                _state.update { reducePostSuccess(it, isCurrent, completion) }
             }.onFailure { e ->
-                _state.value = _state.value.copy(isPosting = false, error = e.message ?: "ポストに失敗しました")
+                failPost(e.message ?: "ポストに失敗しました")
             }
         }
     }
 
-    fun clearPosted() {
-        _state.value = _state.value.copy(
-            posted = false,
-            postedEventId = null,
-            publishResult = null,
-            postWarning = null,
-            draftDeleted = false,
-        )
+    /** 未消費の投稿完了を一度だけ取り出す。 */
+    fun consumeCompletion(): PostCompletion? {
+        val completion = _state.value.completion ?: return null
+        _state.update { it.copy(completion = null) }
+        return completion
     }
 
-    private suspend fun deleteRestoredMemoAfterPost(signer: AccountSigner): String? {
-        val eventId = editingMemoEventId ?: return null
-        val sourcePubkey = editingMemoPubkey ?: signer.pubkey
+    /** 送信中に入力状態が破棄された後の失敗通知を一度だけ取り出す。 */
+    fun consumeStaleFailure(): String? {
+        val message = _state.value.staleFailure ?: return null
+        _state.update { it.copy(staleFailure = null) }
+        return message
+    }
+
+    private fun clearEditingMemo() {
+        editingMemoEventId = null
+        editingMemoPubkey = null
+        editingMemoIdentifier = null
+        editingMemoUpdatedAt = null
+    }
+
+    /** 送信開始時点で編集中だった下書きの参照。送信中に別の下書きへ切り替わっても取り違えない。 */
+    private class EditingMemoRef(
+        val eventId: String?,
+        val pubkey: String?,
+        val identifier: String?,
+    )
+
+    private suspend fun deleteRestoredMemoAfterPost(signer: AccountSigner, memo: EditingMemoRef): String? {
+        val eventId = memo.eventId ?: return null
+        val sourcePubkey = memo.pubkey ?: signer.pubkey
         if (sourcePubkey != signer.pubkey) {
             return "投稿しましたが、下書きの所有者を確認できないため削除できませんでした"
         }
@@ -547,13 +600,9 @@ class PostViewModel(
             val deletion = signer.sign(
                 content = "",
                 kind = 5,
-                tags = draftDeletionTags(eventId, sourcePubkey, editingMemoIdentifier),
+                tags = draftDeletionTags(eventId, sourcePubkey, memo.identifier),
             )
             NostrRepository.publish(deletion)
-            editingMemoEventId = null
-            editingMemoPubkey = null
-            editingMemoIdentifier = null
-            editingMemoUpdatedAt = null
             null
         } catch (cancelled: CancellationException) {
             throw cancelled
@@ -568,6 +617,25 @@ class PostViewModel(
     private fun memoEventIdentifier(replyToId: String?, updatedAt: Long): String =
         "${memoIdentifier(replyToId)}-$updatedAt"
 }
+
+/**
+ * 送信成功時の状態。送信を始めた入力状態が現在も有効（[isCurrent]）なら入力を空にして完了だけを残す。
+ * 送信中に `reset()` された場合は、いま入力中の状態を上書きせず完了だけを追加する。
+ * どちらの場合も、未消費の別送信の失敗通知は失わない。
+ */
+internal fun reducePostSuccess(state: PostState, isCurrent: Boolean, completion: PostCompletion): PostState =
+    if (isCurrent) {
+        PostState(completion = completion, staleFailure = state.staleFailure)
+    } else {
+        state.copy(completion = completion)
+    }
+
+/**
+ * 送信失敗時の状態。現在の入力状態なら本文を残してエラーを出す。
+ * 送信中に破棄された入力状態の失敗は、いまの入力欄ではなく別枠の通知として残す。
+ */
+internal fun reducePostFailure(state: PostState, isCurrent: Boolean, message: String): PostState =
+    if (isCurrent) state.copy(isPosting = false, error = message) else state.copy(staleFailure = message)
 
 internal fun draftDeletionTags(
     eventId: String,

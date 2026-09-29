@@ -1,9 +1,12 @@
 package com.nostr.torinos.ui.post
 
 import com.nostr.torinos.model.MediaMetadata
+import com.nostr.torinos.model.NoteContext
+import com.nostr.torinos.network.RelayPublishResult
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import kotlinx.serialization.encodeToString
 
@@ -58,6 +61,127 @@ class PostViewModelTest {
 
         assertEquals(PostState(), viewModel.state.value)
     }
+
+    @Test
+    fun postOverTheCharacterLimitIsRejectedBeforeSending() {
+        val viewModel = PostViewModel()
+        viewModel.onTextChange("あ".repeat(MAX_POST_CHARS + 1))
+
+        viewModel.post()
+
+        val state = viewModel.state.value
+        assertEquals("本文は${MAX_POST_CHARS}文字以内にしてください", state.error)
+        assertFalse(state.isPosting)
+        assertEquals(MAX_POST_CHARS + 1, state.text.length)
+    }
+
+    @Test
+    fun postAtTheCharacterLimitPassesTheLengthCheck() {
+        val viewModel = PostViewModel()
+        viewModel.onTextChange("あ".repeat(MAX_POST_CHARS))
+        // 送信先が空なので、文字数の検査を通った後のリレー検査で止まる（ネットワークへは出ない）。
+        viewModel.post(relayUrls = emptyList())
+
+        assertEquals("送信先リレーを1つ以上選択してください", viewModel.state.value.error)
+    }
+
+    @Test
+    fun postWithNoTargetRelayKeepsTheTextAndShowsTheError() {
+        val viewModel = PostViewModel()
+        viewModel.onTextChange("本文")
+
+        viewModel.post(relayUrls = listOf(" ", ""))
+
+        val state = viewModel.state.value
+        assertEquals("送信先リレーを1つ以上選択してください", state.error)
+        assertEquals("本文", state.text)
+        assertFalse(state.isPosting)
+    }
+
+    @Test
+    fun showErrorIsClearedByTheNextEdit() {
+        val viewModel = PostViewModel()
+        viewModel.onTextChange("本文")
+
+        viewModel.showError("書き込み可能なリレーがありません")
+        assertEquals("書き込み可能なリレーがありません", viewModel.state.value.error)
+
+        viewModel.onTextChange("本文2")
+        assertNull(viewModel.state.value.error)
+    }
+
+    @Test
+    fun consumingWithoutACompletionReturnsNull() {
+        val viewModel = PostViewModel()
+
+        assertNull(viewModel.consumeCompletion())
+        assertNull(viewModel.consumeStaleFailure())
+    }
+
+    @Test
+    fun successOfTheCurrentDraftClearsTheInputAndKeepsOnlyTheCompletion() {
+        val typing = PostState(text = "送信した本文", isPosting = true)
+
+        val next = reducePostSuccess(typing, isCurrent = true, completion = completion(fromCurrentDraft = true))
+
+        assertEquals(PostState(completion = completion(fromCurrentDraft = true)), next)
+    }
+
+    @Test
+    fun successAfterTheDraftWasResetDoesNotOverwriteWhatIsBeingTypedNow() {
+        // 送信中に簡易欄を閉じて別の入力を始めた状態。
+        val typingNow = PostState(text = "いま入力中の本文", error = "別のエラー")
+
+        val next = reducePostSuccess(typingNow, isCurrent = false, completion = completion(fromCurrentDraft = false))
+
+        assertEquals("いま入力中の本文", next.text)
+        assertEquals("別のエラー", next.error)
+        assertEquals(completion(fromCurrentDraft = false), next.completion)
+    }
+
+    @Test
+    fun successOfTheCurrentDraftKeepsAnUnconsumedStaleFailure() {
+        // 以前に破棄した入力の送信失敗が、まだホストに消費されていない状態。
+        val posting = PostState(text = "送信した本文", isPosting = true, staleFailure = "古い送信の失敗")
+
+        val next = reducePostSuccess(posting, isCurrent = true, completion = completion(fromCurrentDraft = true))
+
+        assertEquals("", next.text)
+        assertEquals("古い送信の失敗", next.staleFailure)
+        assertEquals(completion(fromCurrentDraft = true), next.completion)
+    }
+
+    @Test
+    fun failureOfTheCurrentDraftKeepsTheTextAndShowsTheError() {
+        val posting = PostState(text = "送信した本文", isPosting = true)
+
+        val next = reducePostFailure(posting, isCurrent = true, message = "ポストに失敗しました")
+
+        assertEquals("送信した本文", next.text)
+        assertEquals("ポストに失敗しました", next.error)
+        assertFalse(next.isPosting)
+        assertNull(next.staleFailure)
+    }
+
+    @Test
+    fun failureAfterTheDraftWasResetIsReportedSeparatelyFromTheCurrentInput() {
+        val typingNow = PostState(text = "いま入力中の本文")
+
+        val next = reducePostFailure(typingNow, isCurrent = false, message = "ポストに失敗しました")
+
+        assertEquals("いま入力中の本文", next.text)
+        assertNull(next.error)
+        assertEquals("ポストに失敗しました", next.staleFailure)
+    }
+
+    private fun completion(fromCurrentDraft: Boolean) = PostCompletion(
+        eventId = "event",
+        replyToId = "parent",
+        noteContext = NoteContext.Timeline,
+        publishResult = RelayPublishResult(setOf("wss://relay.example"), emptyMap()),
+        warning = null,
+        fromCurrentDraft = fromCurrentDraft,
+    )
 
     @Test
     fun contentWarningUsesTheNip36Tag() {

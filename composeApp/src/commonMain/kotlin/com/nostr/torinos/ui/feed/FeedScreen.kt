@@ -106,6 +106,11 @@ fun FeedScreen(
     chromeState: FeedChromeState = remember { FeedChromeState() },
     /** 下部バーの裏までリストを描くための下側の余白。下部バーはリストに重ねて描かれる。 */
     bottomContentPadding: Dp = 0.dp,
+    /**
+     * false の間はクロームの折りたたみ更新を止め、表示状態（fraction 0）に固定する。
+     * 簡易投稿欄が開いている間、入力欄とボトムナビがスクロールで動かないようにするために使う。
+     */
+    chromeCollapseEnabled: Boolean = true,
     /** null = グローバルフィード、非null = 特定ユーザーのポスト */
     authorPubkey: String? = null,
 ) {
@@ -233,8 +238,10 @@ fun FeedScreen(
     val chromeSettleJob = remember { mutableStateOf<Job?>(null) }
     var chromeBehaviorState by remember { mutableStateOf(FeedChromeBehaviorState()) }
     val currentTopBarHeightPx = rememberUpdatedState(topBarHeightPx)
+    val currentChromeCollapseEnabled = rememberUpdatedState(chromeCollapseEnabled)
 
     fun settleChrome(targetFraction: Float) {
+        if (!currentChromeCollapseEnabled.value) return
         chromeSettleJob.value?.cancel()
         chromeSettleJob.value = coroutineScope.launch {
             val fraction = chromeState.collapseFraction
@@ -254,6 +261,7 @@ fun FeedScreen(
             override fun onPostScroll(consumed: Offset, available: Offset, source: NestedScrollSource): Offset {
                 val collapseDistancePx = currentTopBarHeightPx.value
                 if (
+                    !currentChromeCollapseEnabled.value ||
                     authorPubkey != null ||
                     activeListState == null ||
                     collapseDistancePx <= 0 ||
@@ -285,6 +293,7 @@ fun FeedScreen(
             }
 
             override suspend fun onPostFling(consumed: Velocity, available: Velocity): Velocity {
+                if (!currentChromeCollapseEnabled.value) return Velocity.Zero
                 val decision = reduceFeedChromePostFling(
                     state = chromeBehaviorState,
                     currentFraction = chromeState.collapseFraction,
@@ -295,6 +304,17 @@ fun FeedScreen(
                 decision.targetFraction?.let(::settleChrome)
                 return Velocity.Zero
             }
+        }
+    }
+
+    // 停止時は、実行中の寄せアニメーションとジェスチャー状態を捨てて表示状態へ戻す。
+    // 見た目のfractionだけを0にして、背後の状態機械を動かし続けない。
+    // 再開時は表示状態から始め、直前の収納率は復元しない。
+    LaunchedEffect(chromeCollapseEnabled) {
+        if (!chromeCollapseEnabled) {
+            chromeSettleJob.value?.cancel()
+            chromeBehaviorState = FeedChromeBehaviorState()
+            chromeState.collapseFraction = 0f
         }
     }
 

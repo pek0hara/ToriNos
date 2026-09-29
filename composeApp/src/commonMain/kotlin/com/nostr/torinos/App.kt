@@ -42,6 +42,8 @@ fun App() {
         }
         var ageVerificationStatus by remember { mutableStateOf<String?>(null) }
         var isAgeVerificationLoaded by remember { mutableStateOf(false) }
+        // 鍵設定の完了でセッションが作り直されても、フィードの＋からの新規投稿の再開要求を失わない。
+        val pendingComposerRequests = remember { PendingComposerRequestHolder() }
 
         LaunchedEffect(Unit) {
             AccountSessions.manager.initialize()
@@ -72,6 +74,7 @@ fun App() {
             ageVerificationStatus = ageVerificationStatus,
             isAgeVerificationLoaded = isAgeVerificationLoaded,
             onAgeVerificationChanged = ::updateAgeVerification,
+            pendingComposerRequests = pendingComposerRequests,
         )
 
         accountTransitionError?.let { message ->
@@ -95,6 +98,7 @@ private fun AppSessionHost(
     ageVerificationStatus: String?,
     isAgeVerificationLoaded: Boolean,
     onAgeVerificationChanged: (String?) -> Unit,
+    pendingComposerRequests: PendingComposerRequestHolder,
 ) {
     when (state) {
         AccountSessionState.Loading,
@@ -112,6 +116,7 @@ private fun AppSessionHost(
                 ageVerificationStatus = ageVerificationStatus,
                 isAgeVerificationLoaded = isAgeVerificationLoaded,
                 onAgeVerificationChanged = onAgeVerificationChanged,
+                pendingComposerRequests = pendingComposerRequests,
             )
         }
 
@@ -124,6 +129,7 @@ private fun AppSessionHost(
                 ageVerificationStatus = ageVerificationStatus,
                 isAgeVerificationLoaded = isAgeVerificationLoaded,
                 onAgeVerificationChanged = onAgeVerificationChanged,
+                pendingComposerRequests = pendingComposerRequests,
             )
         }
     }

@@ -16,6 +16,7 @@
 - [`feed-chrome-interaction-design.md`](./feed-chrome-interaction-design.md) — フィードヘッダー／ボトムナビのドラッグ、慣性中断、先頭再表示を扱う操作状態機械
 - [`feed-chrome-refactor-design.md`](./feed-chrome-refactor-design.md) — 現行のフィードヘッダー動作を固定したまま分岐を純粋ロジックへ移す段階的リファクタ計画
 - [`feed-initial-reveal-design.md`](./feed-initial-reveal-design.md) — フィード初回表示の公開タイミングをコントローラへ一本化し、透明のまま取り残されないフェード演出へ移す段階的リファクタ設計
+- [`feed-inline-post-composer-design.md`](./feed-inline-post-composer-design.md) — フィードの＋から簡易投稿欄を開き、入力を保ったまま現行投稿シートへ展開するUI・状態共有設計
 - [`status-tab-refactor-design.md`](./status-tab-refactor-design.md) — ステータスタブの購読ライフサイクル、置換イベント集約、投稿処理を整理する段階的リファクタ設計
 - [`article-tab-refactor-design.md`](./article-tab-refactor-design.md) — 記事タブの一覧ViewModel統合、置換イベント集約、取得・削除処理、Markdown解析を整理する段階的リファクタ設計
 - [`journal-refactor-design.md`](./journal-refactor-design.md) — ジャーナルの仕様整理、下書き一覧の分離、種類判定の統一、取得計画・日付索引・エンゲージメント集約を整理する段階的リファクタ設計

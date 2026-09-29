@@ -98,7 +98,10 @@ internal fun ColumnScope.ComposerBodyEditor(
     onRemoveImage: (Int) -> Unit,
     extraMessages: @Composable () -> Unit = {},
 ) {
-    var textValue by remember { mutableStateOf(TextFieldValue(state.text)) }
+    // 簡易コンポーザーから展開したときも、本文の末尾から続けて入力できるようカーソルを末尾に置く。
+    var textValue by remember {
+        mutableStateOf(TextFieldValue(state.text, selection = TextRange(state.text.length)))
+    }
     val accountSession = LocalAccountSession.current
     var showCustomEmojiPicker by remember { mutableStateOf(false) }
     var showImageSourceMenu by remember { mutableStateOf(false) }
