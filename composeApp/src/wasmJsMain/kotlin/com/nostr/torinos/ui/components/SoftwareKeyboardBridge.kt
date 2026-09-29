@@ -15,14 +15,14 @@ package com.nostr.torinos.ui.components
  * 次フレームの focus() が上書きしないよう、[installRedundantFocusGuard] と併せて使う。
  */
 internal fun installSoftwareKeyboardBridge() {
-    installSoftwareKeyboardBridgeJs(TAP_SLOP_PX, KEYBOARD_MIN_HEIGHT_PX)
+    installSoftwareKeyboardBridgeJs(TAP_SLOP_PX, SOFTWARE_KEYBOARD_MIN_HEIGHT_PX)
 }
 
 // これ以上指が動いたらスクロールとみなし、入力欄のタップとして扱わない。
 private const val TAP_SLOP_PX = 10
 
 // 表示領域がこれ以上狭まっていれば、キーボードが出ているとみなす。
-private const val KEYBOARD_MIN_HEIGHT_PX = 100
+internal const val SOFTWARE_KEYBOARD_MIN_HEIGHT_PX = 100
 
 private fun installSoftwareKeyboardBridgeJs(tapSlop: Int, keyboardMinHeight: Int) {
     js(

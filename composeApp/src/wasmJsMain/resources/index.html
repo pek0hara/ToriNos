@@ -2,7 +2,7 @@
 <html lang="ja">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, interactive-widget=resizes-content">
     <!--
         秘密鍵を localStorage に置くため、スクリプトは自オリジンだけに限る(Worker はアプリ自身が blob から作る)。
         リレー(wss:)と画像・NIP-05 などの取得(https:)は任意の接続先を許可する。
@@ -18,9 +18,19 @@
             height: 100%;
             overflow: hidden;
         }
+
+        #compose-root {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+        }
     </style>
 </head>
 <body>
+<div id="compose-root"></div>
 <script type="application/javascript" src="composeApp.js"></script>
 </body>
 </html>
