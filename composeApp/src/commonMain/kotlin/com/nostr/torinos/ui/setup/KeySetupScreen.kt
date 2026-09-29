@@ -76,6 +76,10 @@ fun KeySetupScreen(onSetupComplete: (pubkeyHex: String) -> Unit, onDismiss: (() 
     var error by remember { mutableStateOf<String?>(null) }
     var generatedInfo by remember { mutableStateOf<Pair<String, String>?>(null) } // priv, pub
     var pendingUsageConsentAction by remember { mutableStateOf<(() -> Unit)?>(null) }
+    // Web版は利用条件への同意を求めずに進める。ネイティブは同意ダイアログを挟む。
+    fun runAfterUsageConsent(action: () -> Unit) {
+        if (isWebPlatform) action() else pendingUsageConsentAction = action
+    }
     var storedAccounts by remember { mutableStateOf<List<StoredAccount>>(emptyList()) }
     var storedProfiles by remember { mutableStateOf<Map<String, NostrProfile>>(emptyMap()) }
     var accountLoginError by remember { mutableStateOf<String?>(null) }
@@ -161,7 +165,7 @@ fun KeySetupScreen(onSetupComplete: (pubkeyHex: String) -> Unit, onDismiss: (() 
                         error = accountLoginError,
                         deletingAccountPubkey = deletingAccountPubkey,
                         onAccountClick = { account ->
-                            pendingUsageConsentAction = {
+                            runAfterUsageConsent {
                                 scope.launch(uiExceptionHandler) {
                                     val err = runCatching {
                                         AccountSessions.manager.switchAccount(account.pubkeyHex).getOrThrow()
@@ -184,7 +188,7 @@ fun KeySetupScreen(onSetupComplete: (pubkeyHex: String) -> Unit, onDismiss: (() 
                 if (generatedInfo == null) {
                     Button(
                         onClick = {
-                            pendingUsageConsentAction = {
+                            runAfterUsageConsent {
                                 val kp = generateKeyPair()
                                 error = null
                                 generatedInfo = Pair(kp.privateKeyHex, kp.publicKeyHex)
@@ -299,7 +303,7 @@ fun KeySetupScreen(onSetupComplete: (pubkeyHex: String) -> Unit, onDismiss: (() 
                                     focusManager.clearFocus()
                                     keyboardController?.hide()
                                     val keyToImport = importKey
-                                    pendingUsageConsentAction = {
+                                    runAfterUsageConsent {
                                         scope.launch(uiExceptionHandler) {
                                             val (err, pubkey) = validateAndSave(keyToImport, saveToPasswordManager)
                                             if (err == null && pubkey != null) onSetupComplete(pubkey) else error = err
