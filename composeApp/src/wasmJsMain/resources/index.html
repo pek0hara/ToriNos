@@ -10,6 +10,8 @@
     <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https: wss:; img-src 'self' data: blob: https:; style-src 'self' 'unsafe-inline'; font-src 'self' data:; object-src 'none'; base-uri 'none'; form-action 'none'">
     <title>ToriNos</title>
     <link rel="icon" type="image/png" href="favicon.png">
+    <!-- ページの解析より先に URL の # を外す必要があるため、head で同期的に読み込む。 -->
+    <script src="initial-hash.js"></script>
     <style>
         html, body {
             margin: 0;
@@ -32,5 +34,6 @@
 <body>
 <div id="compose-root"></div>
 <script type="application/javascript" src="composeApp.js"></script>
+<script src="realign-viewport.js"></script>
 </body>
 </html>
