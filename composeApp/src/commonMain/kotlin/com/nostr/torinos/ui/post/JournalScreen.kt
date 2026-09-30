@@ -3,6 +3,7 @@ package com.nostr.torinos.ui.post
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
@@ -43,6 +44,7 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.nostr.torinos.account.accountSessionViewModel
+import com.nostr.torinos.crypto.isWebPlatform
 import com.nostr.torinos.engagement.EngagementRequest
 import com.nostr.torinos.engagement.EngagementSlot
 import com.nostr.torinos.engagement.displayOwnEmojiReactionEventIds
@@ -255,15 +257,7 @@ fun JournalScreen(
                 )
             }
             HorizontalDivider()
-            PullToRefreshBox(
-                isRefreshing = isPullRefreshing,
-                onRefresh = {
-                    if (!state.isLoading) {
-                        viewModel.refresh()
-                    }
-                },
-                modifier = Modifier.fillMaxSize(),
-            ) {
+            val journalContent: @Composable BoxScope.() -> Unit = {
                 when {
                     state.isLoading && state.timeline.isEmpty() -> {
                         CircularProgressIndicator(modifier = Modifier.align(Alignment.Center))
@@ -315,6 +309,21 @@ fun JournalScreen(
                         }
                     }
                 }
+            }
+            // ブラウザではプルで更新が動かないため、Web 版では付けない。
+            if (isWebPlatform) {
+                Box(modifier = Modifier.fillMaxSize(), content = journalContent)
+            } else {
+                PullToRefreshBox(
+                    isRefreshing = isPullRefreshing,
+                    onRefresh = {
+                        if (!state.isLoading) {
+                            viewModel.refresh()
+                        }
+                    },
+                    modifier = Modifier.fillMaxSize(),
+                    content = journalContent,
+                )
             }
         }
     }

@@ -50,6 +50,7 @@ import androidx.compose.runtime.derivedStateOf
 import androidx.compose.foundation.layout.offset
 import coil3.SingletonImageLoader
 import coil3.compose.LocalPlatformContext
+import com.nostr.torinos.crypto.isWebPlatform
 import com.nostr.torinos.model.NostrEvent
 import com.nostr.torinos.model.ReactionOption
 import com.nostr.torinos.account.LocalAccountSession
@@ -358,7 +359,8 @@ fun NoteTimeline(
         derivedStateOf { topOverlayVisibility() > 0f }
     }
     Box(modifier = modifier) {
-        if (onRefresh != null) {
+        // ブラウザではプルで更新が動かないため、Web 版では付けない。
+        if (onRefresh != null && !isWebPlatform) {
             val pullToRefreshState = rememberPullToRefreshState()
             PullToRefreshBox(
                 isRefreshing = isRefreshing,
