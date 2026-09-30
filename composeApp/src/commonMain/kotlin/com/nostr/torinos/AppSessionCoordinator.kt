@@ -286,6 +286,15 @@ internal fun AppSessionCoordinator(
 
         fun navigateFeedTab() {
             feedChromeState.collapseFraction = 0f
+            if (isWebPlatform) {
+                if (currentRoute == "feed") return
+                // URL の #journal から直接起動した場合も、グラフの起点を残してフィードへ戻す。
+                nav.navigate("feed") {
+                    popUpTo(nav.graph.id)
+                    launchSingleTop = true
+                }
+                return
+            }
             navigateTopLevelRoute("feed")
         }
 
