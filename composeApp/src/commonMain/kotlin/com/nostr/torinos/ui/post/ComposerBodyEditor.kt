@@ -63,6 +63,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.compose.ui.window.PopupProperties
+import com.nostr.torinos.crypto.isWebPlatform
 import com.nostr.torinos.model.ReactionOption
 import com.nostr.torinos.emoji.CustomEmoji
 import com.nostr.torinos.account.LocalAccountSession
@@ -265,7 +266,13 @@ internal fun ColumnScope.ComposerBodyEditor(
                 TextButton(
                     onClick = {
                         dismissKeyboard()
-                        showImageSourceMenu = !showImageSourceMenu
+                        // Web版はクリップボードの画像読み取りに対応していないため、メニューを出さずに写真を選ぶ。
+                        // ブラウザはタップ中にしかファイル選択を開かないので、ここで同期的に呼ぶ。
+                        if (isWebPlatform) {
+                            onPickImage()
+                        } else {
+                            showImageSourceMenu = !showImageSourceMenu
+                        }
                     },
                     enabled = state.images.size < 4,
                     contentPadding = PaddingValues(horizontal = 4.dp),
