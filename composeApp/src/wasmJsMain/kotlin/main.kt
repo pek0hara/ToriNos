@@ -1,6 +1,7 @@
 import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.window.ComposeViewport
 import com.nostr.torinos.App
+import com.nostr.torinos.ui.components.installDuplicateCompositionCommitGuard
 import com.nostr.torinos.ui.components.installRedundantFocusGuard
 import com.nostr.torinos.ui.components.installSoftwareKeyboardBridge
 import com.nostr.torinos.ui.components.installVisualViewportBridge
@@ -12,6 +13,7 @@ private const val ComposeViewportContainerId = "compose-root"
 fun main() {
     timeZoneDatabase
     installRedundantFocusGuard()
+    installDuplicateCompositionCommitGuard()
     installSoftwareKeyboardBridge()
     installVisualViewportBridge(ComposeViewportContainerId)
     // 画像はCoilの既定シングルトンを使う(ディスクキャッシュを置けないため registerAppImageLoader は呼ばない)。
