@@ -43,4 +43,5 @@ internal fun AppNavigationGraph(
         modifier = modifier,
         builder = builder,
     )
+    BindBrowserNavigation(navController)
 }
