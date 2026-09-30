@@ -33,6 +33,10 @@
 
 - [`push-notification-durable-object-design.md`](./push-notification-durable-object-design.md) — Yabume共有購読とDurable Objectを使うプッシュ通知基盤の現行設計
 
+## 開発フロー
+
+- [`pr-preview-design.md`](./pr-preview-design.md) — Issue から Claude が PR を作り、別オリジンに Web 版プレビューを公開・PR を閉じたら削除する GitHub Actions
+
 ## 公開サイト
 
 `site/`にはGitHub Pagesで公開するHTMLとスタイルを置く。

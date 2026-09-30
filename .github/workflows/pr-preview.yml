@@ -1,0 +1,154 @@
+# PR ごとに Web 版(Kotlin/Wasm)のプレビューを公開し、PR を閉じたら削除する。
+# 秘密鍵を localStorage に置く本番と同じオリジンにしないため、公開先は別 Organization のリポジトリ(変数 PREVIEW_REPO)にする。
+# 設計は docs/pr-preview-design.md を参照。
+name: PR Preview
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize, closed]
+  # GITHUB_TOKEN で作った PR は pull_request を起動しないため、issue-to-pr.yml から明示的に起動する。
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: PR番号
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pr-preview-${{ github.event.pull_request.number || inputs.pr }}
+  cancel-in-progress: ${{ github.event.action != 'closed' }}
+
+env:
+  PR_NUMBER: ${{ github.event.pull_request.number || inputs.pr }}
+  PREVIEW_REPO: ${{ vars.PREVIEW_REPO }}
+
+jobs:
+  # PR のコード(Gradle のビルドスクリプトを含む)を動かすジョブにはシークレットを渡さない。
+  build:
+    if: >-
+      github.event.action != 'closed' &&
+      (github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check inputs
+        run: |
+          [[ $PR_NUMBER =~ ^[0-9]+$ ]] || { echo "PR番号が不正です: $PR_NUMBER" >&2; exit 1; }
+          [[ $PREVIEW_REPO == */* ]] || { echo "リポジトリ変数 PREVIEW_REPO(owner/name)が未設定です" >&2; exit 1; }
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Build web distribution
+        run: ./gradlew :composeApp:wasmJsBrowserDistribution
+
+      - name: Assemble preview
+        run: |
+          mkdir -p _site
+          cp -R composeApp/build/dist/wasmJs/productionExecutable/. _site/
+          # 検索エンジンに載せない。CSP がインラインスクリプトを禁止しているため、帯は style 属性だけで作る。
+          banner="<div style=\"position:fixed;left:4px;bottom:4px;z-index:2147483647;pointer-events:none;padding:2px 6px;border-radius:4px;background:#d97706;color:#fff;font:bold 11px/1.4 sans-serif;opacity:.85\">PREVIEW #${PR_NUMBER}</div>"
+          sed -i \
+            -e "s|<title>ToriNos</title>|<meta name=\"robots\" content=\"noindex\">\n    <title>[PR #${PR_NUMBER}] ToriNos</title>|" \
+            -e "s|</body>|${banner}\n</body>|" \
+            _site/index.html
+          grep -q "PREVIEW #${PR_NUMBER}" _site/index.html
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: preview-site
+          path: _site
+          retention-days: 1
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      # デプロイ鍵を扱うので、スクリプトは PR 側ではなく既定ブランチのものを使う。
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          sparse-checkout: .github/scripts
+          persist-credentials: false
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: preview-site
+          path: _site
+
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ vars.PREVIEW_REPO }}
+          ref: gh-pages
+          ssh-key: ${{ secrets.PREVIEW_DEPLOY_KEY }}
+          path: _pages
+          fetch-depth: 1
+
+      - name: Publish preview
+        run: .github/scripts/preview-pages.sh _pages deploy "$PR_NUMBER" _site
+
+      - name: Comment preview URL
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          owner=${PREVIEW_REPO%%/*}
+          name=${PREVIEW_REPO#*/}
+          host="${owner,,}.github.io"
+          if [[ ${name,,} == "$host" ]]; then
+            url="https://$host/pr-$PR_NUMBER/"
+          else
+            url="https://$host/$name/pr-$PR_NUMBER/"
+          fi
+          .github/scripts/preview-comment.sh "$PR_NUMBER" "### Web版プレビュー
+
+          $url
+
+          ${HEAD_SHA:0:7} をビルドしました。反映まで1分ほどかかります。PR を閉じると削除します。"
+
+  cleanup:
+    if: >-
+      github.event.action == 'closed' &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          sparse-checkout: .github/scripts
+          persist-credentials: false
+
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ vars.PREVIEW_REPO }}
+          ref: gh-pages
+          ssh-key: ${{ secrets.PREVIEW_DEPLOY_KEY }}
+          path: _pages
+          fetch-depth: 1
+
+      - name: Remove preview
+        run: .github/scripts/preview-pages.sh _pages remove "$PR_NUMBER"
+
+      - name: Update comment
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          .github/scripts/preview-comment.sh "$PR_NUMBER" "### Web版プレビュー
+
+          PR を閉じたのでプレビューを削除しました。"
