@@ -19,6 +19,7 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Delete
+import com.nostr.torinos.AppVersion
 import com.nostr.torinos.model.NostrProfile
 import com.nostr.torinos.ui.components.ProfileNameText
 import com.nostr.torinos.ui.profile.AvatarCircle
@@ -198,7 +199,11 @@ fun SettingsScreen(
                             showDeleteAccountDialog = true
                         },
                     )
+                    HorizontalDivider()
                 }
+            }
+            item {
+                VersionSection()
             }
         }
     }
@@ -700,6 +705,27 @@ private fun DisplayToggleRow(
             style = MaterialTheme.typography.bodyMedium,
         )
         Switch(checked = checked, onCheckedChange = onCheckedChange)
+    }
+}
+
+@Composable
+private fun VersionSection() {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(16.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            text = "バージョン",
+            style = MaterialTheme.typography.bodyMedium,
+        )
+        Text(
+            text = AppVersion.NAME,
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
     }
 }
 
