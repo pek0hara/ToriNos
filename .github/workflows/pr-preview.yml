@@ -6,7 +6,7 @@ name: PR Preview
 on:
   pull_request:
     types: [opened, reopened, synchronize, closed]
-  # GITHUB_TOKEN で作った PR は pull_request を起動しないため、issue-to-pr.yml から明示的に起動する。
+  # GITHUB_TOKEN で作った PR の pull_request は承認待ちで止まるため、issue-to-pr.yml などから明示的に起動する。
   workflow_dispatch:
     inputs:
       pr:
@@ -16,21 +16,24 @@ on:
 permissions:
   contents: read
 
-concurrency:
-  group: pr-preview-${{ github.event.pull_request.number || inputs.pr }}
-  cancel-in-progress: ${{ github.event.action != 'closed' }}
-
 env:
   PR_NUMBER: ${{ github.event.pull_request.number || inputs.pr }}
   PREVIEW_REPO: ${{ vars.PREVIEW_REPO }}
 
 jobs:
   # PR のコード(Gradle のビルドスクリプトを含む)を動かすジョブにはシークレットを渡さない。
+  # github-actions[bot] が起こした pull_request(Claude の PR 作成・push)は承認待ちになるうえ、
+  # 起動元が dispatch で同じビルドを走らせるのでスキップする。
+  # concurrency をジョブに置くのは、スキップした実行(承認後を含む)が dispatch のビルドを止めないようにするため。
   build:
     if: >-
       github.event.action != 'closed' &&
-      (github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository)
+      (github.event_name == 'workflow_dispatch' ||
+       (github.event.pull_request.head.repo.full_name == github.repository && github.event.sender.login != 'github-actions[bot]'))
     runs-on: ubuntu-latest
+    concurrency:
+      group: pr-preview-build-${{ github.event.pull_request.number || inputs.pr }}
+      cancel-in-progress: true
     steps:
       - name: Check inputs
         run: |
@@ -70,26 +73,39 @@ jobs:
           path: _site
           retention-days: 1
 
+  # gh-pages への反映と削除は PR ごとに直列にし、閉じた後に古いビルドが再公開しないよう PR の状態を確かめる。
   deploy:
     needs: build
     runs-on: ubuntu-latest
+    concurrency:
+      group: pr-preview-pages-${{ github.event.pull_request.number || inputs.pr }}
+      cancel-in-progress: false
     permissions:
       contents: read
       pull-requests: write
+    env:
+      GH_TOKEN: ${{ github.token }}
     steps:
+      - id: state
+        name: Check pull request is open
+        run: echo "state=$(gh pr view "$PR_NUMBER" -R "$GITHUB_REPOSITORY" --json state --jq .state)" >> "$GITHUB_OUTPUT"
+
       # デプロイ鍵を扱うので、スクリプトは PR 側ではなく既定ブランチのものを使う。
-      - uses: actions/checkout@v4
+      - if: steps.state.outputs.state == 'OPEN'
+        uses: actions/checkout@v4
         with:
           ref: ${{ github.event.repository.default_branch }}
           sparse-checkout: .github/scripts
           persist-credentials: false
 
-      - uses: actions/download-artifact@v4
+      - if: steps.state.outputs.state == 'OPEN'
+        uses: actions/download-artifact@v4
         with:
           name: preview-site
           path: _site
 
-      - uses: actions/checkout@v4
+      - if: steps.state.outputs.state == 'OPEN'
+        uses: actions/checkout@v4
         with:
           repository: ${{ vars.PREVIEW_REPO }}
           ref: gh-pages
@@ -97,12 +113,13 @@ jobs:
           path: _pages
           fetch-depth: 1
 
-      - name: Publish preview
+      - if: steps.state.outputs.state == 'OPEN'
+        name: Publish preview
         run: .github/scripts/preview-pages.sh _pages deploy "$PR_NUMBER" _site
 
-      - name: Comment preview URL
+      - if: steps.state.outputs.state == 'OPEN'
+        name: Comment preview URL
         env:
-          GH_TOKEN: ${{ github.token }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
           owner=${PREVIEW_REPO%%/*}
@@ -124,6 +141,9 @@ jobs:
       github.event.action == 'closed' &&
       github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
+    concurrency:
+      group: pr-preview-pages-${{ github.event.pull_request.number }}
+      cancel-in-progress: false
     permissions:
       contents: read
       pull-requests: write

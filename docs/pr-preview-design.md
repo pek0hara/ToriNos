@@ -49,12 +49,17 @@ Web 版は秘密鍵を `localStorage` に平文で保存する(`BrowserKeyStore`
 - Claude に許すコマンドは `./gradlew` と `git` に限る。ビルドとテストは Claude が実行して確かめる。
 - 認証はシークレット `CLAUDE_CODE_OAUTH_TOKEN`(`claude setup-token` で作る)。
 
-### GITHUB_TOKEN で作った PR はワークフローを起動しない
+### GITHUB_TOKEN で作った PR のワークフローは承認待ちになる
 
-`GITHUB_TOKEN` による push や PR 作成では `pull_request` などのワークフローが起動しない(無限ループ防止)。
-例外は `workflow_dispatch` と `repository_dispatch` なので、PR を作った後に
-`gh workflow run pr-preview.yml --ref <branch> -f pr=<N>` でプレビューを明示的に起動する。
-PAT や GitHub App トークンで PR を作る方式は、トークンの種類によって起動したりしなかったりするため採らない。
+`GITHUB_TOKEN` で PR を作ると、`pull_request` の実行は作られるが「Approve and run」の承認待ちで止まる
+(`github-actions[bot]` が初回の貢献者として扱われる。2026-10 に PR #6 で確認)。
+手動承認を不要にするため、PR を作った後に `gh workflow run pr-preview.yml --ref <branch> -f pr=<N>` で
+プレビューを明示的に起動する(`workflow_dispatch` は `GITHUB_TOKEN` からでも承認なしで動く)。
+
+- `pr-preview.yml` は `github-actions[bot]` が起こした `pull_request` では全ジョブをスキップする。
+  承認待ちの実行は放置してよく、承認しても何もしない。
+  当初はワークフロー単位の concurrency だったため、承認するとほぼ終わっていた dispatch のビルドが止められて作り直しになっていた。
+- PAT や GitHub App トークンで PR を作る方式は、トークンの種類によって起動や承認の扱いが変わるため採らない。
 
 ## pr-claude.yml
 
@@ -78,7 +83,10 @@ Issue 上のコメントは対象外にする(タグモードは Issue へのコ
 - フォークからの PR は対象外(`head.repo.full_name == github.repository`)。フォークの PR にはシークレットが渡らない。
 - **ビルドとデプロイのジョブを分ける**。Gradle のビルドスクリプトは PR 側で書き換えられるので、
   デプロイ鍵が見えるジョブでは PR のコードを動かさない。
-- 同じ PR の実行は `concurrency: pr-preview-<N>` で直列にし、古いものを止める。`closed` は止めない。
+- concurrency はジョブ単位に置く(ワークフロー単位だと、スキップする実行も他の実行を止めてしまう)。
+  - build: `pr-preview-build-<N>`。同じ PR の古いビルドを止める。
+  - deploy・cleanup: `pr-preview-pages-<N>`。止めずに直列にする。
+    deploy は PR が開いているときだけ公開し、閉じた後に古いビルドが再公開しないようにする。
 - gh-pages への書き込みは複数 PR が同時に行いうる。Actions の concurrency は待ちが1件しか残らず、
   別 PR のデプロイが取り消されるため使わない。代わりに「取得 → 変更 → `--force-with-lease` で push」を
   最大5回やり直す(`.github/scripts/preview-pages.sh`)。
