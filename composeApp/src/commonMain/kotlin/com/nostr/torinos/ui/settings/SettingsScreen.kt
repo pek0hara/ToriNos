@@ -720,10 +720,12 @@ private fun VersionSection() {
         Text(
             text = "バージョン",
             style = MaterialTheme.typography.bodyMedium,
+            fontWeight = FontWeight.Bold,
         )
         Text(
             text = AppVersion.NAME,
             style = MaterialTheme.typography.bodyMedium,
+            fontWeight = FontWeight.Bold,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
     }
