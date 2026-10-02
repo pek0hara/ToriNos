@@ -14,11 +14,11 @@ import com.nostr.torinos.network.RelayStore
 import com.nostr.torinos.ui.components.AppMessageComposer
 
 /**
- * フィード下部の簡易投稿欄。ポスト詳細の返信欄と同じ [AppMessageComposer] に、フィード固有の状態と
+ * フィードと自分のジャーナルで共用する簡易投稿欄。[AppMessageComposer] に、投稿状態と
  * 先頭の閉じるボタン（▼）を接続するだけの薄いバインディング。独自の入力欄や送信ボタンは持たない。
  * 投稿シートへの展開（△）はFABが受け持つ。
  *
- * @param onClose 閉じるボタンを押したとき。null のとき（Web版）は閉じるボタンを表示しない。
+ * @param onClose 閉じるボタンを押したとき。null のときは閉じるボタンを表示しない。
  */
 @Composable
 internal fun FeedInlinePostComposer(

@@ -1,6 +1,5 @@
 package com.nostr.torinos.network
 
-import com.nostr.torinos.crypto.isWebPlatform
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -17,8 +16,8 @@ object DisplayPreferencesStore {
     private const val XPreviewKey = "display_pref_x_preview_v1"
     private const val FooterComposerKey = "display_pref_footer_composer_v1"
 
-    /** フッター投稿を一度も切り替えていないときの既定。ネイティブは従来の全画面シート、Webはフッター投稿。 */
-    private val defaultUseFooterComposer = isWebPlatform
+    /** フッター投稿を一度も切り替えていないときの既定。全プラットフォームで投稿シートを使う。 */
+    private const val defaultUseFooterComposer = false
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
@@ -33,7 +32,7 @@ object DisplayPreferencesStore {
     private val _showXPreviews = MutableStateFlow(false)
     val showXPreviews: StateFlow<Boolean> = _showXPreviews.asStateFlow()
 
-    /** フィードの＋で、全画面の投稿シートではなくフッターの簡易投稿欄を開くか。 */
+    /** フィードと自分のジャーナルの＋で、全画面の投稿シートではなくフッターの簡易投稿欄を開くか。 */
     private val _useFooterComposer = MutableStateFlow(defaultUseFooterComposer)
     val useFooterComposer: StateFlow<Boolean> = _useFooterComposer.asStateFlow()
 

@@ -15,7 +15,6 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Apps
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.KeyboardArrowUp
-import androidx.compose.material.icons.filled.MoreHoriz
 import androidx.compose.material.icons.filled.Sms
 import androidx.compose.material.icons.filled.Today
 import androidx.compose.material3.AlertDialog
@@ -493,6 +492,7 @@ internal fun AppSessionCoordinator(
         val density = LocalDensity.current
         val bottomBarHeightPx = with(density) { AppNavigationBarHeight.toPx() }.toInt()
         val isFeedRoute = currentRoute == "feed"
+        val isNewPostRoute = currentRoute == "feed" || currentRoute == "journal"
         // フィードでは下部バーをリストに重ね、高さは変えずに下へずらして隠す。
         // 折りたたみ量はスクロール中に毎フレーム変わるので、graphicsLayerの中でだけ読む。
         fun activeFeedChromeCollapseFraction(): Float =
@@ -505,10 +505,15 @@ internal fun AppSessionCoordinator(
             }
         }
 
-        // フィード以外へ遷移したら簡易コンポーザーを閉じ、新規投稿状態を破棄する。
+        // 画面が変わったら簡易コンポーザーを閉じ、新規投稿状態を破棄する。
+        // フィードとジャーナル間でも入力を持ち越さない。
         // フィードタブ（フォロー／グローバル）の切り替えはルートが変わらないので閉じない。
+        // 起動直後の最初のルート確定は画面の切り替えではないので、鍵設定後に再開した投稿欄を閉じない。
+        var lastComposerRoute by remember { mutableStateOf<String?>(null) }
         LaunchedEffect(currentRoute) {
-            if (currentRoute != null && currentRoute != "feed") {
+            val previousRoute = lastComposerRoute
+            if (currentRoute != null) lastComposerRoute = currentRoute
+            if (previousRoute != null && currentRoute != null && currentRoute != previousRoute) {
                 composer.closeInline(
                     isPosting = postViewModel.state.value.isPosting,
                     resetPost = postViewModel::reset,
@@ -804,8 +809,8 @@ internal fun AppSessionCoordinator(
                 floatingActionButton = {
                     if (isWriteSupported) {
                         when (currentRoute) {
-                            // 簡易コンポーザー表示中は「…」でフッターメニューへ切り替える。シート表示中はFABを出さない。
-                            "feed" -> when (composer.presentation) {
+                            // フィードと自分のジャーナルは、投稿の起動・展開を同じFABで扱う。
+                            "feed", "journal" -> when (composer.presentation) {
                                 ComposerPresentation.Hidden -> Box(
                                     modifier = Modifier.graphicsLayer {
                                         translationY = bottomBarHeightPx * activeFeedChromeCollapseFraction()
@@ -822,15 +827,8 @@ internal fun AppSessionCoordinator(
                                         },
                                     )
                                 }
-                                // ネイティブは△で投稿シートへ展開する（閉じるのは簡易欄左端の▼）。
-                                // Webは展開しないので「…」でフッターメニューへ戻す。
-                                ComposerPresentation.FeedInline -> if (isWebPlatform) {
-                                    AppFloatingActionButton(
-                                        onClick = composer::switchInlineToMenu,
-                                        icon = Icons.Default.MoreHoriz,
-                                        contentDescription = "メニューを表示",
-                                    )
-                                } else {
+                                // △で投稿シートへ展開する（閉じるのは簡易欄左端の▼）。
+                                ComposerPresentation.FeedInline -> {
                                     AppFloatingActionButton(
                                         onClick = {
                                             // キーボードを閉じてから全画面の投稿シートへ切り替える。
@@ -878,15 +876,14 @@ internal fun AppSessionCoordinator(
                     }
                 },
                 bottomBar = {
-                    // 簡易コンポーザーはフッターメニューと入れ替えて表示する（FABの「…」で切り替え）。
-                    if (isFeedRoute && composer.presentation == ComposerPresentation.FeedInline) {
+                    // フィードと自分のジャーナルで、同じ簡易投稿欄をフッターメニューと入れ替えて表示する。
+                    if (isNewPostRoute && composer.presentation == ComposerPresentation.FeedInline) {
                         FeedInlinePostComposer(
                             state = postState,
                             onTextChange = postViewModel::onTextChange,
                             onSend = postViewModel::postFromFeedInline,
-                            // Web版では展開ボタンを出さない。フィードからの新規投稿はテキストのみとする。
-                            // ネイティブは左端の▼で入力を保持したままフッターメニューへ戻す。Webは「…」FABで戻す。
-                            onClose = if (isWebPlatform) null else composer::switchInlineToMenu,
+                            // 左端の▼で入力を保持したままフッターメニューへ戻す。
+                            onClose = composer::switchInlineToMenu,
                             // iOS Safari はタップ中の focus でしかキーボードを出さないため、Web では自動フォーカスしない。
                             autoFocus = !isWebPlatform,
                         )
@@ -1171,10 +1168,6 @@ internal fun AppSessionCoordinator(
                             toggleCalendarRequest = composer.journalToggleCalendarRequest,
                             showCalendarRequest = composer.journalShowCalendarRequest,
                             accountKey = accountSession?.sessionId.orEmpty(),
-                            onNewPost = {
-                                cancelPendingReplyResolution()
-                                composer.openNewPostSheet()
-                            },
                             onOpenThread = { eventId -> nav.navigate(ThreadRoute(eventId)) },
                             onReply = { event, preview ->
                                 openReplyComposer(event, preview, NoteContext.Timeline)
@@ -1369,7 +1362,6 @@ internal fun AppSessionCoordinator(
                         val route = backStack.toRoute<UserJournalRoute>()
                         JournalScreen(
                             onBack = { nav.popBackStack() },
-                            onNewPost = {},
                             onOpenThread = { eventId -> nav.navigate(ThreadRoute(eventId)) },
                             onReply = { event, preview ->
                                 openReplyComposer(event, preview, NoteContext.Timeline)

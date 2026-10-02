@@ -304,16 +304,40 @@ class ComposerCoordinatorTest {
     }
 
     @Test
-    fun newPostSheetForJournalResetsReplyContext() {
+    fun newPostWithFooterDisabledClearsReplyAndQuoteContext() {
         val coordinator = ComposerCoordinator()
         coordinator.prepareReply(event(), "preview", NoteContext.Timeline)
 
-        coordinator.openNewPostSheet()
+        coordinator.quoteToId = "quote"
+        coordinator.quoteToPubkey = "author"
+        coordinator.quoteToPreview = "quoted"
 
+        coordinator.openNewPost(useFooterComposer = false) { }
+
+        assertNull(coordinator.quoteToId)
+        assertNull(coordinator.quoteToPubkey)
+        assertNull(coordinator.quoteToPreview)
         assertNull(coordinator.replyTarget)
         assertNull(coordinator.replyToPreview)
         assertEquals(ComposerPresentation.FullScreen, coordinator.presentation)
         assertEquals(PostSheetInitialState.Reset, coordinator.sheetInitialState)
+    }
+
+    @Test
+    fun localDraftRestoresInTheSheetWithEitherFooterSetting() {
+        for (useFooterComposer in listOf(false, true)) {
+            val coordinator = ComposerCoordinator()
+            val draft = memo("絵文字設定から戻った本文")
+            coordinator.localDraft = draft
+            var resetCount = 0
+
+            coordinator.openNewPost(useFooterComposer) { resetCount++ }
+
+            assertEquals(ComposerPresentation.FullScreen, coordinator.presentation)
+            assertEquals(PostSheetInitialState.RestoreMemo, coordinator.sheetInitialState)
+            assertEquals(draft, coordinator.localDraft)
+            assertEquals(0, resetCount)
+        }
     }
 
     private fun memo(text: String) = PostMemoData(
