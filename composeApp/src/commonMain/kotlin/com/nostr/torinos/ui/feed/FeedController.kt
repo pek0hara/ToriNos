@@ -198,6 +198,11 @@ internal class FeedController(
     private val receivedReactionEvents = linkedMapOf<String, NostrEvent>()
     private val receivedRepostEvents = linkedMapOf<String, NostrEvent>()
     private val rawEvents = linkedMapOf<String, NostrEvent>()
+    /**
+     * 保持中の投稿が参照する返信先・引用先の ID。表示前の投稿の引用カードを一覧の整理で
+     * 捨てないために使う。本文の解析を組み直しのたびに繰り返さないよう、受信時に一度だけ求める。
+     */
+    private val referencedIdsByEvent = mutableMapOf<String, List<String>>()
     private val canonicalEvents = linkedMapOf<String, NostrEvent>()
     private val eventSortTimes = mutableMapOf<String, Long>()
     private val pendingQuoteIds = linkedSetOf<String>()
@@ -355,12 +360,14 @@ internal class FeedController(
 
     private fun removeEventLocally(eventId: String) {
         pendingTimelineEvents.remove(eventId)
-        updateEvents(immediate = true) { current -> current.events.filter { it.id != eventId } }
+        // 組み直しは保持中の投稿を基準に付随情報を残すので、先に保持から外す。
         seenEventIds.remove(eventId)
         rawEvents.remove(eventId)
+        referencedIdsByEvent.remove(eventId)
         canonicalEvents.remove(eventId)
         eventSortTimes.remove(eventId)
         forgetEngagementHistory(eventId)
+        updateEvents(immediate = true) { current -> current.events.filter { it.id != eventId } }
     }
 
     fun consumeEngagementError() {
@@ -603,6 +610,7 @@ internal class FeedController(
         receivedReactionEvents.clear()
         receivedRepostEvents.clear()
         rawEvents.clear()
+        referencedIdsByEvent.clear()
         canonicalEvents.clear()
         eventSortTimes.clear()
         pendingQuoteIds.clear()
@@ -1126,6 +1134,8 @@ internal class FeedController(
             return 0
         }
         rawEvents[event.id] = event
+        val quoteIds = quotedEventIds(event)
+        referencedIdsByEvent[event.id] = quoteIds + listOfNotNull(event.replyTargetId())
         if (event.id !in canonicalEvents) {
             canonicalEvents[event.id] = event
         }
@@ -1133,6 +1143,7 @@ internal class FeedController(
         while (rawEvents.size > MAX_SEEN_IDS) {
             val removedId = rawEvents.keys.first()
             rawEvents.remove(removedId)
+            referencedIdsByEvent.remove(removedId)
             eventSortTimes.remove(removedId)
             forgetEngagementHistory(removedId)
         }
@@ -1142,7 +1153,6 @@ internal class FeedController(
         if (cur.events.any { it.id == event.id } || pendingTimelineEvents.containsKey(event.id)) return 0
         pendingTimelineEvents[event.id] = event
         scheduleTimelineBatch()
-        val quoteIds = quotedEventIds(event)
         scheduleQuoteFetch(quoteIds)
         event.replyTargetId()?.takeIf { it !in quoteIds }?.let { scheduleQuoteFetch(listOf(it)) }
         return 1
@@ -1294,13 +1304,21 @@ internal class FeedController(
                     val events = computeEvents(current)
                     val ownPubkeySnapshot = ownPubkey
                     val eventSortTimesSnapshot = eventSortTimes.toMap()
+                    // 集合の構築はバックグラウンドで行い、ここでは参照の写しだけを取る。
+                    val heldIdsSnapshot = rawEvents.keys.toList()
+                    val referencedIdsSnapshot = referencedIdsByEvent.values.toList()
                     val newState = withContext(computeDispatcher) {
+                        val heldEventIds = buildSet {
+                            addAll(heldIdsSnapshot)
+                            referencedIdsSnapshot.forEach(::addAll)
+                        }
                         computeUpdatedFeedState(
                             events = events,
                             oldestVisibleAt = oldestVisibleAt,
                             current = current,
                             ownPubkeySnapshot = ownPubkeySnapshot,
                             eventSortTimesSnapshot = eventSortTimesSnapshot,
+                            heldEventIds = heldEventIds,
                         )
                     }
 
@@ -1328,6 +1346,8 @@ internal class FeedController(
         current: UiState,
         ownPubkeySnapshot: String?,
         eventSortTimesSnapshot: Map<String, Long>,
+        /** 保持中の投稿（表示待ち・表示範囲外・除外中を含む）と、それらの返信先・引用先の ID。 */
+        heldEventIds: Set<String>,
     ): UiState {
         val visibleEvents = events
             .let { timelineEvents ->
@@ -1341,23 +1361,27 @@ internal class FeedController(
         val visibleEventIds = visibleEvents.mapTo(linkedSetOf()) { it.id }
         val retainedEventIds = visibleEventIds + visibleEvents.mapNotNull { it.replyTargetId() } +
             visibleEvents.flatMap { quotedEventIds(it) }
-        val quotedEvents = current.quotedEvents.filterKeys { it in retainedEventIds }
-        val replies = current.replies.filterKeys { it in visibleEventIds }
-        val quoteRepostEvents = current.quoteRepostEvents.filterKeys { it in visibleEventIds }
+        // 投稿ごとの付随情報は、まだ表示していない保持中の投稿の分も残す。表示前に捨てると、
+        // 後から表示したときにリポスト表示・件数・引用カードが失われ、取り直しもされない。
+        val keptEventIds = retainedEventIds + heldEventIds
+        val quotedEvents = current.quotedEvents.filterKeys { it in keptEventIds }
+        val replies = current.replies.filterKeys { it in keptEventIds }
+        val quoteRepostEvents = current.quoteRepostEvents.filterKeys { it in keptEventIds }
+        // プロフィールはキャッシュから引き直せるので、表示中の投稿に関わる分だけ持つ。
         val retainedPubkeys = buildSet {
             visibleEvents.forEach { event ->
                 add(event.pubkey)
                 addAll(mentionedPubkeysCache.mentionedPubkeys(event))
             }
-            quotedEvents.values.forEach { event ->
+            quotedEvents.filterKeys { it in retainedEventIds }.values.forEach { event ->
                 add(event.pubkey)
                 addAll(mentionedPubkeysCache.mentionedPubkeys(event))
             }
-            replies.values.flatten().forEach { event ->
+            replies.filterKeys { it in visibleEventIds }.values.flatten().forEach { event ->
                 add(event.pubkey)
                 addAll(mentionedPubkeysCache.mentionedPubkeys(event))
             }
-            quoteRepostEvents.values.flatten().forEach { event ->
+            quoteRepostEvents.filterKeys { it in visibleEventIds }.values.flatten().forEach { event ->
                 add(event.pubkey)
                 addAll(mentionedPubkeysCache.mentionedPubkeys(event))
             }
@@ -1390,22 +1414,22 @@ internal class FeedController(
                 current.initialFeedState
             },
             profiles = profiles,
-            reactionCounts = current.reactionCounts.filterKeys { it in retainedEventIds },
-            likeReactionCounts = current.likeReactionCounts.filterKeys { it in retainedEventIds },
-            customReactions = current.customReactions.filterKeys { it in retainedEventIds },
-            unicodeReactions = current.unicodeReactions.filterKeys { it in retainedEventIds },
-            reactionEvents = current.reactionEvents.filterKeys { it in retainedEventIds },
-            replyCounts = current.replyCounts.filterKeys { it in retainedEventIds },
+            reactionCounts = current.reactionCounts.filterKeys { it in keptEventIds },
+            likeReactionCounts = current.likeReactionCounts.filterKeys { it in keptEventIds },
+            customReactions = current.customReactions.filterKeys { it in keptEventIds },
+            unicodeReactions = current.unicodeReactions.filterKeys { it in keptEventIds },
+            reactionEvents = current.reactionEvents.filterKeys { it in keptEventIds },
+            replyCounts = current.replyCounts.filterKeys { it in keptEventIds },
             replies = replies,
-            repostCounts = current.repostCounts.filterKeys { it in retainedEventIds },
-            repostPubkeys = current.repostPubkeys.filterKeys { it in retainedEventIds },
+            repostCounts = current.repostCounts.filterKeys { it in keptEventIds },
+            repostPubkeys = current.repostPubkeys.filterKeys { it in keptEventIds },
             quoteRepostEvents = quoteRepostEvents,
             quotedEvents = quotedEvents,
-            repostedByPubkeys = current.repostedByPubkeys.filterKeys { it in visibleEventIds },
-            likedReactions = current.likedReactions.filterKeys { it in retainedEventIds },
+            repostedByPubkeys = current.repostedByPubkeys.filterKeys { it in keptEventIds },
+            likedReactions = current.likedReactions.filterKeys { it in keptEventIds },
             ownEmojiReactionEventIds = current.ownEmojiReactionEventIds
-                .filterKeys { it in retainedEventIds },
-            repostedEvents = current.repostedEvents.filterKeys { it in retainedEventIds },
+                .filterKeys { it in keptEventIds },
+            repostedEvents = current.repostedEvents.filterKeys { it in keptEventIds },
         )
     }
 

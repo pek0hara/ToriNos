@@ -377,6 +377,110 @@ class FeedRelayMergeGapTest {
         controller.close()
     }
 
+    @Test
+    fun repostRevealedLaterKeepsItsRepostedByAndCount() = runTest {
+        // relay-a: フォローしている人が、古い投稿を最近リポストした
+        val original = NostrEvent(
+            id = "original",
+            pubkey = "someone",
+            createdAt = newest - 50_000,
+            kind = 1,
+            tags = emptyList(),
+            content = "original",
+            sig = "signature",
+        )
+        val repost = NostrEvent(
+            id = "repost",
+            pubkey = "reposter",
+            createdAt = newest - 2,
+            kind = 6,
+            tags = listOf(listOf("e", original.id), listOf("p", original.pubkey)),
+            content = Json.encodeToString(NostrEvent.serializer(), original),
+            sig = "signature",
+        )
+        val relays = SimulatedRelays(mapOf("relay-a" to sparseEvents + repost, "relay-b" to denseEvents))
+        val controller = FeedController(
+            computeDispatcher = Dispatchers.Unconfined,
+            includeRepostsInFeed = true,
+            scope = backgroundScope,
+            subscriptions = relays,
+        )
+        // relay-a が先に返り、relay-b の応答で表示範囲が決まる
+        relays.held += "relay-b"
+        runCurrent()
+        relays.serveFeedFetches()
+        runCurrent()
+        relays.held.clear()
+        settle(relays)
+
+        val state = controller.state.value
+        assertTrue(state.events.any { it.id == original.id }, "リポストされた投稿が表示されていない")
+        assertEquals("reposter", state.repostedByPubkeys[original.id], "「がリポスト」の表示が消えた")
+        assertEquals(1, state.repostCounts[original.id], "リポスト数が消えた")
+        controller.close()
+    }
+
+    @Test
+    fun quoteCardAndReactionsReceivedBeforeRevealAreKept() = runTest {
+        val quoted = NostrEvent(
+            id = "quoted",
+            pubkey = "quoted-author",
+            createdAt = newest - 90_000,
+            kind = 1,
+            tags = emptyList(),
+            content = "quoted",
+            sig = "signature",
+        )
+        // 表示範囲より古く、しばらく隠れている投稿
+        val hidden = NostrEvent(
+            id = "hidden",
+            pubkey = "author",
+            createdAt = newest - 50_000,
+            kind = 1,
+            tags = listOf(listOf("q", quoted.id)),
+            content = "quote",
+            sig = "signature",
+        )
+        // relay-a は最初のページで隠れる投稿まで返し、relay-b の浅い範囲で表示範囲が決まる
+        val relays = SimulatedRelays(mapOf("relay-a" to sparseEvents.take(5) + hidden, "relay-b" to denseEvents))
+        relays.heldEngagementTargets += hidden.id
+        val controller = FeedController(computeDispatcher = Dispatchers.Unconfined, scope = backgroundScope, subscriptions = relays)
+        relays.held += "relay-b"
+        // リアクション取得の開始 (500ms) は待つが、遅延扱いの猶予 (2 秒) は過ぎないようにする
+        repeat(3) {
+            runCurrent()
+            relays.serveFeedFetches()
+            runCurrent()
+            advanceTimeBy(500)
+        }
+        runCurrent()
+
+        // 隠れている間に、引用先とリアクションが届く
+        relays.deliverToEventStream("quot-", quoted)
+        val reaction = NostrEvent(
+            id = "reaction",
+            pubkey = "fan",
+            createdAt = newest,
+            kind = 7,
+            tags = listOf(listOf("e", hidden.id), listOf("p", hidden.pubkey)),
+            content = "+",
+            sig = "signature",
+        )
+        relays.deliverToEngagementFetch(hidden.id, reaction, relay = "relay-a")
+        runCurrent()
+        assertTrue(controller.state.value.events.none { it.id == hidden.id }, "前提: まだ隠れている")
+
+        relays.held.clear()
+        settle(relays)
+        loadToTheEnd(controller, relays)
+
+        val state = controller.state.value
+        assertTrue(state.events.any { it.id == hidden.id })
+        assertEquals(quoted, state.quotedEvents[quoted.id], "引用カードが消えた")
+        assertEquals(1, state.reactionCounts[hidden.id], "リアクション数が消えた")
+        controller.close()
+    }
+
     /** 最後に表示した投稿より新しく、1 ページ (30 件) を超える投稿。 */
     private fun postsWhileAway(): List<NostrEvent> {
         val now = Clock.System.now().epochSeconds
