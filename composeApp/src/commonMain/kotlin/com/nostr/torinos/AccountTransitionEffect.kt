@@ -6,7 +6,6 @@ import com.nostr.torinos.account.AccountSession
 import com.nostr.torinos.model.NostrProfile
 import com.nostr.torinos.network.ProfileFetchPolicy
 import com.nostr.torinos.network.ProfileRepository
-import com.nostr.torinos.network.RelayStore
 import com.nostr.torinos.util.logException
 import kotlin.coroutines.cancellation.CancellationException
 
@@ -43,7 +42,6 @@ internal fun AccountTransitionEffect(
     }
 
     LaunchedEffect(session?.sessionId) {
-        RelayStore.activateAccount(pubkey)
         val activeSession = session ?: return@LaunchedEffect
         try {
             activeSession.relayListSynchronizer.syncFromRelays()

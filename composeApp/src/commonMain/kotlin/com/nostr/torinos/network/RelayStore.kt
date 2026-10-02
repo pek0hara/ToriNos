@@ -125,6 +125,7 @@ object RelayStore {
     init {
         scope.launch {
             accountMutex.withLock {
+                if (_isLoaded.value) return@withLock
                 runCatching {
                     loadSavedState()
                 }.onFailure {

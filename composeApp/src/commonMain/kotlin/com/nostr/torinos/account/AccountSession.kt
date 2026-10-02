@@ -10,6 +10,7 @@ import com.nostr.torinos.crypto.normalizePrivateKey
 import com.nostr.torinos.crypto.signEvent
 import com.nostr.torinos.crypto.toHex
 import com.nostr.torinos.model.NostrEvent
+import com.nostr.torinos.util.logException
 import com.nostr.torinos.network.FollowRepository
 import com.nostr.torinos.emoji.CustomEmojiRepository
 import com.nostr.torinos.emoji.EmojiPreferenceSync
@@ -19,6 +20,8 @@ import com.nostr.torinos.network.NgWordStore
 import com.nostr.torinos.network.PrivateMuteListStore
 import com.nostr.torinos.network.RelayListSynchronizer
 import com.nostr.torinos.network.AccountRelayStore
+import com.nostr.torinos.network.RelayStore
+import com.nostr.torinos.network.NostrRepository
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -29,6 +32,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 
@@ -57,7 +61,13 @@ class AccountSession internal constructor(
 ) {
     val relayStore = AccountRelayStore(this)
     val followRepository = FollowRepository(this, resources.scope)
-    private val privateMuteListStore = PrivateMuteListStore(this, relayStore, resources.scope)
+    private val privateMuteListStore = PrivateMuteListStore(
+        signer = signer,
+        sessionId = sessionId,
+        scope = resources.scope,
+        writableRelayUrls = relayStore::writableRelayUrlsSnapshot,
+        ensureActive = ::ensureActive,
+    )
     val muteStore = MuteStore(privateMuteListStore)
     val ngWordStore = NgWordStore(privateMuteListStore)
     val relayListSynchronizer = RelayListSynchronizer(this, followRepository, relayStore, resources.scope)
@@ -78,7 +88,7 @@ class AccountSession internal constructor(
 
     init {
         resources.onClose(followRepository::close)
-        resources.onClose(privateMuteListStore::close)
+        resources.onBeforeClose(privateMuteListStore::closeAndFlush)
         resources.onClose(relayListSynchronizer::close)
         resources.onClose(emojiPreferenceSync::close)
         resources.onClose(customEmojis::close)
@@ -86,6 +96,15 @@ class AccountSession internal constructor(
 
     internal fun ensureActive() {
         resources.lease.ensureActive()
+    }
+
+    internal suspend fun prepareLocalState() {
+        privateMuteListStore.initialize()
+    }
+
+    internal fun restorePendingChanges(previous: AccountSession) {
+        check(previous.pubkey == pubkey)
+        privateMuteListStore.restorePendingChanges(previous.privateMuteListStore.pendingSnapshot())
     }
 
     internal fun startRepositories() {
@@ -129,21 +148,26 @@ internal class AccountSessionResources(
     private val sessionJob: Job = SupervisorJob(),
 ) {
     private val closeActions = mutableListOf<() -> Unit>()
+    private val beforeCloseActions = mutableListOf<suspend () -> Unit>()
     val scope: CoroutineScope = CoroutineScope(sessionJob + Dispatchers.Default)
     val isClosed: Boolean get() = !lease.isActive
 
     suspend fun close() {
         if (isClosed) return
         lease.invalidate()
-        closeActions.toList().also { closeActions.clear() }.forEach { action ->
-            runCatching(action)
+        try {
+            // ローカル変更を保存してから、保存を所有するセッションのジョブをキャンセルする。
+            beforeCloseActions.toList().also { beforeCloseActions.clear() }.forEach { it() }
+        } finally {
+            closeActions.toList().also { closeActions.clear() }.forEach { action -> runCatching(action) }
+            sessionJob.cancel()
+            withTimeoutOrNull(SESSION_CLOSE_TIMEOUT_MS) { sessionJob.join() }
         }
-        // ネットワーク処理などの子ジョブがキャンセル完了を返さなくても、
-        // アカウント操作のインジケータを永続的に止めない。
-        sessionJob.cancel()
-        withTimeoutOrNull(SESSION_CLOSE_TIMEOUT_MS) {
-            sessionJob.join()
-        }
+    }
+
+    fun onBeforeClose(action: suspend () -> Unit) {
+        check(!isClosed)
+        beforeCloseActions += action
     }
 
     fun onClose(action: () -> Unit) {
@@ -257,6 +281,13 @@ class AccountSessionManager internal constructor(
     private val signerFactory: (AccountCredentials, AccountSessionLease) -> AccountSigner = { credentials, lease ->
         PrivateKeyAccountSigner(credentials.privateKeyHex, lease)
     },
+    private val prepareAccount: suspend (AccountSession?) -> Unit = { session ->
+        RelayStore.activateAccount(session?.pubkey)
+        withTimeout(10_000L) {
+            NostrRepository.awaitRelayRouting(RelayStore.enabledRelayUrlsSnapshot().toSet())
+        }
+        session?.prepareLocalState()
+    },
 ) {
     // AccountSessionHost の破棄で呼び出し元 ViewModel がキャンセルされても、
     // Switching に入った遷移は必ず終端状態まで完了させる。
@@ -290,7 +321,7 @@ class AccountSessionManager internal constructor(
             _state.value = next
             next
         }.onFailure {
-            _state.value = newAnonymousSession()
+            _state.value = fallbackAnonymousSession()
             _transitionError.value = "アカウントを復元できませんでした"
         }
     }
@@ -426,17 +457,26 @@ class AccountSessionManager internal constructor(
                 pubkey = credentials.pubkey,
                 signer = signer,
                 resources = resources,
-            )
+            ).also { prepareAccount(it) }
         } catch (error: Throwable) {
             resources.close()
             throw error
         }
     }
 
-    private fun newAnonymousSession(): AccountSessionState.Anonymous =
-        AccountSessionState.Anonymous(
+    private suspend fun newAnonymousSession(): AccountSessionState.Anonymous {
+        prepareAccount(null)
+        return AccountSessionState.Anonymous(
             session = AnonymousSession(sessionId = nextSessionId("anonymous")),
         )
+    }
+
+    /** 匿名の準備まで失敗しても、Loading/Switchingで停止しない。 */
+    private suspend fun fallbackAnonymousSession(): AccountSessionState.Anonymous =
+        runCatching { newAnonymousSession() }.getOrElse { error ->
+            logException("AccountSessionManager", error, "Failed to prepare anonymous fallback")
+            AccountSessionState.Anonymous(AnonymousSession(nextSessionId("anonymous")))
+        }
 
     private fun nextSessionId(owner: String): String {
         nextSessionNumber++
@@ -446,7 +486,7 @@ class AccountSessionManager internal constructor(
     private suspend fun restorePreviousSession(previous: AccountSession?): AccountSessionState {
         if (previous == null) {
             runCatching { storage.logout() }
-            return newAnonymousSession()
+            return fallbackAnonymousSession()
         }
         return runCatching {
             val currentCredentials = runCatching { storage.loadActiveCredentials() }.getOrNull()
@@ -457,10 +497,10 @@ class AccountSessionManager internal constructor(
                 checkNotNull(storage.loadActiveCredentials())
             }
             check(credentials.pubkey == previous.pubkey)
-            AccountSessionState.Active(newActiveSession(credentials))
+            AccountSessionState.Active(newActiveSession(credentials).also { it.restorePendingChanges(previous) })
         }.getOrElse {
             runCatching { storage.logout() }
-            newAnonymousSession()
+            fallbackAnonymousSession()
         }
     }
 }

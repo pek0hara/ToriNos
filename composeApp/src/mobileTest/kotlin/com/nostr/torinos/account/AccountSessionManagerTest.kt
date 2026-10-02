@@ -197,6 +197,79 @@ class AccountSessionManagerTest {
         assertEquals(PUBKEY_B, result.session.pubkey)
     }
 
+    @Test
+    fun newAccountIsNotVisibleUntilRelayAndCachePreparationFinishes() = runBlocking {
+        val enteredPreparation = CompletableDeferred<Unit>()
+        val finishPreparation = CompletableDeferred<Unit>()
+        val prepared = mutableListOf<String?>()
+        val manager = AccountSessionManager(
+            storage = FakeAccountStorage(activePubkey = PUBKEY_A),
+            signerFactory = { credentials, lease -> FakeSigner(credentials.pubkey, lease) },
+            prepareAccount = { session ->
+                if (session?.pubkey == PUBKEY_B) {
+                    enteredPreparation.complete(Unit)
+                    finishPreparation.await()
+                }
+                prepared += session?.pubkey
+            },
+        )
+        manager.initialize().getOrThrow()
+        val switching = launch { manager.switchAccount(PUBKEY_B).getOrThrow() }
+        enteredPreparation.await()
+        assertTrue(manager.state.value is AccountSessionState.Switching)
+        assertEquals(null, manager.currentPubkey)
+        finishPreparation.complete(Unit)
+        switching.join()
+        assertEquals(listOf<String?>(PUBKEY_A, PUBKEY_B), prepared)
+        assertEquals(PUBKEY_B, manager.currentPubkey)
+    }
+
+    @Test
+    fun failedPreparationRestoresPreviousAccountAndPreparesItsSettingsAgain() = runBlocking {
+        val prepared = mutableListOf<String?>()
+        val manager = AccountSessionManager(
+            storage = FakeAccountStorage(activePubkey = PUBKEY_A),
+            signerFactory = { credentials, lease -> FakeSigner(credentials.pubkey, lease) },
+            prepareAccount = { session ->
+                prepared += session?.pubkey
+                if (session?.pubkey == PUBKEY_B) error("relay preparation failed")
+            },
+        )
+        manager.initialize().getOrThrow()
+        assertTrue(manager.switchAccount(PUBKEY_B).isFailure)
+        assertEquals(PUBKEY_A, manager.currentPubkey)
+        assertEquals(listOf<String?>(PUBKEY_A, PUBKEY_B, PUBKEY_A), prepared)
+    }
+
+    @Test
+    fun closingSessionFlushesLocalChangesBeforeCancellingItsJobs() = runBlocking {
+        val resources = AccountSessionResources()
+        val childStarted = CompletableDeferred<Unit>()
+        val child = resources.scope.launch { childStarted.complete(Unit); awaitCancellation() }
+        childStarted.await()
+        var flushed = false
+        resources.onBeforeClose {
+            assertTrue(child.isActive)
+            assertTrue(!resources.lease.isActive)
+            flushed = true
+        }
+        resources.close()
+        assertTrue(flushed)
+        assertTrue(child.isCancelled)
+    }
+
+    @Test
+    fun failedActiveAndAnonymousPreparationStillEndsInAnonymousState() = runBlocking {
+        val manager = AccountSessionManager(
+            storage = FakeAccountStorage(activePubkey = PUBKEY_A),
+            signerFactory = { credentials, lease -> FakeSigner(credentials.pubkey, lease) },
+            prepareAccount = { error("preparation failed") },
+        )
+        assertTrue(manager.initialize().isFailure)
+        assertTrue(manager.state.value is AccountSessionState.Anonymous)
+        assertEquals(null, manager.currentPubkey)
+    }
+
     private class FakeAccountStorage(
         activePubkey: String? = null,
         private val failSwitch: Boolean = false,
@@ -249,7 +322,11 @@ class AccountSessionManagerTest {
     }
 
     private fun newManager(storage: AccountStorage): AccountSessionManager =
-        AccountSessionManager(storage) { credentials, lease -> FakeSigner(credentials.pubkey, lease) }
+        AccountSessionManager(
+            storage = storage,
+            signerFactory = { credentials, lease -> FakeSigner(credentials.pubkey, lease) },
+            prepareAccount = {},
+        )
 
     private class FakeSigner(
         override val pubkey: String,
