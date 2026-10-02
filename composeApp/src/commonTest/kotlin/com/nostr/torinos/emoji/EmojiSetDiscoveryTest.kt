@@ -10,6 +10,15 @@ class EmojiSetDiscoveryTest {
     private val authorB = "b".repeat(64)
 
     @Test
+    fun addressFilterRequestsExactlyOneSet() {
+        val filter = EmojiSetAddress(authorA, "cats").toFilter()
+        assertEquals(listOf(EmojiSetAddress.KIND_EMOJI_SET), filter.kinds)
+        assertEquals(listOf(authorA), filter.authors)
+        assertEquals(listOf("cats"), filter.dTags)
+        assertEquals(1, filter.limit)
+    }
+
+    @Test
     fun deduplicatePublishedEmojiSets_keepsNewestEventForSameAddress() {
         val old = emojiSet(identifier = "list", eventId = "old", createdAt = 10)
         val newest = emojiSet(identifier = "list", eventId = "new", createdAt = 20)
@@ -18,11 +27,11 @@ class EmojiSetDiscoveryTest {
     }
 
     @Test
-    fun deduplicatePublishedEmojiSets_mergesRecreatedSetWithSameAuthorAndName() {
+    fun deduplicatePublishedEmojiSets_keepsDifferentAddressesWithSameAuthorAndName() {
         val old = emojiSet(identifier = "old-list", eventId = "old", createdAt = 10)
         val recreated = emojiSet(identifier = "new-list", eventId = "new", createdAt = 20)
 
-        assertEquals(listOf(recreated), deduplicatePublishedEmojiSets(listOf(old, recreated)))
+        assertEquals(listOf(recreated, old), deduplicatePublishedEmojiSets(listOf(old, recreated)))
     }
 
     @Test
@@ -31,8 +40,7 @@ class EmojiSetDiscoveryTest {
         val lowerId = emojiSet(identifier = "list", eventId = "aaaa", createdAt = 20)
 
         assertEquals(listOf(lowerId), deduplicatePublishedEmojiSets(listOf(higherId, lowerId)))
-        assertEquals(true, lowerId.isPreferredTo(higherId))
-        assertEquals(false, higherId.isPreferredTo(lowerId))
+        assertEquals(listOf(lowerId), deduplicatePublishedEmojiSets(listOf(lowerId, higherId)))
     }
 
     @Test

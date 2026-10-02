@@ -119,10 +119,12 @@ import com.nostr.torinos.ui.profile.MyProfileScreen
 import com.nostr.torinos.ui.profile.UserProfileScreen
 import com.nostr.torinos.ui.relay.RelaySettingsScreen
 import com.nostr.torinos.ui.search.SearchScreen
-import com.nostr.torinos.ui.settings.QuickSettingsDialogs
+import com.nostr.torinos.ui.settings.AccountSwitcherSheet
 import com.nostr.torinos.ui.settings.CustomEmojiSettingsScreen
 import com.nostr.torinos.ui.settings.SettingsScreen
+import com.nostr.torinos.ui.service.EmojiServiceHeader
 import com.nostr.torinos.ui.service.ServiceTab
+import com.nostr.torinos.ui.service.serviceTabSwipe
 import com.nostr.torinos.ui.status.StatusScreen
 import com.nostr.torinos.ui.thread.ThreadScreen
 import com.nostr.torinos.ui.thread.ThreadViewModel
@@ -212,7 +214,7 @@ internal fun AppSessionCoordinator(
         val feedChromeState = remember { FeedChromeState() }
         var feedLongBackgroundResetRequest by remember { mutableStateOf(0) }
         var backgroundedAtMillis by remember { mutableStateOf<Long?>(null) }
-        var showQuickSettings by remember { mutableStateOf(false) }
+        var showAccountSwitcher by remember(ownPubkey) { mutableStateOf(false) }
         var relaySettingsNavigationRequest by remember { mutableStateOf(0) }
         val drawerCoordinator = rememberDrawerCoordinator(scope)
         val profileDrawerStateHolder = rememberSaveableStateHolder()
@@ -313,8 +315,11 @@ internal fun AppSessionCoordinator(
         }
 
         fun requestRelaySettings() {
-            showQuickSettings = false
             relaySettingsNavigationRequest++
+        }
+
+        fun openSettings() {
+            nav.navigate("settings") { launchSingleTop = true }
         }
 
         LaunchedEffect(relaySettingsNavigationRequest) {
@@ -561,28 +566,20 @@ internal fun AppSessionCoordinator(
             onBack = composer::switchInlineToMenu,
         )
 
-        QuickSettingsDialogs(
-            open = showQuickSettings,
-            ownPubkey = ownPubkey,
-            onOpenChange = { showQuickSettings = it },
-            onAccountChanged = {},
-            onAddAccountClick = {
-                composer.pendingKeyAction = null
-                composer.showKeySetup = true
-            },
-            onRelaySettingsClick = {
-                requestRelaySettings()
-            },
-            onCustomEmojiSettingsClick = {
-                nav.navigate(CustomEmojiRoute())
-            },
-            onOpenAllSettings = {
-                nav.navigate("settings")
-            },
-            onUserClick = { pk ->
-                openProfileDrawer(pk)
-            },
-        )
+        if (showAccountSwitcher) {
+            AccountSwitcherSheet(
+                ownPubkey = ownPubkey,
+                onDismiss = { showAccountSwitcher = false },
+                onAccountChanged = { showAccountSwitcher = false },
+                onAddAccountClick = {
+                    showAccountSwitcher = false
+                    closeProfileDrawerAndThen {
+                        composer.pendingKeyAction = null
+                        composer.showKeySetup = true
+                    }
+                },
+            )
+        }
 
         // カスタム絵文字タップ → 絵文字設定画面（対象絵文字付き）へ遷移。
         // 読み手（本文・リアクション）が多いので、再コンポーズのたびに値を変えない。
@@ -657,8 +654,9 @@ internal fun AppSessionCoordinator(
                                             onOpenFollowers = {
                                                 drawerCoordinator.openFollowers(drawerDestination.pubkey)
                                             },
+                                            onOpenAccountSwitcher = { showAccountSwitcher = true },
                                             onOpenSettings = {
-                                                closeProfileDrawerAndThen { showQuickSettings = true }
+                                                closeProfileDrawerAndThen { openSettings() }
                                             },
                                             onUserClick = ::openProfileDrawer,
                                             onReply = { event, preview ->
@@ -985,7 +983,7 @@ internal fun AppSessionCoordinator(
                 ) {
                     composable("feed") {
                         FeedScreen(
-                            onOpenSettings = { showQuickSettings = true },
+                            onOpenSettings = { openSettings() },
                             onOpenRelaySettings = {
                                 requestRelaySettings()
                             },
@@ -1023,6 +1021,26 @@ internal fun AppSessionCoordinator(
                     }
                     composable("services") {
                         when (currentServiceTab) {
+                            ServiceTab.Emojis -> {
+                                CustomEmojiSettingsScreen(
+                                    modifier = Modifier.serviceTabSwipe(
+                                        selectedTab = currentServiceTab,
+                                        onTabSelected = { currentServiceTab = it },
+                                    ),
+                                    onOpenRelaySettings = ::requestRelaySettings,
+                                    onOpenProfile = ::openProfileDrawer,
+                                    serviceHeader = {
+                                        EmojiServiceHeader(
+                                            ownPubkey = ownPubkey,
+                                            ownProfile = ownProfile,
+                                            onOpenProfile = ::requestOwnProfile,
+                                            onOpenSettings = { openSettings() },
+                                            onOpenRelaySettings = ::requestRelaySettings,
+                                            onServiceTabSelected = { currentServiceTab = it },
+                                        )
+                                    },
+                                )
+                            }
                             ServiceTab.Channels -> {
                                 ChannelListScreen(
                                     onChannelClick = { id -> nav.navigate(ChannelRoute(id)) },
@@ -1034,7 +1052,7 @@ internal fun AppSessionCoordinator(
                                     onOpenRelaySettings = {
                                         requestRelaySettings()
                                     },
-                                    onOpenSettings = { showQuickSettings = true },
+                                    onOpenSettings = { openSettings() },
                                     selectedServiceTab = currentServiceTab,
                                     onServiceTabSelected = { currentServiceTab = it },
                                 )
@@ -1046,7 +1064,7 @@ internal fun AppSessionCoordinator(
                                     onOpenProfile = {
                                         requestOwnProfile()
                                     },
-                                    onOpenSettings = { showQuickSettings = true },
+                                    onOpenSettings = { openSettings() },
                                     onOpenRelaySettings = {
                                         requestRelaySettings()
                                     },
@@ -1077,7 +1095,7 @@ internal fun AppSessionCoordinator(
                                     onOpenRelaySettings = {
                                         requestRelaySettings()
                                     },
-                                    onOpenSettings = { showQuickSettings = true },
+                                    onOpenSettings = { openSettings() },
                                     selectedServiceTab = currentServiceTab,
                                     onServiceTabSelected = { currentServiceTab = it },
                                 )
@@ -1237,7 +1255,8 @@ internal fun AppSessionCoordinator(
                             onOpenFollowers = {
                                 nav.navigate(FollowersRoute(pubkey))
                             },
-                            onOpenSettings = { showQuickSettings = true },
+                            onOpenAccountSwitcher = { showAccountSwitcher = true },
+                            onOpenSettings = { openSettings() },
                             onUserClick = { pk ->
                                 openProfileDrawer(pk)
                             },
@@ -1268,6 +1287,7 @@ internal fun AppSessionCoordinator(
                             onMuteListClick = { nav.navigate("mute-list") },
                             onNgWordClick = { nav.navigate("ng-words") },
                             onCustomEmojiClick = { nav.navigate(CustomEmojiRoute()) },
+                            onRelaySettingsClick = ::requestRelaySettings,
                         )
                     }
                     composable("mute-list") {
@@ -1286,6 +1306,8 @@ internal fun AppSessionCoordinator(
                         val route = backStack.toRoute<CustomEmojiRoute>()
                         CustomEmojiSettingsScreen(
                             onBack = { nav.popBackStack() },
+                            onOpenRelaySettings = ::requestRelaySettings,
+                            onOpenProfile = ::openProfileDrawer,
                             initialQuery = route.query,
                             initialImageUrl = route.imageUrl,
                             initialSetAddress = EmojiSetAddress.parse(route.setAddress),

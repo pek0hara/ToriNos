@@ -11,10 +11,8 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.CheckCircle
-import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Search
-import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -29,7 +27,6 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.nostr.torinos.emoji.CustomEmoji
 import com.nostr.torinos.emoji.PublishedEmojiSet
-import com.nostr.torinos.emoji.RegisteredEmojiSet
 import com.nostr.torinos.ui.components.DismissKeyboardOnLeave
 import com.nostr.torinos.ui.components.NetworkImage
 
@@ -70,43 +67,6 @@ internal fun EmojiSearchField(
 }
 
 @Composable
-internal fun SectionHeader(
-    title: String,
-    trailing: String,
-    showProgress: Boolean = false,
-) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 16.dp, vertical = 12.dp),
-        horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Text(
-            text = title,
-            style = MaterialTheme.typography.titleSmall,
-            fontWeight = FontWeight.Bold,
-        )
-        Row(
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            if (showProgress) {
-                CircularProgressIndicator(
-                    modifier = Modifier.size(16.dp),
-                    strokeWidth = 2.dp,
-                )
-            }
-            Text(
-                text = trailing,
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
-    }
-}
-
-@Composable
 internal fun EmptyText(text: String) {
     Box(
         modifier = Modifier
@@ -129,6 +89,7 @@ internal fun PublishedEmojiSetRow(
     canRegister: Boolean,
     onRegister: () -> Unit,
     onClick: () -> Unit,
+    adoptionLabel: String? = null,
 ) {
     Column(
         modifier = Modifier
@@ -153,6 +114,10 @@ internal fun PublishedEmojiSetRow(
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
+                adoptionLabel?.let { label ->
+                    Text(label, style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
             }
             if (isRegistered) {
                 Icon(
@@ -177,63 +142,6 @@ internal fun PublishedEmojiSetRow(
                     Text("登録")
                 }
             }
-        }
-        Row(
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            set.emojis.take(8).forEach { emoji ->
-                NetworkImage(
-                    url = emoji.imageUrl,
-                    contentDescription = emoji.shortcode,
-                    contentScale = ContentScale.Fit,
-                    modifier = Modifier.size(28.dp),
-                )
-            }
-            if (set.emojis.size > 8) {
-                Text(
-                    text = "+${set.emojis.size - 8}",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-        }
-    }
-}
-
-@Composable
-internal fun RegisteredEmojiSetRow(
-    set: RegisteredEmojiSet,
-    onClick: () -> Unit,
-) {
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clickable(onClick = onClick)
-            .padding(horizontal = 16.dp, vertical = 10.dp),
-        verticalArrangement = Arrangement.spacedBy(8.dp),
-    ) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = set.title,
-                    style = MaterialTheme.typography.bodyMedium,
-                    fontWeight = FontWeight.Bold,
-                )
-                Text(
-                    text = "${set.emojis.size}個",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-            Icon(
-                Icons.Default.ChevronRight,
-                contentDescription = "セットの詳細",
-                tint = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
         }
         EmojiPreviewRow(set.emojis)
     }

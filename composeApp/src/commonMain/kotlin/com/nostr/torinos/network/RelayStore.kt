@@ -66,6 +66,7 @@ object RelayStore {
     private const val SELECTED_CHANNEL_RELAY_KEY = "selected_channel_relay_url"
     private const val SELECTED_STATUS_RELAY_KEY = "selected_status_relay_url"
     private const val SELECTED_ARTICLE_RELAY_KEY = "selected_article_relay_url"
+    private const val SELECTED_EMOJI_RELAY_KEY = "selected_emoji_relay_url"
     private const val SELECTED_MEMO_RELAY_KEY = "selected_memo_relay_url"
     private const val ALL_RELAYS_VALUE = "__all_relays__"
     private val removedRelayUrls = setOf("wss://relay.nostr.band")
@@ -90,6 +91,7 @@ object RelayStore {
     private val _selectedChannelRelayUrl = MutableStateFlow<String?>(null)
     private val _selectedStatusRelayUrl = MutableStateFlow<String?>(null)
     private val _selectedArticleRelayUrl = MutableStateFlow<String?>(null)
+    private val _selectedEmojiRelayUrl = MutableStateFlow<String?>(null)
     private val _selectedMemoRelayUrl = MutableStateFlow<String?>(null)
     private val _isLoaded = MutableStateFlow(false)
     private var activeAccountPubkey: String? = null
@@ -115,6 +117,9 @@ object RelayStore {
 
     /** アーティクル画面で選択中のリレー URL */
     val selectedArticleRelayUrl: StateFlow<String?> = _selectedArticleRelayUrl.asStateFlow()
+
+    /** 絵文字探索に使用する単一の閲覧リレー。 */
+    val selectedEmojiRelayUrl: StateFlow<String?> = _selectedEmojiRelayUrl.asStateFlow()
 
     /** ポストメモ画面で選択中のリレー URL */
     val selectedMemoRelayUrl: StateFlow<String?> = _selectedMemoRelayUrl.asStateFlow()
@@ -146,6 +151,7 @@ object RelayStore {
         _selectedChannelRelayUrl.value = null
         _selectedStatusRelayUrl.value = null
         _selectedArticleRelayUrl.value = null
+        _selectedEmojiRelayUrl.value = null
         _selectedMemoRelayUrl.value = null
         runCatching { loadSavedState() }.onFailure { ensureSelectedRelay() }
         ensureSelectedRelay()
@@ -282,6 +288,10 @@ object RelayStore {
         )
     }
 
+    fun setSelectedEmojiRelayUrl(url: String?) {
+        setSelectedRelayUrl(_selectedEmojiRelayUrl, url, allowAll = false, save = ::saveSelectedEmojiRelay)
+    }
+
     fun setSelectedMemoRelayUrl(url: String?) {
         setSelectedRelayUrl(
             state = _selectedMemoRelayUrl,
@@ -340,6 +350,10 @@ object RelayStore {
             ?: legacySelectedRelayUrl
             ?: enabledRelayUrls().firstOrNull()
 
+        _selectedEmojiRelayUrl.value = readSetting(SELECTED_EMOJI_RELAY_KEY)
+            ?.takeIf { it in enabledRelayUrls() }
+            ?: enabledRelayUrls().firstOrNull()
+
         _selectedMemoRelayUrl.value = readSetting(SELECTED_MEMO_RELAY_KEY)
             ?.takeIf { it in enabledRelayUrls() }
             ?: legacySelectedRelayUrl
@@ -367,6 +381,10 @@ object RelayStore {
         if (_selectedArticleRelayUrl.value !in enabledUrls) {
             _selectedArticleRelayUrl.value = enabledUrls.firstOrNull()
             saveSelectedArticleRelay()
+        }
+        if (_selectedEmojiRelayUrl.value !in enabledUrls) {
+            _selectedEmojiRelayUrl.value = enabledUrls.firstOrNull()
+            saveSelectedEmojiRelay()
         }
         if (_selectedMemoRelayUrl.value !in enabledUrls) {
             _selectedMemoRelayUrl.value = enabledUrls.firstOrNull()
@@ -446,6 +464,12 @@ object RelayStore {
         scope.launch {
             LocalSettingsStorage.putString(key, value)
         }
+    }
+
+    private fun saveSelectedEmojiRelay() {
+        val value = _selectedEmojiRelayUrl.value
+        val key = storageKey(SELECTED_EMOJI_RELAY_KEY)
+        scope.launch { LocalSettingsStorage.putString(key, value) }
     }
 
     private fun saveSelectedMemoRelay() {

@@ -4,6 +4,7 @@ import com.nostr.torinos.emoji.CustomEmoji
 import com.nostr.torinos.emoji.EmojiSetAddress
 import com.nostr.torinos.emoji.PublishedEmojiSet
 import com.nostr.torinos.emoji.RegisteredEmojiSet
+import com.nostr.torinos.emoji.normalizeEmojiSearchQuery
 import com.nostr.torinos.emoji.normalizeShortcode
 
 /** 設定画面で詳細を開く絵文字セット。登録済みか公開一覧のどちらから来たかは問わない。 */
@@ -37,7 +38,7 @@ internal fun findRequestedEmojiSet(
 ): EmojiSetView? {
     val candidates = registered.map { it.toView() } + published.map { it.toView() }
     if (address != null) {
-        candidates.firstOrNull { it.address == address }?.let { return it }
+        return candidates.firstOrNull { it.address == address }
     }
     val code = normalizeShortcode(shortcode)
     val url = imageUrl.trim()
@@ -66,32 +67,60 @@ internal fun selectInitialEmoji(
     } ?: emojis.firstOrNull()
 }
 
-internal fun List<PublishedEmojiSet>.filterPublishedSets(
+/**
+ * 一覧に出すセットを絞り込む。
+ * 「登録済みのみ」では登録済みセットをすべて出す。公開一覧にあるものはその情報を使い、
+ * 無いもの（別リレーで見つけたセットなど）は登録時の内容で補う。
+ */
+internal fun List<PublishedEmojiSet>.filterEmojiSets(
     query: String,
     registeredOnly: Boolean,
-    isRegistered: (EmojiSetAddress) -> Boolean,
+    registered: List<RegisteredEmojiSet>,
 ): List<PublishedEmojiSet> {
-    val normalizedQuery = query.trim().lowercase()
-    return filter { set ->
-        (!registeredOnly || isRegistered(set.address)) &&
-            (
-                normalizedQuery.isBlank() ||
-                    set.name.lowercase().contains(normalizedQuery) ||
-                    set.authorPubkey.contains(normalizedQuery) ||
-                    set.emojis.any { it.shortcode.lowercase().contains(normalizedQuery) }
-                )
+    val normalizedQuery = normalizeEmojiSearchQuery(query)
+    val source = if (registeredOnly) {
+        val published = associateBy { it.address }
+        registered.map { set ->
+            published[set.address] ?: PublishedEmojiSet(set.address, "", set.title, 0, set.emojis)
+        }
+    } else {
+        this
+    }
+    if (normalizedQuery.isBlank()) return source
+    return source.filter { set ->
+        set.name.lowercase().contains(normalizedQuery) ||
+            set.authorPubkey.contains(normalizedQuery) ||
+            set.emojis.any { it.shortcode.lowercase().contains(normalizedQuery) }
     }
 }
 
-internal fun List<RegisteredEmojiSet>.filterRegisteredSets(query: String): List<RegisteredEmojiSet> {
-    val normalizedQuery = query.trim().lowercase()
-    val sorted = sortedBy { it.title.lowercase() }
-    if (normalizedQuery.isBlank()) return sorted
-    return sorted.filter { set ->
-        set.title.lowercase().contains(normalizedQuery) ||
-            set.emojis.any { emoji ->
-                emoji.shortcode.lowercase().contains(normalizedQuery) ||
-                    emoji.imageUrl.lowercase().contains(normalizedQuery)
-            }
+internal enum class EmojiSetSort(val label: String) {
+    Adoption("フォロー内の登録順"), Newest("新着・更新順"),
+}
+
+/** 取得中・スクロール中は既存行の相対順を保持し、新しい行だけ末尾へ追加する。 */
+internal fun reconcileEmojiSetOrder(previous: List<String>, desired: List<String>, apply: Boolean): List<String> {
+    if (apply) return desired
+    val existing = previous.toSet()
+    val visible = desired.toSet()
+    return previous.filter { it in visible } + desired.filter { it !in existing }
+}
+
+internal fun emojiSetSearchRank(set: PublishedEmojiSet, query: String): Int {
+    val normalized = normalizeEmojiSearchQuery(query)
+    if (normalized.isBlank()) return 0
+    return (listOf(set.name) + set.emojis.map { it.shortcode }).maxOf { value ->
+        val text = value.lowercase()
+        when { text == normalized -> 3; text.startsWith(normalized) -> 2; normalized in text -> 1; else -> 0 }
     }
 }
+
+internal fun List<PublishedEmojiSet>.sortForDiscovery(
+    query: String, sort: EmojiSetSort, counts: Map<EmojiSetAddress, Int>,
+): List<PublishedEmojiSet> = sortedWith(
+    compareByDescending<PublishedEmojiSet> { emojiSetSearchRank(it, query) }
+        .thenByDescending { if (sort == EmojiSetSort.Adoption) counts[it.address] ?: 0 else 0 }
+        .thenByDescending { it.createdAt }
+        .thenBy { it.name.lowercase() }
+        .thenBy { it.address.value },
+)

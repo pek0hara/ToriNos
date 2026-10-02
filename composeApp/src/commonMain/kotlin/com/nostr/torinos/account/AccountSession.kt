@@ -71,6 +71,7 @@ class AccountSession internal constructor(
     val muteStore = MuteStore(privateMuteListStore)
     val ngWordStore = NgWordStore(privateMuteListStore)
     val relayListSynchronizer = RelayListSynchronizer(this, followRepository, relayStore, resources.scope)
+    internal val emojiAdoption = com.nostr.torinos.emoji.EmojiAdoptionRepository(pubkey, sessionId, resources.scope)
     val customEmojis = CustomEmojiRepository(pubkey, resources.scope)
     internal val emojiPreferenceSync = EmojiPreferenceSync(
         pubkey = pubkey,
@@ -92,6 +93,7 @@ class AccountSession internal constructor(
         resources.onClose(relayListSynchronizer::close)
         resources.onClose(emojiPreferenceSync::close)
         resources.onClose(customEmojis::close)
+        resources.onClose(emojiAdoption::close)
     }
 
     internal fun ensureActive() {

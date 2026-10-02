@@ -1,11 +1,13 @@
 package com.nostr.torinos.ui.profile
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -23,6 +25,7 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.VolumeOff
 import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Sms
@@ -236,6 +239,7 @@ internal fun ProfileHeader(
     onOpenSettings: (() -> Unit)? = null,
     onEditBanner: (() -> Unit)? = null,
     onEditAvatar: (() -> Unit)? = null,
+    onOpenAccountSwitcher: (() -> Unit)? = null,
     onEditName: (() -> Unit)? = null,
     onEditAbout: (() -> Unit)? = null,
     generalStatus: ProfileGeneralStatus? = null,
@@ -290,19 +294,28 @@ internal fun ProfileHeader(
                         .align(Alignment.BottomStart)
                         .padding(start = 16.dp),
                 )
-                FollowActionRow(
-                    isOwnProfile = isOwnProfile,
-                    canFollow = canFollow,
-                    isFollowLoading = isFollowLoading,
-                    isFollowing = isFollowing,
-                    isMuted = isMuted,
-                    onFollow = onFollow,
-                    onUnfollow = onUnfollow,
-                    onMuteToggle = onMuteToggle,
-                    modifier = Modifier
-                        .align(Alignment.BottomEnd)
-                        .padding(end = 16.dp),
-                )
+                if (isOwnProfile && onOpenAccountSwitcher != null) {
+                    AccountSwitcherButton(
+                        onClick = onOpenAccountSwitcher,
+                        modifier = Modifier
+                            .align(Alignment.BottomEnd)
+                            .padding(end = 16.dp),
+                    )
+                } else {
+                    FollowActionRow(
+                        isOwnProfile = isOwnProfile,
+                        canFollow = canFollow,
+                        isFollowLoading = isFollowLoading,
+                        isFollowing = isFollowing,
+                        isMuted = isMuted,
+                        onFollow = onFollow,
+                        onUnfollow = onUnfollow,
+                        onMuteToggle = onMuteToggle,
+                        modifier = Modifier
+                            .align(Alignment.BottomEnd)
+                            .padding(end = 16.dp),
+                    )
+                }
                 if (showBackButton && onBack != null) {
                     IconButton(
                         onClick = onBack,
@@ -356,16 +369,20 @@ internal fun ProfileHeader(
                         size = 64,
                         onEditAvatar = if (isOwnProfile) onEditAvatar else null,
                     )
-                    FollowActionRow(
-                        isOwnProfile = isOwnProfile,
-                        canFollow = canFollow,
-                        isFollowLoading = isFollowLoading,
-                        isFollowing = isFollowing,
-                        isMuted = isMuted,
-                        onFollow = onFollow,
-                        onUnfollow = onUnfollow,
-                        onMuteToggle = onMuteToggle,
-                    )
+                    if (isOwnProfile && onOpenAccountSwitcher != null) {
+                        AccountSwitcherButton(onClick = onOpenAccountSwitcher)
+                    } else {
+                        FollowActionRow(
+                            isOwnProfile = isOwnProfile,
+                            canFollow = canFollow,
+                            isFollowLoading = isFollowLoading,
+                            isFollowing = isFollowing,
+                            isMuted = isMuted,
+                            onFollow = onFollow,
+                            onUnfollow = onUnfollow,
+                            onMuteToggle = onMuteToggle,
+                        )
+                    }
                 }
             }
 
@@ -665,6 +682,27 @@ private fun ProfileAvatar(
                 )
             }
         }
+    }
+}
+
+@Composable
+private fun AccountSwitcherButton(
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    OutlinedButton(
+        onClick = onClick,
+        modifier = modifier,
+        shape = CircleShape,
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+        contentPadding = PaddingValues(start = 14.dp, end = 10.dp, top = 8.dp, bottom = 8.dp),
+    ) {
+        Text("アカウント切替", style = MaterialTheme.typography.labelLarge)
+        Icon(
+            Icons.Default.ArrowDropDown,
+            contentDescription = null,
+            modifier = Modifier.padding(start = 4.dp).size(18.dp),
+        )
     }
 }
 
