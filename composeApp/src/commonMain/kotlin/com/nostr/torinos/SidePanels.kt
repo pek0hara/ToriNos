@@ -32,23 +32,19 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.ViewModelStore
 import androidx.lifecycle.ViewModelStoreOwner
 import androidx.lifecycle.viewmodel.compose.LocalViewModelStoreOwner
-import com.nostr.torinos.crypto.isWebPlatform
 
 /** PC ブラウザやタブレットの横長画面で、スマホ向けレイアウトを中央の列に収める幅。 */
 internal val MaxContentWidth = 640.dp
-private val MinSidePanelWidth = 320.dp
-private val MaxSidePanelWidth = 480.dp
 
 /** 左右のサイドパネルの幅。null ならサイドパネルを出さず、既存のドロワーと画面遷移を使う。 */
 internal val LocalSidePanelWidth = compositionLocalOf<Dp?> { null }
 
-/** Web版で中央の列の左右に [MinSidePanelWidth] 以上の余白が取れるときだけ、パネル幅を返す。 */
-internal fun sidePanelWidthFor(screenWidth: Dp): Dp? {
-    if (!isWebPlatform) return null
-    val available = (screenWidth - MaxContentWidth) / 2
-    if (available < MinSidePanelWidth) return null
-    return available.coerceAtMost(MaxSidePanelWidth)
-}
+/**
+ * 横長画面は全プラットフォームで NavigationRail + 本文の構成に統一したため、サイドパネルは常に出さない。
+ * 3 カラム表示を再開するときは、この関数で幅を返す。
+ */
+@Suppress("UNUSED_PARAMETER")
+internal fun sidePanelWidthFor(screenWidth: Dp): Dp? = null
 
 /**
  * [panelWidth] があれば左・中央・右の3列、なければ [center] だけを全幅で表示する。
