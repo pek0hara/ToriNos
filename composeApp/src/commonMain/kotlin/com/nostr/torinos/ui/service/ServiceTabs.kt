@@ -27,6 +27,7 @@ enum class ServiceTab(val label: String) {
     Articles("記事"),
     Channels("チャンネル"),
     Status("ステータス"),
+    Emojis("絵文字"),
 }
 
 @Composable

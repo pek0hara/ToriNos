@@ -45,6 +45,7 @@ fun RelaySelector(
     selectedRelayName: String? = null,
     selectedRelayNameFontSize: TextUnit = 16.sp,
     showSelectedRelayUrl: Boolean = true,
+    menuDescription: String? = null,
 ) {
     val relayConnectionStates by NostrRepository.relayConnectionStates.collectAsState()
     var expanded by remember { mutableStateOf(false) }
@@ -93,6 +94,10 @@ fun RelaySelector(
             expanded = expanded,
             onDismissRequest = { expanded = false },
         ) {
+            menuDescription?.let { description ->
+                DropdownMenuItem(text = { Text(description, style = MaterialTheme.typography.bodySmall) },
+                    onClick = {}, enabled = false)
+            }
             DropdownMenuItem(
                 text = { Text("リレー設定") },
                 onClick = {

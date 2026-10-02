@@ -53,7 +53,7 @@ fun AccountSessionHost(
         LocalViewModelStoreOwner provides owner,
         LocalAccountSession provides session,
     ) {
-        key(sessionId) { content() }
+        key(sessionId) { com.nostr.torinos.badge.BadgeHost(session) { content() } }
     }
 }
 

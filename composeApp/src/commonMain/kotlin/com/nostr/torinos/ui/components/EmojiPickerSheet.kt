@@ -40,7 +40,8 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.DisposableEffect
+import com.nostr.torinos.network.RelayStore
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -61,11 +62,58 @@ import androidx.compose.ui.unit.sp
 import com.nostr.torinos.model.ReactionOption
 import com.nostr.torinos.emoji.CustomEmoji
 import com.nostr.torinos.emoji.EmojiSetDiscovery
+import com.nostr.torinos.emoji.EmojiSetDiscoveryState
+import com.nostr.torinos.emoji.normalizeEmojiSearchQuery
 
-private data class EmojiPickerSection(
+internal data class EmojiPickerSection(
     val title: String,
     val options: List<ReactionOption>,
 )
+
+/** ピッカー下部のボタンで選ぶ絞り込み。同時に1つだけ有効。 */
+internal sealed interface EmojiPickerFilter {
+    data object All : EmojiPickerFilter
+    data object Favorites : EmojiPickerFilter
+    data object Custom : EmojiPickerFilter
+    data class Category(val category: StandardEmojiCategory) : EmojiPickerFilter
+}
+
+/**
+ * 表示するセクション。検索語（正規化済み）があれば絞り込みより優先して検索結果だけを出す。
+ * 「すべて」はお気に入り → 最近使った項目 → カスタム絵文字 → 標準カテゴリの順で、空のセクションは出さない。
+ */
+internal fun emojiPickerSections(
+    query: String,
+    filter: EmojiPickerFilter,
+    favorites: List<ReactionOption>,
+    recent: List<ReactionOption>,
+    custom: List<ReactionOption>,
+    searchableCustom: List<ReactionOption.Custom>,
+): List<EmojiPickerSection> {
+    if (query.isNotBlank()) {
+        val unicodeMatches = STANDARD_EMOJI_CATEGORIES.flatMap { category ->
+            category.emojis.filter { emoji ->
+                query in emoji ||
+                    query in category.label.lowercase() ||
+                    EMOJI_SEARCH_KEYWORDS[emoji].orEmpty().any { query in it }
+            }
+        }.distinct().map { ReactionOption.Unicode(it) }
+        val customMatches = searchableCustom.filter { query in it.shortcode.lowercase() }
+        return listOf(EmojiPickerSection("検索結果", customMatches + unicodeMatches))
+    }
+    return when (filter) {
+        EmojiPickerFilter.Custom -> listOf(EmojiPickerSection("カスタム絵文字", custom))
+        EmojiPickerFilter.Favorites -> listOf(EmojiPickerSection("お気に入り", favorites))
+        is EmojiPickerFilter.Category -> listOf(filter.category.toSection())
+        EmojiPickerFilter.All -> listOf(
+            EmojiPickerSection("お気に入り", favorites),
+            EmojiPickerSection("最近使った項目", recent),
+            EmojiPickerSection("カスタム絵文字", custom),
+        ).filter { it.options.isNotEmpty() } + STANDARD_EMOJI_CATEGORIES.map { it.toSection() }
+    }
+}
+
+private fun StandardEmojiCategory.toSection() = EmojiPickerSection(label, emojis.map { ReactionOption.Unicode(it) })
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -81,13 +129,22 @@ internal fun StandardEmojiPickerSheet(
     }
     val recentReactions = emojiPreferences.recent
     val favoriteEmojis = emojiPreferences.favorites
-    val discoveryState by EmojiSetDiscovery.state.collectAsState()
-    LaunchedEffect(Unit) { EmojiSetDiscovery.ensureLoaded() }
+    val discoverySnapshot by EmojiSetDiscovery.state.collectAsState()
+    val selectedRelay by RelayStore.selectedEmojiRelayUrl.collectAsState()
+    val relaysLoaded by RelayStore.isLoaded.collectAsState()
+    val discoveryState = discoverySnapshot.takeIf { it.relayUrl == selectedRelay }
+        ?: EmojiSetDiscoveryState(relayUrl = selectedRelay)
+    DisposableEffect(selectedRelay, relaysLoaded) {
+        val release = if (relaysLoaded) selectedRelay?.let(EmojiSetDiscovery::acquire) else null
+        onDispose { release?.invoke() }
+    }
     var query by remember { mutableStateOf("") }
-    var selectedCategory by remember { mutableStateOf<StandardEmojiCategory?>(null) }
-    var customOnly by remember { mutableStateOf(false) }
-    var favoriteOnly by remember { mutableStateOf(false) }
-    val normalizedQuery = query.trim().trim(':').lowercase()
+    var filter by remember { mutableStateOf<EmojiPickerFilter>(EmojiPickerFilter.All) }
+    fun select(next: EmojiPickerFilter) {
+        query = ""
+        filter = next
+    }
+    val normalizedQuery = normalizeEmojiSearchQuery(query)
     val customOptions = remember(emojiPreferences, savedCustomEmojis) {
         savedCustomEmojis.map { emojiPreferences.toReactionOption(it) }
     }
@@ -108,50 +165,16 @@ internal fun StandardEmojiPickerSheet(
         favoriteEmojis.map { emojiPreferences.toReactionOption(it) }
     }
     val visibleSections = remember(
-        normalizedQuery,
-        selectedCategory,
-        customOnly,
-        favoriteOnly,
-        customOptions,
-        favoriteOptions,
-        recentOptions,
-        searchableCustomOptions,
+        normalizedQuery, filter, customOptions, favoriteOptions, recentOptions, searchableCustomOptions,
     ) {
-        when {
-            normalizedQuery.isNotBlank() -> {
-                val unicodeMatches = STANDARD_EMOJI_CATEGORIES.flatMap { category ->
-                    category.emojis.filter { emoji ->
-                        normalizedQuery in emoji ||
-                            normalizedQuery in category.label.lowercase() ||
-                            EMOJI_SEARCH_KEYWORDS[emoji].orEmpty().any { normalizedQuery in it }
-                    }
-                }.distinct().map { ReactionOption.Unicode(it) }
-                val customMatches = searchableCustomOptions.filter {
-                    normalizedQuery in it.shortcode.lowercase()
-                }
-                listOf(EmojiPickerSection("検索結果", customMatches + unicodeMatches))
-            }
-            customOnly -> listOf(EmojiPickerSection("カスタム絵文字", customOptions))
-            favoriteOnly -> listOf(EmojiPickerSection("お気に入り", favoriteOptions))
-            selectedCategory != null -> listOf(
-                EmojiPickerSection(
-                    selectedCategory!!.label,
-                    selectedCategory!!.emojis.map { ReactionOption.Unicode(it) },
-                ),
-            )
-            else -> (if (favoriteOptions.isNotEmpty()) {
-                listOf(EmojiPickerSection("お気に入り", favoriteOptions))
-            } else emptyList()) + (if (recentOptions.isNotEmpty()) {
-                listOf(EmojiPickerSection("最近使った項目", recentOptions))
-            } else emptyList()) + (if (customOptions.isNotEmpty()) {
-                listOf(EmojiPickerSection("カスタム絵文字", customOptions))
-            } else emptyList()) + STANDARD_EMOJI_CATEGORIES.map { category ->
-                EmojiPickerSection(
-                    category.label,
-                    category.emojis.map { ReactionOption.Unicode(it) },
-                )
-            }
-        }
+        emojiPickerSections(
+            query = normalizedQuery,
+            filter = filter,
+            favorites = favoriteOptions,
+            recent = recentOptions,
+            custom = customOptions,
+            searchableCustom = searchableCustomOptions,
+        )
     }
 
     ModalBottomSheet(
@@ -255,49 +278,29 @@ internal fun StandardEmojiPickerSheet(
                     icon = "",
                     iconVector = Icons.Default.History,
                     label = "すべてとよく使う項目",
-                    selected = selectedCategory == null && !customOnly && !favoriteOnly,
-                    onClick = {
-                        query = ""
-                        selectedCategory = null
-                        customOnly = false
-                        favoriteOnly = false
-                    },
+                    selected = filter == EmojiPickerFilter.All,
+                    onClick = { select(EmojiPickerFilter.All) },
                 )
                 EmojiCategoryButton(
                     icon = "",
                     iconVector = Icons.Default.Star,
                     label = "お気に入り",
-                    selected = favoriteOnly,
-                    onClick = {
-                        query = ""
-                        selectedCategory = null
-                        customOnly = false
-                        favoriteOnly = true
-                    },
+                    selected = filter == EmojiPickerFilter.Favorites,
+                    onClick = { select(EmojiPickerFilter.Favorites) },
                 )
                 EmojiCategoryButton(
                     icon = "✦",
                     customImageUrl = savedCustomEmojis.firstOrNull()?.imageUrl,
                     label = "カスタム絵文字",
-                    selected = customOnly,
-                    onClick = {
-                        query = ""
-                        selectedCategory = null
-                        customOnly = true
-                        favoriteOnly = false
-                    },
+                    selected = filter == EmojiPickerFilter.Custom,
+                    onClick = { select(EmojiPickerFilter.Custom) },
                 )
                 STANDARD_EMOJI_CATEGORIES.forEach { category ->
                     EmojiCategoryButton(
                         icon = category.icon,
                         label = category.label,
-                        selected = selectedCategory == category,
-                        onClick = {
-                            query = ""
-                            selectedCategory = category
-                            customOnly = false
-                            favoriteOnly = false
-                        },
+                        selected = filter == EmojiPickerFilter.Category(category),
+                        onClick = { select(EmojiPickerFilter.Category(category)) },
                     )
                 }
             }

@@ -42,6 +42,10 @@ import com.nostr.torinos.ui.components.formatTimestamp
 internal fun DraftListSheet(
     onDismiss: () -> Unit,
     onDraftClick: (PostMemoData) -> Unit,
+    onSaveDraft: () -> Unit,
+    canSaveDraft: Boolean,
+    isSavingDraft: Boolean,
+    saveError: String?,
     viewModel: DraftListViewModel = accountSessionViewModel(
         key = "post-draft-list",
     ) { accountSession -> DraftListViewModel(accountSession) },
@@ -74,6 +78,28 @@ internal fun DraftListSheet(
                 Text(
                     text = "下書き一覧",
                     style = MaterialTheme.typography.titleLarge,
+                    modifier = Modifier.weight(1f),
+                )
+                TextButton(
+                    onClick = onSaveDraft,
+                    enabled = canSaveDraft,
+                ) {
+                    if (isSavingDraft) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(16.dp),
+                            strokeWidth = 2.dp,
+                        )
+                    } else {
+                        Text("下書きに保存")
+                    }
+                }
+            }
+            saveError?.let { error ->
+                Text(
+                    text = error,
+                    color = MaterialTheme.colorScheme.error,
+                    style = MaterialTheme.typography.bodySmall,
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
                 )
             }
             HorizontalDivider()

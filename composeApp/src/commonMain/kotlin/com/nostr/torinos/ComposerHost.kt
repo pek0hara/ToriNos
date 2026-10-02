@@ -5,6 +5,9 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import com.nostr.torinos.crypto.isWebPlatform
+import com.nostr.torinos.account.accountSessionViewModel
+import com.nostr.torinos.ui.profile.EditProfileViewModel
+import com.nostr.torinos.ui.profile.RegistrationProfileDialog
 import com.nostr.torinos.ui.post.PostCompletion
 import com.nostr.torinos.ui.post.PostSheet
 import com.nostr.torinos.ui.post.PostViewModel
@@ -75,9 +78,25 @@ internal fun ComposerHost(
         )
     }
 
+    if (coordinator.showRegistrationProfile) {
+        val profileViewModel = accountSessionViewModel<EditProfileViewModel>(
+            key = "registration-profile",
+        ) { session -> EditProfileViewModel(session, loadExistingProfile = false) }
+        RegistrationProfileDialog(
+            viewModel = profileViewModel,
+            onComplete = {
+                coordinator.completeRegistration { text ->
+                    postViewModel.reset()
+                    postViewModel.onTextChange(text)
+                }
+            },
+        )
+    }
+
     if (coordinator.showKeySetup) {
         KeySetupScreen(
             onSetupComplete = {},
+            onRegisteringAccount = coordinator.pendingRequests::requestRegistration,
             onDismiss = coordinator::dismissKeySetup,
         )
     }

@@ -68,6 +68,7 @@ fun SettingsScreen(
     onMuteListClick: () -> Unit = {},
     onNgWordClick: () -> Unit = {},
     onCustomEmojiClick: () -> Unit = {},
+    onRelaySettingsClick: () -> Unit = {},
 ) {
     val accountViewModel = if (ownPubkey != null) {
         viewModel(key = "settings-account") { SettingsViewModel() }
@@ -151,8 +152,13 @@ fun SettingsScreen(
                 FilterSection(
                     onMuteListClick = onMuteListClick,
                     onNgWordClick = onNgWordClick,
-                    onCustomEmojiClick = onCustomEmojiClick,
                 )
+                HorizontalDivider()
+            }
+            item {
+                SettingsLinkSection("絵文字", "カスタム絵文字", onCustomEmojiClick)
+                HorizontalDivider()
+                SettingsLinkSection("リレー", "投稿先リレー", onRelaySettingsClick)
                 HorizontalDivider()
             }
             val account = accountViewModel
@@ -275,7 +281,7 @@ private fun AccountSwitcherSection(
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
         Text(
-            text = "アカウント",
+            text = "アカウント管理",
             style = MaterialTheme.typography.titleSmall,
             fontWeight = FontWeight.Bold,
         )
@@ -659,7 +665,7 @@ private fun DisplaySection(
         verticalArrangement = Arrangement.spacedBy(0.dp),
     ) {
         Text(
-            text = "表示",
+            text = "表示・投稿",
             style = MaterialTheme.typography.titleSmall,
             fontWeight = FontWeight.Bold,
             modifier = Modifier.padding(bottom = 4.dp),
@@ -707,7 +713,6 @@ private fun DisplayToggleRow(
 private fun FilterSection(
     onMuteListClick: () -> Unit,
     onNgWordClick: () -> Unit,
-    onCustomEmojiClick: () -> Unit,
 ) {
     Column(
         modifier = Modifier
@@ -723,7 +728,6 @@ private fun FilterSection(
         )
         FilterNavRow(label = "ミュートリスト", onClick = onMuteListClick)
         FilterNavRow(label = "NGワード", onClick = onNgWordClick)
-        FilterNavRow(label = "カスタム絵文字", onClick = onCustomEmojiClick)
     }
 }
 
@@ -747,5 +751,18 @@ private fun FilterNavRow(label: String, onClick: () -> Unit) {
             tint = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.size(20.dp),
         )
+    }
+}
+
+@Composable
+private fun SettingsLinkSection(title: String, label: String, onClick: () -> Unit) {
+    Column(modifier = Modifier.fillMaxWidth().padding(16.dp)) {
+        Text(
+            text = title,
+            style = MaterialTheme.typography.titleSmall,
+            fontWeight = FontWeight.Bold,
+            modifier = Modifier.padding(bottom = 4.dp),
+        )
+        FilterNavRow(label = label, onClick = onClick)
     }
 }

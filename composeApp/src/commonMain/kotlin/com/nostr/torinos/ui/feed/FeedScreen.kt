@@ -182,17 +182,6 @@ fun FeedScreen(
         }
     }
 
-    // リレーリストが変わったら、各タブの選択中 URL を有効なものに補正する。
-    LaunchedEffect(relays, selectedFollowingRelayUrl, selectedGlobalRelayUrl) {
-        if (selectedFollowingRelayUrl != null && selectedFollowingRelayUrl !in relays) {
-            RelayStore.setSelectedFollowingRelayUrl(null)
-        }
-        val fallbackGlobalRelayUrl = relays.firstOrNull()
-        if (fallbackGlobalRelayUrl != null && (selectedGlobalRelayUrl == null || selectedGlobalRelayUrl !in relays)) {
-            RelayStore.setSelectedGlobalRelayUrl(fallbackGlobalRelayUrl)
-        }
-    }
-
     LaunchedEffect(scrollToTopRequest) {
         if (scrollToTopRequest <= handledScrollToTopRequest) return@LaunchedEffect
         handledScrollToTopRequest = scrollToTopRequest

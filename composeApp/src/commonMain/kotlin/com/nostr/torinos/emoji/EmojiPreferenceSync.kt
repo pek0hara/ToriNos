@@ -195,18 +195,6 @@ internal fun buildEmojiPreferenceTags(
         .distinct() +
     setReferences.distinct().map { listOf("a", it.value) }
 
-/** kind 30030 のイベントを登録用のセットにする。絵文字が無ければ null。 */
-internal fun NostrEvent.toRegisteredEmojiSet(): RegisteredEmojiSet? {
-    if (kind != EmojiSetAddress.KIND_EMOJI_SET) return null
-    val identifier = tags.firstOrNull { it.firstOrNull() == "d" }?.getOrNull(1) ?: return null
-    val address = EmojiSetAddress.of(pubkey, identifier) ?: return null
-    val title = tags.firstOrNull { it.firstOrNull() == "title" }?.getOrNull(1)?.trim()
-        ?.takeIf { it.isNotBlank() } ?: identifier
-    val emojis = tags.emojiTags().distinctBy { it.identity }
-    if (emojis.isEmpty()) return null
-    return RegisteredEmojiSet(address, title, emojis)
-}
-
 /** NostrRepository を使う実装。 */
 internal class NostrEmojiPreferenceTransport(
     private val sessionId: String,
@@ -243,10 +231,7 @@ internal class NostrEmojiPreferenceTransport(
             timeoutMs = EmojiPreferenceSync.FETCH_TIMEOUT_MS,
         ) { it.kind == EmojiSetAddress.KIND_EMOJI_SET }
         return events
-            .groupBy { event ->
-                event.tags.firstOrNull { it.firstOrNull() == "d" }?.getOrNull(1)
-                    ?.let { EmojiSetAddress.of(event.pubkey, it) }
-            }
+            .groupBy { event -> event.dTag()?.let { EmojiSetAddress.of(event.pubkey, it) } }
             .filterKeys { it != null && it in expected }
             .mapNotNull { (address, versions) -> versions.newestOrNull()?.toRegisteredEmojiSet()?.let { address!! to it } }
             .toMap()

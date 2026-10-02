@@ -27,6 +27,19 @@ internal enum class ComposerPresentation {
  */
 internal class PendingComposerRequestHolder {
     private var newPostRequested = false
+    var registeringPubkey by mutableStateOf<String?>(null)
+        private set
+
+    fun requestRegistration(pubkey: String?) {
+        registeringPubkey = pubkey
+    }
+
+    fun consumeRegistration(pubkey: String): Boolean {
+        if (registeringPubkey != pubkey) return false
+        registeringPubkey = null
+        newPostRequested = false
+        return true
+    }
 
     fun requestNewPost() {
         newPostRequested = true
@@ -40,6 +53,7 @@ internal class PendingComposerRequestHolder {
     }
 
     fun clear() {
+        registeringPubkey = null
         newPostRequested = false
     }
 }
@@ -55,10 +69,30 @@ internal class ComposerCoordinator(
         private set
     /**
      * 簡易コンポーザーを「…」でフッターメニューへ切り替えた後も、その入力を保持しているか。
-     * true の間はフィードの＋で同じ入力を再表示する。
+     * true の間は現在の画面の＋で同じ入力を再表示する。
      */
     var hasHeldInlineDraft by mutableStateOf(false)
         private set
+    var showRegistrationProfile by mutableStateOf(false)
+        private set
+
+    fun resumeAfterKeySetup(pubkey: String, useFooterComposer: Boolean, resetPost: () -> Unit) {
+        if (pendingRequests.consumeRegistration(pubkey)) {
+            dismissPost()
+            showRegistrationProfile = true
+        } else if (pendingRequests.consumeNewPost()) {
+            openNewPost(useFooterComposer, resetPost)
+        }
+    }
+
+    fun completeRegistration(preparePost: (String) -> Unit) {
+        if (!showRegistrationProfile) return
+        showRegistrationProfile = false
+        clearPostContext(clearDraft = true)
+        preparePost("Nostr、はじめました🐦")
+        openFullScreen(PostSheetInitialState.KeepCurrent)
+    }
+
     var showStatusComposer by mutableStateOf(false)
     var replyTarget by mutableStateOf<ReplyTarget?>(null)
     var replyToPreview by mutableStateOf<String?>(null)
@@ -114,28 +148,26 @@ internal class ComposerCoordinator(
         presentation = ComposerPresentation.FullScreen
     }
 
-    /** 新規投稿のシートを全画面で開く。ジャーナルなど、簡易コンポーザーを持たない画面から使う。 */
-    fun openNewPostSheet(initialState: PostSheetInitialState = PostSheetInitialState.Reset) {
-        replyTarget = null
-        replyToPreview = null
-        replyNoteContext = NoteContext.Timeline
+    /** 新規投稿をシートで開始する内部処理。入口は設定を参照する [openNewPost] に統一する。 */
+    private fun openNewPostSheet(initialState: PostSheetInitialState = PostSheetInitialState.Reset) {
+        clearPostContext(clearDraft = false)
         openFullScreen(initialState)
     }
 
     /**
-     * フィードの＋。ローカル下書きがある場合は現行どおりシートで復元する
+     * フィードと自分のジャーナルの＋。ローカル下書きがある場合はシートで復元する
      * （カスタム絵文字設定へ移動する間に退避した本文を失わないため）。
      * 「…」で保持した入力があれば、それをそのまま簡易コンポーザーに戻す。
      * どちらもない場合は投稿状態を空にして簡易コンポーザーを開く。
      */
     fun openNewPost(useFooterComposer: Boolean = true, resetPost: () -> Unit) {
-        // フッター投稿を使わない設定では、従来どおり全画面のシートを開く。
-        if (!useFooterComposer) {
-            openNewPostSheet()
-            return
-        }
         if (localDraft != null) {
             openNewPostSheet(PostSheetInitialState.RestoreMemo)
+            return
+        }
+        // フッター投稿を使わない設定では全画面のシートを開く。
+        if (!useFooterComposer) {
+            openNewPostSheet()
             return
         }
         if (hasHeldInlineDraft) {
@@ -166,7 +198,7 @@ internal class ComposerCoordinator(
     }
 
     /**
-     * 簡易コンポーザー、または「…」で保持中の入力を破棄する（フィード以外への遷移）。
+     * 簡易コンポーザー、または「…」で保持中の入力を破棄する（画面遷移）。
      * 送信中は `reset()` しない。送信結果を失わず、その後の入力が古い結果で上書きされないよう、
      * 送信の完了側が世代で扱う。
      */

@@ -54,4 +54,33 @@ class EmojiPickerSheetTest {
         assertEquals(custom, custom.toRecentReaction().toReactionOption())
         assertEquals(unicode, unicode.toRecentReaction().toReactionOption())
     }
+
+    @Test
+    fun allFilterSkipsEmptyPersonalSectionsAndKeepsOrder() {
+        val favorite = ReactionOption.Custom("fav", "https://example.com/fav.png")
+        val custom = ReactionOption.Custom("mine", "https://example.com/mine.png")
+        val titles = emojiPickerSections("", EmojiPickerFilter.All, listOf(favorite), emptyList(), listOf(custom), emptyList())
+            .map { it.title }
+        assertEquals(listOf("お気に入り", "カスタム絵文字") + STANDARD_EMOJI_CATEGORIES.map { it.label }, titles)
+    }
+
+    @Test
+    fun queryOverridesFilterAndListsCustomMatchesBeforeUnicode() {
+        val bird = ReactionOption.Custom("party_bird", "https://example.com/bird.png")
+        val other = ReactionOption.Custom("cat", "https://example.com/cat.png")
+        val sections = emojiPickerSections("party", EmojiPickerFilter.Favorites, emptyList(), emptyList(), emptyList(),
+            listOf(other, bird))
+        assertEquals(listOf("検索結果"), sections.map { it.title })
+        assertEquals(bird, sections.single().options.first())
+        assertEquals(false, other in sections.single().options)
+    }
+
+    @Test
+    fun singleFiltersShowOnlyTheirSection() {
+        val category = STANDARD_EMOJI_CATEGORIES[1]
+        assertEquals(listOf(category.label), emojiPickerSections("", EmojiPickerFilter.Category(category),
+            emptyList(), emptyList(), emptyList(), emptyList()).map { it.title })
+        assertEquals(listOf("お気に入り"), emojiPickerSections("", EmojiPickerFilter.Favorites,
+            emptyList(), emptyList(), emptyList(), emptyList()).map { it.title })
+    }
 }

@@ -15,7 +15,6 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Apps
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.KeyboardArrowUp
-import androidx.compose.material.icons.filled.MoreHoriz
 import androidx.compose.material.icons.filled.Sms
 import androidx.compose.material.icons.filled.Today
 import androidx.compose.material3.AlertDialog
@@ -126,10 +125,12 @@ import com.nostr.torinos.ui.profile.MyProfileScreen
 import com.nostr.torinos.ui.profile.UserProfileScreen
 import com.nostr.torinos.ui.relay.RelaySettingsScreen
 import com.nostr.torinos.ui.search.SearchScreen
-import com.nostr.torinos.ui.settings.QuickSettingsDialogs
+import com.nostr.torinos.ui.settings.AccountSwitcherSheet
 import com.nostr.torinos.ui.settings.CustomEmojiSettingsScreen
 import com.nostr.torinos.ui.settings.SettingsScreen
+import com.nostr.torinos.ui.service.EmojiServiceHeader
 import com.nostr.torinos.ui.service.ServiceTab
+import com.nostr.torinos.ui.service.serviceTabSwipe
 import com.nostr.torinos.ui.status.StatusScreen
 import com.nostr.torinos.ui.thread.ThreadScreen
 import com.nostr.torinos.ui.thread.ThreadViewModel
@@ -219,9 +220,12 @@ internal fun AppSessionCoordinator(
         val feedChromeState = remember { FeedChromeState() }
         var feedLongBackgroundResetRequest by remember { mutableStateOf(0) }
         var backgroundedAtMillis by remember { mutableStateOf<Long?>(null) }
-        var showQuickSettings by remember { mutableStateOf(false) }
+        var showAccountSwitcher by remember(ownPubkey) { mutableStateOf(false) }
         var relaySettingsNavigationRequest by remember { mutableStateOf(0) }
         val drawerCoordinator = rememberDrawerCoordinator(scope)
+        val sidePanelWidth = LocalSidePanelWidth.current
+        val isSidePanelMode = sidePanelWidth != null
+        val sidePanelNavigator = rememberSidePanelNavigator()
         val profileDrawerStateHolder = rememberSaveableStateHolder()
         var lastProfileDrawerPubkey by rememberSaveable { mutableStateOf<String?>(null) }
         val profileDrawerStateOwners = remember { mutableMapOf<String, String?>() }
@@ -320,7 +324,6 @@ internal fun AppSessionCoordinator(
         }
 
         fun requestRelaySettings() {
-            showQuickSettings = false
             relaySettingsNavigationRequest++
         }
 
@@ -328,6 +331,40 @@ internal fun AppSessionCoordinator(
             if (relaySettingsNavigationRequest <= 0) return@LaunchedEffect
             nav.navigate("relay-settings") {
                 launchSingleTop = true
+            }
+        }
+
+        fun openSettings() {
+            if (isSidePanelMode) {
+                sidePanelNavigator.openRoot(SidePanelDestination.Settings)
+            } else {
+                nav.navigate("settings") { launchSingleTop = true }
+            }
+        }
+
+        fun openSearch(query: String) {
+            if (isSidePanelMode) {
+                sidePanelNavigator.openRoot(SidePanelDestination.Search(query))
+            } else {
+                nav.navigate(SearchRoute(query))
+            }
+        }
+
+        LaunchedEffect(isSidePanelMode) {
+            drawerCoordinator.updateProfileDocking(isSidePanelMode)
+            if (isSidePanelMode) return@LaunchedEffect
+            // 狭い幅に戻ったら、右パネルで開いていた画面を中央の画面遷移で表示し続ける。
+            val destinations = sidePanelNavigator.entries.map { it.destination }
+            sidePanelNavigator.disposeAll()
+            destinations.forEach { destination ->
+                when (destination) {
+                    SidePanelDestination.Settings -> nav.navigate("settings")
+                    SidePanelDestination.MuteList -> nav.navigate("mute-list")
+                    SidePanelDestination.NgWords -> nav.navigate("ng-words")
+                    SidePanelDestination.RelaySettings -> nav.navigate("relay-settings")
+                    is SidePanelDestination.CustomEmoji -> nav.navigate(destination.route)
+                    is SidePanelDestination.Search -> nav.navigate(SearchRoute(destination.query))
+                }
             }
         }
 
@@ -457,7 +494,8 @@ internal fun AppSessionCoordinator(
                 is ProfileDrawerDestination.Profile -> destination.pubkey
                 is ProfileDrawerDestination.Following -> destination.pubkey
                 is ProfileDrawerDestination.Followers -> destination.pubkey
-                is ProfileDrawerDestination.Thread -> lastProfileDrawerPubkey
+                is ProfileDrawerDestination.Thread,
+                is ProfileDrawerDestination.CustomEmoji -> lastProfileDrawerPubkey
             }
             if (handledProfileNavigationSessionId != sessionId) {
                 val nextPubkey = (destination as? ProfileDrawerDestination.Profile)?.pubkey
@@ -500,6 +538,7 @@ internal fun AppSessionCoordinator(
         val density = LocalDensity.current
         val bottomBarHeightPx = with(density) { AppNavigationBarHeight.toPx() }.toInt()
         val isFeedRoute = currentRoute == "feed"
+        val isNewPostRoute = currentRoute == "feed" || currentRoute == "journal"
         // フィードでは下部バーをリストに重ね、高さは変えずに下へずらして隠す。
         // 折りたたみ量はスクロール中に毎フレーム変わるので、graphicsLayerの中でだけ読む。
         fun activeFeedChromeCollapseFraction(): Float =
@@ -512,10 +551,15 @@ internal fun AppSessionCoordinator(
             }
         }
 
-        // フィード以外へ遷移したら簡易コンポーザーを閉じ、新規投稿状態を破棄する。
+        // 画面が変わったら簡易コンポーザーを閉じ、新規投稿状態を破棄する。
+        // フィードとジャーナル間でも入力を持ち越さない。
         // フィードタブ（フォロー／グローバル）の切り替えはルートが変わらないので閉じない。
+        // 起動直後の最初のルート確定は画面の切り替えではないので、鍵設定後に再開した投稿欄を閉じない。
+        var lastComposerRoute by remember { mutableStateOf<String?>(null) }
         LaunchedEffect(currentRoute) {
-            if (currentRoute != null && currentRoute != "feed") {
+            val previousRoute = lastComposerRoute
+            if (currentRoute != null) lastComposerRoute = currentRoute
+            if (previousRoute != null && currentRoute != null && currentRoute != previousRoute) {
                 composer.closeInline(
                     isPosting = postViewModel.state.value.isPosting,
                     resetPost = postViewModel::reset,
@@ -533,11 +577,10 @@ internal fun AppSessionCoordinator(
             }
         }
 
-        // 鍵設定の完了でセッションが作り直された後、フィードの＋からの新規投稿を一度だけ再開する。
-        LaunchedEffect(ownPubkey) {
-            if (ownPubkey != null && composer.pendingRequests.consumeNewPost()) {
-                feedChromeState.collapseFraction = 0f
-                composer.openNewPost(useFooterComposer, postViewModel::reset)
+        // 鍵設定の完了でセッションが作り直された後、＋からの新規投稿を一度だけ再開する。
+        LaunchedEffect(ownPubkey, composer.pendingRequests.registeringPubkey) {
+            if (ownPubkey != null) {
+                composer.resumeAfterKeySetup(ownPubkey, useFooterComposer, postViewModel::reset)
             }
         }
 
@@ -564,28 +607,20 @@ internal fun AppSessionCoordinator(
             onBack = composer::switchInlineToMenu,
         )
 
-        QuickSettingsDialogs(
-            open = showQuickSettings,
-            ownPubkey = ownPubkey,
-            onOpenChange = { showQuickSettings = it },
-            onAccountChanged = {},
-            onAddAccountClick = {
-                composer.pendingKeyAction = null
-                composer.showKeySetup = true
-            },
-            onRelaySettingsClick = {
-                requestRelaySettings()
-            },
-            onCustomEmojiSettingsClick = {
-                nav.navigate(CustomEmojiRoute())
-            },
-            onOpenAllSettings = {
-                nav.navigate("settings")
-            },
-            onUserClick = { pk ->
-                openProfileDrawer(pk)
-            },
-        )
+        if (showAccountSwitcher) {
+            AccountSwitcherSheet(
+                ownPubkey = ownPubkey,
+                onDismiss = { showAccountSwitcher = false },
+                onAccountChanged = { showAccountSwitcher = false },
+                onAddAccountClick = {
+                    showAccountSwitcher = false
+                    closeProfileDrawerAndThen {
+                        composer.pendingKeyAction = null
+                        composer.showKeySetup = true
+                    }
+                },
+            )
+        }
 
         // カスタム絵文字タップ → 絵文字設定画面（対象絵文字付き）へ遷移。
         // 読み手（本文・リアクション）が多いので、再コンポーズのたびに値を変えない。
@@ -600,21 +635,255 @@ internal fun AppSessionCoordinator(
                 )
             }
         }
-        CompositionLocalProvider(
-            LocalCustomEmojiNavigator provides openCustomEmoji,
-            LocalQuotePostHandler provides { event: NostrEvent ->
-                cancelPendingReplyResolution()
-                composer.prepareQuote(event)
-                runWithPrivateKey(PendingKeyAction.Quote) {
-                    composer.openFullScreen()
+        val quotePostHandler = { event: NostrEvent ->
+            cancelPendingReplyResolution()
+            composer.prepareQuote(event)
+            runWithPrivateKey(PendingKeyAction.Quote) {
+                composer.openFullScreen()
+            }
+        }
+        // プロフィールドロワーの中身。PCブラウザの横長画面では左パネルに表示する。
+        val profilePanelContent: @Composable (ProfileDrawerDestination?, Boolean) -> Unit = { drawerDestination, isReady ->
+            when {
+                drawerDestination == null -> Unit
+                !isReady -> Box(
+                    modifier = Modifier.fillMaxSize(),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    CircularProgressIndicator()
+                }
+                else -> CompositionLocalProvider(
+                    LocalCustomEmojiNavigator provides { request ->
+                        drawerCoordinator.openCustomEmoji(drawerDestination, request)
+                    },
+                ) {
+                    profileDrawerStateHolder.SaveableStateProvider(
+                        key = "profile-drawer-${drawerDestination.stateKey}",
+                    ) {
+                        when (drawerDestination) {
+                            is ProfileDrawerDestination.Following -> FollowListScreen(
+                                mode = FollowListMode.FOLLOWING,
+                                ownPubkey = drawerDestination.pubkey,
+                                onBack = drawerCoordinator::navigateBackOrCloseProfile,
+                                onUserClick = ::openProfileDrawer,
+                            )
+                            is ProfileDrawerDestination.Followers -> FollowListScreen(
+                                mode = FollowListMode.FOLLOWERS,
+                                ownPubkey = drawerDestination.pubkey,
+                                onBack = drawerCoordinator::navigateBackOrCloseProfile,
+                                onUserClick = ::openProfileDrawer,
+                            )
+                            is ProfileDrawerDestination.Profile -> if (
+                                drawerDestination.pubkey == ownPubkey
+                            ) {
+                                MyProfileScreen(
+                                    ownPubkey = drawerDestination.pubkey,
+                                    onBack = drawerCoordinator::navigateBackOrCloseProfile,
+                                    onOpenFollowing = {
+                                        drawerCoordinator.openFollowing(drawerDestination.pubkey)
+                                    },
+                                    onOpenFollowers = {
+                                        drawerCoordinator.openFollowers(drawerDestination.pubkey)
+                                    },
+                                    onOpenAccountSwitcher = { showAccountSwitcher = true },
+                                    onOpenSettings = {
+                                        closeProfileDrawerAndThen { openSettings() }
+                                    },
+                                    onUserClick = ::openProfileDrawer,
+                                    onReply = { event, preview ->
+                                        closeProfileDrawerAndThen {
+                                            openReplyComposer(event, preview, NoteContext.Timeline)
+                                        }
+                                    },
+                                    onOpenReplies = { eventId ->
+                                        drawerCoordinator.openThread(drawerDestination, eventId)
+                                    },
+                                    onOpenLikes = { eventId ->
+                                        drawerCoordinator.openThread(drawerDestination, eventId, "likes")
+                                    },
+                                    onOpenReposts = { eventId ->
+                                        drawerCoordinator.openThread(drawerDestination, eventId, "reposts")
+                                    },
+                                    longBackgroundResetRequest = feedLongBackgroundResetRequest,
+                                )
+                            } else {
+                                UserProfileScreen(
+                                    pubkey = drawerDestination.pubkey,
+                                    onBack = drawerCoordinator::navigateBackOrCloseProfile,
+                                    isOwnProfile = false,
+                                    ownPubkey = ownPubkey,
+                                    onOpenFollowing = {
+                                        drawerCoordinator.openFollowing(drawerDestination.pubkey)
+                                    },
+                                    onOpenFollowers = {
+                                        drawerCoordinator.openFollowers(drawerDestination.pubkey)
+                                    },
+                                    onUserClick = ::openProfileDrawer,
+                                    onReply = { event, preview ->
+                                        closeProfileDrawerAndThen {
+                                            openReplyComposer(event, preview, NoteContext.Timeline)
+                                        }
+                                    },
+                                    onOpenReplies = { eventId ->
+                                        drawerCoordinator.openThread(drawerDestination, eventId)
+                                    },
+                                    onOpenLikes = { eventId ->
+                                        drawerCoordinator.openThread(drawerDestination, eventId, "likes")
+                                    },
+                                    onOpenReposts = { eventId ->
+                                        drawerCoordinator.openThread(drawerDestination, eventId, "reposts")
+                                    },
+                                    onOpenJournal = {
+                                        closeProfileDrawerAndThen {
+                                            nav.navigate(UserJournalRoute(drawerDestination.pubkey))
+                                        }
+                                    },
+                                    longBackgroundResetRequest = feedLongBackgroundResetRequest,
+                                )
+                            }
+                            is ProfileDrawerDestination.CustomEmoji -> CustomEmojiSettingsScreen(
+                                onBack = drawerCoordinator::navigateBackOrCloseProfile,
+                                onOpenRelaySettings = {
+                                    closeProfileDrawerAndThen { requestRelaySettings() }
+                                },
+                                onOpenProfile = ::openProfileDrawer,
+                                initialQuery = drawerDestination.request.shortcode,
+                                initialImageUrl = drawerDestination.request.imageUrl,
+                                initialSetAddress = drawerDestination.request.setAddress,
+                                returnToSourceOnDetailBack = true,
+                            )
+                            is ProfileDrawerDestination.Thread -> {
+                                val channelId = drawerDestination.channelId
+                                val threadViewModel = accountSessionViewModel<ThreadViewModel>(
+                                    key = "profile-drawer-thread-${drawerDestination.eventId}-${channelId ?: "note"}",
+                                ) { session ->
+                                    ThreadViewModel(
+                                        eventId = drawerDestination.eventId,
+                                        noteContext = noteContextForChannel(channelId),
+                                        accountSession = session,
+                                    )
+                                }
+                                ThreadScreen(
+                                    eventId = drawerDestination.eventId,
+                                    initialTab = drawerDestination.initialTab,
+                                    channelId = channelId,
+                                    onBack = drawerCoordinator::navigateBackOrCloseProfile,
+                                    enableSwipeBack = true,
+                                    onUserClick = ::openProfileDrawer,
+                                    onReply = { event, preview, chId ->
+                                        closeProfileDrawerAndThen {
+                                            openReplyComposer(event, preview, noteContextForChannel(chId))
+                                        }
+                                    },
+                                    onOpenThread = { eventId ->
+                                        drawerCoordinator.openThread(
+                                            source = drawerDestination,
+                                            eventId = eventId,
+                                            channelId = channelId,
+                                        )
+                                    },
+                                    onOpenLikes = { eventId ->
+                                        drawerCoordinator.openThread(
+                                            source = drawerDestination,
+                                            eventId = eventId,
+                                            initialTab = "likes",
+                                            channelId = channelId,
+                                        )
+                                    },
+                                    onOpenReposts = { eventId ->
+                                        drawerCoordinator.openThread(
+                                            source = drawerDestination,
+                                            eventId = eventId,
+                                            initialTab = "reposts",
+                                            channelId = channelId,
+                                        )
+                                    },
+                                    ownPubkey = ownPubkey,
+                                    viewModel = threadViewModel,
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        // 右パネルの画面。設定の子画面はパネル内に積み、投稿は中央、ユーザーは左パネルで開く。
+        val sidePanelScreen: @Composable (SidePanelDestination) -> Unit = { destination ->
+            when (destination) {
+                SidePanelDestination.Settings -> SettingsScreen(
+                    ownPubkey = ownPubkey,
+                    onBack = sidePanelNavigator::back,
+                    onAccountChanged = {},
+                    onAddAccountClick = {
+                        composer.pendingKeyAction = null
+                        composer.showKeySetup = true
+                    },
+                    onMuteListClick = { sidePanelNavigator.push(SidePanelDestination.MuteList) },
+                    onNgWordClick = { sidePanelNavigator.push(SidePanelDestination.NgWords) },
+                    onCustomEmojiClick = { sidePanelNavigator.push(SidePanelDestination.CustomEmoji()) },
+                    onRelaySettingsClick = { sidePanelNavigator.push(SidePanelDestination.RelaySettings) },
+                )
+                SidePanelDestination.MuteList -> MuteListScreen(
+                    onBack = sidePanelNavigator::back,
+                    onUserClick = ::openProfileDrawer,
+                )
+                SidePanelDestination.NgWords -> NgWordScreen(onBack = sidePanelNavigator::back)
+                SidePanelDestination.RelaySettings -> RelaySettingsScreen(onBack = sidePanelNavigator::back)
+                is SidePanelDestination.CustomEmoji -> CustomEmojiSettingsScreen(
+                    onBack = sidePanelNavigator::back,
+                    onOpenRelaySettings = { sidePanelNavigator.push(SidePanelDestination.RelaySettings) },
+                    onOpenProfile = ::openProfileDrawer,
+                    initialQuery = destination.route.query,
+                    initialImageUrl = destination.route.imageUrl,
+                    initialSetAddress = EmojiSetAddress.parse(destination.route.setAddress),
+                )
+                is SidePanelDestination.Search -> SearchScreen(
+                    initialQuery = destination.query,
+                    onBack = sidePanelNavigator::back,
+                    onUserClick = ::openProfileDrawer,
+                    onOpenThread = { eventId -> nav.navigate(ThreadRoute(eventId)) },
+                    onOpenReplies = { eventId -> nav.navigate(ThreadRoute(eventId)) },
+                    onOpenLikes = { eventId -> nav.navigate(ThreadRoute(eventId, "likes")) },
+                    onOpenReposts = { eventId -> nav.navigate(ThreadRoute(eventId, "reposts")) },
+                )
+            }
+        }
+        SidePanelLayout(
+            panelWidth = sidePanelWidth,
+            left = {
+                CompositionLocalProvider(
+                    LocalCustomEmojiNavigator provides openCustomEmoji,
+                    LocalQuotePostHandler provides quotePostHandler,
+                ) {
+                    // 閉じるアニメーション中は、最後に表示していたプロフィールを出し続ける。
+                    SlidingSidePanel(value = drawerCoordinator.profileDestination) { displayed ->
+                        profilePanelContent(displayed, true)
+                    }
                 }
             },
+            right = {
+                CompositionLocalProvider(
+                    LocalCustomEmojiNavigator provides openCustomEmoji,
+                    LocalQuotePostHandler provides quotePostHandler,
+                ) {
+                    SidePanelHost(sidePanelNavigator) { destination ->
+                        sidePanelScreen(destination)
+                    }
+                }
+            },
+        ) {
+        CompositionLocalProvider(
+            LocalCustomEmojiNavigator provides openCustomEmoji,
+            LocalQuotePostHandler provides quotePostHandler,
         ) {
         AppModalNavigationDrawer(
             drawerState = profileDrawerState,
             endDrawer = false,
-            gesturesEnabled = profileDrawerState.currentValue != DrawerValue.Closed ||
-                profileDrawerState.targetValue != DrawerValue.Closed,
+            // 左パネル表示中はプロフィールドロワーを使わない。
+            gesturesEnabled = !isSidePanelMode && (
+                profileDrawerState.currentValue != DrawerValue.Closed ||
+                    profileDrawerState.targetValue != DrawerValue.Closed
+                ),
             drawerContent = {
                 ModalDrawerSheet(
                     modifier = Modifier
@@ -624,150 +893,11 @@ internal fun AppSessionCoordinator(
                     drawerContainerColor = MaterialTheme.colorScheme.background,
                     windowInsets = WindowInsets(0),
                 ) {
-                        val drawerDestination = drawerCoordinator.profileDestination
-                        when {
-                            drawerDestination == null -> Unit
-                            !drawerCoordinator.isProfileContentReady -> Box(
-                                modifier = Modifier.fillMaxSize(),
-                                contentAlignment = Alignment.Center,
-                            ) {
-                                CircularProgressIndicator()
-                            }
-                            else -> profileDrawerStateHolder.SaveableStateProvider(
-                                key = "profile-drawer-${drawerDestination.stateKey}",
-                            ) {
-                                when (drawerDestination) {
-                                    is ProfileDrawerDestination.Following -> FollowListScreen(
-                                        mode = FollowListMode.FOLLOWING,
-                                        ownPubkey = drawerDestination.pubkey,
-                                        onBack = drawerCoordinator::navigateBackOrCloseProfile,
-                                        onUserClick = ::openProfileDrawer,
-                                    )
-                                    is ProfileDrawerDestination.Followers -> FollowListScreen(
-                                        mode = FollowListMode.FOLLOWERS,
-                                        ownPubkey = drawerDestination.pubkey,
-                                        onBack = drawerCoordinator::navigateBackOrCloseProfile,
-                                        onUserClick = ::openProfileDrawer,
-                                    )
-                                    is ProfileDrawerDestination.Profile -> if (
-                                        drawerDestination.pubkey == ownPubkey
-                                    ) {
-                                        MyProfileScreen(
-                                            ownPubkey = drawerDestination.pubkey,
-                                            onBack = drawerCoordinator::navigateBackOrCloseProfile,
-                                            onOpenFollowing = {
-                                                drawerCoordinator.openFollowing(drawerDestination.pubkey)
-                                            },
-                                            onOpenFollowers = {
-                                                drawerCoordinator.openFollowers(drawerDestination.pubkey)
-                                            },
-                                            onOpenSettings = {
-                                                closeProfileDrawerAndThen { showQuickSettings = true }
-                                            },
-                                            onUserClick = ::openProfileDrawer,
-                                            onReply = { event, preview ->
-                                                closeProfileDrawerAndThen {
-                                                    openReplyComposer(event, preview, NoteContext.Timeline)
-                                                }
-                                            },
-                                            onOpenReplies = { eventId ->
-                                                drawerCoordinator.openThread(drawerDestination, eventId)
-                                            },
-                                            onOpenLikes = { eventId ->
-                                                drawerCoordinator.openThread(drawerDestination, eventId, "likes")
-                                            },
-                                            onOpenReposts = { eventId ->
-                                                drawerCoordinator.openThread(drawerDestination, eventId, "reposts")
-                                            },
-                                            longBackgroundResetRequest = feedLongBackgroundResetRequest,
-                                        )
-                                    } else {
-                                        UserProfileScreen(
-                                            pubkey = drawerDestination.pubkey,
-                                            onBack = drawerCoordinator::navigateBackOrCloseProfile,
-                                            isOwnProfile = false,
-                                            ownPubkey = ownPubkey,
-                                            onOpenFollowing = {
-                                                drawerCoordinator.openFollowing(drawerDestination.pubkey)
-                                            },
-                                            onOpenFollowers = {
-                                                drawerCoordinator.openFollowers(drawerDestination.pubkey)
-                                            },
-                                            onUserClick = ::openProfileDrawer,
-                                            onReply = { event, preview ->
-                                                closeProfileDrawerAndThen {
-                                                    openReplyComposer(event, preview, NoteContext.Timeline)
-                                                }
-                                            },
-                                            onOpenReplies = { eventId ->
-                                                drawerCoordinator.openThread(drawerDestination, eventId)
-                                            },
-                                            onOpenLikes = { eventId ->
-                                                drawerCoordinator.openThread(drawerDestination, eventId, "likes")
-                                            },
-                                            onOpenReposts = { eventId ->
-                                                drawerCoordinator.openThread(drawerDestination, eventId, "reposts")
-                                            },
-                                            onOpenJournal = {
-                                                closeProfileDrawerAndThen {
-                                                    nav.navigate(UserJournalRoute(drawerDestination.pubkey))
-                                                }
-                                            },
-                                            longBackgroundResetRequest = feedLongBackgroundResetRequest,
-                                        )
-                                    }
-                                    is ProfileDrawerDestination.Thread -> {
-                                        val channelId = drawerDestination.channelId
-                                        val threadViewModel = accountSessionViewModel<ThreadViewModel>(
-                                            key = "profile-drawer-thread-${drawerDestination.eventId}-${channelId ?: "note"}",
-                                        ) { session ->
-                                            ThreadViewModel(
-                                                eventId = drawerDestination.eventId,
-                                                noteContext = noteContextForChannel(channelId),
-                                                accountSession = session,
-                                            )
-                                        }
-                                        ThreadScreen(
-                                            eventId = drawerDestination.eventId,
-                                            initialTab = drawerDestination.initialTab,
-                                            channelId = channelId,
-                                            onBack = drawerCoordinator::navigateBackOrCloseProfile,
-                                            enableSwipeBack = true,
-                                            onUserClick = ::openProfileDrawer,
-                                            onReply = { event, preview, chId ->
-                                                closeProfileDrawerAndThen {
-                                                    openReplyComposer(event, preview, noteContextForChannel(chId))
-                                                }
-                                            },
-                                            onOpenThread = { eventId ->
-                                                drawerCoordinator.openThread(
-                                                    source = drawerDestination,
-                                                    eventId = eventId,
-                                                    channelId = channelId,
-                                                )
-                                            },
-                                            onOpenLikes = { eventId ->
-                                                drawerCoordinator.openThread(
-                                                    source = drawerDestination,
-                                                    eventId = eventId,
-                                                    initialTab = "likes",
-                                                    channelId = channelId,
-                                                )
-                                            },
-                                            onOpenReposts = { eventId ->
-                                                drawerCoordinator.openThread(
-                                                    source = drawerDestination,
-                                                    eventId = eventId,
-                                                    initialTab = "reposts",
-                                                    channelId = channelId,
-                                                )
-                                            },
-                                            ownPubkey = ownPubkey,
-                                            viewModel = threadViewModel,
-                                        )
-                                    }
-                                }
-                            }
+                        if (!isSidePanelMode) {
+                            profilePanelContent(
+                                drawerCoordinator.profileDestination,
+                                drawerCoordinator.isProfileContentReady,
+                            )
                         }
                     }
             },
@@ -883,8 +1013,8 @@ internal fun AppSessionCoordinator(
                 floatingActionButton = {
                     if (isWriteSupported) {
                         when (currentRoute) {
-                            // 簡易コンポーザー表示中は「…」でフッターメニューへ切り替える。シート表示中はFABを出さない。
-                            "feed" -> when (composer.presentation) {
+                            // フィードと自分のジャーナルは、投稿の起動・展開を同じFABで扱う。
+                            "feed", "journal" -> when (composer.presentation) {
                                 ComposerPresentation.Hidden -> Box(
                                     modifier = Modifier.graphicsLayer {
                                         translationY = bottomBarHeightPx * activeFeedChromeCollapseFraction()
@@ -901,15 +1031,8 @@ internal fun AppSessionCoordinator(
                                         },
                                     )
                                 }
-                                // ネイティブは△で投稿シートへ展開する（閉じるのは簡易欄左端の▼）。
-                                // Webは展開しないので「…」でフッターメニューへ戻す。
-                                ComposerPresentation.FeedInline -> if (isWebPlatform) {
-                                    AppFloatingActionButton(
-                                        onClick = composer::switchInlineToMenu,
-                                        icon = Icons.Default.MoreHoriz,
-                                        contentDescription = "メニューを表示",
-                                    )
-                                } else {
+                                // △で投稿シートへ展開する（閉じるのは簡易欄左端の▼）。
+                                ComposerPresentation.FeedInline -> {
                                     AppFloatingActionButton(
                                         onClick = {
                                             // キーボードを閉じてから全画面の投稿シートへ切り替える。
@@ -957,15 +1080,14 @@ internal fun AppSessionCoordinator(
                     }
                 },
                 bottomBar = {
-                    // 簡易コンポーザーはフッターメニューと入れ替えて表示する（FABの「…」で切り替え）。
-                    if (isFeedRoute && composer.presentation == ComposerPresentation.FeedInline) {
+                    // フィードと自分のジャーナルで、同じ簡易投稿欄をフッターメニューと入れ替えて表示する。
+                    if (isNewPostRoute && composer.presentation == ComposerPresentation.FeedInline) {
                         FeedInlinePostComposer(
                             state = postState,
                             onTextChange = postViewModel::onTextChange,
                             onSend = postViewModel::postFromFeedInline,
-                            // Web版では展開ボタンを出さない。フィードからの新規投稿はテキストのみとする。
-                            // ネイティブは左端の▼で入力を保持したままフッターメニューへ戻す。Webは「…」FABで戻す。
-                            onClose = if (isWebPlatform) null else composer::switchInlineToMenu,
+                            // 左端の▼で入力を保持したままフッターメニューへ戻す。
+                            onClose = composer::switchInlineToMenu,
                             // iOS Safari はタップ中の focus でしかキーボードを出さないため、Web では自動フォーカスしない。
                             autoFocus = !isWebPlatform,
                         )
@@ -1017,7 +1139,7 @@ internal fun AppSessionCoordinator(
                 ) {
                     composable("feed") {
                         FeedScreen(
-                            onOpenSettings = { showQuickSettings = true },
+                            onOpenSettings = { openSettings() },
                             onOpenRelaySettings = {
                                 requestRelaySettings()
                             },
@@ -1034,7 +1156,7 @@ internal fun AppSessionCoordinator(
                             onOpenReplies = { eventId -> nav.navigate(ThreadRoute(eventId)) },
                             onOpenLikes = { eventId -> nav.navigate(ThreadRoute(eventId, "likes")) },
                             onOpenReposts = { eventId -> nav.navigate(ThreadRoute(eventId, "reposts")) },
-                            onOpenSearch = { query -> nav.navigate(SearchRoute(query)) },
+                            onOpenSearch = ::openSearch,
                             ownPubkey = ownPubkey,
                             ownProfile = ownProfile,
                             isAccountLoaded = isAccountLoaded,
@@ -1055,6 +1177,26 @@ internal fun AppSessionCoordinator(
                     }
                     composable("services") {
                         when (currentServiceTab) {
+                            ServiceTab.Emojis -> {
+                                CustomEmojiSettingsScreen(
+                                    modifier = Modifier.serviceTabSwipe(
+                                        selectedTab = currentServiceTab,
+                                        onTabSelected = { currentServiceTab = it },
+                                    ),
+                                    onOpenRelaySettings = ::requestRelaySettings,
+                                    onOpenProfile = ::openProfileDrawer,
+                                    serviceHeader = {
+                                        EmojiServiceHeader(
+                                            ownPubkey = ownPubkey,
+                                            ownProfile = ownProfile,
+                                            onOpenProfile = ::requestOwnProfile,
+                                            onOpenSettings = { openSettings() },
+                                            onOpenRelaySettings = ::requestRelaySettings,
+                                            onServiceTabSelected = { currentServiceTab = it },
+                                        )
+                                    },
+                                )
+                            }
                             ServiceTab.Channels -> {
                                 ChannelListScreen(
                                     onChannelClick = { id -> nav.navigate(ChannelRoute(id)) },
@@ -1066,7 +1208,7 @@ internal fun AppSessionCoordinator(
                                     onOpenRelaySettings = {
                                         requestRelaySettings()
                                     },
-                                    onOpenSettings = { showQuickSettings = true },
+                                    onOpenSettings = { openSettings() },
                                     selectedServiceTab = currentServiceTab,
                                     onServiceTabSelected = { currentServiceTab = it },
                                 )
@@ -1078,7 +1220,7 @@ internal fun AppSessionCoordinator(
                                     onOpenProfile = {
                                         requestOwnProfile()
                                     },
-                                    onOpenSettings = { showQuickSettings = true },
+                                    onOpenSettings = { openSettings() },
                                     onOpenRelaySettings = {
                                         requestRelaySettings()
                                     },
@@ -1109,7 +1251,7 @@ internal fun AppSessionCoordinator(
                                     onOpenRelaySettings = {
                                         requestRelaySettings()
                                     },
-                                    onOpenSettings = { showQuickSettings = true },
+                                    onOpenSettings = { openSettings() },
                                     selectedServiceTab = currentServiceTab,
                                     onServiceTabSelected = { currentServiceTab = it },
                                 )
@@ -1200,10 +1342,6 @@ internal fun AppSessionCoordinator(
                             toggleCalendarRequest = composer.journalToggleCalendarRequest,
                             showCalendarRequest = composer.journalShowCalendarRequest,
                             accountKey = accountSession?.sessionId.orEmpty(),
-                            onNewPost = {
-                                cancelPendingReplyResolution()
-                                composer.openNewPostSheet()
-                            },
                             onOpenThread = { eventId -> nav.navigate(ThreadRoute(eventId)) },
                             onReply = { event, preview ->
                                 openReplyComposer(event, preview, NoteContext.Timeline)
@@ -1273,7 +1411,8 @@ internal fun AppSessionCoordinator(
                             onOpenFollowers = {
                                 nav.navigate(FollowersRoute(pubkey))
                             },
-                            onOpenSettings = { showQuickSettings = true },
+                            onOpenAccountSwitcher = { showAccountSwitcher = true },
+                            onOpenSettings = { openSettings() },
                             onUserClick = { pk ->
                                 openProfileDrawer(pk)
                             },
@@ -1304,6 +1443,7 @@ internal fun AppSessionCoordinator(
                             onMuteListClick = { nav.navigate("mute-list") },
                             onNgWordClick = { nav.navigate("ng-words") },
                             onCustomEmojiClick = { nav.navigate(CustomEmojiRoute()) },
+                            onRelaySettingsClick = ::requestRelaySettings,
                         )
                     }
                     composable("mute-list") {
@@ -1322,6 +1462,8 @@ internal fun AppSessionCoordinator(
                         val route = backStack.toRoute<CustomEmojiRoute>()
                         CustomEmojiSettingsScreen(
                             onBack = { nav.popBackStack() },
+                            onOpenRelaySettings = ::requestRelaySettings,
+                            onOpenProfile = ::openProfileDrawer,
                             initialQuery = route.query,
                             initialImageUrl = route.imageUrl,
                             initialSetAddress = EmojiSetAddress.parse(route.setAddress),
@@ -1398,7 +1540,6 @@ internal fun AppSessionCoordinator(
                         val route = backStack.toRoute<UserJournalRoute>()
                         JournalScreen(
                             onBack = { nav.popBackStack() },
-                            onNewPost = {},
                             onOpenThread = { eventId -> nav.navigate(ThreadRoute(eventId)) },
                             onReply = { event, preview ->
                                 openReplyComposer(event, preview, NoteContext.Timeline)
@@ -1485,6 +1626,7 @@ internal fun AppSessionCoordinator(
                 failedRelays = failedRelays,
                 onDismiss = { publishFailureDialogRelays = null },
             )
+        }
         }
 
 }

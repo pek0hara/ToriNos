@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -48,6 +49,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import com.nostr.torinos.MaxContentWidth
 import com.nostr.torinos.model.NoteContext
 import com.nostr.torinos.ui.channel.ComposerRelayContext
 import com.nostr.torinos.model.ReplyTarget
@@ -166,6 +168,17 @@ fun PostSheet(
         }
     }
 
+    fun saveDraft() {
+        if (!state.canSaveMemo) return
+        postViewModel.saveMemo(activeReplyTarget, activeNoteContext) {
+            showDraftListSheet = false
+            closeOverlay {
+                onDismiss()
+                onDraftSaved()
+            }
+        }
+    }
+
     fun openCustomEmojiSettings() {
         val draft = if (preserveLocalDraftOnNavigation) {
             postViewModel.currentMemoSnapshot(activeReplyTarget, activeNoteContext)
@@ -230,7 +243,12 @@ fun PostSheet(
                     .clickable(onClick = ::requestCancel),
             )
             Surface(
-                modifier = Modifier.fillMaxSize(),
+                // PCブラウザなどの横長画面では、アプリ本体と同じ中央の列に合わせる。
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .fillMaxHeight()
+                    .widthIn(max = MaxContentWidth)
+                    .fillMaxWidth(),
                 color = MaterialTheme.colorScheme.surface,
             ) {
                 PostSheetContent(
@@ -295,11 +313,17 @@ fun PostSheet(
 
     if (showDraftListSheet) {
         DraftListSheet(
-            onDismiss = { showDraftListSheet = false },
+            onDismiss = { if (!state.isSavingMemo) showDraftListSheet = false },
             onDraftClick = { memo ->
-                selectedDraft = memo
-                showDraftListSheet = false
+                if (!state.isSavingMemo) {
+                    selectedDraft = memo
+                    showDraftListSheet = false
+                }
             },
+            onSaveDraft = ::saveDraft,
+            canSaveDraft = state.canSaveMemo,
+            isSavingDraft = state.isSavingMemo,
+            saveError = state.error,
         )
     }
 
@@ -336,14 +360,7 @@ fun PostSheet(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .heightIn(min = 52.dp),
-                            onClick = {
-                                postViewModel.saveMemo(activeReplyTarget, activeNoteContext) {
-                                    closeOverlay {
-                                        onDismiss()
-                                        onDraftSaved()
-                                    }
-                                }
-                            },
+                            onClick = ::saveDraft,
                             enabled = state.canSaveMemo,
                         ) {
                             if (state.isSavingMemo) {

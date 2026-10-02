@@ -12,7 +12,6 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items as gridItems
@@ -51,6 +50,7 @@ import com.nostr.torinos.network.ProfileRepository
 import com.nostr.torinos.ui.components.AppTopBar
 import com.nostr.torinos.ui.components.NetworkImage
 import com.nostr.torinos.ui.components.ProfileNameText
+import com.nostr.torinos.ui.components.swipeBack
 import com.nostr.torinos.ui.profile.AvatarCircle
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -68,6 +68,8 @@ internal fun EmojiSetDetailScreen(
     onRegister: () -> Unit,
     onUnregister: () -> Unit,
     onBack: () -> Unit,
+    onOpenProfile: (String) -> Unit = {},
+    serviceHeader: (@Composable () -> Unit)? = null,
 ) {
     val authorProfile by ProfileRepository.observe(authorPubkey).collectAsState(
         initial = ProfileRepository.getCached(authorPubkey),
@@ -86,17 +88,29 @@ internal fun EmojiSetDetailScreen(
     Scaffold(
         contentWindowInsets = WindowInsets(0),
         topBar = {
-            AppTopBar(
-                title = { Text(title) },
-                navigationIcon = {
-                    IconButton(onClick = onBack) {
-                        Icon(
-                            Icons.AutoMirrored.Filled.ArrowBack,
-                            contentDescription = "一覧に戻る",
-                        )
+            if (serviceHeader != null) {
+                Column {
+                    serviceHeader()
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(end = 16.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        IconButton(onClick = onBack) {
+                            Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "一覧に戻る")
+                        }
+                        Text(title, style = MaterialTheme.typography.titleMedium)
                     }
-                },
-            )
+                }
+            } else {
+                AppTopBar(
+                    title = { Text(title) },
+                    navigationIcon = {
+                        IconButton(onClick = onBack) {
+                            Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "一覧に戻る")
+                        }
+                    },
+                )
+            }
         },
         bottomBar = {
             Surface(tonalElevation = 3.dp) {
@@ -124,7 +138,8 @@ internal fun EmojiSetDetailScreen(
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(padding),
+                .padding(padding)
+                .swipeBack(onBack),
         ) {
             Column(
                 modifier = Modifier
@@ -169,6 +184,10 @@ internal fun EmojiSetDetailScreen(
                 }
                 if (authorPubkey.isNotBlank()) {
                     Row(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(8.dp))
+                            .clickable { onOpenProfile(authorPubkey) }
+                            .padding(horizontal = 8.dp, vertical = 4.dp),
                         horizontalArrangement = Arrangement.spacedBy(10.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {

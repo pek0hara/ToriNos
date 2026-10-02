@@ -54,6 +54,10 @@ fun App() {
         // 鍵設定の完了でセッションが作り直されても、フィードの＋からの新規投稿の再開要求を失わない。
         val pendingComposerRequests = remember { PendingComposerRequestHolder() }
 
+        LaunchedEffect(accountTransitionError) {
+            if (accountTransitionError != null) pendingComposerRequests.requestRegistration(null)
+        }
+
         LaunchedEffect(Unit) {
             AccountSessions.manager.initialize()
             try {
@@ -102,12 +106,12 @@ fun App() {
     }
 }
 
-/** 画面幅が [WideLayoutMinWidth] 以上（Medium / Expanded）かどうか。true のときはボトムバーの代わりに NavigationRail を使う。 */
+/** 画面幅が [WideLayoutMinWidth] 以上（Medium / Expanded）で、サイドパネルを出さないかどうか。true のときはボトムバーの代わりに NavigationRail を使う。 */
 internal val LocalIsWideLayout = compositionLocalOf { false }
 
 /**
- * 画面幅が [WideLayoutMinWidth] 未満なら全幅で表示する。
- * それ以上なら全幅のまま [LocalIsWideLayout] を立て、レールと本文の配置は [AppScaffold] に任せる。
+ * 常に全幅を渡し、横長のときは [LocalIsWideLayout] を立てて、レールと本文の配置は [AppScaffold] に任せる。
+ * Web版で左右にパネルを置ける幅では、中央の列は下部バーのままセッション側の [SidePanelLayout] に任せる。
  */
 @Composable
 private fun CenteredContentColumn(content: @Composable () -> Unit) {
@@ -116,7 +120,11 @@ private fun CenteredContentColumn(content: @Composable () -> Unit) {
             .fillMaxSize()
             .background(MaterialTheme.colorScheme.background),
     ) {
-        CompositionLocalProvider(LocalIsWideLayout provides (maxWidth >= WideLayoutMinWidth)) {
+        val sidePanelWidth = sidePanelWidthFor(maxWidth)
+        CompositionLocalProvider(
+            LocalIsWideLayout provides (sidePanelWidth == null && maxWidth >= WideLayoutMinWidth),
+            LocalSidePanelWidth provides sidePanelWidth,
+        ) {
             content()
         }
     }

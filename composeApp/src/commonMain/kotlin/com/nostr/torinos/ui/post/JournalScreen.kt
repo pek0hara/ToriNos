@@ -14,7 +14,6 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.FilterList
 import androidx.compose.material.icons.filled.Today
 import androidx.compose.material3.CircularProgressIndicator
@@ -60,7 +59,6 @@ import com.nostr.torinos.model.NostrProfile
 import com.nostr.torinos.model.quotedEventIds
 import com.nostr.torinos.model.replyTargetId
 import com.nostr.torinos.network.RelayStore
-import com.nostr.torinos.ui.components.AppFloatingActionButton
 import com.nostr.torinos.ui.components.AppTopBar
 import com.nostr.torinos.ui.components.DeleteNoteDialog
 import com.nostr.torinos.ui.components.NoteCard
@@ -74,7 +72,6 @@ import kotlinx.coroutines.flow.collectLatest
 @Composable
 fun JournalScreen(
     onBack: () -> Unit,
-    onNewPost: () -> Unit,
     toggleCalendarRequest: Int = 0,
     showCalendarRequest: Int = 0,
     onOpenThread: (eventId: String) -> Unit = {},
@@ -161,13 +158,6 @@ fun JournalScreen(
     Scaffold(
         contentWindowInsets = WindowInsets(0),
         snackbarHost = { SnackbarHost(snackbarHostState) },
-        floatingActionButton = {
-            if (!isUserJournal) AppFloatingActionButton(
-                onClick = onNewPost,
-                icon = Icons.Default.Add,
-                contentDescription = "ポスト",
-            )
-        },
         topBar = {
             AppTopBar(
                 title = {

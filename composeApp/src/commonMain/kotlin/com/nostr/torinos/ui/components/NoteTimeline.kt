@@ -284,6 +284,29 @@ fun NoteTimeline(
         }
     }
 
+    // Rebuilt every composition but held in one State, so items keep the same lambdas (see NoteListActions).
+    val actions = rememberUpdatedState(
+        NoteListActions(
+            onUserClick = onUserClick,
+            onLike = onLike,
+            onUnlike = onUnlike,
+            onEmojiReact = onEmojiReact,
+            onEmojiUnreact = onEmojiUnreact,
+            onDelete = onDelete,
+            onReply = onReply,
+            onOpenReplies = onOpenReplies,
+            onOpenLikes = onOpenLikes,
+            onOpenReposts = onOpenReposts,
+            onRefreshReactions = onRefreshReactions,
+            onRepost = onRepost,
+            onUnrepost = onUnrepost,
+            onReport = onReport,
+            onHashtagClick = onHashtagClick,
+            onMuteUser = { muteStore?.mute(it) },
+            onUnmuteUser = { muteStore?.unmute(it) },
+        ),
+    )
+
     @Composable
     fun TimelineList(listModifier: Modifier) {
         val presentedState = when {
@@ -311,27 +334,7 @@ fun NoteTimeline(
             noteListItems(
                 state = presentedState,
                 ownPubkey = ownPubkey,
-                onUserClick = onUserClick,
-                onLike = onLike,
-                onUnlike = onUnlike,
-                onEmojiReact = onEmojiReact,
-                onEmojiUnreact = onEmojiUnreact,
-                onDelete = onDelete,
-                onReply = onReply,
-                onOpenReplies = onOpenReplies,
-                onOpenLikes = onOpenLikes,
-                onOpenReposts = onOpenReposts,
-                onRefreshReactions = onRefreshReactions,
-                onRepost = { eventId, _ ->
-                    state.events.find { it.id == eventId }?.let(onRepost)
-                },
-                onUnrepost = onUnrepost,
-                onReport = { eventId, reason, detail ->
-                    state.events.find { it.id == eventId }?.let { onReport(it, reason, detail) }
-                },
-                onHashtagClick = onHashtagClick,
-                onMuteUser = { muteStore?.mute(it) },
-                onUnmuteUser = { muteStore?.unmute(it) },
+                actions = actions,
                 mutedPubkeys = mutedPubkeys,
                 emptyText = emptyText,
                 emptyContent = {

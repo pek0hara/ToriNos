@@ -676,6 +676,11 @@ object NostrRepository {
     suspend fun targetRelayUrls(target: RelayTarget): Set<String> =
         stateMutex.withLock { target.urls(enabledRelayUrls).toSet() }
 
+    /** セッション開始前に、保存済みリレー設定が購読ルーティングへ反映されるのを待つ。 */
+    internal suspend fun awaitRelayRouting(urls: Set<String>) {
+        routingRelayUrls.first { it == urls }
+    }
+
     /** 署名済みイベントを有効な全リレーへ送信し、全送信先の結果を返す。 */
     suspend fun publish(event: NostrEvent): RelayPublishResult {
         val targets = RelayStore.writableRelayUrlsSnapshot()

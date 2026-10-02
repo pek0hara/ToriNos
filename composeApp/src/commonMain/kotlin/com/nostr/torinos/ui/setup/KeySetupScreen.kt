@@ -37,6 +37,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import kotlinx.coroutines.launch
+import kotlin.coroutines.cancellation.CancellationException
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalClipboard
@@ -69,7 +70,12 @@ import com.nostr.torinos.util.logException
 import com.nostr.torinos.ui.components.DismissKeyboardOnLeave
 
 @Composable
-fun KeySetupScreen(onSetupComplete: (pubkeyHex: String) -> Unit, onDismiss: (() -> Unit)? = null) {
+fun KeySetupScreen(
+    onSetupComplete: (pubkeyHex: String) -> Unit,
+    onDismiss: (() -> Unit)? = null,
+    // セッションの切り替え前に登録要求を退避し、失敗時は取り消す。
+    onRegisteringAccount: (String?) -> Unit = {},
+) {
     DismissKeyboardOnLeave()
     var importKey by remember { mutableStateOf("") }
     var showImportForm by remember { mutableStateOf(false) }
@@ -209,6 +215,7 @@ fun KeySetupScreen(onSetupComplete: (pubkeyHex: String) -> Unit, onDismiss: (() 
                             scope.launch(uiExceptionHandler) {
                                 val err = runCatching {
                                     savePrivateKeyAndVerify(priv)
+                                    onRegisteringAccount(pub)
                                     val session = AccountSessions.manager.activateCurrentAccount(pub).getOrThrow()
                                     session.resources.scope.launch {
                                         runCatching { saveToPasswordManager(nsec, npub) }
@@ -237,6 +244,9 @@ fun KeySetupScreen(onSetupComplete: (pubkeyHex: String) -> Unit, onDismiss: (() 
                                             }
                                     }
                                 }.exceptionOrNull()?.let {
+                                    // Switching でこの画面の scope が終了しても、登録要求は次のセッションへ残す。
+                                    if (it is CancellationException) throw it
+                                    onRegisteringAccount(null)
                                     logException("KeySetupScreen", it, "Failed to save generated private key")
                                     "秘密鍵を保存できませんでした: ${it.message}"
                                 }

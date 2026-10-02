@@ -8,6 +8,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import com.nostr.torinos.ui.components.CustomEmojiOpenRequest
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
@@ -26,6 +27,10 @@ internal sealed interface ProfileDrawerDestination {
 
     data class Followers(val pubkey: String) : ProfileDrawerDestination {
         override val stateKey: String = "followers-$pubkey"
+    }
+
+    data class CustomEmoji(val request: CustomEmojiOpenRequest) : ProfileDrawerDestination {
+        override val stateKey: String = "emoji-${request.shortcode}-${request.imageUrl}-${request.setAddress?.value.orEmpty()}"
     }
 
     data class Thread(
@@ -52,6 +57,10 @@ internal class DrawerCoordinator(
     var profileNavigationSessionId by mutableStateOf(0)
         private set
 
+    /** PCブラウザの横長画面で、プロフィールをドロワーではなく左パネルに固定表示している。 */
+    var isProfileDocked by mutableStateOf(false)
+        private set
+
     private var hasProfileOpened = false
     private val profileHistory = mutableListOf<ProfileDrawerDestination>()
     private val transitionMutex = Mutex()
@@ -61,7 +70,8 @@ internal class DrawerCoordinator(
             transitionMutex.withLock {
                 val currentDestination = profileDestination
                 val isProfileActive = currentDestination != null &&
-                    (profileState.currentValue == DrawerValue.Open ||
+                    (isProfileDocked ||
+                        profileState.currentValue == DrawerValue.Open ||
                         profileState.targetValue == DrawerValue.Open)
                 if (
                     currentDestination == ProfileDrawerDestination.Profile(pubkey) &&
@@ -81,6 +91,13 @@ internal class DrawerCoordinator(
                 }
 
                 profileHistory.clear()
+                if (isProfileDocked) {
+                    // 左パネルは中央の画面と同時に見えるので、通知ドロワーも閉じない。
+                    profileDestination = ProfileDrawerDestination.Profile(pubkey)
+                    profileNavigationSessionId++
+                    isProfileContentReady = true
+                    return@withLock
+                }
                 isProfileContentReady = false
                 notificationsState.close()
                 profileState.close()
@@ -142,12 +159,27 @@ internal class DrawerCoordinator(
         }
     }
 
+    fun openCustomEmoji(source: ProfileDrawerDestination, request: CustomEmojiOpenRequest) {
+        scope.launch {
+            transitionMutex.withLock {
+                if (profileDestination != source) return@withLock
+                val destination = ProfileDrawerDestination.CustomEmoji(request)
+                if (destination == source) return@withLock
+                profileHistory.add(source)
+                profileDestination = destination
+                isProfileContentReady = true
+            }
+        }
+    }
+
     fun navigateBackOrCloseProfile() {
         scope.launch {
             transitionMutex.withLock {
                 if (profileHistory.isNotEmpty()) {
                     profileDestination = profileHistory.removeAt(profileHistory.lastIndex)
                     isProfileContentReady = true
+                } else if (isProfileDocked) {
+                    clearProfile()
                 } else {
                     profileState.close()
                 }
@@ -158,7 +190,7 @@ internal class DrawerCoordinator(
     fun openNotifications() {
         scope.launch {
             transitionMutex.withLock {
-                profileState.close()
+                if (!isProfileDocked) profileState.close()
                 notificationsState.open()
             }
         }
@@ -167,7 +199,8 @@ internal class DrawerCoordinator(
     fun closeProfileAndThen(action: () -> Unit) {
         scope.launch {
             transitionMutex.withLock {
-                profileState.close()
+                // 左パネルは中央の操作の邪魔にならないので、開いたまま操作を続ける。
+                if (!isProfileDocked) profileState.close()
                 action()
             }
         }
@@ -182,13 +215,38 @@ internal class DrawerCoordinator(
                         profileState.targetValue == DrawerValue.Closed &&
                         hasProfileOpened -> {
                         hasProfileOpened = false
-                        isProfileContentReady = false
-                        profileDestination = null
-                        profileHistory.clear()
+                        clearProfile()
                     }
                 }
             }
         }
+    }
+
+    /**
+     * 左パネルへの固定表示を切り替える。表示中のプロフィールと履歴は引き継ぎ、
+     * 固定表示に入るときはドロワーを閉じ、外れるときはドロワーとして開き直す。
+     */
+    fun updateProfileDocking(docked: Boolean) {
+        scope.launch {
+            transitionMutex.withLock {
+                if (isProfileDocked == docked) return@withLock
+                isProfileDocked = docked
+                if (docked) {
+                    // ドロワーを閉じても onProfileStateChanged で表示先を消さない。
+                    hasProfileOpened = false
+                    profileState.snapTo(DrawerValue.Closed)
+                } else if (profileDestination != null) {
+                    isProfileContentReady = true
+                    profileState.open()
+                }
+            }
+        }
+    }
+
+    private fun clearProfile() {
+        isProfileContentReady = false
+        profileDestination = null
+        profileHistory.clear()
     }
 
     fun onNotificationsOpened() {

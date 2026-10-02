@@ -22,5 +22,8 @@ internal fun findStandaloneShortcodes(text: String): List<ShortcodeMatch> =
 /** タグや入力の shortcode から前後の空白とコロンを取り除く。 */
 internal fun normalizeShortcode(value: String): String = value.trim().trim(':')
 
+/** 検索語。shortcode と同じくコロンを外し、大文字小文字を区別しない。 */
+internal fun normalizeEmojiSearchQuery(query: String): String = normalizeShortcode(query).lowercase()
+
 private fun Char?.isAsciiLetterOrDigit(): Boolean =
     this != null && (this in 'a'..'z' || this in 'A'..'Z' || this in '0'..'9')
