@@ -166,6 +166,17 @@ fun PostSheet(
         }
     }
 
+    fun saveDraft() {
+        if (!state.canSaveMemo) return
+        postViewModel.saveMemo(activeReplyTarget, activeNoteContext) {
+            showDraftListSheet = false
+            closeOverlay {
+                onDismiss()
+                onDraftSaved()
+            }
+        }
+    }
+
     fun openCustomEmojiSettings() {
         val draft = if (preserveLocalDraftOnNavigation) {
             postViewModel.currentMemoSnapshot(activeReplyTarget, activeNoteContext)
@@ -295,11 +306,17 @@ fun PostSheet(
 
     if (showDraftListSheet) {
         DraftListSheet(
-            onDismiss = { showDraftListSheet = false },
+            onDismiss = { if (!state.isSavingMemo) showDraftListSheet = false },
             onDraftClick = { memo ->
-                selectedDraft = memo
-                showDraftListSheet = false
+                if (!state.isSavingMemo) {
+                    selectedDraft = memo
+                    showDraftListSheet = false
+                }
             },
+            onSaveDraft = ::saveDraft,
+            canSaveDraft = state.canSaveMemo,
+            isSavingDraft = state.isSavingMemo,
+            saveError = state.error,
         )
     }
 
@@ -336,14 +353,7 @@ fun PostSheet(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .heightIn(min = 52.dp),
-                            onClick = {
-                                postViewModel.saveMemo(activeReplyTarget, activeNoteContext) {
-                                    closeOverlay {
-                                        onDismiss()
-                                        onDraftSaved()
-                                    }
-                                }
-                            },
+                            onClick = ::saveDraft,
                             enabled = state.canSaveMemo,
                         ) {
                             if (state.isSavingMemo) {
