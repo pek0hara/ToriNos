@@ -66,6 +66,7 @@ fun NetworkImage(
     animate: Boolean = true,
     blurHash: String? = null,
     onSuccessSize: ((androidx.compose.ui.geometry.Size) -> Unit)? = null,
+    onError: ((AsyncImagePainter.State.Error) -> Unit)? = null,
 ) {
     val context = LocalPlatformContext.current
     val model = remember(context, url, contentScale, maxDecodeSizePx, animate) {
@@ -79,6 +80,7 @@ fun NetworkImage(
             model = model,
             contentDescription = contentDescription,
             onSuccess = onSuccess,
+            onError = onError,
             contentScale = contentScale,
             alignment = alignment,
             filterQuality = filterQuality,
@@ -100,6 +102,7 @@ fun NetworkImage(
                     showBlurHash = false
                     onSuccess?.invoke(state)
                 },
+                onError = onError,
                 contentScale = contentScale,
                 alignment = alignment,
                 filterQuality = filterQuality,

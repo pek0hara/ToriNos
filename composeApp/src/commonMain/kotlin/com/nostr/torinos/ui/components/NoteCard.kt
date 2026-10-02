@@ -569,7 +569,13 @@ fun NoteCard(
                 Box {
                     EngagementCount(
                         icon = Icons.Default.Favorite,
-                        contentDescription = if (hasOwnReaction) "リアクションを解除" else "いいね",
+                        reaction = ownEmojiReaction.takeUnless { isLiked },
+                        contentDescription = when {
+                            isLiked -> "いいねを解除"
+                            ownEmojiReaction != null -> "${ownEmojiReaction.eventContent}のリアクションを解除"
+                            hasOwnReaction -> "リアクションを解除"
+                            else -> "いいね"
+                        },
                         count = reactionCount,
                         countText = if (reactionCount > 0) {
                             "$reactionCount${if (expandedEngagement == ExpandedEngagement.Reactions) "⌃" else "⌄"}"
@@ -2164,6 +2170,7 @@ fun EngagementCount(
     onClick: (() -> Unit)? = null,
     onLongClick: (() -> Unit)? = null,
     onCountClick: (() -> Unit)? = null,
+    reaction: ReactionOption? = null,
 ) {
     Row(
         verticalAlignment = Alignment.CenterVertically,
@@ -2182,12 +2189,41 @@ fun EngagementCount(
             },
             contentAlignment = Alignment.Center,
         ) {
-            Icon(
-                imageVector = icon,
-                contentDescription = contentDescription,
-                modifier = Modifier.size(22.dp),
-                tint = tint,
-            )
+            when (reaction) {
+                is ReactionOption.Custom -> {
+                    var imageFailed by remember(reaction.imageUrl) { mutableStateOf(false) }
+                    if (imageFailed) {
+                        Icon(
+                            imageVector = Icons.Default.Favorite,
+                            contentDescription = contentDescription,
+                            modifier = Modifier.size(22.dp),
+                            tint = tint,
+                        )
+                    } else {
+                        NetworkImage(
+                            url = reaction.imageUrl,
+                            contentDescription = contentDescription,
+                            contentScale = ContentScale.Fit,
+                            modifier = Modifier.size(22.dp),
+                            onError = { imageFailed = true },
+                        )
+                    }
+                }
+                is ReactionOption.Unicode -> Text(
+                    text = reaction.value,
+                    fontSize = 22.sp,
+                    maxLines = 1,
+                    modifier = Modifier.semantics {
+                        this.contentDescription = contentDescription
+                    },
+                )
+                null -> Icon(
+                    imageVector = icon,
+                    contentDescription = contentDescription,
+                    modifier = Modifier.size(22.dp),
+                    tint = tint,
+                )
+            }
         }
         Box(
             modifier = if (onCountClick != null) {
