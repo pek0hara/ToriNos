@@ -6,6 +6,8 @@ import com.nostr.torinos.emoji.customEmojiTagsForContent
 import com.nostr.torinos.account.AccountSession
 import com.nostr.torinos.ui.SafeViewModel
 import com.nostr.torinos.model.NostrProfile
+import com.nostr.torinos.network.Nip05Repository
+import com.nostr.torinos.network.Nip05Status
 import com.nostr.torinos.network.ImageUploader
 import com.nostr.torinos.network.NostrRepository
 import com.nostr.torinos.network.ProfileFetchPolicy
@@ -79,6 +81,11 @@ class EditProfileViewModel(
     fun onPictureChange(v: String) { _state.value = _state.value.copy(picture = v, error = null) }
     fun onBannerChange(v: String) { _state.value = _state.value.copy(banner = v, error = null) }
     fun onNip05Change(v: String) { _state.value = _state.value.copy(nip05 = v, error = null) }
+
+    suspend fun verifyNip05(address: String): Nip05Status {
+        val pubkey = accountSession?.pubkey ?: return Nip05Status.Unchecked
+        return Nip05Repository.verify(address, pubkey, forceRefresh = true)
+    }
 
     fun uploadProfileImage(bytes: ByteArray, mimeType: String) {
         uploadImage(bytes, mimeType, ImageUploadTarget.Picture)

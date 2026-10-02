@@ -1,5 +1,9 @@
 package com.nostr.torinos.ui.profile
 
+import com.nostr.torinos.network.Nip05Status
+import androidx.compose.runtime.rememberCoroutineScope
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.launch
 import com.nostr.torinos.model.NostrProfile
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -451,6 +455,10 @@ fun NameEditDialog(
     val state by viewModel.state.collectAsState()
     var name by remember { mutableStateOf(currentProfile?.name ?: "") }
     var displayName by remember { mutableStateOf(currentProfile?.displayName ?: "") }
+    var nip05 by remember { mutableStateOf(currentProfile?.nip05 ?: "") }
+    var nip05Status by remember { mutableStateOf(Nip05Status.Unchecked) }
+    var verificationJob by remember { mutableStateOf<Job?>(null) }
+    val scope = rememberCoroutineScope()
 
     LaunchedEffect(state.saved) {
         if (state.saved) {
@@ -463,9 +471,12 @@ fun NameEditDialog(
 
     AlertDialog(
         onDismissRequest = { if (!state.isSaving) onDismiss() },
-        title = { Text("名前を編集") },
+        title = { Text("名前・NIP-05を編集") },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Column(
+                modifier = Modifier.verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
                 OutlinedTextField(
                     value = name,
                     onValueChange = { name = it },
@@ -482,6 +493,40 @@ fun NameEditDialog(
                     modifier = Modifier.fillMaxWidth(),
                     enabled = !state.isSaving,
                 )
+                OutlinedTextField(
+                    value = nip05,
+                    onValueChange = {
+                        verificationJob?.cancel()
+                        nip05 = it
+                        nip05Status = Nip05Status.Unchecked
+                    },
+                    label = { Text("NIP-05アドレス（任意）") },
+                    placeholder = { Text("alice@example.com") },
+                    supportingText = { Text("取得済みのアドレスを入力") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                    enabled = !state.isSaving,
+                )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    TextButton(
+                        onClick = {
+                            verificationJob = scope.launch {
+                                nip05Status = Nip05Status.Checking
+                                nip05Status = viewModel.verifyNip05(nip05)
+                            }
+                        },
+                        enabled = nip05.isNotBlank() && !state.isSaving && nip05Status != Nip05Status.Checking,
+                    ) { Text("確認") }
+                    Text(
+                        text = nip05Status.message,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = when (nip05Status) {
+                            Nip05Status.Verified -> MaterialTheme.colorScheme.primary
+                            Nip05Status.InvalidAddress, Nip05Status.Mismatch -> MaterialTheme.colorScheme.error
+                            else -> MaterialTheme.colorScheme.onSurfaceVariant
+                        },
+                    )
+                }
                 state.error?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.labelSmall) }
             }
         },
@@ -491,6 +536,7 @@ fun NameEditDialog(
                     viewModel.initFrom(currentProfile ?: NostrProfile())
                     viewModel.onNameChange(name)
                     viewModel.onDisplayNameChange(displayName)
+                    viewModel.onNip05Change(nip05)
                     viewModel.save()
                 },
                 enabled = !state.isSaving,

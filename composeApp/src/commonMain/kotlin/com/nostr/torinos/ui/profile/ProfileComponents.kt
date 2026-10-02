@@ -66,6 +66,8 @@ import coil3.request.ImageRequest
 import coil3.request.crossfade
 import com.nostr.torinos.crypto.hexToNpub
 import com.nostr.torinos.model.NostrProfile
+import com.nostr.torinos.network.Nip05Repository
+import com.nostr.torinos.network.Nip05Status
 import com.nostr.torinos.network.RelayStore
 import com.nostr.torinos.ui.components.LinkedText
 import com.nostr.torinos.ui.components.NetworkImage
@@ -389,11 +391,14 @@ internal fun ProfileHeader(
                             .weight(1f, fill = false),
                     )
                 }
+                profile?.nip05?.takeIf { it.isNotBlank() }?.let { nip05 ->
+                    Nip05VerificationIcon(pubkey, nip05)
+                }
                 if (isOwnProfile && onEditName != null) {
                     IconButton(onClick = onEditName, modifier = Modifier.size(28.dp)) {
                         Icon(
                             Icons.Default.Edit,
-                            contentDescription = "名前を編集",
+                            contentDescription = "名前・NIP-05を編集",
                             modifier = Modifier.size(14.dp),
                             tint = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
@@ -893,4 +898,35 @@ private val avatarPalette = listOf(
 internal fun avatarColor(pubkey: String): Color {
     val index = pubkey.hashCode().mod(avatarPalette.size)
     return avatarPalette[index]
+}
+
+@Composable
+private fun Nip05VerificationIcon(pubkey: String, address: String) {
+    val verification = remember(pubkey, address) { Nip05Repository.observe(address, pubkey) }
+    val status by verification.collectAsState(initial = Nip05Status.Unchecked)
+    LaunchedEffect(pubkey, address) {
+        Nip05Repository.verify(address, pubkey)
+    }
+    when (status) {
+        Nip05Status.Verified -> Icon(
+            Icons.Default.Check,
+            contentDescription = status.message,
+            tint = MaterialTheme.colorScheme.primary,
+            modifier = Modifier.padding(start = 4.dp).size(16.dp),
+        )
+        Nip05Status.Checking -> CircularProgressIndicator(
+            modifier = Modifier.padding(start = 4.dp).size(12.dp),
+            strokeWidth = 1.dp,
+        )
+        else -> Text(
+            text = when (status) {
+                Nip05Status.Mismatch -> "不一致"
+                Nip05Status.InvalidAddress -> "形式エラー"
+                else -> "未確認"
+            },
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(start = 4.dp),
+        )
+    }
 }
