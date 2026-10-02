@@ -217,6 +217,9 @@ internal fun AppSessionCoordinator(
         var showAccountSwitcher by remember(ownPubkey) { mutableStateOf(false) }
         var relaySettingsNavigationRequest by remember { mutableStateOf(0) }
         val drawerCoordinator = rememberDrawerCoordinator(scope)
+        val sidePanelWidth = LocalSidePanelWidth.current
+        val isSidePanelMode = sidePanelWidth != null
+        val sidePanelNavigator = rememberSidePanelNavigator()
         val profileDrawerStateHolder = rememberSaveableStateHolder()
         var lastProfileDrawerPubkey by rememberSaveable { mutableStateOf<String?>(null) }
         val profileDrawerStateOwners = remember { mutableMapOf<String, String?>() }
@@ -318,14 +321,44 @@ internal fun AppSessionCoordinator(
             relaySettingsNavigationRequest++
         }
 
-        fun openSettings() {
-            nav.navigate("settings") { launchSingleTop = true }
-        }
-
         LaunchedEffect(relaySettingsNavigationRequest) {
             if (relaySettingsNavigationRequest <= 0) return@LaunchedEffect
             nav.navigate("relay-settings") {
                 launchSingleTop = true
+            }
+        }
+
+        fun openSettings() {
+            if (isSidePanelMode) {
+                sidePanelNavigator.openRoot(SidePanelDestination.Settings)
+            } else {
+                nav.navigate("settings") { launchSingleTop = true }
+            }
+        }
+
+        fun openSearch(query: String) {
+            if (isSidePanelMode) {
+                sidePanelNavigator.openRoot(SidePanelDestination.Search(query))
+            } else {
+                nav.navigate(SearchRoute(query))
+            }
+        }
+
+        LaunchedEffect(isSidePanelMode) {
+            drawerCoordinator.updateProfileDocking(isSidePanelMode)
+            if (isSidePanelMode) return@LaunchedEffect
+            // 狭い幅に戻ったら、右パネルで開いていた画面を中央の画面遷移で表示し続ける。
+            val destinations = sidePanelNavigator.entries.map { it.destination }
+            sidePanelNavigator.disposeAll()
+            destinations.forEach { destination ->
+                when (destination) {
+                    SidePanelDestination.Settings -> nav.navigate("settings")
+                    SidePanelDestination.MuteList -> nav.navigate("mute-list")
+                    SidePanelDestination.NgWords -> nav.navigate("ng-words")
+                    SidePanelDestination.RelaySettings -> nav.navigate("relay-settings")
+                    is SidePanelDestination.CustomEmoji -> nav.navigate(destination.route)
+                    is SidePanelDestination.Search -> nav.navigate(SearchRoute(destination.query))
+                }
             }
         }
 
@@ -455,7 +488,8 @@ internal fun AppSessionCoordinator(
                 is ProfileDrawerDestination.Profile -> destination.pubkey
                 is ProfileDrawerDestination.Following -> destination.pubkey
                 is ProfileDrawerDestination.Followers -> destination.pubkey
-                is ProfileDrawerDestination.Thread -> lastProfileDrawerPubkey
+                is ProfileDrawerDestination.Thread,
+                is ProfileDrawerDestination.CustomEmoji -> lastProfileDrawerPubkey
             }
             if (handledProfileNavigationSessionId != sessionId) {
                 val nextPubkey = (destination as? ProfileDrawerDestination.Profile)?.pubkey
@@ -594,21 +628,255 @@ internal fun AppSessionCoordinator(
                 )
             }
         }
-        CompositionLocalProvider(
-            LocalCustomEmojiNavigator provides openCustomEmoji,
-            LocalQuotePostHandler provides { event: NostrEvent ->
-                cancelPendingReplyResolution()
-                composer.prepareQuote(event)
-                runWithPrivateKey(PendingKeyAction.Quote) {
-                    composer.openFullScreen()
+        val quotePostHandler = { event: NostrEvent ->
+            cancelPendingReplyResolution()
+            composer.prepareQuote(event)
+            runWithPrivateKey(PendingKeyAction.Quote) {
+                composer.openFullScreen()
+            }
+        }
+        // プロフィールドロワーの中身。PCブラウザの横長画面では左パネルに表示する。
+        val profilePanelContent: @Composable (ProfileDrawerDestination?, Boolean) -> Unit = { drawerDestination, isReady ->
+            when {
+                drawerDestination == null -> Unit
+                !isReady -> Box(
+                    modifier = Modifier.fillMaxSize(),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    CircularProgressIndicator()
+                }
+                else -> CompositionLocalProvider(
+                    LocalCustomEmojiNavigator provides { request ->
+                        drawerCoordinator.openCustomEmoji(drawerDestination, request)
+                    },
+                ) {
+                    profileDrawerStateHolder.SaveableStateProvider(
+                        key = "profile-drawer-${drawerDestination.stateKey}",
+                    ) {
+                        when (drawerDestination) {
+                            is ProfileDrawerDestination.Following -> FollowListScreen(
+                                mode = FollowListMode.FOLLOWING,
+                                ownPubkey = drawerDestination.pubkey,
+                                onBack = drawerCoordinator::navigateBackOrCloseProfile,
+                                onUserClick = ::openProfileDrawer,
+                            )
+                            is ProfileDrawerDestination.Followers -> FollowListScreen(
+                                mode = FollowListMode.FOLLOWERS,
+                                ownPubkey = drawerDestination.pubkey,
+                                onBack = drawerCoordinator::navigateBackOrCloseProfile,
+                                onUserClick = ::openProfileDrawer,
+                            )
+                            is ProfileDrawerDestination.Profile -> if (
+                                drawerDestination.pubkey == ownPubkey
+                            ) {
+                                MyProfileScreen(
+                                    ownPubkey = drawerDestination.pubkey,
+                                    onBack = drawerCoordinator::navigateBackOrCloseProfile,
+                                    onOpenFollowing = {
+                                        drawerCoordinator.openFollowing(drawerDestination.pubkey)
+                                    },
+                                    onOpenFollowers = {
+                                        drawerCoordinator.openFollowers(drawerDestination.pubkey)
+                                    },
+                                    onOpenAccountSwitcher = { showAccountSwitcher = true },
+                                    onOpenSettings = {
+                                        closeProfileDrawerAndThen { openSettings() }
+                                    },
+                                    onUserClick = ::openProfileDrawer,
+                                    onReply = { event, preview ->
+                                        closeProfileDrawerAndThen {
+                                            openReplyComposer(event, preview, NoteContext.Timeline)
+                                        }
+                                    },
+                                    onOpenReplies = { eventId ->
+                                        drawerCoordinator.openThread(drawerDestination, eventId)
+                                    },
+                                    onOpenLikes = { eventId ->
+                                        drawerCoordinator.openThread(drawerDestination, eventId, "likes")
+                                    },
+                                    onOpenReposts = { eventId ->
+                                        drawerCoordinator.openThread(drawerDestination, eventId, "reposts")
+                                    },
+                                    longBackgroundResetRequest = feedLongBackgroundResetRequest,
+                                )
+                            } else {
+                                UserProfileScreen(
+                                    pubkey = drawerDestination.pubkey,
+                                    onBack = drawerCoordinator::navigateBackOrCloseProfile,
+                                    isOwnProfile = false,
+                                    ownPubkey = ownPubkey,
+                                    onOpenFollowing = {
+                                        drawerCoordinator.openFollowing(drawerDestination.pubkey)
+                                    },
+                                    onOpenFollowers = {
+                                        drawerCoordinator.openFollowers(drawerDestination.pubkey)
+                                    },
+                                    onUserClick = ::openProfileDrawer,
+                                    onReply = { event, preview ->
+                                        closeProfileDrawerAndThen {
+                                            openReplyComposer(event, preview, NoteContext.Timeline)
+                                        }
+                                    },
+                                    onOpenReplies = { eventId ->
+                                        drawerCoordinator.openThread(drawerDestination, eventId)
+                                    },
+                                    onOpenLikes = { eventId ->
+                                        drawerCoordinator.openThread(drawerDestination, eventId, "likes")
+                                    },
+                                    onOpenReposts = { eventId ->
+                                        drawerCoordinator.openThread(drawerDestination, eventId, "reposts")
+                                    },
+                                    onOpenJournal = {
+                                        closeProfileDrawerAndThen {
+                                            nav.navigate(UserJournalRoute(drawerDestination.pubkey))
+                                        }
+                                    },
+                                    longBackgroundResetRequest = feedLongBackgroundResetRequest,
+                                )
+                            }
+                            is ProfileDrawerDestination.CustomEmoji -> CustomEmojiSettingsScreen(
+                                onBack = drawerCoordinator::navigateBackOrCloseProfile,
+                                onOpenRelaySettings = {
+                                    closeProfileDrawerAndThen { requestRelaySettings() }
+                                },
+                                onOpenProfile = ::openProfileDrawer,
+                                initialQuery = drawerDestination.request.shortcode,
+                                initialImageUrl = drawerDestination.request.imageUrl,
+                                initialSetAddress = drawerDestination.request.setAddress,
+                                returnToSourceOnDetailBack = true,
+                            )
+                            is ProfileDrawerDestination.Thread -> {
+                                val channelId = drawerDestination.channelId
+                                val threadViewModel = accountSessionViewModel<ThreadViewModel>(
+                                    key = "profile-drawer-thread-${drawerDestination.eventId}-${channelId ?: "note"}",
+                                ) { session ->
+                                    ThreadViewModel(
+                                        eventId = drawerDestination.eventId,
+                                        noteContext = noteContextForChannel(channelId),
+                                        accountSession = session,
+                                    )
+                                }
+                                ThreadScreen(
+                                    eventId = drawerDestination.eventId,
+                                    initialTab = drawerDestination.initialTab,
+                                    channelId = channelId,
+                                    onBack = drawerCoordinator::navigateBackOrCloseProfile,
+                                    enableSwipeBack = true,
+                                    onUserClick = ::openProfileDrawer,
+                                    onReply = { event, preview, chId ->
+                                        closeProfileDrawerAndThen {
+                                            openReplyComposer(event, preview, noteContextForChannel(chId))
+                                        }
+                                    },
+                                    onOpenThread = { eventId ->
+                                        drawerCoordinator.openThread(
+                                            source = drawerDestination,
+                                            eventId = eventId,
+                                            channelId = channelId,
+                                        )
+                                    },
+                                    onOpenLikes = { eventId ->
+                                        drawerCoordinator.openThread(
+                                            source = drawerDestination,
+                                            eventId = eventId,
+                                            initialTab = "likes",
+                                            channelId = channelId,
+                                        )
+                                    },
+                                    onOpenReposts = { eventId ->
+                                        drawerCoordinator.openThread(
+                                            source = drawerDestination,
+                                            eventId = eventId,
+                                            initialTab = "reposts",
+                                            channelId = channelId,
+                                        )
+                                    },
+                                    ownPubkey = ownPubkey,
+                                    viewModel = threadViewModel,
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        // 右パネルの画面。設定の子画面はパネル内に積み、投稿は中央、ユーザーは左パネルで開く。
+        val sidePanelScreen: @Composable (SidePanelDestination) -> Unit = { destination ->
+            when (destination) {
+                SidePanelDestination.Settings -> SettingsScreen(
+                    ownPubkey = ownPubkey,
+                    onBack = sidePanelNavigator::back,
+                    onAccountChanged = {},
+                    onAddAccountClick = {
+                        composer.pendingKeyAction = null
+                        composer.showKeySetup = true
+                    },
+                    onMuteListClick = { sidePanelNavigator.push(SidePanelDestination.MuteList) },
+                    onNgWordClick = { sidePanelNavigator.push(SidePanelDestination.NgWords) },
+                    onCustomEmojiClick = { sidePanelNavigator.push(SidePanelDestination.CustomEmoji()) },
+                    onRelaySettingsClick = { sidePanelNavigator.push(SidePanelDestination.RelaySettings) },
+                )
+                SidePanelDestination.MuteList -> MuteListScreen(
+                    onBack = sidePanelNavigator::back,
+                    onUserClick = ::openProfileDrawer,
+                )
+                SidePanelDestination.NgWords -> NgWordScreen(onBack = sidePanelNavigator::back)
+                SidePanelDestination.RelaySettings -> RelaySettingsScreen(onBack = sidePanelNavigator::back)
+                is SidePanelDestination.CustomEmoji -> CustomEmojiSettingsScreen(
+                    onBack = sidePanelNavigator::back,
+                    onOpenRelaySettings = { sidePanelNavigator.push(SidePanelDestination.RelaySettings) },
+                    onOpenProfile = ::openProfileDrawer,
+                    initialQuery = destination.route.query,
+                    initialImageUrl = destination.route.imageUrl,
+                    initialSetAddress = EmojiSetAddress.parse(destination.route.setAddress),
+                )
+                is SidePanelDestination.Search -> SearchScreen(
+                    initialQuery = destination.query,
+                    onBack = sidePanelNavigator::back,
+                    onUserClick = ::openProfileDrawer,
+                    onOpenThread = { eventId -> nav.navigate(ThreadRoute(eventId)) },
+                    onOpenReplies = { eventId -> nav.navigate(ThreadRoute(eventId)) },
+                    onOpenLikes = { eventId -> nav.navigate(ThreadRoute(eventId, "likes")) },
+                    onOpenReposts = { eventId -> nav.navigate(ThreadRoute(eventId, "reposts")) },
+                )
+            }
+        }
+        SidePanelLayout(
+            panelWidth = sidePanelWidth,
+            left = {
+                CompositionLocalProvider(
+                    LocalCustomEmojiNavigator provides openCustomEmoji,
+                    LocalQuotePostHandler provides quotePostHandler,
+                ) {
+                    // 閉じるアニメーション中は、最後に表示していたプロフィールを出し続ける。
+                    SlidingSidePanel(value = drawerCoordinator.profileDestination) { displayed ->
+                        profilePanelContent(displayed, true)
+                    }
                 }
             },
+            right = {
+                CompositionLocalProvider(
+                    LocalCustomEmojiNavigator provides openCustomEmoji,
+                    LocalQuotePostHandler provides quotePostHandler,
+                ) {
+                    SidePanelHost(sidePanelNavigator) { destination ->
+                        sidePanelScreen(destination)
+                    }
+                }
+            },
+        ) {
+        CompositionLocalProvider(
+            LocalCustomEmojiNavigator provides openCustomEmoji,
+            LocalQuotePostHandler provides quotePostHandler,
         ) {
         AppModalNavigationDrawer(
             drawerState = profileDrawerState,
             endDrawer = false,
-            gesturesEnabled = profileDrawerState.currentValue != DrawerValue.Closed ||
-                profileDrawerState.targetValue != DrawerValue.Closed,
+            // 左パネル表示中はプロフィールドロワーを使わない。
+            gesturesEnabled = !isSidePanelMode && (
+                profileDrawerState.currentValue != DrawerValue.Closed ||
+                    profileDrawerState.targetValue != DrawerValue.Closed
+                ),
             drawerContent = {
                 ModalDrawerSheet(
                     modifier = Modifier
@@ -617,151 +885,11 @@ internal fun AppSessionCoordinator(
                     drawerContainerColor = MaterialTheme.colorScheme.background,
                     windowInsets = WindowInsets(0),
                 ) {
-                        val drawerDestination = drawerCoordinator.profileDestination
-                        when {
-                            drawerDestination == null -> Unit
-                            !drawerCoordinator.isProfileContentReady -> Box(
-                                modifier = Modifier.fillMaxSize(),
-                                contentAlignment = Alignment.Center,
-                            ) {
-                                CircularProgressIndicator()
-                            }
-                            else -> profileDrawerStateHolder.SaveableStateProvider(
-                                key = "profile-drawer-${drawerDestination.stateKey}",
-                            ) {
-                                when (drawerDestination) {
-                                    is ProfileDrawerDestination.Following -> FollowListScreen(
-                                        mode = FollowListMode.FOLLOWING,
-                                        ownPubkey = drawerDestination.pubkey,
-                                        onBack = drawerCoordinator::navigateBackOrCloseProfile,
-                                        onUserClick = ::openProfileDrawer,
-                                    )
-                                    is ProfileDrawerDestination.Followers -> FollowListScreen(
-                                        mode = FollowListMode.FOLLOWERS,
-                                        ownPubkey = drawerDestination.pubkey,
-                                        onBack = drawerCoordinator::navigateBackOrCloseProfile,
-                                        onUserClick = ::openProfileDrawer,
-                                    )
-                                    is ProfileDrawerDestination.Profile -> if (
-                                        drawerDestination.pubkey == ownPubkey
-                                    ) {
-                                        MyProfileScreen(
-                                            ownPubkey = drawerDestination.pubkey,
-                                            onBack = drawerCoordinator::navigateBackOrCloseProfile,
-                                            onOpenFollowing = {
-                                                drawerCoordinator.openFollowing(drawerDestination.pubkey)
-                                            },
-                                            onOpenFollowers = {
-                                                drawerCoordinator.openFollowers(drawerDestination.pubkey)
-                                            },
-                                            onOpenAccountSwitcher = { showAccountSwitcher = true },
-                                            onOpenSettings = {
-                                                closeProfileDrawerAndThen { openSettings() }
-                                            },
-                                            onUserClick = ::openProfileDrawer,
-                                            onReply = { event, preview ->
-                                                closeProfileDrawerAndThen {
-                                                    openReplyComposer(event, preview, NoteContext.Timeline)
-                                                }
-                                            },
-                                            onOpenReplies = { eventId ->
-                                                drawerCoordinator.openThread(drawerDestination, eventId)
-                                            },
-                                            onOpenLikes = { eventId ->
-                                                drawerCoordinator.openThread(drawerDestination, eventId, "likes")
-                                            },
-                                            onOpenReposts = { eventId ->
-                                                drawerCoordinator.openThread(drawerDestination, eventId, "reposts")
-                                            },
-                                            longBackgroundResetRequest = feedLongBackgroundResetRequest,
-                                        )
-                                    } else {
-                                        UserProfileScreen(
-                                            pubkey = drawerDestination.pubkey,
-                                            onBack = drawerCoordinator::navigateBackOrCloseProfile,
-                                            isOwnProfile = false,
-                                            ownPubkey = ownPubkey,
-                                            onOpenFollowing = {
-                                                drawerCoordinator.openFollowing(drawerDestination.pubkey)
-                                            },
-                                            onOpenFollowers = {
-                                                drawerCoordinator.openFollowers(drawerDestination.pubkey)
-                                            },
-                                            onUserClick = ::openProfileDrawer,
-                                            onReply = { event, preview ->
-                                                closeProfileDrawerAndThen {
-                                                    openReplyComposer(event, preview, NoteContext.Timeline)
-                                                }
-                                            },
-                                            onOpenReplies = { eventId ->
-                                                drawerCoordinator.openThread(drawerDestination, eventId)
-                                            },
-                                            onOpenLikes = { eventId ->
-                                                drawerCoordinator.openThread(drawerDestination, eventId, "likes")
-                                            },
-                                            onOpenReposts = { eventId ->
-                                                drawerCoordinator.openThread(drawerDestination, eventId, "reposts")
-                                            },
-                                            onOpenJournal = {
-                                                closeProfileDrawerAndThen {
-                                                    nav.navigate(UserJournalRoute(drawerDestination.pubkey))
-                                                }
-                                            },
-                                            longBackgroundResetRequest = feedLongBackgroundResetRequest,
-                                        )
-                                    }
-                                    is ProfileDrawerDestination.Thread -> {
-                                        val channelId = drawerDestination.channelId
-                                        val threadViewModel = accountSessionViewModel<ThreadViewModel>(
-                                            key = "profile-drawer-thread-${drawerDestination.eventId}-${channelId ?: "note"}",
-                                        ) { session ->
-                                            ThreadViewModel(
-                                                eventId = drawerDestination.eventId,
-                                                noteContext = noteContextForChannel(channelId),
-                                                accountSession = session,
-                                            )
-                                        }
-                                        ThreadScreen(
-                                            eventId = drawerDestination.eventId,
-                                            initialTab = drawerDestination.initialTab,
-                                            channelId = channelId,
-                                            onBack = drawerCoordinator::navigateBackOrCloseProfile,
-                                            enableSwipeBack = true,
-                                            onUserClick = ::openProfileDrawer,
-                                            onReply = { event, preview, chId ->
-                                                closeProfileDrawerAndThen {
-                                                    openReplyComposer(event, preview, noteContextForChannel(chId))
-                                                }
-                                            },
-                                            onOpenThread = { eventId ->
-                                                drawerCoordinator.openThread(
-                                                    source = drawerDestination,
-                                                    eventId = eventId,
-                                                    channelId = channelId,
-                                                )
-                                            },
-                                            onOpenLikes = { eventId ->
-                                                drawerCoordinator.openThread(
-                                                    source = drawerDestination,
-                                                    eventId = eventId,
-                                                    initialTab = "likes",
-                                                    channelId = channelId,
-                                                )
-                                            },
-                                            onOpenReposts = { eventId ->
-                                                drawerCoordinator.openThread(
-                                                    source = drawerDestination,
-                                                    eventId = eventId,
-                                                    initialTab = "reposts",
-                                                    channelId = channelId,
-                                                )
-                                            },
-                                            ownPubkey = ownPubkey,
-                                            viewModel = threadViewModel,
-                                        )
-                                    }
-                                }
-                            }
+                        if (!isSidePanelMode) {
+                            profilePanelContent(
+                                drawerCoordinator.profileDestination,
+                                drawerCoordinator.isProfileContentReady,
+                            )
                         }
                     }
             },
@@ -1000,7 +1128,7 @@ internal fun AppSessionCoordinator(
                             onOpenReplies = { eventId -> nav.navigate(ThreadRoute(eventId)) },
                             onOpenLikes = { eventId -> nav.navigate(ThreadRoute(eventId, "likes")) },
                             onOpenReposts = { eventId -> nav.navigate(ThreadRoute(eventId, "reposts")) },
-                            onOpenSearch = { query -> nav.navigate(SearchRoute(query)) },
+                            onOpenSearch = ::openSearch,
                             ownPubkey = ownPubkey,
                             ownProfile = ownProfile,
                             isAccountLoaded = isAccountLoaded,
@@ -1470,6 +1598,7 @@ internal fun AppSessionCoordinator(
                 failedRelays = failedRelays,
                 onDismiss = { publishFailureDialogRelays = null },
             )
+        }
         }
 
 }

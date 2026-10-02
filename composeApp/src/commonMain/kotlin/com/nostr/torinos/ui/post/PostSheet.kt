@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -48,6 +49,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import com.nostr.torinos.MaxContentWidth
 import com.nostr.torinos.model.NoteContext
 import com.nostr.torinos.ui.channel.ComposerRelayContext
 import com.nostr.torinos.model.ReplyTarget
@@ -241,7 +243,12 @@ fun PostSheet(
                     .clickable(onClick = ::requestCancel),
             )
             Surface(
-                modifier = Modifier.fillMaxSize(),
+                // PCブラウザなどの横長画面では、アプリ本体と同じ中央の列に合わせる。
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .fillMaxHeight()
+                    .widthIn(max = MaxContentWidth)
+                    .fillMaxWidth(),
                 color = MaterialTheme.colorScheme.surface,
             ) {
                 PostSheetContent(
