@@ -58,6 +58,7 @@ import kotlinx.coroutines.Job
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.requiredHeight
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.graphicsLayer
@@ -618,7 +619,8 @@ internal fun AppSessionCoordinator(
                 ModalDrawerSheet(
                     modifier = Modifier
                         .fillMaxHeight()
-                        .fillMaxWidth(ProfileDrawerWidthFraction),
+                        .fillMaxWidth(ProfileDrawerWidthFraction)
+                        .then(if (isWideLayout) Modifier.widthIn(max = ProfileDrawerWideMaxWidth) else Modifier),
                     drawerContainerColor = MaterialTheme.colorScheme.background,
                     windowInsets = WindowInsets(0),
                 ) {
@@ -1618,3 +1620,4 @@ private class MainDestination(
 
 private val AppNavigationBarHeight = 80.dp
 private const val ProfileDrawerWidthFraction = 0.92f
+private val ProfileDrawerWideMaxWidth = 480.dp

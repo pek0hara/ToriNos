@@ -114,7 +114,7 @@ private fun CenteredContentColumn(content: @Composable () -> Unit) {
     BoxWithConstraints(
         modifier = Modifier
             .fillMaxSize()
-            .background(MaterialTheme.colorScheme.surfaceVariant),
+            .background(MaterialTheme.colorScheme.background),
     ) {
         CompositionLocalProvider(LocalIsWideLayout provides (maxWidth >= WideLayoutMinWidth)) {
             content()

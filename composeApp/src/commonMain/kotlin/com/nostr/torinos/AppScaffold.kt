@@ -46,37 +46,33 @@ internal fun AppScaffold(
         scaffold()
         return
     }
-    // 横長画面: 左端にレールを置き、残りの領域の中央に読みやすい幅の本文を置く。
-    Row(Modifier.fillMaxSize()) {
-        if (navigationRail != null) {
-            navigationRail()
+    // 横長画面: [レール + 本文] を一組にして画面中央に置き、左右の余白は背景色に馴染ませる。
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(MaterialTheme.colorScheme.background),
+        contentAlignment = Alignment.TopCenter,
+    ) {
+        Row(Modifier.fillMaxHeight()) {
+            navigationRail?.invoke()
             VerticalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-        }
-        Box(
-            modifier = Modifier
-                .weight(1f)
-                .fillMaxHeight()
-                .background(MaterialTheme.colorScheme.surfaceVariant),
-            contentAlignment = Alignment.TopCenter,
-        ) {
-            Row(Modifier.fillMaxHeight().widthIn(max = WideContentMaxWidth)) {
-                Box(
-                    Modifier
-                        .weight(1f)
-                        .fillMaxHeight()
-                        // 画面外に待機している通知ドロワーなどが余白に見えないようにする。
-                        .clipToBounds()
-                        .background(MaterialTheme.colorScheme.background),
-                ) {
-                    scaffold()
-                }
+            Box(
+                modifier = Modifier
+                    .weight(1f, fill = false)
+                    .widthIn(max = WideContentMaxWidth)
+                    .fillMaxHeight()
+                    // 画面外に待機している通知ドロワーなどが余白に見えないようにする。
+                    .clipToBounds(),
+            ) {
+                scaffold()
             }
+            VerticalDivider(color = MaterialTheme.colorScheme.outlineVariant)
         }
     }
 }
 
-/** 横長画面（レール表示時）の本文の最大幅。 */
-private val WideContentMaxWidth = 720.dp
+/** 横長画面の本文の最大幅。 */
+private val WideContentMaxWidth = 760.dp
 
 /** ルート登録を画面シェルから分離するための NavHost 境界。 */
 @Composable
