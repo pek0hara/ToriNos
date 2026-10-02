@@ -37,6 +37,7 @@ data class EditProfileState(
 
 class EditProfileViewModel(
     private val accountSession: AccountSession? = null,
+    loadExistingProfile: Boolean = true,
 ) : SafeViewModel() {
     companion object {
         private var instanceCounter = 0
@@ -45,7 +46,7 @@ class EditProfileViewModel(
     val state: StateFlow<EditProfileState> = _state.asStateFlow()
 
     init {
-        launch {
+        if (loadExistingProfile) launch {
             val pubkey = accountSession?.pubkey ?: return@launch
             val profile = ProfileRepository.awaitProfiles(
                 setOf(pubkey),

@@ -57,6 +57,10 @@ fun App() {
         // 鍵設定の完了でセッションが作り直されても、フィードの＋からの新規投稿の再開要求を失わない。
         val pendingComposerRequests = remember { PendingComposerRequestHolder() }
 
+        LaunchedEffect(accountTransitionError) {
+            if (accountTransitionError != null) pendingComposerRequests.requestRegistration(null)
+        }
+
         LaunchedEffect(Unit) {
             AccountSessions.manager.initialize()
             try {

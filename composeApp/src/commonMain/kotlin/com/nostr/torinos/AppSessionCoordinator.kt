@@ -526,11 +526,10 @@ internal fun AppSessionCoordinator(
             }
         }
 
-        // 鍵設定の完了でセッションが作り直された後、フィードの＋からの新規投稿を一度だけ再開する。
-        LaunchedEffect(ownPubkey) {
-            if (ownPubkey != null && composer.pendingRequests.consumeNewPost()) {
-                feedChromeState.collapseFraction = 0f
-                composer.openNewPost(useFooterComposer, postViewModel::reset)
+        // 鍵設定の完了でセッションが作り直された後、＋からの新規投稿を一度だけ再開する。
+        LaunchedEffect(ownPubkey, composer.pendingRequests.registeringPubkey) {
+            if (ownPubkey != null) {
+                composer.resumeAfterKeySetup(ownPubkey, useFooterComposer, postViewModel::reset)
             }
         }
 

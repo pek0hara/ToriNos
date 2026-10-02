@@ -27,6 +27,19 @@ internal enum class ComposerPresentation {
  */
 internal class PendingComposerRequestHolder {
     private var newPostRequested = false
+    var registeringPubkey by mutableStateOf<String?>(null)
+        private set
+
+    fun requestRegistration(pubkey: String?) {
+        registeringPubkey = pubkey
+    }
+
+    fun consumeRegistration(pubkey: String): Boolean {
+        if (registeringPubkey != pubkey) return false
+        registeringPubkey = null
+        newPostRequested = false
+        return true
+    }
 
     fun requestNewPost() {
         newPostRequested = true
@@ -40,6 +53,7 @@ internal class PendingComposerRequestHolder {
     }
 
     fun clear() {
+        registeringPubkey = null
         newPostRequested = false
     }
 }
@@ -59,6 +73,26 @@ internal class ComposerCoordinator(
      */
     var hasHeldInlineDraft by mutableStateOf(false)
         private set
+    var showRegistrationProfile by mutableStateOf(false)
+        private set
+
+    fun resumeAfterKeySetup(pubkey: String, useFooterComposer: Boolean, resetPost: () -> Unit) {
+        if (pendingRequests.consumeRegistration(pubkey)) {
+            dismissPost()
+            showRegistrationProfile = true
+        } else if (pendingRequests.consumeNewPost()) {
+            openNewPost(useFooterComposer, resetPost)
+        }
+    }
+
+    fun completeRegistration(preparePost: (String) -> Unit) {
+        if (!showRegistrationProfile) return
+        showRegistrationProfile = false
+        clearPostContext(clearDraft = true)
+        preparePost("Nostr、はじめました🐦")
+        openFullScreen(PostSheetInitialState.KeepCurrent)
+    }
+
     var showStatusComposer by mutableStateOf(false)
     var replyTarget by mutableStateOf<ReplyTarget?>(null)
     var replyToPreview by mutableStateOf<String?>(null)
