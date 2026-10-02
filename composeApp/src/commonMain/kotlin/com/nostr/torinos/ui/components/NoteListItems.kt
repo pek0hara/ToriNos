@@ -13,12 +13,14 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.State
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.unit.dp
 import com.nostr.torinos.model.NostrEvent
+import com.nostr.torinos.model.NostrProfile
 import com.nostr.torinos.model.extractNpubReferences
 import com.nostr.torinos.model.quotedEventIds
 import com.nostr.torinos.model.ReactionOption
@@ -26,26 +28,57 @@ import com.nostr.torinos.model.replyTargetId
 import com.nostr.torinos.model.stripNostrEventUris
 import com.nostr.torinos.ui.feed.FeedViewModel
 
-fun LazyListScope.noteListItems(
+/**
+ * Actions for timeline items. Items hold the [State] (one stable instance) and read `.value` only
+ * when the user acts, so a new UiState or recreated caller lambdas never change NoteCard's lambdas.
+ * Do not read `.value` during composition of an item.
+ */
+internal class NoteListActions(
+    val onUserClick: (String) -> Unit,
+    val onLike: (eventId: String, authorPubkey: String) -> Unit,
+    val onUnlike: (eventId: String) -> Unit,
+    val onEmojiReact: (eventId: String, authorPubkey: String, option: ReactionOption) -> Unit,
+    val onEmojiUnreact: (eventId: String, option: ReactionOption) -> Unit,
+    val onDelete: (eventId: String) -> Unit,
+    val onReply: ((event: NostrEvent, preview: String) -> Unit)? = null,
+    val onOpenReplies: ((eventId: String) -> Unit)? = null,
+    val onOpenLikes: ((eventId: String) -> Unit)? = null,
+    val onOpenReposts: ((eventId: String) -> Unit)? = null,
+    val onRefreshReactions: ((eventId: String) -> Unit)? = null,
+    val onRepost: ((NostrEvent) -> Unit)? = null,
+    val onUnrepost: ((eventId: String) -> Unit)? = null,
+    val onReport: ((event: NostrEvent, reason: String, detail: String) -> Unit)? = null,
+    val onHashtagClick: ((tag: String) -> Unit)? = null,
+    val onMuteUser: ((pubkey: String) -> Unit)? = null,
+    val onUnmuteUser: ((pubkey: String) -> Unit)? = null,
+)
+
+/** The reply target shown above a reply, when it has been fetched. */
+internal fun noteReplyParent(
+    event: NostrEvent,
+    quotedEvents: Map<String, NostrEvent>,
+    profiles: Map<String, NostrProfile>,
+): QuotedEvent? {
+    val parentEvent = event.replyTargetId()?.let(quotedEvents::get) ?: return null
+    return QuotedEvent(event = parentEvent, profile = profiles[parentEvent.pubkey])
+}
+
+/** Fetched quoted events in reference order, excluding the reply target shown separately. */
+internal fun noteQuotedEvents(
+    event: NostrEvent,
+    quotedEvents: Map<String, NostrEvent>,
+    profiles: Map<String, NostrProfile>,
+): List<QuotedEvent> {
+    val replyParentId = event.replyTargetId()
+    return quotedEventIds(event)
+        .filter { it != replyParentId }
+        .mapNotNull { id -> quotedEvents[id]?.let { QuotedEvent(event = it, profile = profiles[it.pubkey]) } }
+}
+
+internal fun LazyListScope.noteListItems(
     state: FeedViewModel.UiState,
     ownPubkey: String?,
-    onUserClick: (String) -> Unit,
-    onLike: (eventId: String, authorPubkey: String) -> Unit,
-    onUnlike: (eventId: String) -> Unit,
-    onEmojiReact: (eventId: String, authorPubkey: String, option: ReactionOption) -> Unit,
-    onEmojiUnreact: (eventId: String, option: ReactionOption) -> Unit,
-    onDelete: (eventId: String) -> Unit,
-    onReply: ((event: NostrEvent, preview: String) -> Unit)? = null,
-    onOpenReplies: ((eventId: String) -> Unit)? = null,
-    onOpenLikes: ((eventId: String) -> Unit)? = null,
-    onOpenReposts: ((eventId: String) -> Unit)? = null,
-    onRefreshReactions: ((eventId: String) -> Unit)? = null,
-    onRepost: ((eventId: String, authorPubkey: String) -> Unit)? = null,
-    onUnrepost: ((eventId: String) -> Unit)? = null,
-    onReport: ((eventId: String, reason: String, detail: String) -> Unit)? = null,
-    onHashtagClick: ((tag: String) -> Unit)? = null,
-    onMuteUser: ((pubkey: String) -> Unit)? = null,
-    onUnmuteUser: ((pubkey: String) -> Unit)? = null,
+    actions: State<NoteListActions>,
     mutedPubkeys: Set<String> = emptySet(),
     emptyText: String = "ポストがありません",
     emptyContent: (@Composable () -> Unit)? = null,
@@ -53,6 +86,18 @@ fun LazyListScope.noteListItems(
     eventEnterFadeMillis: Int = 0,
     deferWebViewLoad: Boolean = false,
 ) {
+    // Which actions exist decides which buttons are shown; read once here, not inside items.
+    val available = actions.value
+    val canReply = ownPubkey != null && available.onReply != null
+    val canOpenReplies = available.onOpenReplies != null
+    val canOpenLikes = available.onOpenLikes != null
+    val canOpenReposts = available.onOpenReposts != null
+    val canRefreshReactions = available.onRefreshReactions != null
+    val canRepost = ownPubkey != null && available.onRepost != null
+    val canHashtag = available.onHashtagClick != null
+    val canMute = available.onMuteUser != null
+    val canUnmute = available.onUnmuteUser != null
+    val canReport = ownPubkey != null && available.onReport != null
     when {
         state.events.isEmpty() &&
             state.initialFeedState == FeedViewModel.InitialFeedState.Loading ->
@@ -114,24 +159,12 @@ fun LazyListScope.noteListItems(
                     val repostPubkeysForEvent = state.repostPubkeys[event.id].orEmpty()
                     val quoteRepostEventsForEvent = state.quoteRepostEvents[event.id].orEmpty()
                     val reactionEventsForEvent = state.reactionEvents[event.id].orEmpty()
-                    val replyParentForEvent = run {
-                        val parentId = event.replyTargetId() ?: return@run null
-                        val parentEvent = state.quotedEvents[parentId] ?: return@run null
-                        QuotedEvent(event = parentEvent, profile = state.profiles[parentEvent.pubkey])
-                    }
-                    val quotedEventsForEvent = run {
-                        val replyParentId = event.replyTargetId()
-                        quotedEventIds(event)
-                            .filter { it != replyParentId }
-                            .mapNotNull { quotedEventId ->
-                                state.quotedEvents[quotedEventId]?.let { quotedEvent ->
-                                    QuotedEvent(
-                                        event = quotedEvent,
-                                        profile = state.profiles[quotedEvent.pubkey],
-                                    )
-                                }
-                            }
-                    }
+                    // Rebuilt on every UiState; keep the previous instance while the content is equal,
+                    // otherwise NoteCard sees a new (identity-compared) argument and cannot skip.
+                    val builtReplyParent = noteReplyParent(event, state.quotedEvents, state.profiles)
+                    val replyParentForEvent = remember(builtReplyParent) { builtReplyParent }
+                    val builtQuotedEvents = noteQuotedEvents(event, state.quotedEvents, state.profiles)
+                    val quotedEventsForEvent = remember(builtQuotedEvents) { builtQuotedEvents }
                     // このノートが実際に参照しうるpubkeyだけに絞り込み、無関係なプロフィール更新で
                     // 表示中の全アイテムが再コンポーズされるのを防ぐ。state.profilesはキーに含めない。
                     val relevantPubkeys = remember(
@@ -178,6 +211,10 @@ fun LazyListScope.noteListItems(
                     val relevantProfiles = remember(relevantProfileEntries) {
                         relevantProfileEntries.toMap()
                     }
+                    // Toggle decisions use this note's own flags, not the whole UiState, so the
+                    // lambdas below change only when this note's like/repost state changes.
+                    val isLiked = state.isLiked(event.id)
+                    val isReposted = state.isReposted(event.id)
                     NoteCard(
                         event = event,
                         precomputedContent = state.parsedContents[event.id],
@@ -196,62 +233,66 @@ fun LazyListScope.noteListItems(
                         customReactions = state.customReactions[event.id].orEmpty(),
                         unicodeReactions = state.unicodeReactions[event.id].orEmpty(),
                         reactionEvents = reactionEventsForEvent,
-                        isLiked = state.isLiked(event.id),
+                        isLiked = isLiked,
                         ownEmojiReactionEventIds = state.displayOwnEmojiReactionEventIds(event.id),
-                        isReposted = state.isReposted(event.id),
-                        onUserClick = onUserClick,
+                        isReposted = isReposted,
+                        onUserClick = { actions.value.onUserClick(it) },
                         onLike = if (ownPubkey != null) {
                             {
-                                if (state.isLiked(event.id))
-                                    onUnlike(event.id)
+                                if (isLiked)
+                                    actions.value.onUnlike(event.id)
                                 else
-                                    onLike(event.id, event.pubkey)
+                                    actions.value.onLike(event.id, event.pubkey)
                             }
                         } else null,
                         onEmojiReact = if (ownPubkey != null) {
-                            { option -> onEmojiReact(event.id, event.pubkey, option) }
+                            { option -> actions.value.onEmojiReact(event.id, event.pubkey, option) }
                         } else null,
                         onEmojiUnreact = if (ownPubkey != null) {
-                            { option -> onEmojiUnreact(event.id, option) }
+                            { option -> actions.value.onEmojiUnreact(event.id, option) }
                         } else null,
-                        onReply = if (ownPubkey != null && onReply != null) {
-                            { onReply(event, event.content.replyPreviewText()) }
+                        onReply = if (canReply) {
+                            { actions.value.onReply?.invoke(event, event.content.replyPreviewText()) }
                         } else null,
-                        onOpenReplies = if (onOpenReplies != null) {
-                            { onOpenReplies(event.id) }
+                        onOpenReplies = if (canOpenReplies) {
+                            { actions.value.onOpenReplies?.invoke(event.id) }
                         } else null,
-                        onOpenLikes = if (onOpenLikes != null) {
-                            { onOpenLikes(event.id) }
+                        onOpenLikes = if (canOpenLikes) {
+                            { actions.value.onOpenLikes?.invoke(event.id) }
                         } else null,
-                        onOpenReposts = if (onOpenReposts != null) {
-                            { onOpenReposts(event.id) }
+                        onOpenReposts = if (canOpenReposts) {
+                            { actions.value.onOpenReposts?.invoke(event.id) }
                         } else null,
-                        onRefreshReactions = if (onRefreshReactions != null) {
-                            { onRefreshReactions(event.id) }
+                        onRefreshReactions = if (canRefreshReactions) {
+                            { actions.value.onRefreshReactions?.invoke(event.id) }
                         } else null,
-                        onRepost = if (event.kind == 1 && ownPubkey != null && onRepost != null) {
+                        onRepost = if (event.kind == 1 && canRepost) {
                             {
-                                if (state.isReposted(event.id))
-                                    onUnrepost?.invoke(event.id)
+                                if (isReposted)
+                                    actions.value.onUnrepost?.invoke(event.id)
                                 else
-                                    onRepost(event.id, event.pubkey)
+                                    actions.value.onRepost?.invoke(event)
                             }
                         } else null,
-                        onHashtagClick = onHashtagClick,
-                        onNoteClick = if (onOpenReplies != null) onOpenReplies else null,
+                        onHashtagClick = if (canHashtag) {
+                            { tag -> actions.value.onHashtagClick?.invoke(tag) }
+                        } else null,
+                        onNoteClick = if (canOpenReplies) {
+                            { eventId -> actions.value.onOpenReplies?.invoke(eventId) }
+                        } else null,
                         replyParent = replyParentForEvent,
                         quotedEvents = quotedEventsForEvent,
                         ownPubkey = ownPubkey,
-                        onDelete = { onDelete(event.id) },
+                        onDelete = { actions.value.onDelete(event.id) },
                         isMuted = mutedPubkeys.contains(event.pubkey),
-                        onMute = if (onMuteUser != null) {
-                            { onMuteUser(event.pubkey) }
+                        onMute = if (canMute) {
+                            { actions.value.onMuteUser?.invoke(event.pubkey) }
                         } else null,
-                        onUnmute = if (onUnmuteUser != null) {
-                            { onUnmuteUser(event.pubkey) }
+                        onUnmute = if (canUnmute) {
+                            { actions.value.onUnmuteUser?.invoke(event.pubkey) }
                         } else null,
-                        onReport = if (ownPubkey != null && onReport != null) {
-                            { reason, detail -> onReport(event.id, reason, detail) }
+                        onReport = if (canReport) {
+                            { reason, detail -> actions.value.onReport?.invoke(event, reason, detail) }
                         } else null,
                     )
                     HorizontalDivider(
