@@ -29,6 +29,11 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.NavigationBarItemDefaults
+import androidx.compose.material3.NavigationRail
+import androidx.compose.material3.NavigationRailItem
+import androidx.compose.material3.NavigationRailItemDefaults
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.material3.Snackbar
 import androidx.compose.material3.SnackbarDuration
 import androidx.compose.material3.SnackbarHost
@@ -52,6 +57,7 @@ import kotlinx.coroutines.Job
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.requiredHeight
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.graphicsLayer
@@ -528,6 +534,7 @@ internal fun AppSessionCoordinator(
         val isProfileRoute = currentRoute == "myprofile" ||
             routeName?.endsWith("ProfileRoute") == true
         val hasBottomBar = currentRoute in bottomBarRoutes || isChannelThreadRoute || isProfileRoute
+        val isWideLayout = LocalIsWideLayout.current
         val density = LocalDensity.current
         val bottomBarHeightPx = with(density) { AppNavigationBarHeight.toPx() }.toInt()
         val isFeedRoute = currentRoute == "feed"
@@ -881,7 +888,8 @@ internal fun AppSessionCoordinator(
                 ModalDrawerSheet(
                     modifier = Modifier
                         .fillMaxHeight()
-                        .fillMaxWidth(ProfileDrawerWidthFraction),
+                        .fillMaxWidth(ProfileDrawerWidthFraction)
+                        .then(if (isWideLayout) Modifier.widthIn(max = ProfileDrawerWideMaxWidth) else Modifier),
                     drawerContainerColor = MaterialTheme.colorScheme.background,
                     windowInsets = WindowInsets(0),
                 ) {
@@ -917,7 +925,77 @@ internal fun AppSessionCoordinator(
                     )
                 },
             ) {
+            val isServiceRoute = currentRoute == "services" ||
+                currentRoute == "channels" ||
+                isChannelRoute ||
+                isChannelThreadRoute ||
+                currentRoute == "status"
+            // ボトムバーとNavigationRailで同じ導線を共有する。
+            val mainDestinations = listOf(
+                MainDestination(
+                    icon = Icons.Default.Home,
+                    selected = currentRoute == "feed",
+                    onClick = {
+                        feedChromeState.collapseFraction = 0f
+                        if (currentRoute == "feed") {
+                            feedScrollToTopTargetTab = currentFeedTab
+                            feedScrollToTopRequest++
+                        } else {
+                            navigateFeedTab()
+                        }
+                    },
+                ),
+                MainDestination(
+                    icon = Icons.Default.Today,
+                    selected = currentRoute == "journal",
+                    onClick = {
+                        runWithPrivateKey(PendingKeyAction.Journal) {
+                            if (currentRoute == "journal") {
+                                composer.journalToggleCalendarRequest++
+                            } else {
+                                composer.journalShowCalendarRequest++
+                                navigateJournalTab()
+                            }
+                        }
+                    },
+                ),
+                MainDestination(
+                    icon = Icons.Default.Apps,
+                    selected = isServiceRoute,
+                    onClick = {
+                        if (currentRoute == "services") {
+                            navigateNextServiceTab()
+                        } else {
+                            navigateServiceTab(currentServiceTab)
+                        }
+                    },
+                ),
+            )
             AppScaffold(
+                navigationRail = if (isWideLayout && hasBottomBar) {
+                    {
+                        NavigationRail(containerColor = MaterialTheme.colorScheme.background) {
+                            Spacer(Modifier.weight(1f))
+                            mainDestinations.forEach { destination ->
+                                NavigationRailItem(
+                                    icon = {
+                                        Icon(
+                                            destination.icon,
+                                            contentDescription = null,
+                                            modifier = Modifier.size(if (destination.selected) 26.dp else 24.dp),
+                                        )
+                                    },
+                                    selected = destination.selected,
+                                    colors = appNavigationRailItemColors(),
+                                    onClick = destination.onClick,
+                                )
+                            }
+                            Spacer(Modifier.weight(1f))
+                        }
+                    }
+                } else {
+                    null
+                },
                 contentWindowInsets = WindowInsets(0),
                 containerColor = MaterialTheme.colorScheme.background,
                 snackbarHost = {
@@ -1013,7 +1091,7 @@ internal fun AppSessionCoordinator(
                             // iOS Safari はタップ中の focus でしかキーボードを出さないため、Web では自動フォーカスしない。
                             autoFocus = !isWebPlatform,
                         )
-                    } else if (hasBottomBar) {
+                    } else if (hasBottomBar && !isWideLayout) {
                         Box(
                             modifier = Modifier
                                 .height(AppNavigationBarHeight)
@@ -1029,70 +1107,20 @@ internal fun AppSessionCoordinator(
                                 containerColor = MaterialTheme.colorScheme.background,
                                 tonalElevation = 0.dp,
                             ) {
-                                NavigationBarItem(
-                                    icon = {
-                                        Icon(
-                                            Icons.Default.Home,
-                                            contentDescription = null,
-                                            modifier = Modifier.size(if (currentRoute == "feed") 26.dp else 24.dp),
-                                        )
-                                    },
-                                    selected = currentRoute == "feed",
-                                    colors = appNavigationBarItemColors(),
-                                    onClick = {
-                                        feedChromeState.collapseFraction = 0f
-                                        if (currentRoute == "feed") {
-                                            feedScrollToTopTargetTab = currentFeedTab
-                                            feedScrollToTopRequest++
-                                        } else {
-                                            navigateFeedTab()
-                                        }
-                                    },
-                                )
-                                NavigationBarItem(
-                                    icon = {
-                                        Icon(
-                                            Icons.Default.Today,
-                                            contentDescription = null,
-                                            modifier = Modifier.size(if (currentRoute == "journal") 26.dp else 24.dp),
-                                        )
-                                    },
-                                    selected = currentRoute == "journal",
-                                    colors = appNavigationBarItemColors(),
-                                    onClick = {
-                                        runWithPrivateKey(PendingKeyAction.Journal) {
-                                            if (currentRoute == "journal") {
-                                                composer.journalToggleCalendarRequest++
-                                            } else {
-                                                composer.journalShowCalendarRequest++
-                                                navigateJournalTab()
-                                            }
-                                        }
-                                    },
-                                )
-                                val isServiceRoute = currentRoute == "services" ||
-                                    currentRoute == "channels" ||
-                                    isChannelRoute ||
-                                    isChannelThreadRoute ||
-                                    currentRoute == "status"
-                                NavigationBarItem(
-                                    icon = {
-                                        Icon(
-                                            Icons.Default.Apps,
-                                            contentDescription = null,
-                                            modifier = Modifier.size(if (isServiceRoute) 26.dp else 24.dp),
-                                        )
-                                    },
-                                    selected = isServiceRoute,
-                                    colors = appNavigationBarItemColors(),
-                                    onClick = {
-                                        if (currentRoute == "services") {
-                                            navigateNextServiceTab()
-                                        } else {
-                                            navigateServiceTab(currentServiceTab)
-                                        }
-                                    },
-                                )
+                                mainDestinations.forEach { destination ->
+                                    NavigationBarItem(
+                                        icon = {
+                                            Icon(
+                                                destination.icon,
+                                                contentDescription = null,
+                                                modifier = Modifier.size(if (destination.selected) 26.dp else 24.dp),
+                                            )
+                                        },
+                                        selected = destination.selected,
+                                        colors = appNavigationBarItemColors(),
+                                        onClick = destination.onClick,
+                                    )
+                                }
                             }
                         }
                     }
@@ -1719,5 +1747,19 @@ private fun appNavigationBarItemColors() = NavigationBarItemDefaults.colors(
     indicatorColor = Color.Transparent,
 )
 
+@Composable
+private fun appNavigationRailItemColors() = NavigationRailItemDefaults.colors(
+    selectedIconColor = MaterialTheme.colorScheme.primary,
+    unselectedIconColor = MaterialTheme.colorScheme.onSurfaceVariant,
+    indicatorColor = Color.Transparent,
+)
+
+private class MainDestination(
+    val icon: ImageVector,
+    val selected: Boolean,
+    val onClick: () -> Unit,
+)
+
 private val AppNavigationBarHeight = 80.dp
 private const val ProfileDrawerWidthFraction = 0.92f
+private val ProfileDrawerWideMaxWidth = 480.dp

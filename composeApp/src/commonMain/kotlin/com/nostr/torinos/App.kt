@@ -3,20 +3,17 @@ package com.nostr.torinos
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
-import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.width
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.VerticalDivider
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -24,7 +21,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.unit.dp
 import com.nostr.torinos.account.AccountSessionHost
 import com.nostr.torinos.account.AccountSessionState
 import com.nostr.torinos.account.AccountSessions
@@ -38,6 +35,9 @@ import kotlinx.coroutines.launch
 internal const val AgeVerificationAccepted = "accepted_13_or_older"
 internal const val AgeVerificationBlocked = "blocked_under_13"
 private const val AgeVerificationKey = "age_verification_status_v1"
+
+/** Material 3 の Compact / Medium の境界。この幅以上で NavigationRail に切り替える。 */
+private val WideLayoutMinWidth = 600.dp
 
 /** アプリ共通状態と、アカウントごとに破棄される画面ツリーの境界。 */
 @Composable
@@ -106,40 +106,26 @@ fun App() {
     }
 }
 
+/** 画面幅が [WideLayoutMinWidth] 以上（Medium / Expanded）で、サイドパネルを出さないかどうか。true のときはボトムバーの代わりに NavigationRail を使う。 */
+internal val LocalIsWideLayout = compositionLocalOf { false }
+
 /**
- * 画面が [MaxContentWidth] より広いときだけ、中身を中央の列にして左右を余白にする。
- * Web版で左右にパネルを置ける幅なら中央の列はセッション側の [SidePanelLayout] に任せ、ここでは全幅を渡す。
+ * 常に全幅を渡し、横長のときは [LocalIsWideLayout] を立てて、レールと本文の配置は [AppScaffold] に任せる。
+ * Web版で左右にパネルを置ける幅では、中央の列は下部バーのままセッション側の [SidePanelLayout] に任せる。
  */
 @Composable
 private fun CenteredContentColumn(content: @Composable () -> Unit) {
     BoxWithConstraints(
         modifier = Modifier
             .fillMaxSize()
-            .background(MaterialTheme.colorScheme.surfaceVariant),
-        contentAlignment = Alignment.TopCenter,
+            .background(MaterialTheme.colorScheme.background),
     ) {
         val sidePanelWidth = sidePanelWidthFor(maxWidth)
-        val isCentered = sidePanelWidth == null && maxWidth > MaxContentWidth
-        // 幅が変わっても content の呼び出し位置を変えず、画面ツリーを作り直さない。
-        Row(Modifier.fillMaxHeight()) {
-            if (isCentered) VerticalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-            Box(
-                if (isCentered) {
-                    Modifier
-                        .fillMaxHeight()
-                        .width(MaxContentWidth)
-                        // 画面外に待機している通知ドロワーなどが左右の余白に見えないようにする。
-                        .clipToBounds()
-                        .background(MaterialTheme.colorScheme.background)
-                } else {
-                    Modifier.fillMaxSize()
-                },
-            ) {
-                CompositionLocalProvider(LocalSidePanelWidth provides sidePanelWidth) {
-                    content()
-                }
-            }
-            if (isCentered) VerticalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+        CompositionLocalProvider(
+            LocalIsWideLayout provides (sidePanelWidth == null && maxWidth >= WideLayoutMinWidth),
+            LocalSidePanelWidth provides sidePanelWidth,
+        ) {
+            content()
         }
     }
 }
