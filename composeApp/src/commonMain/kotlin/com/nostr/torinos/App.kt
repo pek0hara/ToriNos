@@ -106,13 +106,10 @@ fun App() {
     }
 }
 
-/** 画面幅が [WideLayoutMinWidth] 以上（Medium / Expanded）で、サイドパネルを出さないかどうか。true のときはボトムバーの代わりに NavigationRail を使う。 */
+/** 画面幅が [WideLayoutMinWidth] 以上（Medium / Expanded）かどうか。true のときはボトムバーの代わりに NavigationRail を使う。 */
 internal val LocalIsWideLayout = compositionLocalOf { false }
 
-/**
- * 常に全幅を渡し、横長のときは [LocalIsWideLayout] を立てて、レールと本文の配置は [AppScaffold] に任せる。
- * Web版で左右にパネルを置ける幅では、中央の列は下部バーのままセッション側の [SidePanelLayout] に任せる。
- */
+/** 常に全幅を渡し、横長のときは [LocalIsWideLayout] を立てて、レールと本文の配置は [AppScaffold] に任せる。 */
 @Composable
 private fun CenteredContentColumn(content: @Composable () -> Unit) {
     BoxWithConstraints(
@@ -120,10 +117,8 @@ private fun CenteredContentColumn(content: @Composable () -> Unit) {
             .fillMaxSize()
             .background(MaterialTheme.colorScheme.background),
     ) {
-        val sidePanelWidth = sidePanelWidthFor(maxWidth)
         CompositionLocalProvider(
-            LocalIsWideLayout provides (sidePanelWidth == null && maxWidth >= WideLayoutMinWidth),
-            LocalSidePanelWidth provides sidePanelWidth,
+            LocalIsWideLayout provides (maxWidth >= WideLayoutMinWidth),
         ) {
             content()
         }
