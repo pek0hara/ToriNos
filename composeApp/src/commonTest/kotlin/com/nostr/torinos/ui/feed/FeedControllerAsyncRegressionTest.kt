@@ -32,6 +32,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
+import kotlin.time.Clock
 
 @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
 class FeedControllerAsyncRegressionTest {
@@ -47,7 +48,9 @@ class FeedControllerAsyncRegressionTest {
         runCurrent()
 
         val author = "author-updated-during-computation"
-        gateway.liveSessions.single().event(event("note", 10, pubkey = author))
+        // 過去分の取得前に届くライブイベントは、取得開始時刻以降のものに限られる。
+        val liveAt = Clock.System.now().epochSeconds + 10
+        gateway.liveSessions.single().event(event("note", liveAt, pubkey = author))
         runCurrent()
         advanceTimeBy(150)
         runCurrent()
@@ -71,6 +74,8 @@ class FeedControllerAsyncRegressionTest {
     fun longBackgroundResetClearsTimelineAndStartsFromLatestOnlyOnce() = runTest {
         val gateway = FakeGateway()
         val controller = FeedController(computeDispatcher = Dispatchers.Unconfined, scope = backgroundScope, subscriptions = gateway)
+        runCurrent()
+        gateway.completeInitialFeedHistory()
         runCurrent()
 
         gateway.liveSessions.single().event(event("old", 10))
@@ -113,6 +118,8 @@ class FeedControllerAsyncRegressionTest {
         val gateway = FakeGateway()
         val controller = FeedController(computeDispatcher = Dispatchers.Unconfined, scope = backgroundScope, subscriptions = gateway)
         runCurrent()
+        gateway.completeInitialFeedHistory()
+        runCurrent()
         val live = gateway.liveSessions.single()
         val observedEventStates = mutableListOf<List<String>>()
         val observer = backgroundScope.launch {
@@ -149,6 +156,8 @@ class FeedControllerAsyncRegressionTest {
     fun pendingTimelineWorkStaysDormantUntilSubscriptionsRestart() = runTest {
         val gateway = FakeGateway()
         val controller = FeedController(computeDispatcher = Dispatchers.Unconfined, scope = backgroundScope, subscriptions = gateway)
+        runCurrent()
+        gateway.completeInitialFeedHistory()
         runCurrent()
 
         gateway.liveSessions.single().event(event("pending", 10))
@@ -365,10 +374,15 @@ class FeedControllerAsyncRegressionTest {
         val secondPage = gateway.fetchSessions.last { it.target == RelayTarget.Single("relay-a") }
         assertTrue(secondPage.filters.all { it.until == 71L })
 
+        val secondPageB = gateway.fetchSessions.last { it.target == RelayTarget.Single("relay-b") }
+        assertTrue(secondPageB.filters.all { it.until == 71L })
         (42L..71L).forEach { createdAt ->
             secondPage.event(event("event-$createdAt", createdAt), relay = "relay-a")
+            secondPageB.event(event("event-$createdAt", createdAt), relay = "relay-b")
         }
         secondPage.complete("relay-a")
+        // 表示境界は両リレーが 42 秒まで網羅してから進む
+        secondPageB.complete("relay-b")
         runCurrent()
 
         assertEquals(59, controller.state.value.events.size)
@@ -548,6 +562,8 @@ class FeedControllerAsyncRegressionTest {
             feedEventKinds = setOf(1, COMMENT_EVENT_KIND),
         )
         runCurrent()
+        gateway.completeInitialFeedHistory()
+        runCurrent()
 
         gateway.sessions.forEach { session ->
             assertEquals(listOf(1), session.filters[0].kinds)
@@ -679,6 +695,8 @@ class FeedControllerAsyncRegressionTest {
         val gateway = FakeGateway()
         val controller = FeedController(computeDispatcher = Dispatchers.Unconfined, scope = backgroundScope, subscriptions = gateway)
         runCurrent()
+        gateway.completeInitialFeedHistory()
+        runCurrent()
         val live = gateway.liveSessions.single()
         val duplicate = event("same-event", 10)
 
@@ -696,6 +714,8 @@ class FeedControllerAsyncRegressionTest {
     fun eventArrivingAfterCloseCannotChangeState() = runTest {
         val gateway = FakeGateway()
         val controller = FeedController(computeDispatcher = Dispatchers.Unconfined, scope = backgroundScope, subscriptions = gateway)
+        runCurrent()
+        gateway.completeInitialFeedHistory()
         runCurrent()
         val live = gateway.liveSessions.single()
         live.event(event("before-close", 10))
@@ -745,6 +765,8 @@ class FeedControllerAsyncRegressionTest {
     fun parallelRelayHistoryDoesNotDoubleCountTheSameReaction() = runTest {
         val gateway = FakeGateway(initialRelayUrls = setOf("relay-a", "relay-b"))
         val controller = FeedController(computeDispatcher = Dispatchers.Unconfined, scope = backgroundScope, subscriptions = gateway)
+        runCurrent()
+        gateway.completeInitialFeedHistory()
         runCurrent()
         gateway.liveSessions.single().event(event("note", 10))
         runCurrent()
@@ -1401,6 +1423,8 @@ class FeedControllerAsyncRegressionTest {
             subscriptions = gateway,
         )
         runCurrent()
+        gateway.completeInitialFeedHistory()
+        runCurrent()
         gateway.liveSessions.single().event(event("from-alice", 10, pubkey = "alice"))
         advanceTimeBy(151)
         runCurrent()
@@ -1484,6 +1508,8 @@ class FeedControllerAsyncRegressionTest {
             feedFetchSessions.filterNot { it.closed }.forEach { session ->
                 val relay = (session.target as? RelayTarget.Single)?.url ?: "relay"
                 session.complete(relay)
+                // 有限取得は完了とともにリポジトリ側で閉じられる。
+                session.closed = true
             }
         }
 

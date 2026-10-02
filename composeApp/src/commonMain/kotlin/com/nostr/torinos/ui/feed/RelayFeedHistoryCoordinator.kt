@@ -22,6 +22,14 @@ import kotlinx.coroutines.launch
  * 遅い、または停止したリレーの有限取得を別セッションに隔離し、応答したリレーの
  * カーソルを独立して進める。フィルターごとにもカーソルを持つため、投稿とコメントの
  * 件数差で片方を早く打ち切らない。
+ *
+ * 表示境界は、続きのあるリレーのうち最も浅いカーソルに合わせる。投稿のまばらな
+ * リレーが深く遡っても、密なリレーが未取得の区間を表示範囲に含めないためである。
+ * 猶予を過ぎても応答しないリレーや再試行待ちのリレーは境界の決定から外し、
+ * 応答後に表示済みの範囲まで自動で追いつかせる。
+ *
+ * [revealsHistory] が false のときは表示境界を扱わず、[autoContinue] が true なら
+ * 各リレーを続きがなくなるまで自動で取得する。復帰時の差分取得に使う。
  */
 internal class RelayFeedHistoryCoordinator(
     private val scope: CoroutineScope,
@@ -33,8 +41,13 @@ internal class RelayFeedHistoryCoordinator(
     private val pageSize: Int,
     private val maxPageSize: Int,
     private val settleDelayMillis: Long,
+    private val revealsHistory: Boolean = true,
+    private val autoContinue: Boolean = false,
     private val onEvent: (NostrEvent) -> Int,
-    private val onPageBoundary: (Long?) -> Unit,
+    /** この時刻以降を表示してよい。値は単調に古くなり、変わったときだけ通知する。 */
+    private val onReveal: (Long) -> Unit = {},
+    /** 境界は変わらないが、ページ完了で受信済みイベントを画面へ確定させる。 */
+    private val onFlush: () -> Unit,
     private val onState: (RelayHistoryUiState) -> Unit,
 ) {
     private val relays = linkedMapOf<String, RelayState>()
@@ -45,6 +58,10 @@ internal class RelayFeedHistoryCoordinator(
     private var generation = 0
     private var foregroundLoading = false
     private var started = false
+    private var paused = false
+    private var revealedThrough: Long? = null
+    /** 問い合わせ先がなかった「もっと読む」を、応答待ちのリレーが返ったら続ける。 */
+    private var loadMoreDeferred = false
 
     fun updateRelays(urls: Set<String>) {
         if (!active) return
@@ -65,8 +82,11 @@ internal class RelayFeedHistoryCoordinator(
             )
         }
         if (relays.values.none { it.session != null || it.opening }) foregroundLoading = false
+        if (started) {
+            added.forEach(::requestRelay)
+            if (!paused && removed.isNotEmpty()) publishReveal()
+        }
         publishState()
-        if (started) added.forEach(::requestRelay)
     }
 
     fun start() {
@@ -74,21 +94,96 @@ internal class RelayFeedHistoryCoordinator(
         loadMore()
     }
 
-    /** 応答待ちのリレーはそのまま残し、取得可能なリレーだけ次ページへ進める。 */
+    /**
+     * 応答待ちのリレーはそのまま残し、表示境界に届いているリレーだけ次ページへ進める。
+     * 境界より深く遡ったリレーは、既に表示範囲外の投稿を持っているので問い合わせない。
+     */
     fun loadMore() {
-        if (!active) return
+        if (!active || paused) return
+        val floor = revealedThrough
         val candidates = relays.filterValues { relay ->
             !relay.opening && relay.session == null && relay.retryJob == null &&
-                relay.cursors.any { !it.exhausted && !it.suppressed }
+                relay.hasMore() && (floor == null || relay.coverage() >= floor)
         }.keys
         if (candidates.isEmpty()) {
+            val waiting = relays.values.filter { relay ->
+                relay.hasMore() && (relay.session != null || relay.opening || relay.retryJob != null)
+            }
+            if (waiting.isNotEmpty()) {
+                // 応答待ちのリレーが返ったら続ける。読み込み中にしておくと、画面側も止まらない。
+                loadMoreDeferred = true
+                foregroundLoading = true
+                // 境界を決めているリレーが応答待ちなら、猶予後に遅延扱いにして表示を進める。
+                if (waiting.any { (it.session != null || it.opening) && !it.lagging }) scheduleSettle()
+            }
+            publishReveal()
             publishState()
             return
         }
+        candidates.forEach { url -> relays[url]?.catchUpPages = 0 }
         generation++
         foregroundLoading = true
         publishState()
         candidates.forEach(::requestRelay)
+    }
+
+    /**
+     * タブを離れる間は通信だけ止め、リレーごとのカーソルは保持する。
+     * 取得途中だったページは破棄し、[resume] で同じカーソルから取り直す。
+     */
+    fun pause() {
+        if (!active || paused) return
+        paused = true
+        settleJob?.cancel()
+        settleJob = null
+        foregroundLoading = false
+        loadMoreDeferred = false
+        collectors.values.forEach { it.cancel() }
+        collectors.clear()
+        relays.values.forEach { relay ->
+            if (relay.session != null || relay.opening || relay.retryJob != null) relay.needsResume = true
+            relay.resumeWithBackoff = relay.retryJob != null
+            relay.retryJob?.cancel()
+            relay.retryJob = null
+            relay.session?.let { session -> scope.launch { session.close() } }
+            relay.session = null
+            relay.opening = false
+            relay.page = null
+            relay.lagging = false
+            relay.requestToken++
+        }
+        publishState()
+    }
+
+    fun resume() {
+        if (!active || !paused) return
+        paused = false
+        val interrupted = relays.filterValues { it.needsResume }
+        interrupted.forEach { (url, relay) ->
+            relay.needsResume = false
+            // 再試行待ちだったリレーは、タブ切り替えで待ち時間を飛ばさない。
+            if (relay.resumeWithBackoff) startRetryTimer(url, relay) else requestRelay(url)
+            relay.resumeWithBackoff = false
+        }
+        // 一時停止中に外れたリレーなどで、境界が進められる場合がある。
+        publishReveal(flushIfUnchanged = false)
+        publishState()
+    }
+
+    /** 手動更新では、拒否や再試行待ちで止めていたリレーにもすぐ問い合わせ直す。 */
+    fun retryStalledRelays() {
+        if (!active || paused) return
+        relays.forEach { (url, relay) ->
+            val stalled = relay.suppressed || relay.retryJob != null
+            if (!stalled) return@forEach
+            relay.suppressed = false
+            relay.closedDisposition = null
+            relay.failureCount = 0
+            relay.retryJob?.cancel()
+            relay.retryJob = null
+            if (relay.hasMore()) requestRelay(url)
+        }
+        publishState()
     }
 
     fun close() {
@@ -107,9 +202,16 @@ internal class RelayFeedHistoryCoordinator(
 
     private fun requestRelay(url: String) {
         val relay = relays[url] ?: return
+        if (paused) {
+            relay.needsResume = true
+            return
+        }
         if (relay.opening || relay.session != null) return
+        val floor = revealedThrough
         val available = relay.cursors.mapIndexedNotNull { index, cursor ->
-            if (cursor.exhausted || cursor.suppressed) null
+            // 表示境界より深く遡ったフィルターは、まだ表示しない投稿を取りに行かない。
+            val beyondFloor = floor != null && (cursor.until ?: Long.MAX_VALUE) < floor
+            if (cursor.exhausted || cursor.suppressed || beyondFloor) null
             else RequestedFilter(index, cursor.until, cursor.limit)
         }
         val requested = if (relay.isolateFilters && available.size > 1) {
@@ -126,6 +228,7 @@ internal class RelayFeedHistoryCoordinator(
         relay.retryJob = null
         relay.opening = true
         relay.page = Page(requested)
+        val token = relay.requestToken
         val requestId = ++requestSequence
         val filters = requested.map { requestedFilter ->
             baseFilters[requestedFilter.index].copy(
@@ -147,14 +250,19 @@ internal class RelayFeedHistoryCoordinator(
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (_: Throwable) {
+                if (relay.requestToken != token) return@launch
                 relay.opening = false
                 relay.page = null
-                if (active && relays[url] === relay) scheduleRetry(url, relay, page = null)
+                relay.lagging = false
+                if (active && relays[url] === relay) {
+                    scheduleRetry(url, relay, page = null)
+                    publishReveal()
+                }
                 if (relays.values.none { it.session != null || it.opening }) foregroundLoading = false
                 publishState()
                 return@launch
             }
-            if (!active || relays[url] !== relay) {
+            if (!active || relays[url] !== relay || relay.requestToken != token) {
                 session.close()
                 return@launch
             }
@@ -184,6 +292,7 @@ internal class RelayFeedHistoryCoordinator(
     private fun handleEvent(url: String, relay: RelayState, signal: SubscriptionSignal.Event) {
         val visibleAdded = onEvent(signal.event)
         if (signal.relayUrl != url) return
+        relay.oldestReceived = minOf(relay.oldestReceived ?: Long.MAX_VALUE, signal.event.createdAt)
         val page = relay.page ?: return
         val requested = page.requested.firstOrNull { requestedFilter ->
             signal.event.matches(baseFilters[requestedFilter.index])
@@ -201,6 +310,7 @@ internal class RelayFeedHistoryCoordinator(
         if (relay.session !== session) return
         collectors.remove(url)
         relay.session = null
+        relay.lagging = false
         val page = relay.page
         relay.page = null
         val succeeded = completed.outcomes[url] is RelayOutcome.Eose
@@ -208,14 +318,11 @@ internal class RelayFeedHistoryCoordinator(
             relay.hasCompletedInitialPage = true
             relay.failureCount = 0
             relay.closedDisposition = null
-            var oldest: Long? = null
             page.requested.forEach { requested ->
                 val cursor = relay.cursors[requested.index]
                 val timestamps = page.events[requested.index].orEmpty().values
-                oldest = listOfNotNull(oldest, timestamps.minOrNull()).minOrNull()
                 advanceCursor(cursor, requested, timestamps)
             }
-            onPageBoundary(oldest)
         } else {
             scheduleRetry(url, relay, page)
         }
@@ -223,6 +330,20 @@ internal class RelayFeedHistoryCoordinator(
             settleJob?.cancel()
             settleJob = null
             foregroundLoading = false
+        }
+        publishReveal()
+        // 差分取得は最後まで、遅れて応答したリレーは既に表示した範囲を埋め終わるまで続けて取得する。
+        val floor = revealedThrough
+        // 追いつきは数ページまでにし、残りは「もっと読む」に合わせて進める。
+        val behindRevealed = floor != null && relay.coverage() > floor &&
+            relay.catchUpPages < MAX_CATCH_UP_PAGES
+        if (succeeded && relay.hasMore() && (autoContinue || behindRevealed)) {
+            if (!autoContinue) relay.catchUpPages++
+            requestRelay(url)
+        }
+        if (loadMoreDeferred && relay.session == null && !relay.opening) {
+            loadMoreDeferred = false
+            loadMore()
         }
         publishState()
     }
@@ -280,7 +401,12 @@ internal class RelayFeedHistoryCoordinator(
             return
         }
         relay.failureCount++
-        val delayMillis = (RETRY_BASE_DELAY_MS * (1L shl (relay.failureCount - 1).coerceAtMost(4)))
+        startRetryTimer(url, relay)
+    }
+
+    private fun startRetryTimer(url: String, relay: RelayState) {
+        val attempt = relay.failureCount.coerceAtLeast(1)
+        val delayMillis = (RETRY_BASE_DELAY_MS * (1L shl (attempt - 1).coerceAtMost(4)))
             .coerceAtMost(RETRY_MAX_DELAY_MS)
         relay.retryJob = scope.launch {
             delay(delayMillis)
@@ -290,25 +416,61 @@ internal class RelayFeedHistoryCoordinator(
     }
 
     private fun scheduleSettle() {
-        if (settleJob != null || !foregroundLoading) return
+        if (settleJob != null) return
         settleJob = scope.launch {
             delay(settleDelayMillis)
             settleJob = null
             foregroundLoading = false
-            // 通信は継続したまま、応答済みイベントをUIへ確定する。
-            val oldestReceived = relays.values
-                .mapNotNull { relay -> relay.page?.events?.values?.flatMap { it.values }?.minOrNull() }
-                .minOrNull()
-            onPageBoundary(oldestReceived)
+            // 通信は継続したまま、応答の遅いリレーを境界の決定から外して表示を進める。
+            relays.values.forEach { relay ->
+                if (relay.session != null || relay.opening) relay.lagging = true
+            }
+            publishReveal()
             publishState()
         }
     }
 
+    /**
+     * 境界を決めるリレーのうち最も浅いカーソルまでを表示する。
+     * 該当するリレーがない（全リレーが遅延・再試行中）ときは、受信済みの分をすべて表示する。
+     */
+    private fun publishReveal(flushIfUnchanged: Boolean = true) {
+        if (!active || paused || !started) return
+        if (!revealsHistory) {
+            if (flushIfUnchanged) onFlush()
+            return
+        }
+        val current = revealedThrough
+        val blocking = relays.values.filter { relay ->
+            !relay.suppressed && relay.retryJob == null && !relay.lagging &&
+                // 表示済みの範囲より遅れているリレーは追いつき中なので、境界を止めない。
+                (current == null || relay.coverage() <= current)
+        }
+        val floor = if (blocking.isNotEmpty()) {
+            blocking.maxOf { it.coverage() }
+        } else {
+            relays.values.mapNotNull { it.oldestReceived }.minOrNull() ?: return
+        }
+        if (current != null && floor >= current) {
+            if (flushIfUnchanged) onFlush()
+            return
+        }
+        revealedThrough = floor
+        onReveal(floor)
+    }
+
+    /** このリレーから欠けなく受信済みの最古時刻。続きのないリレーは全期間を網羅している。 */
+    private fun RelayState.coverage(): Long =
+        cursors.filter { !it.exhausted && !it.suppressed }
+            .maxOfOrNull { it.until ?: Long.MAX_VALUE }
+            ?: Long.MIN_VALUE
+
+    private fun RelayState.hasMore(): Boolean =
+        !suppressed && cursors.any { !it.exhausted && !it.suppressed }
+
     private fun publishState() {
         if (!active) return
-        val canLoadMore = relays.values.any { relay ->
-            !relay.suppressed && relay.cursors.any { !it.exhausted && !it.suppressed }
-        }
+        val canLoadMore = relays.values.any { it.hasMore() }
         onState(
             RelayHistoryUiState(
                 isLoading = foregroundLoading,
@@ -339,6 +501,16 @@ internal class RelayFeedHistoryCoordinator(
         var suppressed: Boolean = false,
         var isolateFilters: Boolean = false,
         var nextFilterIndex: Int = 0,
+        /** 猶予を過ぎても応答がなく、表示境界の決定から外している。 */
+        var lagging: Boolean = false,
+        /** 一時停止で中断した取得を、再開時に取り直す。 */
+        var needsResume: Boolean = false,
+        var resumeWithBackoff: Boolean = false,
+        /** 「もっと読む」なしで続けた追いつき取得のページ数。 */
+        var catchUpPages: Int = 0,
+        /** 一時停止をまたいだ古い取得の結果を捨てるための世代。 */
+        var requestToken: Int = 0,
+        var oldestReceived: Long? = null,
     )
 
     private data class FilterCursor(
@@ -364,6 +536,7 @@ internal class RelayFeedHistoryCoordinator(
         const val DEFAULT_PAGE_SIZE = 30
         const val RETRY_BASE_DELAY_MS = 2_000L
         const val RETRY_MAX_DELAY_MS = 30_000L
+        const val MAX_CATCH_UP_PAGES = 3
     }
 }
 

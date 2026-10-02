@@ -152,16 +152,23 @@ internal class FeedController(
     private val shortKey = authorPubkey?.take(16) ?: authorPubkeys?.hashCode()?.toString() ?: "global"
     private val subscriptionJobs = mutableListOf<Job>()
     private val lifecycleJobs = mutableListOf<Job>()
-    private val historyCollectorJobs = mutableListOf<Job>()
     private var subscriptionIds: SubscriptionIds? = null
     private var liveSession: SubscriptionSession? = null
     private var engagementSession: SubscriptionSession? = null
     // ライブ購読へ最後に送った監視ID。since は呼び出しごとに進むため、IDが同じなら REQ を再送しない。
     private var engagementLiveEventIds: List<String>? = null
     private val engagementHistorySessions = mutableMapOf<String, SubscriptionSession>()
-    private var currentHistorySession: SubscriptionSession? = null
     private var relayHistoryCoordinator: RelayFeedHistoryCoordinator? = null
-    private var historyIndicatorSettleJob: Job? = null
+    /**
+     * 復帰・手動更新時の差分取得。途中でタブを離れても再開して最後まで取りきる。
+     * 常に 1 本だけ持ち、新しい差分取得は未完了分の範囲も引き継ぐ。
+     */
+    private var resumeSync: RelayFeedHistoryCoordinator? = null
+    private var resumeSyncSince: Long? = null
+    private var resumeSyncReceivedCount = 0
+    private var resumeSyncSequence = 0
+    /** 手動更新を過去ページの取得で処理しているとき、その完了で更新表示を消す。 */
+    private var historyOwnsRefresh = false
     private var subscriptionGeneration = 0
     private var historyRequestGeneration = 0
     private val requestedProfilePubkeys = mutableSetOf<String>()
@@ -202,20 +209,7 @@ internal class FeedController(
     private var nextEngagementOperationId = 0L
     private var nextReactionRefreshId = 0L
 
-    private var oldestCreatedAt: Long? = null
-    private var nextHistoryUntil: Long? = null
-    private var activeHistoryUntil: Long? = null
-    private var nextHistoryPageSize = FEED_PAGE_SIZE
-    private var activeHistoryPageSize = FEED_PAGE_SIZE
-    private var shouldRetryHistoryPage = false
-    private var loadingMore = false
-    private var isGapFill = false
-    private var lastHistoryBatchUniqueCount = 0
-    private val historyPageCreatedAtByEventId = linkedMapOf<String, Long>()
-    private val historyPageEventIdsByRelay = mutableMapOf<String, MutableSet<String>>()
-    private val pendingHistoryRelayUrls = mutableSetOf<String>()
     private var historyRevealOldestAt: Long? = null
-    private var consecutiveEmptyHistoryPages = 0
     private var initialHistoryRequested = false
     private var manualRefreshRequested = false
     private val relayTarget: RelayTarget = relayUrl?.let(RelayTarget::Single) ?: RelayTarget.AllEnabled
@@ -264,6 +258,7 @@ internal class FeedController(
             subscriptions.readableRelayUrls.collect {
                 val targetRelays = subscriptions.targetRelayUrls(relayTarget)
                 relayHistoryCoordinator?.updateRelays(targetRelays)
+                resumeSync?.updateRelays(targetRelays)
                 val previousRelays = lastEngagementTargetRelays
                 lastEngagementTargetRelays = targetRelays
                 if (previousRelays == null || previousRelays == targetRelays) return@collect
@@ -519,18 +514,8 @@ internal class FeedController(
     }
 
     fun loadMore() {
-        relayHistoryCoordinator?.let { coordinator ->
-            if (currentFeedState().canLoadMore) coordinator.loadMore()
-            return
-        }
-        if (loadingMore || !currentFeedState().canLoadMore) return
-        launch {
-            val until = if (shouldRetryHistoryPage) nextHistoryUntil else nextHistoryUntil ?: oldestCreatedAt?.minus(1)
-            requestHistoryPage(
-                until = until,
-                retryRelayUrls = pendingHistoryRelayUrls.takeIf { shouldRetryHistoryPage }?.toSet(),
-            )
-        }
+        val coordinator = relayHistoryCoordinator ?: return
+        if (currentFeedState().canLoadMore) coordinator.loadMore()
     }
 
     fun refresh() {
@@ -590,8 +575,6 @@ internal class FeedController(
         refreshIndicatorTimeoutJob = null
         initialFeedSlowJob?.cancel()
         initialFeedSlowJob = null
-        historyIndicatorSettleJob?.cancel()
-        historyIndicatorSettleJob = null
         engagementBatchJob?.cancel()
         engagementBatchJob = null
         engagementRetryJobs.values.forEach(Job::cancel)
@@ -622,21 +605,10 @@ internal class FeedController(
 
         relayHistoryCoordinator?.close()
         relayHistoryCoordinator = null
+        closeResumeSync()
+        historyOwnsRefresh = false
 
-        oldestCreatedAt = null
-        nextHistoryUntil = null
-        activeHistoryUntil = null
-        nextHistoryPageSize = FEED_PAGE_SIZE
-        activeHistoryPageSize = FEED_PAGE_SIZE
-        shouldRetryHistoryPage = false
-        loadingMore = false
-        isGapFill = false
-        lastHistoryBatchUniqueCount = 0
-        historyPageCreatedAtByEventId.clear()
-        historyPageEventIdsByRelay.clear()
-        pendingHistoryRelayUrls.clear()
         historyRevealOldestAt = null
-        consecutiveEmptyHistoryPages = 0
         initialHistoryRequested = false
         manualRefreshRequested = false
         pendingFeedState = UiState()
@@ -698,25 +670,28 @@ internal class FeedController(
             if (current.isInitialLoad && current.events.isEmpty() && !initialHistoryRequested) {
                 // 初回のみ履歴ページを取得
                 startRelayHistory()
-            } else if (manualRefreshRequested) {
+            } else if (manualRefreshRequested && relayHistoryCoordinator == null) {
                 manualRefreshRequested = false
-                startRelayHistory()
+                startRelayHistory(forRefresh = true)
                 resubscribeEngagement(retryPartialHistory = true)
             } else {
-                // タブ再表示時はライブ購読を再開し、離れていた間のギャップを補完する
+                // タブ再表示・手動更新では、読み込み済みの過去ページを保ったまま
+                // ライブ購読を再開し、離れていた間の投稿を取りきる。
+                val refreshing = manualRefreshRequested
+                manualRefreshRequested = false
+                relayHistoryCoordinator?.resume()
+                // 手動更新は、拒否や再試行待ちで止まっているリレーにもすぐ問い合わせ直す。
+                if (refreshing) relayHistoryCoordinator?.retryStalledRelays()
+                resumeSync?.resume()
                 val nowSec = Clock.System.now().epochSeconds
                 subscribeLiveFeed(since = nowSec)
-                val gapSince = eventSortTimes.values.maxOrNull()
+                // 時計のずれた未来の投稿を基準にすると、差分を取り損ねる。
+                val gapSince = eventSortTimes.values.filter { it <= nowSec }.maxOrNull()
                 when (resumeSyncStrategy(gapSince = gapSince, nowSec = nowSec)) {
-                    ResumeSyncStrategy.None -> Unit
-                    ResumeSyncStrategy.GapFill -> requestBackgroundSync(
-                        since = gapSince,
-                        until = nowSec,
-                    )
-                    ResumeSyncStrategy.LatestPage -> requestBackgroundSync(
-                        since = null,
-                        until = nowSec,
-                    )
+                    ResumeSyncStrategy.None ->
+                        if (refreshing) startResumeSync(since = gapSince, until = nowSec)
+                    ResumeSyncStrategy.GapFill -> startResumeSync(since = gapSince, until = nowSec)
+                    ResumeSyncStrategy.LatestPage -> startResumeSync(since = null, until = nowSec)
                 }
                 resubscribeEngagement(retryPartialHistory = true)
             }
@@ -740,14 +715,11 @@ internal class FeedController(
         subscriptionIds = null
         subscriptionJobs.forEach { it.cancel() }
         subscriptionJobs.clear()
-        historyCollectorJobs.forEach { it.cancel() }
-        historyCollectorJobs.clear()
-        historyIndicatorSettleJob?.cancel()
-        historyIndicatorSettleJob = null
         initialFeedSlowJob?.cancel()
         initialFeedSlowJob = null
-        relayHistoryCoordinator?.close()
-        relayHistoryCoordinator = null
+        // 過去ページのカーソルは復帰後の「もっと読む」に必要なので、通信だけ止める。
+        relayHistoryCoordinator?.pause()
+        resumeSync?.pause()
         engagementBatchJob?.cancel()
         engagementRetryJobs.values.forEach(Job::cancel)
         engagementRetryJobs.clear()
@@ -758,30 +730,19 @@ internal class FeedController(
             refreshIndicatorTimeoutJob = null
         }
         emitFeedStateNow()
-        if (loadingMore) {
-            loadingMore = false
-            val current = currentFeedState()
-            setFeedState(current.copy(
-                isInitialLoad = current.isInitialLoad && current.events.isEmpty(),
-                canLoadMore = current.canLoadMore || current.events.isNotEmpty(),
-                isLoadingMore = false,
-                isRefreshing = if (clearRefreshing) false else current.isRefreshing,
-            ))
-        }
+        if (clearRefreshing) clearRefreshIndicator()
         if (currentFeedState().isInitialLoad && currentFeedState().events.isEmpty()) {
             initialHistoryRequested = false
         }
         val sessionsToClose = listOfNotNull(
             liveSession,
             engagementSession,
-            currentHistorySession,
         ) + engagementHistorySessions.values
         liveSession = null
         engagementSession = null
         engagementLiveEventIds = null
         engagementHistorySessions.clear()
         engagementHistoryDedups.clear()
-        currentHistorySession = null
         if (sessionsToClose.isNotEmpty()) {
             launch { sessionsToClose.forEach { it.close() } }
         }
@@ -794,6 +755,9 @@ internal class FeedController(
     fun close() {
         if (closed) return
         stopSubscriptions()
+        relayHistoryCoordinator?.close()
+        relayHistoryCoordinator = null
+        closeResumeSync()
         closed = true
         timelineBatchJob?.cancel()
         timelineBatchJob = null
@@ -807,7 +771,7 @@ internal class FeedController(
     }
 
     /** 初回・手動更新の履歴を、停止リレーが他を塞がない独立セッションで取得する。 */
-    private suspend fun startRelayHistory() {
+    private suspend fun startRelayHistory(forRefresh: Boolean = false) {
         if (authorPubkeys?.isEmpty() == true) {
             updateFeedState {
                 it.copy(
@@ -822,10 +786,14 @@ internal class FeedController(
         }
 
         relayHistoryCoordinator?.close()
+        historyOwnsRefresh = forRefresh
         val historyFloor = Clock.System.now().epochSeconds
         initialHistoryRequested = true
         subscribeLiveFeed(since = historyFloor)
         val targetRelays = subscriptions.targetRelayUrls(relayTarget)
+        // 初回は表示境界が決まるまで過去分を出さない。先に返ったリレーの深い投稿を
+        // 一度表示してから引っ込める、ちらつきを避けるため。
+        if (historyRevealOldestAt == null) historyRevealOldestAt = historyFloor
         scheduleInitialFeedSlowState()
         val coordinator = RelayFeedHistoryCoordinator(
             scope = scope,
@@ -837,20 +805,19 @@ internal class FeedController(
             pageSize = FEED_PAGE_SIZE,
             maxPageSize = MAX_HISTORY_PAGE_SIZE,
             settleDelayMillis = HISTORY_RELAY_SETTLE_DELAY_MS,
-            onEvent = { event ->
-                val added = appendFeedEvent(event)
-                if (currentFeedState().isRefreshing && added > 0) clearRefreshIndicator()
-                added
-            },
-            onPageBoundary = { oldest ->
-                revealHistoryThrough(oldest)
+            onEvent = ::appendHistoryEvent,
+            onReveal = { floor ->
+                revealHistoryThrough(floor)
                 flushPendingTimelineEvents()
             },
+            onFlush = ::flushPendingTimelineEvents,
             onState = { history ->
                 historyRequestGeneration = history.generation
                 val current = currentFeedState()
                 val initialFeedState = when {
                     current.events.isNotEmpty() -> InitialFeedState.ContentReady
+                    // 表示境界の確定直後は一覧の再構築が非同期なので、空と誤判定しない。
+                    hasRevealableEvents() -> current.initialFeedState
                     history.isInitialFetchSettled && history.successfulInitialRelayCount > 0 ->
                         InitialFeedState.Empty
                     history.isInitialFetchSettled && history.relayCount > 0 ->
@@ -865,13 +832,13 @@ internal class FeedController(
                         initialFeedState = initialFeedState,
                         canLoadMore = history.canLoadMore,
                         isLoadingMore = history.isLoading,
-                        isRefreshing = current.isRefreshing && history.isLoading,
                         historyRequestGeneration = history.generation,
                     )
                 }
-                if (!history.isLoading) {
-                    refreshIndicatorTimeoutJob?.cancel()
-                    refreshIndicatorTimeoutJob = null
+                // 復帰時の差分取得が担う更新表示は、過去ページの状態で消さない。
+                if (historyOwnsRefresh && !history.isLoading) {
+                    historyOwnsRefresh = false
+                    clearRefreshIndicator()
                 }
                 if (
                     initialFeedState == InitialFeedState.ContentReady ||
@@ -910,250 +877,90 @@ internal class FeedController(
         }
     }
 
-    private suspend fun requestHistoryPage(
-        until: Long?,
-        retryRelayUrls: Set<String>? = null,
-    ) {
-        val ids = subscriptionIds ?: return
-        if (authorPubkeys?.isEmpty() == true) {
-            loadingMore = false
-            updateFeedState {
-                it.copy(
-                    isInitialLoad = false,
-                    canLoadMore = false,
-                    isLoadingMore = false,
-                    isRefreshing = false,
-                )
-            }
-            return
-        }
-
-        currentHistorySession?.close()
-        val historySubId = nextHistorySubscriptionId(ids)
-
-        isGapFill = false
-        activeHistoryUntil = until
-        activeHistoryPageSize = when {
-            retryRelayUrls != null -> activeHistoryPageSize
-            until == null -> FEED_PAGE_SIZE
-            else -> nextHistoryPageSize
-        }
-        loadingMore = true
-        lastHistoryBatchUniqueCount = 0
-        val target = retryRelayUrls
-            ?.takeIf { it.isNotEmpty() }
-            ?.let(RelayTarget::Explicit)
-            ?: relayTarget
-        if (retryRelayUrls == null) {
-            historyPageCreatedAtByEventId.clear()
-            historyPageEventIdsByRelay.clear()
-            pendingHistoryRelayUrls.clear()
-        }
-        // 初回のみライブ購読も開始（since=現在時刻でライブイベントのみ）
-        if (until == null && retryRelayUrls == null) {
-            initialHistoryRequested = true
-            subscribeLiveFeed(since = Clock.System.now().epochSeconds)
-        }
-        updateFeedState { it.copy(canLoadMore = false, isLoadingMore = true) }
-        val session = subscriptions.open(
-            SubscriptionSpec(
-                id = historySubId,
-                filters = feedFilters(until = until, limit = activeHistoryPageSize),
-                target = target,
-                behavior = SubscriptionBehavior.Fetch(HISTORY_FETCH_TIMEOUT_MS),
-                deduplicateEvents = false,
-            ),
-        )
-        currentHistorySession = session
-        startHistoryCollector(session)
-    }
-
-    /** 既存の表示を維持したまま、復帰後に必要な範囲だけ同期する。 */
-    private suspend fun requestBackgroundSync(since: Long?, until: Long) {
-        val ids = subscriptionIds ?: return
-        if (authorPubkeys?.isEmpty() == true) return
-        currentHistorySession?.close()
-        val historySubId = nextHistorySubscriptionId(ids)
-        isGapFill = true
-        activeHistoryPageSize = FEED_PAGE_SIZE
-        loadingMore = true
-        lastHistoryBatchUniqueCount = 0
-        historyPageCreatedAtByEventId.clear()
-        historyPageEventIdsByRelay.clear()
-        pendingHistoryRelayUrls.clear()
-        val session = subscriptions.open(
-            SubscriptionSpec(
-                id = historySubId,
-                filters = feedFilters(since = since, until = until, limit = FEED_PAGE_SIZE),
-                target = relayTarget,
-                behavior = SubscriptionBehavior.Fetch(HISTORY_FETCH_TIMEOUT_MS),
-                deduplicateEvents = false,
-            ),
-        )
-        currentHistorySession = session
-        startHistoryCollector(session)
-    }
-
-    private fun onHistoryPageCompleted() {
-        if (!loadingMore) return
-        flushPendingTimelineEvents()
-        loadingMore = false
-        // リプライ等がフィルタされても受信件数が上限に達していれば次ページがある
-        val relayHasMore = historyPageEventIdsByRelay.values.any { it.size >= activeHistoryPageSize }
-        val pageWindow = historyPageWindow(
-            createdAts = historyPageCreatedAtByEventId.values.toList(),
-            pageSize = activeHistoryPageSize,
-            hasMore = relayHasMore,
-        )
-        val hasMore = pageWindow.hasMore
-        val loadedVisibleEvents = lastHistoryBatchUniqueCount > 0
-        if (!isGapFill) {
-            shouldRetryHistoryPage = false
-            nextHistoryUntil = pageWindow.nextUntil
-            nextHistoryPageSize = if (
-                pageWindow.nextUntil != null && pageWindow.nextUntil == activeHistoryUntil
-            ) {
-                // created_at は秒精度なので、同じ境界秒にさらにイベントがある間は
-                // until を進めず取得上限を広げ、31件目以降を取りこぼさない。
-                (activeHistoryPageSize * 2).coerceAtMost(MAX_HISTORY_PAGE_SIZE)
-            } else {
-                FEED_PAGE_SIZE
-            }
-            revealHistoryThrough(pageWindow.revealOldestAt)
-        }
-        val cur = currentFeedState()
-        // ギャップ補完は期間が限定されるため件数で過去ページの有無を判断できない
-        setFeedState(cur.copy(
-            canLoadMore = if (isGapFill) cur.canLoadMore else hasMore,
-            isInitialLoad = false,
-            isLoadingMore = false,
-            isRefreshing = false,
-            historyRequestGeneration = historyRequestGeneration,
-        ))
-        refreshIndicatorTimeoutJob?.cancel()
-        refreshIndicatorTimeoutJob = null
-        if (!isGapFill) {
-            continuePastEmptyHistoryPageIfNeeded(
-                hasMore = hasMore,
-                loadedVisibleEvents = loadedVisibleEvents,
-            )
-        }
-    }
-
-    private fun onHistoryFetchIncomplete() {
-        if (!loadingMore) return
-        flushPendingTimelineEvents()
-        loadingMore = false
-        val pageWindow = historyPageWindow(
-            createdAts = historyPageCreatedAtByEventId.values.toList(),
-            pageSize = activeHistoryPageSize,
-            hasMore = false,
-        )
-        if (!isGapFill) {
-            // 一部リレーが未完了のページでは、安全なページ境界を確定できない。
-            shouldRetryHistoryPage = true
-            nextHistoryUntil = activeHistoryUntil
-            revealHistoryThrough(pageWindow.revealOldestAt)
-        }
-        val current = currentFeedState()
-        setFeedState(current.copy(
-            isInitialLoad = false,
-            canLoadMore = if (isGapFill) {
-                current.canLoadMore
-            } else {
-                pendingHistoryRelayUrls.isNotEmpty()
-            },
-            isLoadingMore = false,
-            isRefreshing = false,
-            historyRequestGeneration = historyRequestGeneration,
-        ))
-        refreshIndicatorTimeoutJob?.cancel()
-        refreshIndicatorTimeoutJob = null
-    }
-
-    private fun continuePastEmptyHistoryPageIfNeeded(
-        hasMore: Boolean,
-        loadedVisibleEvents: Boolean,
-    ) {
-        if (loadedVisibleEvents) {
-            consecutiveEmptyHistoryPages = 0
-            return
-        }
-        if (!hasMore || nextHistoryUntil == null) {
-            consecutiveEmptyHistoryPages = 0
-            return
-        }
-        consecutiveEmptyHistoryPages++
-        if (consecutiveEmptyHistoryPages > MAX_AUTO_SKIP_EMPTY_HISTORY_PAGES) return
-        launch {
-            requestHistoryPage(until = nextHistoryUntil)
-        }
-    }
-
-    private fun startHistoryCollector(session: SubscriptionSession) {
-        historyCollectorJobs.forEach { it.cancel() }
-        historyCollectorJobs.clear()
-        historyIndicatorSettleJob?.cancel()
-        historyIndicatorSettleJob = null
-        historyCollectorJobs += launch {
-            session.signals.collect { signal ->
-                if (currentHistorySession !== session) return@collect
-                when (signal) {
-                    is SubscriptionSignal.Event -> {
-                        val event = signal.event
-                        historyPageCreatedAtByEventId[event.id] = event.createdAt
-                        historyPageEventIdsByRelay
-                            .getOrPut(signal.relayUrl) { mutableSetOf() }
-                            .add(event.id)
-                        lastHistoryBatchUniqueCount += appendFeedEvent(event)
-                        if (currentFeedState().isRefreshing && lastHistoryBatchUniqueCount > 0) {
-                            clearRefreshIndicator()
-                        }
-                        if (currentFeedState().isInitialLoad && currentFeedState().events.isNotEmpty()) {
-                            updateFeedState { it.copy(isInitialLoad = false) }
-                        }
-                    }
-                    is SubscriptionSignal.Eose -> scheduleHistoryIndicatorSettle(session)
-                    is SubscriptionSignal.FetchCompleted -> {
-                        historyIndicatorSettleJob?.cancel()
-                        historyIndicatorSettleJob = null
-                        currentHistorySession = null
-                        // 対象リレーは open 時に確定するため、事前スナップショットではなく
-                        // 実際の完了結果から未完了リレーを再構築する。
-                        pendingHistoryRelayUrls.clear()
-                        pendingHistoryRelayUrls += signal.outcomes
-                            .filterValues { it !is RelayOutcome.Eose }
-                            .keys
-                        val incomplete = pendingHistoryRelayUrls.isNotEmpty()
-                        if (incomplete) onHistoryFetchIncomplete() else onHistoryPageCompleted()
-                    }
-                    else -> Unit
-                }
-            }
-        }
+    /** 過去ページと差分取得で共通の、受信イベントの取り込み。 */
+    private fun appendHistoryEvent(event: NostrEvent): Int {
+        val added = appendFeedEvent(event)
+        if (currentFeedState().isRefreshing && added > 0) clearRefreshIndicator()
+        return added
     }
 
     /**
-     * 1台が応答済みなら、短い猶予の後にインジケーターだけを止める。
-     * 取得セッションは継続し、遅いリレーのイベントとページ境界を失わない。
+     * 既存の表示を維持したまま、[since] 以降の投稿をリレーごとに最後まで取得する。
+     * [since] がない（離れていた時間が長すぎる）ときは、各リレーの直近 1 ページだけを取る。
+     * 未完了の差分取得があれば、その範囲も含めて 1 本に取り直す（重複は ID で除く）。
      */
-    private fun scheduleHistoryIndicatorSettle(session: SubscriptionSession) {
-        if (historyIndicatorSettleJob != null) return
-        historyIndicatorSettleJob = launch {
-            delay(HISTORY_RELAY_SETTLE_DELAY_MS)
-            if (currentHistorySession !== session || !loadingMore) return@launch
-            historyIndicatorSettleJob = null
-            flushPendingTimelineEvents()
-            if (!isGapFill) {
-                revealHistoryThrough(
-                    historyPageWindow(
-                        historyPageCreatedAtByEventId.values.toList(),
-                        FEED_PAGE_SIZE,
-                    ).revealOldestAt,
-                )
-            }
-            updateFeedState { it.copy(isLoadingMore = false) }
+    private suspend fun startResumeSync(since: Long?, until: Long) {
+        if (authorPubkeys?.isEmpty() == true) {
+            clearRefreshIndicator()
+            return
         }
+        val previous = resumeSync
+        val effectiveSince = when {
+            previous == null || since == null -> since
+            else -> minOf(since, resumeSyncSince ?: since)
+        }
+        previous?.close()
+        resumeSync = null
+        val targetRelays = subscriptions.targetRelayUrls(relayTarget)
+        lateinit var coordinator: RelayFeedHistoryCoordinator
+        coordinator = RelayFeedHistoryCoordinator(
+            scope = scope,
+            subscriptions = subscriptions,
+            idPrefix = "feed-$instanceKey-sync-${++resumeSyncSequence}",
+            baseFilters = feedFilters(since = effectiveSince),
+            historyFloor = until,
+            fetchTimeoutMillis = HISTORY_FETCH_TIMEOUT_MS,
+            pageSize = FEED_PAGE_SIZE,
+            maxPageSize = MAX_HISTORY_PAGE_SIZE,
+            settleDelayMillis = HISTORY_RELAY_SETTLE_DELAY_MS,
+            revealsHistory = false,
+            autoContinue = effectiveSince != null,
+            onEvent = { event ->
+                resumeSyncReceivedCount++
+                appendHistoryEvent(event)
+            },
+            onFlush = ::flushPendingTimelineEvents,
+            onState = { sync ->
+                // コールバック中に自身を閉じないよう、完了処理は後で行う。
+                when {
+                    resumeSyncReceivedCount > MAX_RESUME_SYNC_EVENTS ->
+                        launch { restartFromLatest() }
+                    sync.relayCount == 0 ||
+                        (if (effectiveSince != null) !sync.canLoadMore else sync.isInitialFetchSettled) ->
+                        launch { finishResumeSync(coordinator) }
+                }
+            },
+        )
+        resumeSync = coordinator
+        resumeSyncSince = effectiveSince
+        resumeSyncReceivedCount = 0
+        coordinator.updateRelays(targetRelays)
+        coordinator.start()
+    }
+
+    private fun finishResumeSync(coordinator: RelayFeedHistoryCoordinator) {
+        if (resumeSync !== coordinator) return
+        closeResumeSync()
+        flushPendingTimelineEvents()
+        clearRefreshIndicator()
+    }
+
+    private fun closeResumeSync() {
+        resumeSync?.close()
+        resumeSync = null
+        resumeSyncSince = null
+        resumeSyncReceivedCount = 0
+    }
+
+    /**
+     * 離れていた間の投稿が多すぎるときは、差分を積み上げず最新から読み直す。
+     * 保持上限を超えて読み込み済みの過去ページが押し出されるのを防ぐ。
+     */
+    private fun restartFromLatest() {
+        if (closed || resumeSync == null) return
+        val wasStarted = subscriptionsStarted
+        resetFeedState()
+        if (wasStarted) startSubscriptions()
     }
 
     private fun scheduleRefreshIndicatorTimeout() {
@@ -1276,9 +1083,6 @@ internal class FeedController(
             forgetEngagementHistory(removedId)
         }
         while (canonicalEvents.size > MAX_SEEN_IDS) canonicalEvents.remove(canonicalEvents.keys.first())
-        if (oldestCreatedAt == null || timelineCreatedAt < (oldestCreatedAt ?: Long.MAX_VALUE)) {
-            oldestCreatedAt = timelineCreatedAt
-        }
         if (isFiltered(event)) return 0
         val cur = currentFeedState()
         if (cur.events.any { it.id == event.id } || pendingTimelineEvents.containsKey(event.id)) return 0
@@ -1568,6 +1372,13 @@ internal class FeedController(
             return false
         }
         return rememberSeenId(seenIds, globalKey)
+    }
+
+    private fun hasRevealableEvents(): Boolean {
+        val floor = historyRevealOldestAt ?: Long.MIN_VALUE
+        return rawEvents.values.any { event ->
+            (eventSortTimes[event.id] ?: event.createdAt) >= floor && !isFiltered(event)
+        }
     }
 
     private fun revealHistoryThrough(createdAt: Long?) {
@@ -2056,21 +1867,17 @@ internal class FeedController(
         val suffix = "$shortKey-$instanceKey-$subscriptionGeneration"
         return SubscriptionIds(
             feed = "feed-$suffix",
-            history = "hist-$suffix",
             reaction = "reac-$suffix",
             repostTarget = "rpt-$suffix",
             quote = "quot-$suffix",
         )
     }
 
-    private fun nextHistorySubscriptionId(ids: SubscriptionIds): String {
-        historyRequestGeneration++
-        return "${ids.history}-$historyRequestGeneration"
-    }
-
     companion object {
         private val DISPLAY_EVENT_KINDS = linkedSetOf(1, COMMENT_EVENT_KIND)
         private const val FEED_PAGE_SIZE = 30
+        /** 差分取得でこれを超えて受信したら、最新から読み直す。表示上限 (800 件) より十分小さく取る。 */
+        private const val MAX_RESUME_SYNC_EVENTS = 500
         private const val MAX_HISTORY_PAGE_SIZE = 3_840
         // FeedItemMapperのデフォルトのキャッシュ上限がこの値を下回らないよう、そちらから直接参照する。
         internal const val MAX_TIMELINE_EVENTS = 800
@@ -2091,7 +1898,6 @@ internal class FeedController(
         private const val ENGAGEMENT_RETRY_BASE_DELAY_MS = 1_000L
         private const val ENGAGEMENT_RETRY_MAX_DELAY_MS = 30_000L
         private const val ENGAGEMENT_LIVE_OVERLAP_SECONDS = 120L
-        private const val MAX_AUTO_SKIP_EMPTY_HISTORY_PAGES = 5
         private var nextInstanceKeyValue = 0
 
         private fun nextInstanceKey(): Int = ++nextInstanceKeyValue
@@ -2229,7 +2035,6 @@ private enum class EngagementHistoryState {
 
 private data class SubscriptionIds(
     val feed: String,
-    val history: String,
     val reaction: String,
     val repostTarget: String,
     val quote: String,
