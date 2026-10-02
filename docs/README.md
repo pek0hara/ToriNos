@@ -25,6 +25,7 @@
 - [`profile-cache-design.md`](./profile-cache-design.md) — kind 0プロフィールの取得、キャッシュ、更新方針
 - [`cache-performance-refactor-design.md`](./cache-performance-refactor-design.md) — キャッシュと長寿命状態の上限、差分通知、DB・画像メモリの性能改善方針
 - [`search-performance-fix-plan.md`](./search-performance-fix-plan.md) — 検索性能の設計と導入状況、キャッシュ・購読・WebSocketのライフサイクル
+- [`post-search-refactor-design.md`](./post-search-refactor-design.md) — 投稿検索の実装レビュー、ページ状態と有限購読の統合、付随情報の分離、段階的な移行案
 - [`notification-target-resolution-design.md`](./notification-target-resolution-design.md) — 通知対象のKind非依存取得、取得状態とKind別表示・遷移の境界
 - [`post-auto-translation-design.md`](./post-auto-translation-design.md) — OS機能を使う投稿言語判定、自動翻訳、言語モデル準備と安全なフォールバック
 - [`web-private-key-login-design.md`](./web-private-key-login-design.md) — Web版(Kotlin/Wasm)の署名実装、ブラウザでの秘密鍵保存、未対応機能とテスト方針
@@ -55,5 +56,6 @@
 ## UI設計
 
 - [`badge-feature-design.md`](./badge-feature-design.md) — NIP-58の現行・旧形式、ポストカードの名前の右側とプロフィールの名前下の表示、授与検証・段階取得・参照キャッシュ・選択保存の設計
+- [`article-drafts-matometr-design.md`](./article-drafts-matometr-design.md) — 記事下書き、自動保存、投稿画面改善、フィード複数選択からのMatometr記事作成を合わせた要件・設計案
 - [`settings-navigation-design.md`](./settings-navigation-design.md) — 設定の統合、プロフィールのアカウント切り替え、サービスの絵文字タブ
 - [`emoji-service-discovery-design.md`](./emoji-service-discovery-design.md) — 絵文字サービスの共通ヘッダー、単一リレー探索、フォロー先の公開登録人数による一覧表示・並び順
