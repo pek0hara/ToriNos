@@ -183,6 +183,12 @@ internal fun InlineMediaPlayer(
                             blurHash = media.blurhash,
                             modifier = Modifier.fillMaxSize(),
                         )
+                    } else if (!isAudio && showPoster) {
+                        VideoPreview(
+                            url = media.url,
+                            contentDescription = media.alt,
+                            modifier = Modifier.fillMaxSize(),
+                        )
                     }
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
