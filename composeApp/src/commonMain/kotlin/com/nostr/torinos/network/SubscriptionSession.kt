@@ -48,6 +48,16 @@ sealed interface SubscriptionSignal {
         val retry: RetryDisposition,
     ) : SubscriptionSignal
 
+    /**
+     * 配信中の購読が切断や CLOSED で途切れた後に再開したが、再送 REQ がリレーの件数上限で
+     * 切られ、[interruptedAt] から [replayOldestAt] までを取り戻せていない。購読側で取り直す。
+     */
+    data class Resumed(
+        val relayUrl: String,
+        val interruptedAt: Long,
+        val replayOldestAt: Long,
+    ) : SubscriptionSignal
+
     data class RelayUnavailable(
         val relayUrl: String,
         val reason: String,

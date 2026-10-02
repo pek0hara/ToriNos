@@ -102,4 +102,131 @@ class SubscriptionStateMachineTest {
         assertEquals(RelaySubscriptionPhase.Live, aCompletedLater.phase)
         assertEquals(RelaySubscriptionPhase.Live, bCompletedFirst.phase)
     }
+
+    @Test
+    fun disconnectWhileLiveRecordsInterruptionUntilNextEose() {
+        val sent = SubscriptionStateMachine.reconcile(null, oldFilters, 1L).state!!
+        val live = SubscriptionStateMachine.onEose(sent)
+
+        val disconnected = SubscriptionStateMachine.onDisconnected(live, 2L, disconnectedAt = 500L)
+        assertEquals(500L, disconnected.interruptedAt)
+
+        // 再接続を繰り返しても、最初に途切れた時刻を保つ
+        val resent = SubscriptionStateMachine.reconcile(disconnected, oldFilters, 2L).state!!
+        val disconnectedAgain = SubscriptionStateMachine.onDisconnected(resent, 3L, disconnectedAt = 900L)
+        assertEquals(500L, disconnectedAgain.interruptedAt)
+
+        val resumed = SubscriptionStateMachine.onEose(
+            SubscriptionStateMachine.reconcile(disconnectedAgain, oldFilters, 3L).state!!,
+        )
+        assertNull(resumed.interruptedAt)
+    }
+
+    @Test
+    fun disconnectDuringFilterUpdateAfterLiveIsAnInterruption() {
+        val live = SubscriptionStateMachine.onEose(SubscriptionStateMachine.reconcile(null, oldFilters, 1L).state!!)
+        val updating = SubscriptionStateMachine.reconcile(live, newFilters, 1L).state!!
+        assertEquals(RelaySubscriptionPhase.Sent, updating.phase)
+
+        val disconnected = SubscriptionStateMachine.onDisconnected(updating, 2L, disconnectedAt = 500L)
+
+        assertEquals(500L, disconnected.interruptedAt)
+    }
+
+    @Test
+    fun replayReachingTheInterruptionLeavesNoGap() {
+        val interrupted = interruptedAndResent(interruptedAt = 500L)
+        val replayed = listOf(900L, 700L, 450L).fold(interrupted) { state, createdAt ->
+            SubscriptionStateMachine.onEvent(state, createdAt)
+        }
+
+        assertNull(SubscriptionStateMachine.replayGap(replayed))
+    }
+
+    @Test
+    fun replayCutByRelayLimitReportsTheMissingRange() {
+        val interrupted = interruptedAndResent(interruptedAt = 500L)
+        val replayed = listOf(900L, 800L).fold(interrupted) { state, createdAt ->
+            SubscriptionStateMachine.onEvent(state, createdAt)
+        }
+
+        assertEquals(ReplayGap(interruptedAt = 500L, replayOldestAt = 800L), SubscriptionStateMachine.replayGap(replayed))
+        assertNull(SubscriptionStateMachine.onEose(replayed).interruptedAt)
+    }
+
+    @Test
+    fun truncatedFilterIsDetectedEvenWhenAnotherFilterReachesBack() {
+        val filters = listOf(
+            NostrFilter(kinds = listOf(1), since = 100L),
+            NostrFilter(kinds = listOf(1111), since = 100L),
+        )
+        val live = SubscriptionStateMachine.onEose(SubscriptionStateMachine.reconcile(null, filters, 1L).state!!)
+        val disconnected = SubscriptionStateMachine.onDisconnected(live, 2L, disconnectedAt = 500L)
+        var state = SubscriptionStateMachine.reconcile(disconnected, filters, 2L).state!!
+        // 投稿は上限で途切れた後だけ、返信は途切れる前まで届いた
+        state = SubscriptionStateMachine.onEvent(state, createdAt = 900L, kind = 1)
+        state = SubscriptionStateMachine.onEvent(state, createdAt = 800L, kind = 1)
+        state = SubscriptionStateMachine.onEvent(state, createdAt = 300L, kind = 1111)
+
+        assertEquals(ReplayGap(interruptedAt = 500L, replayOldestAt = 800L), SubscriptionStateMachine.replayGap(state))
+    }
+
+    @Test
+    fun sinceAdvancedDuringOutageIsReportedAsGap() {
+        val live = SubscriptionStateMachine.onEose(SubscriptionStateMachine.reconcile(null, oldFilters, 1L).state!!)
+        val disconnected = SubscriptionStateMachine.onDisconnected(live, 2L, disconnectedAt = 150L)
+        // 切断中に since=200 のフィルターへ更新され、再送では 150〜200 を取れない
+        val resent = SubscriptionStateMachine.reconcile(disconnected, newFilters, 2L).state!!
+
+        assertEquals(ReplayGap(interruptedAt = 150L, replayOldestAt = 200L), SubscriptionStateMachine.replayGap(resent))
+    }
+
+    @Test
+    fun emptyReplayLeavesNoGap() {
+        assertNull(SubscriptionStateMachine.replayGap(interruptedAndResent(interruptedAt = 500L)))
+    }
+
+    private fun interruptedAndResent(interruptedAt: Long): RelaySubscriptionState {
+        val live = SubscriptionStateMachine.onEose(SubscriptionStateMachine.reconcile(null, oldFilters, 1L).state!!)
+        val disconnected = SubscriptionStateMachine.onDisconnected(live, 2L, disconnectedAt = interruptedAt)
+        return SubscriptionStateMachine.reconcile(disconnected, oldFilters, 2L).state!!
+    }
+
+    @Test
+    fun disconnectBeforeFirstEoseIsNotAnInterruption() {
+        val sent = SubscriptionStateMachine.reconcile(null, oldFilters, 1L).state!!
+
+        val disconnected = SubscriptionStateMachine.onDisconnected(sent, 2L, disconnectedAt = 500L)
+
+        assertNull(disconnected.interruptedAt)
+    }
+
+    @Test
+    fun transientCloseWhileLiveRecordsInterruption() {
+        val live = SubscriptionStateMachine.onEose(SubscriptionStateMachine.reconcile(null, oldFilters, 1L).state!!)
+
+        val closed = SubscriptionStateMachine.onClosed(
+            live,
+            structural = false,
+            maxStructuralRefusals = 3,
+            closedAt = 700L,
+        )
+
+        assertEquals(700L, closed.interruptedAt)
+        assertEquals(700L, SubscriptionStateMachine.prepareRetry(closed).interruptedAt)
+    }
+
+    @Test
+    fun liveRetryKeepsGoingAtASlowPaceAfterQuickAttempts() {
+        val delays = (1..6).map {
+            SubscriptionStateMachine.liveRetryDelayMillis(
+                attempt = it,
+                baseDelayMillis = 1_000L,
+                quickAttempts = 3,
+                slowDelayMillis = 300_000L,
+            )
+        }
+
+        assertEquals(listOf(1_000L, 2_000L, 4_000L, 300_000L, 300_000L, 300_000L), delays)
+    }
 }

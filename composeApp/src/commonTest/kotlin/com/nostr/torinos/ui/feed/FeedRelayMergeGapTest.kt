@@ -11,13 +11,14 @@ import com.nostr.torinos.network.SubscriptionSpec
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
+import kotlinx.serialization.json.Json
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -321,6 +322,61 @@ class FeedRelayMergeGapTest {
         controller.close()
     }
 
+    @Test
+    fun postsDuringLiveOutageOfOneRelayAreFetchedAfterItResumes() = runTest {
+        val relays = SimulatedRelays(mapOf("relay-a" to sparseEvents, "relay-b" to denseEvents))
+        val controller = FeedController(computeDispatcher = Dispatchers.Unconfined, scope = backgroundScope, subscriptions = relays)
+        settle(relays)
+        val fetchesBefore = relays.feedFetchTargets().size
+
+        // relay-b のライブ配信が途切れている間に投稿され、再送 REQ では件数上限で届かなかった分
+        val duringOutage = postsWhileAway()
+        relays.append("relay-b", duringOutage)
+        val interruptedAt = duringOutage.minOf { it.createdAt } - 30
+        // 再送 REQ は新しい 30 件までしか返らなかった
+        val replayed = duringOutage.sortedByDescending { it.createdAt }.take(30)
+        relays.liveSessions().forEach { session ->
+            replayed.forEach { session.emit(SubscriptionSignal.Event("relay-b", it, isLive = false)) }
+            session.emit(SubscriptionSignal.Resumed("relay-b", interruptedAt, replayed.last().createdAt))
+        }
+        settle(relays)
+
+        assertAllShown(controller, duringOutage)
+        // 取り直すのは途切れたリレーだけ
+        assertEquals(
+            setOf<RelayTarget>(RelayTarget.Single("relay-b")),
+            relays.feedFetchTargets().drop(fetchesBefore).toSet(),
+        )
+        controller.close()
+    }
+
+    @Test
+    fun hugeLiveGapOfOneRelayDoesNotResetTheFeedBeingRead() = runTest {
+        val relays = SimulatedRelays(mapOf("relay-a" to sparseEvents, "relay-b" to denseEvents))
+        val controller = FeedController(computeDispatcher = Dispatchers.Unconfined, scope = backgroundScope, subscriptions = relays)
+        settle(relays)
+        repeat(2) {
+            controller.loadMore()
+            settle(relays)
+        }
+        val shownBefore = controller.state.value.events.map { it.id }.toSet()
+
+        // 途切れている間に上限を超える投稿があった
+        val now = Clock.System.now().epochSeconds
+        val duringOutage = (0 until 700).map { event("burst-$it", now - 10 - it) }
+        relays.append("relay-b", duringOutage)
+        relays.liveSessions().forEach { session ->
+            session.emit(SubscriptionSignal.Resumed("relay-b", now - 2_000, now - 10))
+        }
+        // 自動で続くページを上限まで応答し続ける
+        repeat(10) { settle(relays) }
+        assertTrue(relays.feedFetchTargets().size > 20, "上限に届くまで取得が続いていない")
+
+        val shownAfter = controller.state.value.events.map { it.id }.toSet()
+        assertEquals(emptySet(), shownBefore - shownAfter, "読んでいた一覧が消えた")
+        controller.close()
+    }
+
     /** 最後に表示した投稿より新しく、1 ページ (30 件) を超える投稿。 */
     private fun postsWhileAway(): List<NostrEvent> {
         val now = Clock.System.now().epochSeconds
@@ -373,6 +429,8 @@ class FeedRelayMergeGapTest {
         private val served = mutableSetOf<Session>()
         /** 応答を保留するリレー。保留中の REQ は解除後に応答する。 */
         val held = mutableSetOf<String>()
+        /** これらの投稿を対象に含むリアクション取得には応答しない（テストから直接届ける）。 */
+        val heldEngagementTargets = mutableSetOf<String>()
 
         override val readableRelayUrls: Flow<Set<String>> = enabledUrls
 
@@ -385,7 +443,25 @@ class FeedRelayMergeGapTest {
             enabledUrls.value = stores.keys.toSet()
         }
 
-        override fun events(subscriptionId: String): Flow<NostrEvent> = emptyFlow()
+        private val eventStreams = mutableMapOf<String, MutableSharedFlow<NostrEvent>>()
+
+        override fun events(subscriptionId: String): Flow<NostrEvent> =
+            eventStreams.getOrPut(subscriptionId) { MutableSharedFlow(extraBufferCapacity = 64) }
+
+        /** 引用先などの個別取得の結果を、指定した接頭辞の購読へ届ける。 */
+        fun deliverToEventStream(idPrefix: String, event: NostrEvent) {
+            eventStreams.filterKeys { it.startsWith(idPrefix) }.values.forEach { assertTrue(it.tryEmit(event)) }
+        }
+
+        /** [targetId] を対象にしたリアクション取得のセッションへイベントを届ける。 */
+        fun deliverToEngagementFetch(targetId: String, event: NostrEvent, relay: String) {
+            val targets = sessions.filter { session ->
+                session.spec.behavior is SubscriptionBehavior.Fetch && !session.closed &&
+                    session.spec.filters.any { filter -> filter.kinds == listOf(7) && filter.eTags?.contains(targetId) == true }
+            }
+            assertTrue(targets.isNotEmpty(), "リアクション取得のセッションがない")
+            targets.forEach { it.emit(SubscriptionSignal.Event(relay, event, isLive = false)) }
+        }
 
         override suspend fun targetRelayUrls(target: RelayTarget): Set<String> = urlsOf(target)
 
@@ -394,6 +470,10 @@ class FeedRelayMergeGapTest {
             is RelayTarget.Single -> setOf(target.url).intersect(stores.keys)
             is RelayTarget.Explicit -> target.urls.intersect(stores.keys)
         }
+
+        fun feedFetchTargets(): List<RelayTarget> =
+            sessions.filter { it.spec.behavior is SubscriptionBehavior.Fetch && it.spec.filters.all { f -> f.isFeedFilter() } }
+                .map { it.spec.target }
 
         fun liveSessions(): List<Session> =
             sessions.filter { it.spec.behavior is SubscriptionBehavior.Live && !it.closed && it.spec.id.startsWith("feed-") }
@@ -406,7 +486,29 @@ class FeedRelayMergeGapTest {
 
         override fun close(subscriptionId: String) = Unit
 
+        /** フィード以外の取得（リアクションなど）は、空のまま完了させる。 */
+        private fun serveOtherFetches() {
+            sessions
+                .filter { it.spec.behavior is SubscriptionBehavior.Fetch && it !in served && !it.closed }
+                .filterNot { session -> session.spec.filters.all { it.isFeedFilter() } }
+                .filterNot { session ->
+                    session.spec.filters.any { filter -> filter.eTags.orEmpty().any { it in heldEngagementTargets } }
+                }
+                .forEach { session ->
+                    served += session
+                    val urls = urlsOf(session.spec.target)
+                    urls.forEach { session.emit(SubscriptionSignal.Eose(it)) }
+                    session.emit(
+                        SubscriptionSignal.FetchCompleted(
+                            outcomes = urls.associateWith { RelayOutcome.Eose },
+                            timedOut = false,
+                        ),
+                    )
+                }
+        }
+
         fun serveFeedFetches() {
+            serveOtherFetches()
             sessions
                 .filter { it.spec.behavior is SubscriptionBehavior.Fetch && it !in served && !it.closed }
                 .filter { session -> session.spec.filters.all { it.isFeedFilter() } }

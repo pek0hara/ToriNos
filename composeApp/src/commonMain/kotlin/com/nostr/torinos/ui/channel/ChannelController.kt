@@ -1258,6 +1258,7 @@ internal class ChannelController(
                         relayRefusals[signal.relayUrl] = signal.reason.ifBlank { "接続できません" }
                         syncReadyState()
                     }
+                    is SubscriptionSignal.Resumed -> Unit
                     is SubscriptionSignal.FetchCompleted -> Unit
                 }
             }

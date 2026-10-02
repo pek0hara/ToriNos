@@ -10,6 +10,7 @@ import com.nostr.torinos.model.buildReqMessage
 import com.nostr.torinos.util.appLog
 import com.nostr.torinos.util.loggingExceptionHandler
 import com.nostr.torinos.util.networkTraceLog
+import kotlin.time.Clock
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineStart
@@ -85,6 +86,8 @@ object NostrRepository {
     internal val routingRelayUrls: StateFlow<Set<String>> = _routingRelayUrls.asStateFlow()
     private val activeSubscriptions = mutableMapOf<String, ActiveSubscriptionRecord>()
     private val relayConnectionGenerations = mutableMapOf<String, Long>()
+    /** リレーから最後にメッセージを受け取った時刻（epoch 秒）。切断で途切れた配信の起点に使う。 */
+    private val relayLastMessageAt = mutableMapOf<String, Long>()
     private val temporaryRelays = mutableMapOf<String, TemporaryRelayHandle>()
     private val temporarySubscriptions = mutableMapOf<String, Pair<NostrFilter, String>>()
     private val activeRelayCount = MutableStateFlow(0)
@@ -145,10 +148,12 @@ object NostrRepository {
                     val commands = stateMutex.withLock {
                         val generation = (relayConnectionGenerations[relay.url] ?: 0L) + 1L
                         relayConnectionGenerations[relay.url] = generation
+                        // 切断の瞬間は検知が遅れうるため、最後に受信した時刻を控えめな起点にする。
+                        val disconnectedAt = relayLastMessageAt[relay.url] ?: nowEpochSeconds()
                         activeSubscriptions.flatMap { (subId, record) ->
                             record.relayStates[relay.url]?.let { state ->
                                 record.relayStates[relay.url] =
-                                    SubscriptionStateMachine.onDisconnected(state, generation)
+                                    SubscriptionStateMachine.onDisconnected(state, generation, disconnectedAt)
                             }
                             reconcileSubscriptionLocked(subId, record, onlyRelayUrl = relay.url)
                         }
@@ -184,7 +189,10 @@ object NostrRepository {
     private fun reconcileActiveRelaysLocked(): Pair<List<ActiveRelayHandle>, List<ActiveRelayHandle>> {
         val desiredUrls = desiredActiveRelayUrlsLocked()
         val removed = (activeRelays.keys - desiredUrls)
-            .mapNotNull { url -> activeRelays.remove(url) }
+            .mapNotNull { url ->
+                relayLastMessageAt.remove(url)
+                activeRelays.remove(url)
+            }
         val added = (desiredUrls - activeRelays.keys).map { url ->
             networkTraceLog { "[Repo] connecting to relay: $url" }
             val relay = NostrRelay(url, httpClient)
@@ -262,6 +270,7 @@ object NostrRepository {
         var emitToLegacyBus = true
 
         stateMutex.withLock {
+            relayLastMessageAt[relayUrl] = nowEpochSeconds()
             val subscriptionId = message.subscriptionIdOrNull()
             val record = subscriptionId?.let(activeSubscriptions::get)
             val state = record?.relayStates?.get(relayUrl)
@@ -269,7 +278,11 @@ object NostrRepository {
                 when (message) {
                     is RelayMessage.Event -> {
                         val wasLive = state.phase == RelaySubscriptionPhase.Live
-                        record.relayStates[relayUrl] = SubscriptionStateMachine.onEvent(state)
+                        record.relayStates[relayUrl] = SubscriptionStateMachine.onEvent(
+                            state,
+                            createdAt = message.event.createdAt,
+                            kind = message.event.kind,
+                        )
                         val isFirstDelivery = !record.deduplicateEvents || record.seenEventIds.add(message.event.id)
                         emitToLegacyBus = isFirstDelivery
                         if (record.session != null && isFirstDelivery) {
@@ -281,8 +294,18 @@ object NostrRepository {
                         }
                     }
                     is RelayMessage.EndOfStoredEvents -> {
+                        val replayGap = SubscriptionStateMachine.replayGap(state)
                         record.relayStates[relayUrl] = SubscriptionStateMachine.onEose(state)
                         record.session?.let { signals += it to SubscriptionSignal.Eose(relayUrl) }
+                        if (record.behavior is SubscriptionBehavior.Live && replayGap != null) {
+                            record.session?.let {
+                                signals += it to SubscriptionSignal.Resumed(
+                                    relayUrl = relayUrl,
+                                    interruptedAt = replayGap.interruptedAt,
+                                    replayOldestAt = replayGap.replayOldestAt,
+                                )
+                            }
+                        }
                         record.fetchOutcomes[relayUrl] = RelayOutcome.Eose
                         commands = reconcileSubscriptionLocked(subscriptionId, record, onlyRelayUrl = relayUrl)
                         if (record.shouldCompleteFetchLocked()) {
@@ -296,6 +319,7 @@ object NostrRepository {
                             state = state,
                             structural = classification.structural,
                             maxStructuralRefusals = MAX_STRUCTURAL_REFUSALS,
+                            closedAt = nowEpochSeconds(),
                         )
                         record.relayStates[relayUrl] = next
                         record.session?.let {
@@ -310,9 +334,9 @@ object NostrRepository {
                             record.fetchCompletionScheduled = true
                             fetchToComplete = subscriptionId
                         } else if (
+                            // 配信中の購読は回数で諦めず、間隔を延ばして再開を試み続ける。
                             record.behavior is SubscriptionBehavior.Live &&
-                            classification.disposition == RetryDisposition.RetryWithBackoff &&
-                            next.refusalCount < MAX_TRANSIENT_RETRIES
+                            classification.disposition == RetryDisposition.RetryWithBackoff
                         ) {
                             retry = RetryRequest(subscriptionId, relayUrl, next.refusalCount)
                         }
@@ -327,7 +351,14 @@ object NostrRepository {
         if (emitToLegacyBus) bus.emit(RelayEnvelope(relayUrl, message))
         retry?.let { request ->
             scope.launch {
-                delay(RETRY_BASE_DELAY_MS * (1L shl (request.attempt - 1).coerceAtLeast(0)))
+                delay(
+                    SubscriptionStateMachine.liveRetryDelayMillis(
+                        attempt = request.attempt,
+                        baseDelayMillis = RETRY_BASE_DELAY_MS,
+                        quickAttempts = LIVE_QUICK_RETRIES,
+                        slowDelayMillis = LIVE_SLOW_RETRY_DELAY_MS,
+                    ),
+                )
                 retryClosedSubscription(request)
             }
         }
@@ -907,9 +938,12 @@ object NostrRepository {
     private const val PUBLISH_TIMEOUT_MS = 10_000L
     private const val RELAY_CLOSE_GRACE_MS = 100L
     private const val RETRY_BASE_DELAY_MS = 1_000L
-    private const val MAX_TRANSIENT_RETRIES = 3
+    private const val LIVE_QUICK_RETRIES = 3
+    private const val LIVE_SLOW_RETRY_DELAY_MS = 5L * 60L * 1_000L
     private const val MAX_STRUCTURAL_REFUSALS = 3
     private const val CACHE_RELAY_URL = "local://reaction-cache"
+
+    private fun nowEpochSeconds(): Long = Clock.System.now().epochSeconds
 }
 
 private data class RelayEnvelope(

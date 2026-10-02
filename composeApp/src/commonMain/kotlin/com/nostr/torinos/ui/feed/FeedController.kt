@@ -1,6 +1,7 @@
 package com.nostr.torinos.ui.feed
 
 import com.nostr.torinos.ui.feed.FeedViewModel.UiState
+import com.nostr.torinos.util.appLog
 import com.nostr.torinos.ui.feed.FeedViewModel.InitialFeedState
 import com.nostr.torinos.account.AccountSession
 import com.nostr.torinos.crypto.isWriteSupported
@@ -160,13 +161,14 @@ internal class FeedController(
     private val engagementHistorySessions = mutableMapOf<String, SubscriptionSession>()
     private var relayHistoryCoordinator: RelayFeedHistoryCoordinator? = null
     /**
-     * 復帰・手動更新時の差分取得。途中でタブを離れても再開して最後まで取りきる。
-     * 常に 1 本だけ持ち、新しい差分取得は未完了分の範囲も引き継ぐ。
+     * 差分取得。途中でタブを離れても再開して最後まで取りきる。
+     * 復帰・手動更新は全リレー ([ALL_RELAYS_SYNC_KEY])、ライブ配信の途切れはそのリレーだけを対象にし、
+     * 対象ごとに 1 本だけ持つ。新しい差分取得は未完了分の範囲も引き継ぐ。
      */
-    private var resumeSync: RelayFeedHistoryCoordinator? = null
-    private var resumeSyncSince: Long? = null
-    private var resumeSyncReceivedCount = 0
-    private var resumeSyncSequence = 0
+    private val feedSyncs = mutableMapOf<String, FeedSync>()
+    private var feedSyncSequence = 0
+    /** リレー単位の取り直しで追加した件数の合計。取り直しがすべて終わったら数え直す。 */
+    private var liveGapRecoveryAddedCount = 0
     /** 手動更新を過去ページの取得で処理しているとき、その完了で更新表示を消す。 */
     private var historyOwnsRefresh = false
     private var subscriptionGeneration = 0
@@ -258,7 +260,10 @@ internal class FeedController(
             subscriptions.readableRelayUrls.collect {
                 val targetRelays = subscriptions.targetRelayUrls(relayTarget)
                 relayHistoryCoordinator?.updateRelays(targetRelays)
-                resumeSync?.updateRelays(targetRelays)
+                feedSyncs[ALL_RELAYS_SYNC_KEY]?.coordinator?.updateRelays(targetRelays)
+                feedSyncs.keys.filter { it != ALL_RELAYS_SYNC_KEY && it !in targetRelays }.forEach { url ->
+                    feedSyncs.remove(url)?.coordinator?.close()
+                }
                 val previousRelays = lastEngagementTargetRelays
                 lastEngagementTargetRelays = targetRelays
                 if (previousRelays == null || previousRelays == targetRelays) return@collect
@@ -605,7 +610,7 @@ internal class FeedController(
 
         relayHistoryCoordinator?.close()
         relayHistoryCoordinator = null
-        closeResumeSync()
+        closeFeedSyncs()
         historyOwnsRefresh = false
 
         historyRevealOldestAt = null
@@ -682,16 +687,16 @@ internal class FeedController(
                 relayHistoryCoordinator?.resume()
                 // 手動更新は、拒否や再試行待ちで止まっているリレーにもすぐ問い合わせ直す。
                 if (refreshing) relayHistoryCoordinator?.retryStalledRelays()
-                resumeSync?.resume()
+                feedSyncs.values.toList().forEach { it.coordinator.resume() }
                 val nowSec = Clock.System.now().epochSeconds
                 subscribeLiveFeed(since = nowSec)
                 // 時計のずれた未来の投稿を基準にすると、差分を取り損ねる。
                 val gapSince = eventSortTimes.values.filter { it <= nowSec }.maxOrNull()
                 when (resumeSyncStrategy(gapSince = gapSince, nowSec = nowSec)) {
                     ResumeSyncStrategy.None ->
-                        if (refreshing) startResumeSync(since = gapSince, until = nowSec)
-                    ResumeSyncStrategy.GapFill -> startResumeSync(since = gapSince, until = nowSec)
-                    ResumeSyncStrategy.LatestPage -> startResumeSync(since = null, until = nowSec)
+                        if (refreshing) startFeedSync(since = gapSince, until = nowSec)
+                    ResumeSyncStrategy.GapFill -> startFeedSync(since = gapSince, until = nowSec)
+                    ResumeSyncStrategy.LatestPage -> startFeedSync(since = null, until = nowSec)
                 }
                 resubscribeEngagement(retryPartialHistory = true)
             }
@@ -719,7 +724,7 @@ internal class FeedController(
         initialFeedSlowJob = null
         // 過去ページのカーソルは復帰後の「もっと読む」に必要なので、通信だけ止める。
         relayHistoryCoordinator?.pause()
-        resumeSync?.pause()
+        feedSyncs.values.forEach { it.coordinator.pause() }
         engagementBatchJob?.cancel()
         engagementRetryJobs.values.forEach(Job::cancel)
         engagementRetryJobs.clear()
@@ -757,7 +762,7 @@ internal class FeedController(
         stopSubscriptions()
         relayHistoryCoordinator?.close()
         relayHistoryCoordinator = null
-        closeResumeSync()
+        closeFeedSyncs()
         closed = true
         timelineBatchJob?.cancel()
         timelineBatchJob = null
@@ -887,28 +892,34 @@ internal class FeedController(
     /**
      * 既存の表示を維持したまま、[since] 以降の投稿をリレーごとに最後まで取得する。
      * [since] がない（離れていた時間が長すぎる）ときは、各リレーの直近 1 ページだけを取る。
-     * 未完了の差分取得があれば、その範囲も含めて 1 本に取り直す（重複は ID で除く）。
+     * [relayUrl] を指定するとそのリレーだけを対象にする。同じ対象の未完了の差分取得があれば、
+     * その範囲も含めて 1 本に取り直す（重複は ID で除く）。
      */
-    private suspend fun startResumeSync(since: Long?, until: Long) {
+    private suspend fun startFeedSync(since: Long?, until: Long, relayUrl: String? = null) {
+        val key = relayUrl ?: ALL_RELAYS_SYNC_KEY
         if (authorPubkeys?.isEmpty() == true) {
-            clearRefreshIndicator()
+            if (relayUrl == null) clearRefreshIndicator()
             return
         }
-        val previous = resumeSync
+        val allRelays = subscriptions.targetRelayUrls(relayTarget)
+        // 待っている間にタブを離れた・閉じた場合は始めない。ここから登録までは中断しない。
+        if (closed || !subscriptionsStarted) return
+        val targetRelays = relayUrl?.let { allRelays.intersect(setOf(it)) } ?: allRelays
+        val previous = feedSyncs.remove(key)
         val effectiveSince = when {
             previous == null || since == null -> since
-            else -> minOf(since, resumeSyncSince ?: since)
+            else -> minOf(since, previous.since ?: since)
         }
-        previous?.close()
-        resumeSync = null
-        val targetRelays = subscriptions.targetRelayUrls(relayTarget)
-        lateinit var coordinator: RelayFeedHistoryCoordinator
-        coordinator = RelayFeedHistoryCoordinator(
+        val effectiveUntil = previous?.let { maxOf(until, it.until) } ?: until
+        previous?.coordinator?.close()
+        val isLiveGapRecovery = relayUrl != null
+        lateinit var sync: FeedSync
+        val coordinator = RelayFeedHistoryCoordinator(
             scope = scope,
             subscriptions = subscriptions,
-            idPrefix = "feed-$instanceKey-sync-${++resumeSyncSequence}",
+            idPrefix = "feed-$instanceKey-sync-${++feedSyncSequence}",
             baseFilters = feedFilters(since = effectiveSince),
-            historyFloor = until,
+            historyFloor = effectiveUntil,
             fetchTimeoutMillis = HISTORY_FETCH_TIMEOUT_MS,
             pageSize = FEED_PAGE_SIZE,
             maxPageSize = MAX_HISTORY_PAGE_SIZE,
@@ -916,51 +927,90 @@ internal class FeedController(
             revealsHistory = false,
             autoContinue = effectiveSince != null,
             onEvent = { event ->
-                resumeSyncReceivedCount++
-                appendHistoryEvent(event)
+                // ライブ配信の取り直しは手動更新とは無関係なので、更新表示には触らない。
+                val added = if (isLiveGapRecovery) appendFeedEvent(event) else appendHistoryEvent(event)
+                sync.addedCount += added
+                if (isLiveGapRecovery) liveGapRecoveryAddedCount += added
+                added
             },
             onFlush = ::flushPendingTimelineEvents,
-            onState = { sync ->
+            onState = { state ->
+                // 全リレーが一斉に切れても上限を超えないよう、リレー単位の取り直しは件数を合算する。
+                val overflowed = if (isLiveGapRecovery) {
+                    liveGapRecoveryAddedCount > MAX_FEED_SYNC_EVENTS
+                } else {
+                    sync.addedCount > MAX_FEED_SYNC_EVENTS
+                }
                 // コールバック中に自身を閉じないよう、完了処理は後で行う。
                 when {
-                    resumeSyncReceivedCount > MAX_RESUME_SYNC_EVENTS ->
-                        launch { restartFromLatest() }
-                    sync.relayCount == 0 ||
-                        (if (effectiveSince != null) !sync.canLoadMore else sync.isInitialFetchSettled) ->
-                        launch { finishResumeSync(coordinator) }
+                    overflowed -> launch { onFeedSyncOverflow(key, sync) }
+                    state.relayCount == 0 ||
+                        (if (effectiveSince != null) !state.canLoadMore else state.isInitialFetchSettled) ->
+                        launch { finishFeedSync(key, sync) }
                 }
             },
         )
-        resumeSync = coordinator
-        resumeSyncSince = effectiveSince
-        resumeSyncReceivedCount = 0
+        sync = FeedSync(coordinator, effectiveSince, effectiveUntil)
+        feedSyncs[key] = sync
         coordinator.updateRelays(targetRelays)
         coordinator.start()
     }
 
-    private fun finishResumeSync(coordinator: RelayFeedHistoryCoordinator) {
-        if (resumeSync !== coordinator) return
-        closeResumeSync()
-        flushPendingTimelineEvents()
-        clearRefreshIndicator()
+    private suspend fun recoverLiveGap(signal: SubscriptionSignal.Resumed) {
+        val nowSec = Clock.System.now().epochSeconds
+        // 復帰時と同じく 24 時間より前は取りに行かない。
+        val since = maxOf(
+            signal.interruptedAt - LIVE_RESUME_OVERLAP_SECONDS,
+            nowSec - MAX_GAP_FILL_DURATION_SECONDS,
+        ).coerceAtLeast(0L)
+        val until = minOf(signal.replayOldestAt, nowSec)
+        // 全リレーの差分取得が取りきる区間は任せ、その先だけを取り直す。
+        val allSync = feedSyncs[ALL_RELAYS_SYNC_KEY]
+        val from = if (allSync?.since != null && allSync.since <= since) maxOf(since, allSync.until) else since
+        if (from > until) return
+        startFeedSync(since = from, until = until, relayUrl = signal.relayUrl)
     }
 
-    private fun closeResumeSync() {
-        resumeSync?.close()
-        resumeSync = null
-        resumeSyncSince = null
-        resumeSyncReceivedCount = 0
+    private fun finishFeedSync(key: String, sync: FeedSync) {
+        if (feedSyncs[key] !== sync) return
+        feedSyncs.remove(key)
+        sync.coordinator.close()
+        flushPendingTimelineEvents()
+        if (key == ALL_RELAYS_SYNC_KEY) clearRefreshIndicator()
+        if (feedSyncs.keys.none { it != ALL_RELAYS_SYNC_KEY }) liveGapRecoveryAddedCount = 0
+    }
+
+    private fun closeFeedSyncs() {
+        feedSyncs.values.forEach { it.coordinator.close() }
+        feedSyncs.clear()
+        liveGapRecoveryAddedCount = 0
     }
 
     /**
-     * 離れていた間の投稿が多すぎるときは、差分を積み上げず最新から読み直す。
-     * 保持上限を超えて読み込み済みの過去ページが押し出されるのを防ぐ。
+     * 差分の新着が多すぎるとき、保持上限を超えて読み込み済みの過去ページが押し出されるのを防ぐ。
+     * 復帰・手動更新ではユーザーが戻った直後なので最新から読み直し、読んでいる最中に起きる
+     * リレー単位の取り直しでは一覧を崩さず、その取り直しだけを打ち切る。
      */
-    private fun restartFromLatest() {
-        if (closed || resumeSync == null) return
+    private fun onFeedSyncOverflow(key: String, sync: FeedSync) {
+        if (closed || feedSyncs[key] !== sync) return
+        if (key != ALL_RELAYS_SYNC_KEY) {
+            appLog("[FeedController] live gap recovery stopped after $liveGapRecoveryAddedCount events")
+            feedSyncs.filterKeys { it != ALL_RELAYS_SYNC_KEY }.forEach { (relayKey, relaySync) ->
+                finishFeedSync(relayKey, relaySync)
+            }
+            return
+        }
         val wasStarted = subscriptionsStarted
         resetFeedState()
         if (wasStarted) startSubscriptions()
+    }
+
+    private class FeedSync(
+        val coordinator: RelayFeedHistoryCoordinator,
+        val since: Long?,
+        val until: Long,
+    ) {
+        var addedCount = 0
     }
 
     private fun scheduleRefreshIndicatorTimeout() {
@@ -1000,8 +1050,12 @@ internal class FeedController(
         subscriptionJobs += launch {
             session.signals.collect { signal ->
                 if (liveSession !== session) return@collect
-                if (signal is SubscriptionSignal.Event) {
-                    appendFeedEvent(signal.event)
+                when (signal) {
+                    is SubscriptionSignal.Event -> appendFeedEvent(signal.event)
+                    // 再送 REQ がリレーの件数上限で切られた区間を、そのリレーだけから取り直す。
+                    // 購読の停止で止まるよう、購読のジョブとして走らせる。
+                    is SubscriptionSignal.Resumed -> subscriptionJobs += launch { recoverLiveGap(signal) }
+                    else -> Unit
                 }
             }
         }
@@ -1876,8 +1930,11 @@ internal class FeedController(
     companion object {
         private val DISPLAY_EVENT_KINDS = linkedSetOf(1, COMMENT_EVENT_KIND)
         private const val FEED_PAGE_SIZE = 30
-        /** 差分取得でこれを超えて受信したら、最新から読み直す。表示上限 (800 件) より十分小さく取る。 */
-        private const val MAX_RESUME_SYNC_EVENTS = 500
+        /** 差分取得でこれを超えて新着が増えたら打ち切る。表示上限 (800 件) より十分小さく取る。 */
+        private const val MAX_FEED_SYNC_EVENTS = 500
+        private const val ALL_RELAYS_SYNC_KEY = ""
+        /** ライブ配信の途切れを取り直すとき、配送遅れの投稿を拾うために遡る秒数。 */
+        private const val LIVE_RESUME_OVERLAP_SECONDS = 60L
         private const val MAX_HISTORY_PAGE_SIZE = 3_840
         // FeedItemMapperのデフォルトのキャッシュ上限がこの値を下回らないよう、そちらから直接参照する。
         internal const val MAX_TIMELINE_EVENTS = 800
