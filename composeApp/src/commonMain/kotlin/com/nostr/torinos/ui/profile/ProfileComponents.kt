@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
@@ -250,6 +251,11 @@ internal fun ProfileHeader(
     val clipboard = LocalClipboard.current
     val coroutineScope = rememberCoroutineScope()
     val npub = remember(pubkey) { hexToNpub(pubkey) }
+    val badgeProfile = com.nostr.torinos.badge.rememberBadgeProfile(pubkey)
+    var selectedBadge by remember(pubkey) { mutableStateOf<com.nostr.torinos.badge.BadgeDisplayItem?>(null) }
+    selectedBadge?.let { com.nostr.torinos.badge.BadgeDetailDialog(it, { selectedBadge = null }, onUserClick) }
+    var showBadges by remember(pubkey) { mutableStateOf(false) }
+    if (showBadges) com.nostr.torinos.badge.BadgeListSheet(pubkey, { showBadges = false }, onUserClick)
     var pubkeyCopied by remember(pubkey) { mutableStateOf(false) }
     val hasBannerArea = !profile?.banner.isNullOrBlank() ||
         (isOwnProfile && onEditBanner != null) ||
@@ -386,39 +392,62 @@ internal fun ProfileHeader(
                 }
             }
 
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                ProfileNameText(
-                    profile = profile,
-                    fallback = pubkey.take(8) + "…" + pubkey.takeLast(8),
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.Bold,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.weight(1f, fill = false),
-                )
-                profile?.nip05?.takeIf { it.isNotBlank() }?.let { nip05 ->
-                    Text(
-                        text = nip05,
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.primary,
+            Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Row(modifier = Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically) {
+                    ProfileNameText(
+                        profile = profile,
+                        fallback = pubkey.take(8) + "…" + pubkey.takeLast(8),
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier
-                            .padding(start = 8.dp)
-                            .weight(1f, fill = false),
+                        modifier = Modifier.weight(1f, fill = false),
                     )
-                }
-                profile?.nip05?.takeIf { it.isNotBlank() }?.let { nip05 ->
-                    Nip05VerificationIcon(pubkey, nip05)
-                }
-                if (isOwnProfile && onEditName != null) {
-                    IconButton(onClick = onEditName, modifier = Modifier.size(28.dp)) {
-                        Icon(
-                            Icons.Default.Edit,
-                            contentDescription = "名前・NIP-05を編集",
-                            modifier = Modifier.size(14.dp),
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    profile?.nip05?.takeIf { it.isNotBlank() }?.let { nip05 ->
+                        Text(
+                            text = nip05,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.primary,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier
+                                .padding(start = 8.dp)
+                                .weight(1f, fill = false),
                         )
+                    }
+                    profile?.nip05?.takeIf { it.isNotBlank() }?.let { nip05 ->
+                        Nip05VerificationIcon(pubkey, nip05)
+                    }
+                    if (isOwnProfile && onEditName != null) {
+                        IconButton(onClick = onEditName, modifier = Modifier.size(28.dp)) {
+                            Icon(
+                                Icons.Default.Edit,
+                                contentDescription = "名前・NIP-05を編集",
+                                modifier = Modifier.size(14.dp),
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
+                }
+                if (isOwnProfile) {
+                    TextButton(onClick = { showBadges = true }) {
+                        Text("バッジを管理", maxLines = 1, softWrap = false)
+                    }
+                }
+            }
+            if (badgeProfile.badges.isNotEmpty()) {
+                LazyRow(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(1.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    items(badgeProfile.badges, key = { it.address }) { badge ->
+                        Box(
+                            modifier = Modifier.size(24.dp, 48.dp).clickable { selectedBadge = badge },
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            com.nostr.torinos.badge.BadgeImage(badge)
+                        }
                     }
                 }
             }

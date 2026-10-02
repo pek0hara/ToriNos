@@ -85,9 +85,12 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextDecoration
+import androidx.compose.ui.text.rememberTextMeasurer
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
@@ -168,6 +171,14 @@ fun NoteCard(
     deferWebViewLoad: Boolean = false,
 ) {
     val onQuote = LocalQuotePostHandler.current
+    // Read inside the name row only, so badge updates do not recompose the whole card.
+    val badgesState = com.nostr.torinos.badge.rememberBadges(event.pubkey)
+    var selectedBadge by remember(event.pubkey) { mutableStateOf<com.nostr.torinos.badge.BadgeDisplayItem?>(null) }
+    var showBadges by remember(event.pubkey) { mutableStateOf(false) }
+    selectedBadge?.let { badge ->
+        com.nostr.torinos.badge.BadgeDetailDialog(badge, { selectedBadge = null }, onUserClick)
+    }
+    if (showBadges) com.nostr.torinos.badge.BadgeListSheet(event.pubkey, { showBadges = false }, onUserClick)
     var showMenu by remember { mutableStateOf(false) }
     var showDetails by remember(event.id) { mutableStateOf(false) }
     var showReportDialog by remember { mutableStateOf(false) }
@@ -246,154 +257,192 @@ fun NoteCard(
             .padding(horizontal = 16.dp, vertical = 8.dp),
         horizontalArrangement = Arrangement.spacedBy(10.dp),
     ) {
-        AvatarCircle(
-            pubkey = event.pubkey,
-            name = profile?.bestName,
-            pictureUrl = profile?.picture,
-            size = 42,
-            modifier = Modifier.clickable { onUserClick(event.pubkey) },
-        )
+        Column(
+            modifier = Modifier.widthIn(min = 42.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            AvatarCircle(
+                pubkey = event.pubkey,
+                name = profile?.bestName,
+                pictureUrl = profile?.picture,
+                size = 42,
+                modifier = Modifier.clickable { onUserClick(event.pubkey) },
+            )
+            Text(
+                text = formatPostTimestamp(event.createdAt),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                textAlign = TextAlign.Center,
+                softWrap = false,
+            )
+        }
 
         Column(modifier = Modifier.weight(1f)) {
-            if (repostedByPubkey != null) {
-                Row(
-                    modifier = Modifier
-                        .clickable { onUserClick(repostedByPubkey) },
-                    horizontalArrangement = Arrangement.spacedBy(4.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.Repeat,
-                        contentDescription = null,
-                        modifier = Modifier.size(14.dp),
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                    LinkedText(
-                        text = "${repostedByProfile?.bestName ?: shortPubkey(repostedByPubkey)} がリポスト",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        customEmojis = repostedByProfile?.customEmojis.orEmpty(),
-                        enableWebLinks = false,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                }
-                Spacer(modifier = Modifier.height(4.dp))
-            }
-
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically,
+            // Keep attribution and author controls within the avatar's height at normal font sizes.
+            Column(
+                modifier = Modifier.fillMaxWidth().heightIn(min = 42.dp),
+                verticalArrangement = Arrangement.Center,
             ) {
-                Box(modifier = Modifier.weight(1f)) {
-                    ProfileNameText(
-                        profile = profile,
-                        fallback = event.shortPubkey,
-                        style = MaterialTheme.typography.labelLarge,
-                        fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.primary,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.clickable { onUserClick(event.pubkey) },
-                    )
+                val nameRowHeight = if (repostedByPubkey != null) 24.dp else 42.dp
+                if (repostedByPubkey != null) {
+                    Row(
+                        modifier = Modifier
+                            .clickable { onUserClick(repostedByPubkey) },
+                        horizontalArrangement = Arrangement.spacedBy(4.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Repeat,
+                            contentDescription = null,
+                            modifier = Modifier.size(14.dp),
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        LinkedText(
+                            text = "${repostedByProfile?.bestName ?: shortPubkey(repostedByPubkey)} がリポスト",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            customEmojis = repostedByProfile?.customEmojis.orEmpty(),
+                            enableWebLinks = false,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
                 }
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    modifier = Modifier.padding(start = 8.dp),
-                ) {
-                    Text(
-                        text = event.clientName
-                            ?.let { "${formatTimestamp(event.createdAt, todayTimeOnly = true)} · $it" }
-                            ?: formatTimestamp(event.createdAt, todayTimeOnly = true),
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                    if (hasMenu) {
-                        IconButton(
-                            onClick = { showMenu = true },
-                            modifier = Modifier.size(24.dp),
-                        ) {
-                            Icon(
-                                Icons.Default.MoreVert,
-                                contentDescription = "メニュー",
-                                modifier = Modifier.size(16.dp),
-                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+
+                BoxWithConstraints(Modifier.fillMaxWidth().heightIn(min = nameRowHeight), contentAlignment = Alignment.CenterStart) {
+                    val density = LocalDensity.current
+                    val textMeasurer = rememberTextMeasurer()
+                    val labelStyle = MaterialTheme.typography.labelSmall
+                    val badges = badgesState.value
+                    val client = event.clientName?.takeIf { it.isNotBlank() }
+                    // Text widths only depend on the string, style and density; measure them once per change.
+                    val measuredClientWidth = remember(client, labelStyle, density) {
+                        client?.let { with(density) { textMeasurer.measure(it, labelStyle).size.width.toDp() } }
+                    }
+                    val clientWidth = measuredClientWidth
+                        ?.coerceAtMost((64f * density.fontScale).dp)
+                        ?.coerceAtMost(maxWidth * 0.25f) ?: 0.dp
+                    val availableWidth = (maxWidth - (if (hasMenu) 24.dp else 0.dp) - clientWidth -
+                        (if (client != null) 4.dp else 0.dp)).coerceAtLeast(0.dp)
+                    val overflowWidth = remember(badges.size, labelStyle, density) {
+                        with(density) { textMeasurer.measure("+${badges.size}", labelStyle).size.width.toDp().value }
+                    }
+                    val layout = com.nostr.torinos.badge.badgeStripLayout(badges.size, availableWidth.value, density.fontScale, overflowWidth)
+                    val badgeWidth = com.nostr.torinos.badge.badgeStripWidth(layout, overflowWidth)
+                    Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                        ProfileNameText(
+                            profile = profile,
+                            fallback = event.shortPubkey,
+                            style = MaterialTheme.typography.labelLarge,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.primary,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.widthIn(max = (availableWidth - badgeWidth.dp - if (badgeWidth > 0) 8.dp else 0.dp).coerceAtLeast(0.dp))
+                                .clickable { onUserClick(event.pubkey) },
+                        )
+                        if (badgeWidth > 0) {
+                            Spacer(Modifier.width(8.dp))
+                            com.nostr.torinos.badge.BadgeStrip(
+                                badges, layout, { selectedBadge = it }, { showBadges = true },
+                                itemHeight = nameRowHeight,
                             )
                         }
-                        DropdownMenu(
-                            expanded = showMenu,
-                            onDismissRequest = { showMenu = false },
-                        ) {
-                            DropdownMenuItem(
-                                text = { Text("詳細を表示") },
-                                onClick = {
-                                    showMenu = false
-                                    showDetails = true
-                                },
-                            )
-                            DropdownMenuItem(
-                                text = { Text("本文をコピー") },
-                                onClick = {
-                                    showMenu = false
-                                    coroutineScope.launch {
-                                        clipboard.setPlainText(event.content)
-                                    }
-                                },
-                            )
-                            if (onQuote != null) {
-                                DropdownMenuItem(
-                                    text = { Text("投稿を引用") },
-                                    onClick = {
-                                        showMenu = false
-                                        onQuote(event)
-                                    },
+                        Spacer(Modifier.weight(1f))
+                        if (client != null) {
+                            Spacer(Modifier.width(4.dp))
+                            Text(client, style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.widthIn(max = clientWidth), maxLines = 1,
+                                overflow = TextOverflow.Ellipsis)
+                        }
+                        if (hasMenu) Box {
+                            IconButton(
+                                onClick = { showMenu = true },
+                                modifier = Modifier.size(24.dp),
+                            ) {
+                                Icon(
+                                    Icons.Default.MoreVert,
+                                    contentDescription = "メニュー",
+                                    modifier = Modifier.size(16.dp),
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
                                 )
                             }
-                            if (isOwnPost && onDelete != null) {
+                            DropdownMenu(
+                                expanded = showMenu,
+                                onDismissRequest = { showMenu = false },
+                            ) {
                                 DropdownMenuItem(
-                                    text = { Text("削除", color = MaterialTheme.colorScheme.error) },
+                                    text = { Text("詳細を表示") },
                                     onClick = {
                                         showMenu = false
-                                        onDelete()
+                                        showDetails = true
                                     },
                                 )
-                            }
-                            if (onHide != null) {
                                 DropdownMenuItem(
-                                    text = { Text("このメッセージを非表示") },
+                                    text = { Text("本文をコピー") },
                                     onClick = {
                                         showMenu = false
-                                        onHide()
+                                        coroutineScope.launch {
+                                            clipboard.setPlainText(event.content)
+                                        }
                                     },
                                 )
-                            }
-                            if (!isOwnPost) {
-                                if (isMuted) {
+                                if (onQuote != null) {
                                     DropdownMenuItem(
-                                        text = { Text("ブロックを解除") },
+                                        text = { Text("投稿を引用") },
                                         onClick = {
                                             showMenu = false
-                                            onUnmute?.invoke()
-                                        },
-                                    )
-                                } else if (onMute != null) {
-                                    DropdownMenuItem(
-                                        text = { Text("ユーザーをブロック") },
-                                        onClick = {
-                                            showMenu = false
-                                            onMute()
+                                            onQuote(event)
                                         },
                                     )
                                 }
-                                if (onReport != null) {
+                                if (isOwnPost && onDelete != null) {
                                     DropdownMenuItem(
-                                        text = { Text("通報", color = MaterialTheme.colorScheme.error) },
+                                        text = { Text("削除", color = MaterialTheme.colorScheme.error) },
                                         onClick = {
                                             showMenu = false
-                                            showReportDialog = true
+                                            onDelete()
                                         },
                                     )
+                                }
+                                if (onHide != null) {
+                                    DropdownMenuItem(
+                                        text = { Text("このメッセージを非表示") },
+                                        onClick = {
+                                            showMenu = false
+                                            onHide()
+                                        },
+                                    )
+                                }
+                                if (!isOwnPost) {
+                                    if (isMuted) {
+                                        DropdownMenuItem(
+                                            text = { Text("ブロックを解除") },
+                                            onClick = {
+                                                showMenu = false
+                                                onUnmute?.invoke()
+                                            },
+                                        )
+                                    } else if (onMute != null) {
+                                        DropdownMenuItem(
+                                            text = { Text("ユーザーをブロック") },
+                                            onClick = {
+                                                showMenu = false
+                                                onMute()
+                                            },
+                                        )
+                                    }
+                                    if (onReport != null) {
+                                        DropdownMenuItem(
+                                            text = { Text("通報", color = MaterialTheme.colorScheme.error) },
+                                            onClick = {
+                                                showMenu = false
+                                                showReportDialog = true
+                                            },
+                                        )
+                                    }
                                 }
                             }
                         }

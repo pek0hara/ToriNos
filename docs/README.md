@@ -54,5 +54,6 @@
 
 ## UI設計
 
+- [`badge-feature-design.md`](./badge-feature-design.md) — NIP-58の現行・旧形式、ポストカードの名前の右側とプロフィールの名前下の表示、授与検証・段階取得・参照キャッシュ・選択保存の設計
 - [`settings-navigation-design.md`](./settings-navigation-design.md) — 設定の統合、プロフィールのアカウント切り替え、サービスの絵文字タブ
 - [`emoji-service-discovery-design.md`](./emoji-service-discovery-design.md) — 絵文字サービスの共通ヘッダー、単一リレー探索、フォロー先の公開登録人数による一覧表示・並び順
