@@ -3,19 +3,17 @@ package com.nostr.torinos
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
-import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.width
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.VerticalDivider
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -23,7 +21,6 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.unit.dp
 import com.nostr.torinos.account.AccountSessionHost
 import com.nostr.torinos.account.AccountSessionState
@@ -39,8 +36,8 @@ internal const val AgeVerificationAccepted = "accepted_13_or_older"
 internal const val AgeVerificationBlocked = "blocked_under_13"
 private const val AgeVerificationKey = "age_verification_status_v1"
 
-/** PC ブラウザやタブレットの横長画面で、スマホ向けレイアウトを中央の列に収める幅。 */
-private val MaxContentWidth = 640.dp
+/** Material 3 の Compact / Medium の境界。この幅以上で NavigationRail に切り替える。 */
+private val WideLayoutMinWidth = 600.dp
 
 /** アプリ共通状態と、アカウントごとに破棄される画面ツリーの境界。 */
 @Composable
@@ -105,32 +102,22 @@ fun App() {
     }
 }
 
-/** 画面が [MaxContentWidth] より広いときだけ、中身を中央の列にして左右を余白にする。 */
+/** 画面幅が [WideLayoutMinWidth] 以上（Medium / Expanded）かどうか。true のときはボトムバーの代わりに NavigationRail を使う。 */
+internal val LocalIsWideLayout = compositionLocalOf { false }
+
+/**
+ * 画面幅が [WideLayoutMinWidth] 未満なら全幅で表示する。
+ * それ以上なら全幅のまま [LocalIsWideLayout] を立て、レールと本文の配置は [AppScaffold] に任せる。
+ */
 @Composable
 private fun CenteredContentColumn(content: @Composable () -> Unit) {
     BoxWithConstraints(
         modifier = Modifier
             .fillMaxSize()
             .background(MaterialTheme.colorScheme.surfaceVariant),
-        contentAlignment = Alignment.TopCenter,
     ) {
-        if (maxWidth <= MaxContentWidth) {
+        CompositionLocalProvider(LocalIsWideLayout provides (maxWidth >= WideLayoutMinWidth)) {
             content()
-        } else {
-            Row(Modifier.fillMaxHeight()) {
-                VerticalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-                Box(
-                    Modifier
-                        .fillMaxHeight()
-                        .width(MaxContentWidth)
-                        // 画面外に待機している通知ドロワーなどが左右の余白に見えないようにする。
-                        .clipToBounds()
-                        .background(MaterialTheme.colorScheme.background),
-                ) {
-                    content()
-                }
-                VerticalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-            }
         }
     }
 }

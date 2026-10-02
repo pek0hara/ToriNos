@@ -10,6 +10,8 @@ ToriNos は Nostr を利用した日本語向け SNS クライアントである
 - iOS
 - Web（Kotlin/Wasm）
 
+画面幅が 600dp 未満のときは下部の `NavigationBar` を使う。600dp 以上（タブレット・PC）では下部バーを出さず、左端に `NavigationRail`（ホーム・日誌・サービス）を常時表示し、本文はレールの右側に最大 720dp の中央列として配置する。
+
 書き込み機能は `isWriteSupported` が true のプラットフォームで提供する。秘密鍵の保存、画像選択、画像クロップ、クリップボード、パスワードマネージャ連携はプラットフォームごとの実装に委譲する。
 
 Web 版は秘密鍵をブラウザの `localStorage` に保存してログイン・投稿できる。画像添付、動画のインライン再生、X 投稿の埋め込み、パスワードマネージャ連携には対応しない。詳細は [`web-private-key-login-design.md`](./web-private-key-login-design.md)。
