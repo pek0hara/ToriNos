@@ -1,5 +1,6 @@
 package com.nostr.torinos.network
 
+import com.nostr.torinos.model.NostrEvent
 import com.nostr.torinos.model.NostrFilter
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -137,7 +138,7 @@ class SubscriptionStateMachineTest {
     fun replayReachingTheInterruptionLeavesNoGap() {
         val interrupted = interruptedAndResent(interruptedAt = 500L)
         val replayed = listOf(900L, 700L, 450L).fold(interrupted) { state, createdAt ->
-            SubscriptionStateMachine.onEvent(state, createdAt)
+            SubscriptionStateMachine.onEvent(state, event(createdAt))
         }
 
         assertNull(SubscriptionStateMachine.replayGap(replayed))
@@ -147,7 +148,7 @@ class SubscriptionStateMachineTest {
     fun replayCutByRelayLimitReportsTheMissingRange() {
         val interrupted = interruptedAndResent(interruptedAt = 500L)
         val replayed = listOf(900L, 800L).fold(interrupted) { state, createdAt ->
-            SubscriptionStateMachine.onEvent(state, createdAt)
+            SubscriptionStateMachine.onEvent(state, event(createdAt))
         }
 
         assertEquals(ReplayGap(interruptedAt = 500L, replayOldestAt = 800L), SubscriptionStateMachine.replayGap(replayed))
@@ -164,12 +165,35 @@ class SubscriptionStateMachineTest {
         val disconnected = SubscriptionStateMachine.onDisconnected(live, 2L, disconnectedAt = 500L)
         var state = SubscriptionStateMachine.reconcile(disconnected, filters, 2L).state!!
         // 投稿は上限で途切れた後だけ、返信は途切れる前まで届いた
-        state = SubscriptionStateMachine.onEvent(state, createdAt = 900L, kind = 1)
-        state = SubscriptionStateMachine.onEvent(state, createdAt = 800L, kind = 1)
-        state = SubscriptionStateMachine.onEvent(state, createdAt = 300L, kind = 1111)
+        state = SubscriptionStateMachine.onEvent(state, event(900L, kind = 1))
+        state = SubscriptionStateMachine.onEvent(state, event(800L, kind = 1))
+        state = SubscriptionStateMachine.onEvent(state, event(300L, kind = 1111))
 
         assertEquals(ReplayGap(interruptedAt = 500L, replayOldestAt = 800L), SubscriptionStateMachine.replayGap(state))
     }
+
+    @Test
+    fun filtersSharingAKindAreToldApartByTheirConditions() {
+        val filters = listOf(
+            NostrFilter(kinds = listOf(1), authors = listOf("followee"), since = 100L),
+            NostrFilter(kinds = listOf(1), tTags = listOf("nostr"), since = 100L),
+        )
+        val live = SubscriptionStateMachine.onEose(SubscriptionStateMachine.reconcile(null, filters, 1L).state!!)
+        val disconnected = SubscriptionStateMachine.onDisconnected(live, 2L, disconnectedAt = 500L)
+        var state = SubscriptionStateMachine.reconcile(disconnected, filters, 2L).state!!
+        // フォロー中の投稿は途切れる前まで届き、ハッシュタグ側は上限で切れた
+        state = SubscriptionStateMachine.onEvent(state, event(300L, pubkey = "followee"))
+        state = SubscriptionStateMachine.onEvent(state, event(900L, pubkey = "stranger", tags = listOf(listOf("t", "nostr"))))
+
+        assertEquals(ReplayGap(interruptedAt = 500L, replayOldestAt = 900L), SubscriptionStateMachine.replayGap(state))
+    }
+
+    private fun event(
+        createdAt: Long,
+        kind: Int = 1,
+        pubkey: String = "author",
+        tags: List<List<String>> = emptyList(),
+    ) = NostrEvent(id = "e$createdAt$pubkey", pubkey = pubkey, createdAt = createdAt, kind = kind, tags = tags, content = "", sig = "")
 
     @Test
     fun sinceAdvancedDuringOutageIsReportedAsGap() {

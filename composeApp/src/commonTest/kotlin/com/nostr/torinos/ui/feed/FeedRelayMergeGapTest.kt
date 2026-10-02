@@ -481,6 +481,121 @@ class FeedRelayMergeGapTest {
         controller.close()
     }
 
+    @Test
+    fun failingRelayDoesNotKeepResumeSyncAlive() = runTest {
+        val relays = SimulatedRelays(mapOf("relay-a" to sparseEvents, "relay-b" to denseEvents))
+        val controller = FeedController(computeDispatcher = Dispatchers.Unconfined, scope = backgroundScope, subscriptions = relays)
+        settle(relays)
+
+        controller.stopSubscriptions()
+        runCurrent()
+        relays.append("relay-a", postsWhileAway())
+        relays.failing += "relay-b"
+        controller.startSubscriptions()
+        repeat(10) { settle(relays) }
+        val syncFetchesToFailingRelay = relays.syncFetchCount("relay-b")
+        repeat(10) { settle(relays) }
+
+        assertEquals(syncFetchesToFailingRelay, relays.syncFetchCount("relay-b"), "失敗が続くリレーへの差分取得が終わらない")
+        controller.close()
+    }
+
+    @Test
+    fun loadMoreSpinnerStopsWhileOnlyARetryingRelayHasMore() = runTest {
+        val relays = SimulatedRelays(mapOf("relay-a" to sparseEvents, "relay-b" to denseEvents.take(10)))
+        val controller = FeedController(computeDispatcher = Dispatchers.Unconfined, scope = backgroundScope, subscriptions = relays)
+        settle(relays)
+
+        // 続きがあるのは relay-a だけで、その relay-a が失敗し続ける
+        relays.failing += "relay-a"
+        repeat(3) {
+            controller.loadMore()
+            settle(relays)
+        }
+
+        assertFalse(controller.state.value.isLoadingMore, "再試行待ちのリレーしかないのに読み込み中のまま")
+        // 回復したら、続きを読める
+        relays.failing.clear()
+        repeat(5) { settle(relays) }
+        controller.loadMore()
+        settle(relays)
+        assertTrue(controller.state.value.events.any { it.id == "a-35" })
+        controller.close()
+    }
+
+    @Test
+    fun refreshAfterFailedInitialLoadClearsIndicatorWhenDone() = runTest {
+        // 投稿が届けばその時点で更新表示は消えるので、取り直しても空のフィードで確かめる
+        val relays = SimulatedRelays(mapOf("relay-a" to emptyList(), "relay-b" to emptyList()))
+        relays.failing += setOf("relay-a", "relay-b")
+        val controller = FeedController(computeDispatcher = Dispatchers.Unconfined, scope = backgroundScope, subscriptions = relays)
+        runCurrent()
+        relays.serveFeedFetches()
+        runCurrent()
+        controller.stopSubscriptions()
+        runCurrent()
+
+        relays.failing.clear()
+        controller.refresh()
+        runCurrent()
+        assertTrue(controller.state.value.isRefreshing)
+        relays.serveFeedFetches()
+        runCurrent()
+        advanceTimeBy(100)
+        runCurrent()
+
+        assertEquals(FeedViewModel.InitialFeedState.Empty, controller.state.value.initialFeedState)
+        assertFalse(controller.state.value.isRefreshing, "取得が終わっても更新表示が残っている")
+        controller.close()
+    }
+
+    @Test
+    fun resumeDoesNotReopenSyncItIsAboutToReplace() = runTest {
+        val relays = SimulatedRelays(mapOf("relay-a" to sparseEvents, "relay-b" to denseEvents))
+        val controller = FeedController(computeDispatcher = Dispatchers.Unconfined, scope = backgroundScope, subscriptions = relays)
+        settle(relays)
+
+        // 差分取得が relay-b の応答待ちのまま、もう一度タブを離れて戻る
+        controller.stopSubscriptions()
+        runCurrent()
+        relays.held += "relay-b"
+        controller.startSubscriptions()
+        settle(relays)
+        controller.stopSubscriptions()
+        runCurrent()
+        relays.held.clear()
+        val wastedBefore = relays.unansweredClosedFeedFetches()
+        advanceTimeBy(10_000)
+        controller.startSubscriptions()
+        runCurrent()
+        relays.serveFeedFetches()
+        runCurrent()
+
+        assertEquals(wastedBefore, relays.unansweredClosedFeedFetches(), "応答前に閉じる REQ を送った")
+        controller.close()
+    }
+
+    @Test
+    fun finishedLiveGapRecoveryDoesNotCountTowardTheNextOne() = runTest {
+        val relays = SimulatedRelays(mapOf("relay-a" to sparseEvents, "relay-b" to denseEvents))
+        val controller = FeedController(computeDispatcher = Dispatchers.Unconfined, scope = backgroundScope, subscriptions = relays)
+        settle(relays)
+        val now = Clock.System.now().epochSeconds
+
+        val first = (0 until 400).map { event("first-$it", now - 10 - it) }
+        relays.append("relay-b", first)
+        relays.liveSessions().forEach { it.emit(SubscriptionSignal.Resumed("relay-b", now - 1_000, now - 10)) }
+        repeat(10) { settle(relays) }
+
+        val second = (0 until 200).map { event("second-$it", now - 2_000 - it) }
+        relays.append("relay-a", second)
+        relays.liveSessions().forEach { it.emit(SubscriptionSignal.Resumed("relay-a", now - 2_300, now - 2_000)) }
+        repeat(10) { settle(relays) }
+
+        assertAllShown(controller, second)
+        controller.close()
+    }
+
     /** 最後に表示した投稿より新しく、1 ページ (30 件) を超える投稿。 */
     private fun postsWhileAway(): List<NostrEvent> {
         val now = Clock.System.now().epochSeconds
@@ -533,6 +648,15 @@ class FeedRelayMergeGapTest {
         private val served = mutableSetOf<Session>()
         /** 応答を保留するリレー。保留中の REQ は解除後に応答する。 */
         val held = mutableSetOf<String>()
+        /** 取得に失敗する（タイムアウトする）リレー。 */
+        val failing = mutableSetOf<String>()
+
+        /** 応答する前に閉じられたフィード取得。無駄に送られた REQ の数。 */
+        fun unansweredClosedFeedFetches(): Int = sessions.count { session ->
+            session.spec.behavior is SubscriptionBehavior.Fetch && session.closed && session !in served &&
+                session.spec.filters.all { it.isFeedFilter() }
+        }
+
         /** これらの投稿を対象に含むリアクション取得には応答しない（テストから直接届ける）。 */
         val heldEngagementTargets = mutableSetOf<String>()
 
@@ -573,6 +697,10 @@ class FeedRelayMergeGapTest {
             RelayTarget.AllEnabled -> stores.keys.toSet()
             is RelayTarget.Single -> setOf(target.url).intersect(stores.keys)
             is RelayTarget.Explicit -> target.urls.intersect(stores.keys)
+        }
+
+        fun syncFetchCount(url: String): Int = sessions.count { session ->
+            "-sync-" in session.spec.id && session.spec.target == RelayTarget.Single(url)
         }
 
         fun feedFetchTargets(): List<RelayTarget> =
@@ -620,6 +748,17 @@ class FeedRelayMergeGapTest {
                 .forEach { session ->
                     served += session
                     val urls = urlsOf(session.spec.target)
+                    if (urls.any { it in failing }) {
+                        session.emit(
+                            SubscriptionSignal.FetchCompleted(
+                                outcomes = urls.associateWith { url ->
+                                    if (url in failing) RelayOutcome.TimedOut else RelayOutcome.Eose
+                                },
+                                timedOut = true,
+                            ),
+                        )
+                        return@forEach
+                    }
                     urls.forEach { url ->
                         query(stores.getValue(url), session.spec.filters).forEach { event ->
                             session.emit(SubscriptionSignal.Event(url, event, isLive = false))

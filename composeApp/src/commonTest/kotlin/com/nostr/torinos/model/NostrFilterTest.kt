@@ -152,4 +152,36 @@ class NostrFilterTest {
         val msg = buildCloseMessage(id)
         assertTrue(msg.contains(id))
     }
+
+    @Test
+    fun matchesChecksEveryCondition() {
+        val event = NostrEvent(
+            id = "id",
+            pubkey = "alice",
+            createdAt = 100L,
+            kind = 1,
+            tags = listOf(listOf("t", "nostr"), listOf("e", "root")),
+            content = "",
+            sig = "",
+        )
+
+        assertTrue(NostrFilter(kinds = listOf(1), authors = listOf("alice"), tTags = listOf("nostr")).matches(event))
+        assertFalse(NostrFilter(kinds = listOf(1), authors = listOf("bob")).matches(event))
+        assertFalse(NostrFilter(kinds = listOf(1), tTags = listOf("other")).matches(event))
+        assertFalse(NostrFilter(kinds = listOf(1), since = 101L).matches(event))
+        assertFalse(NostrFilter(kinds = listOf(1), until = 99L).matches(event))
+        assertTrue(NostrFilter(eTags = listOf("root")).matches(event))
+    }
+
+    @Test
+    fun indexOfMatchingFallsBackToKindWhenNothingMatchesExactly() {
+        val event = NostrEvent(id = "id", pubkey = "alice", createdAt = 100L, kind = 1, tags = emptyList(), content = "", sig = "")
+        val filters = listOf(
+            NostrFilter(kinds = listOf(1111)),
+            NostrFilter(kinds = listOf(1), authors = listOf("ALICE")),
+        )
+
+        assertEquals(1, filters.indexOfMatching(event))
+        assertEquals(null, listOf(NostrFilter(kinds = listOf(7))).indexOfMatching(event))
+    }
 }

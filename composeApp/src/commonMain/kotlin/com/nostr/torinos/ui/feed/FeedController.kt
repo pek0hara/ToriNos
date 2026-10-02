@@ -167,8 +167,6 @@ internal class FeedController(
      */
     private val feedSyncs = mutableMapOf<String, FeedSync>()
     private var feedSyncSequence = 0
-    /** リレー単位の取り直しで追加した件数の合計。取り直しがすべて終わったら数え直す。 */
-    private var liveGapRecoveryAddedCount = 0
     /** 手動更新を過去ページの取得で処理しているとき、その完了で更新表示を消す。 */
     private var historyOwnsRefresh = false
     private var subscriptionGeneration = 0
@@ -197,12 +195,8 @@ internal class FeedController(
     private val seenEventIds = linkedSetOf<String>()
     private val receivedReactionEvents = linkedMapOf<String, NostrEvent>()
     private val receivedRepostEvents = linkedMapOf<String, NostrEvent>()
-    private val rawEvents = linkedMapOf<String, NostrEvent>()
-    /**
-     * 保持中の投稿が参照する返信先・引用先の ID。表示前の投稿の引用カードを一覧の整理で
-     * 捨てないために使う。本文の解析を組み直しのたびに繰り返さないよう、受信時に一度だけ求める。
-     */
-    private val referencedIdsByEvent = mutableMapOf<String, List<String>>()
+    /** 保持中の投稿。付随情報を残す範囲と表示待ちの判定に使う値も、出し入れに合わせて更新する。 */
+    private val rawEvents = HeldFeedEvents(MAX_SEEN_IDS) { event -> eventSortTimes[event.id] ?: event.createdAt }
     private val canonicalEvents = linkedMapOf<String, NostrEvent>()
     private val eventSortTimes = mutableMapOf<String, Long>()
     private val pendingQuoteIds = linkedSetOf<String>()
@@ -363,7 +357,6 @@ internal class FeedController(
         // 組み直しは保持中の投稿を基準に付随情報を残すので、先に保持から外す。
         seenEventIds.remove(eventId)
         rawEvents.remove(eventId)
-        referencedIdsByEvent.remove(eventId)
         canonicalEvents.remove(eventId)
         eventSortTimes.remove(eventId)
         forgetEngagementHistory(eventId)
@@ -515,6 +508,7 @@ internal class FeedController(
 
     fun reportEvent(event: NostrEvent, reason: String, detail: String) {
         accountSession?.muteStore?.mute(event.pubkey)
+        rawEvents.invalidateRevealable()
         rebuildFilteredEvents()
         launch {
             signedEventPublisher.publish(
@@ -610,7 +604,6 @@ internal class FeedController(
         receivedReactionEvents.clear()
         receivedRepostEvents.clear()
         rawEvents.clear()
-        referencedIdsByEvent.clear()
         canonicalEvents.clear()
         eventSortTimes.clear()
         pendingQuoteIds.clear()
@@ -657,11 +650,17 @@ internal class FeedController(
         // ミュート・NGワード変更時にフィルタ済みリストを再構築
         if (filterMutedUsers) {
             subscriptionJobs += launch {
-                accountSession?.muteStore?.mutedPubkeys?.collect { rebuildFilteredEvents() }
+                accountSession?.muteStore?.mutedPubkeys?.collect {
+                    rawEvents.invalidateRevealable()
+                    rebuildFilteredEvents()
+                }
             }
         }
         subscriptionJobs += launch {
-            accountSession?.ngWordStore?.ngWords?.collect { rebuildFilteredEvents() }
+            accountSession?.ngWordStore?.ngWords?.collect {
+                rawEvents.invalidateRevealable()
+                rebuildFilteredEvents()
+            }
         }
 
         // content が空のリポストから元ポストを追加取得
@@ -681,8 +680,10 @@ internal class FeedController(
         subscriptionJobs += launch {
             val current = currentFeedState()
             if (current.isInitialLoad && current.events.isEmpty() && !initialHistoryRequested) {
-                // 初回のみ履歴ページを取得
-                startRelayHistory()
+                // 初回のみ履歴ページを取得。読み込み失敗後の手動更新もここを通る。
+                val refreshing = manualRefreshRequested
+                manualRefreshRequested = false
+                startRelayHistory(forRefresh = refreshing)
             } else if (manualRefreshRequested && relayHistoryCoordinator == null) {
                 manualRefreshRequested = false
                 startRelayHistory(forRefresh = true)
@@ -695,16 +696,21 @@ internal class FeedController(
                 relayHistoryCoordinator?.resume()
                 // 手動更新は、拒否や再試行待ちで止まっているリレーにもすぐ問い合わせ直す。
                 if (refreshing) relayHistoryCoordinator?.retryStalledRelays()
-                feedSyncs.values.toList().forEach { it.coordinator.resume() }
                 val nowSec = Clock.System.now().epochSeconds
-                subscribeLiveFeed(since = nowSec)
                 // 時計のずれた未来の投稿を基準にすると、差分を取り損ねる。
                 val gapSince = eventSortTimes.values.filter { it <= nowSec }.maxOrNull()
-                when (resumeSyncStrategy(gapSince = gapSince, nowSec = nowSec)) {
-                    ResumeSyncStrategy.None ->
-                        if (refreshing) startFeedSync(since = gapSince, until = nowSec)
-                    ResumeSyncStrategy.GapFill -> startFeedSync(since = gapSince, until = nowSec)
-                    ResumeSyncStrategy.LatestPage -> startFeedSync(since = null, until = nowSec)
+                val strategy = resumeSyncStrategy(gapSince = gapSince, nowSec = nowSec)
+                val startsAllSync = strategy != ResumeSyncStrategy.None || refreshing
+                // 全リレーの差分取得を作り直すなら、古いものは再開せずに引き継ぐ（無駄な REQ を送らない）。
+                feedSyncs.filterKeys { !startsAllSync || it != ALL_RELAYS_SYNC_KEY }
+                    .values.toList()
+                    .forEach { it.coordinator.resume() }
+                subscribeLiveFeed(since = nowSec)
+                if (startsAllSync) {
+                    startFeedSync(
+                        since = if (strategy == ResumeSyncStrategy.LatestPage) null else gapSince,
+                        until = nowSec,
+                    )
                 }
                 resubscribeEngagement(retryPartialHistory = true)
             }
@@ -799,7 +805,7 @@ internal class FeedController(
         }
 
         relayHistoryCoordinator?.close()
-        historyOwnsRefresh = forRefresh
+        historyOwnsRefresh = false
         val historyFloor = Clock.System.now().epochSeconds
         initialHistoryRequested = true
         subscribeLiveFeed(since = historyFloor)
@@ -865,6 +871,8 @@ internal class FeedController(
         )
         relayHistoryCoordinator = coordinator
         coordinator.updateRelays(targetRelays)
+        // 登録時の状態通知で消さないよう、取得を始める直前に手動更新の表示を引き受ける。
+        historyOwnsRefresh = forRefresh
         coordinator.start()
     }
 
@@ -914,11 +922,12 @@ internal class FeedController(
         if (closed || !subscriptionsStarted) return
         val targetRelays = relayUrl?.let { allRelays.intersect(setOf(it)) } ?: allRelays
         val previous = feedSyncs.remove(key)
+        // 未完了分は範囲ごと引き継ぐ。差分取得は失敗の続くリレーを諦めて終わるので、範囲が広がり続けることはない。
         val effectiveSince = when {
             previous == null || since == null -> since
             else -> minOf(since, previous.since ?: since)
         }
-        val effectiveUntil = previous?.let { maxOf(until, it.until) } ?: until
+        val effectiveUntil = effectiveUntilOf(until, previous)
         previous?.coordinator?.close()
         val isLiveGapRecovery = relayUrl != null
         lateinit var sync: FeedSync
@@ -938,27 +947,30 @@ internal class FeedController(
                 // ライブ配信の取り直しは手動更新とは無関係なので、更新表示には触らない。
                 val added = if (isLiveGapRecovery) appendFeedEvent(event) else appendHistoryEvent(event)
                 sync.addedCount += added
-                if (isLiveGapRecovery) liveGapRecoveryAddedCount += added
                 added
             },
             onFlush = ::flushPendingTimelineEvents,
             onState = { state ->
-                // 全リレーが一斉に切れても上限を超えないよう、リレー単位の取り直しは件数を合算する。
+                // 全リレーが一斉に切れても上限を超えないよう、リレー単位の取り直しは動いている分を合算する。
                 val overflowed = if (isLiveGapRecovery) {
-                    liveGapRecoveryAddedCount > MAX_FEED_SYNC_EVENTS
+                    liveGapRecoveryAddedCount() > MAX_FEED_SYNC_EVENTS
                 } else {
                     sync.addedCount > MAX_FEED_SYNC_EVENTS
                 }
+                // 取りきったか、失敗が続くリレーしか残っていなければ終える。応答しないリレーのために
+                // 差分取得を残し続けると、次の復帰で範囲が広がり続ける。
+                val finished = state.relayCount == 0 || state.pendingRelayCount == 0 ||
+                    (effectiveSince == null && state.isInitialFetchSettled)
                 // コールバック中に自身を閉じないよう、完了処理は後で行う。
                 when {
                     overflowed -> launch { onFeedSyncOverflow(key, sync) }
-                    state.relayCount == 0 ||
-                        (if (effectiveSince != null) !state.canLoadMore else state.isInitialFetchSettled) ->
-                        launch { finishFeedSync(key, sync) }
+                    finished -> launch { finishFeedSync(key, sync) }
                 }
             },
         )
         sync = FeedSync(coordinator, effectiveSince, effectiveUntil)
+        // 引き継いだ取り直しの件数も数え続け、作り直しのたびに上限が戻らないようにする。
+        sync.addedCount = previous?.addedCount ?: 0
         feedSyncs[key] = sync
         coordinator.updateRelays(targetRelays)
         coordinator.start()
@@ -972,11 +984,10 @@ internal class FeedController(
             nowSec - MAX_GAP_FILL_DURATION_SECONDS,
         ).coerceAtLeast(0L)
         val until = minOf(signal.replayOldestAt, nowSec)
-        // 全リレーの差分取得が取りきる区間は任せ、その先だけを取り直す。
-        val allSync = feedSyncs[ALL_RELAYS_SYNC_KEY]
-        val from = if (allSync?.since != null && allSync.since <= since) maxOf(since, allSync.until) else since
-        if (from > until) return
-        startFeedSync(since = from, until = until, relayUrl = signal.relayUrl)
+        if (since > until) return
+        // 全リレーの差分取得と範囲が重なっても任せない。あちらは失敗の続くリレーを諦めて終わることが
+        // あり、そのリレーの区間を誰も取らなくなるため。重複して届いた投稿は ID で除く。
+        startFeedSync(since = since, until = until, relayUrl = signal.relayUrl)
     }
 
     private fun finishFeedSync(key: String, sync: FeedSync) {
@@ -985,14 +996,18 @@ internal class FeedController(
         sync.coordinator.close()
         flushPendingTimelineEvents()
         if (key == ALL_RELAYS_SYNC_KEY) clearRefreshIndicator()
-        if (feedSyncs.keys.none { it != ALL_RELAYS_SYNC_KEY }) liveGapRecoveryAddedCount = 0
     }
 
     private fun closeFeedSyncs() {
         feedSyncs.values.forEach { it.coordinator.close() }
         feedSyncs.clear()
-        liveGapRecoveryAddedCount = 0
     }
+
+    private fun liveGapRecoveryAddedCount(): Int =
+        feedSyncs.filterKeys { it != ALL_RELAYS_SYNC_KEY }.values.sumOf { it.addedCount }
+
+    private fun effectiveUntilOf(until: Long, previous: FeedSync?): Long =
+        previous?.let { maxOf(until, it.until) } ?: until
 
     /**
      * 差分の新着が多すぎるとき、保持上限を超えて読み込み済みの過去ページが押し出されるのを防ぐ。
@@ -1002,7 +1017,7 @@ internal class FeedController(
     private fun onFeedSyncOverflow(key: String, sync: FeedSync) {
         if (closed || feedSyncs[key] !== sync) return
         if (key != ALL_RELAYS_SYNC_KEY) {
-            appLog("[FeedController] live gap recovery stopped after $liveGapRecoveryAddedCount events")
+            appLog("[FeedController] live gap recovery stopped after ${liveGapRecoveryAddedCount()} events")
             feedSyncs.filterKeys { it != ALL_RELAYS_SYNC_KEY }.forEach { (relayKey, relaySync) ->
                 finishFeedSync(relayKey, relaySync)
             }
@@ -1133,22 +1148,18 @@ internal class FeedController(
             updateTimelineSortTime(event.id, timelineCreatedAt)
             return 0
         }
-        rawEvents[event.id] = event
+        eventSortTimes[event.id] = timelineCreatedAt
         val quoteIds = quotedEventIds(event)
-        referencedIdsByEvent[event.id] = quoteIds + listOfNotNull(event.replyTargetId())
+        rawEvents.add(event, quoteIds + listOfNotNull(event.replyTargetId())).forEach { evicted ->
+            eventSortTimes.remove(evicted.id)
+            forgetEngagementHistory(evicted.id)
+        }
         if (event.id !in canonicalEvents) {
             canonicalEvents[event.id] = event
         }
-        eventSortTimes[event.id] = timelineCreatedAt
-        while (rawEvents.size > MAX_SEEN_IDS) {
-            val removedId = rawEvents.keys.first()
-            rawEvents.remove(removedId)
-            referencedIdsByEvent.remove(removedId)
-            eventSortTimes.remove(removedId)
-            forgetEngagementHistory(removedId)
-        }
         while (canonicalEvents.size > MAX_SEEN_IDS) canonicalEvents.remove(canonicalEvents.keys.first())
         if (isFiltered(event)) return 0
+        rawEvents.noteRevealable(timelineCreatedAt)
         val cur = currentFeedState()
         if (cur.events.any { it.id == event.id } || pendingTimelineEvents.containsKey(event.id)) return 0
         pendingTimelineEvents[event.id] = event
@@ -1236,6 +1247,7 @@ internal class FeedController(
         val currentSortTime = eventSortTimes[eventId]
         if (currentSortTime != null && timelineCreatedAt <= currentSortTime) return
         eventSortTimes[eventId] = timelineCreatedAt
+        rawEvents[eventId]?.takeIf { !isFiltered(it) }?.let { rawEvents.noteRevealable(timelineCreatedAt) }
         val cur = currentFeedState()
         if (cur.events.none { it.id == eventId } && eventId !in pendingTimelineEvents) return
         if (eventId in pendingTimelineEvents) return
@@ -1304,14 +1316,10 @@ internal class FeedController(
                     val events = computeEvents(current)
                     val ownPubkeySnapshot = ownPubkey
                     val eventSortTimesSnapshot = eventSortTimes.toMap()
-                    // 集合の構築はバックグラウンドで行い、ここでは参照の写しだけを取る。
-                    val heldIdsSnapshot = rawEvents.keys.toList()
-                    val referencedIdsSnapshot = referencedIdsByEvent.values.toList()
-                    val newState = withContext(computeDispatcher) {
-                        val heldEventIds = buildSet {
-                            addAll(heldIdsSnapshot)
-                            referencedIdsSnapshot.forEach(::addAll)
-                        }
+                    // ここでは ID の一覧を写すだけにし、集合はバックグラウンドで作る。
+                    val heldSnapshot = rawEvents.snapshot()
+                    val (newState, heldEventIds) = withContext(computeDispatcher) {
+                        val heldEventIds = heldSnapshot.resolve()
                         computeUpdatedFeedState(
                             events = events,
                             oldestVisibleAt = oldestVisibleAt,
@@ -1319,8 +1327,10 @@ internal class FeedController(
                             ownPubkeySnapshot = ownPubkeySnapshot,
                             eventSortTimesSnapshot = eventSortTimesSnapshot,
                             heldEventIds = heldEventIds,
-                        )
+                        ) to heldEventIds
                     }
+                    // 投稿の出入りがなければ、次の組み直しでこの集合を使い回す。
+                    rawEvents.remember(heldSnapshot, heldEventIds)
 
                     // バックグラウンド計算中にプロフィールやリアクションなどが更新された場合、
                     // 古いUiStateをコミットするとその更新を巻き戻してしまう。最新状態から再計算する。
@@ -1363,10 +1373,11 @@ internal class FeedController(
             visibleEvents.flatMap { quotedEventIds(it) }
         // 投稿ごとの付随情報は、まだ表示していない保持中の投稿の分も残す。表示前に捨てると、
         // 後から表示したときにリポスト表示・件数・引用カードが失われ、取り直しもされない。
-        val keptEventIds = retainedEventIds + heldEventIds
-        val quotedEvents = current.quotedEvents.filterKeys { it in keptEventIds }
-        val replies = current.replies.filterKeys { it in keptEventIds }
-        val quoteRepostEvents = current.quoteRepostEvents.filterKeys { it in keptEventIds }
+        // 2 つの集合を結合して作り直さず、どちらかに含まれるかで判定する。
+        val isKept: (String) -> Boolean = { it in retainedEventIds || it in heldEventIds }
+        val quotedEvents = current.quotedEvents.filterKeys(isKept)
+        val replies = current.replies.filterKeys(isKept)
+        val quoteRepostEvents = current.quoteRepostEvents.filterKeys(isKept)
         // プロフィールはキャッシュから引き直せるので、表示中の投稿に関わる分だけ持つ。
         val retainedPubkeys = buildSet {
             visibleEvents.forEach { event ->
@@ -1414,22 +1425,22 @@ internal class FeedController(
                 current.initialFeedState
             },
             profiles = profiles,
-            reactionCounts = current.reactionCounts.filterKeys { it in keptEventIds },
-            likeReactionCounts = current.likeReactionCounts.filterKeys { it in keptEventIds },
-            customReactions = current.customReactions.filterKeys { it in keptEventIds },
-            unicodeReactions = current.unicodeReactions.filterKeys { it in keptEventIds },
-            reactionEvents = current.reactionEvents.filterKeys { it in keptEventIds },
-            replyCounts = current.replyCounts.filterKeys { it in keptEventIds },
+            reactionCounts = current.reactionCounts.filterKeys(isKept),
+            likeReactionCounts = current.likeReactionCounts.filterKeys(isKept),
+            customReactions = current.customReactions.filterKeys(isKept),
+            unicodeReactions = current.unicodeReactions.filterKeys(isKept),
+            reactionEvents = current.reactionEvents.filterKeys(isKept),
+            replyCounts = current.replyCounts.filterKeys(isKept),
             replies = replies,
-            repostCounts = current.repostCounts.filterKeys { it in keptEventIds },
-            repostPubkeys = current.repostPubkeys.filterKeys { it in keptEventIds },
+            repostCounts = current.repostCounts.filterKeys(isKept),
+            repostPubkeys = current.repostPubkeys.filterKeys(isKept),
             quoteRepostEvents = quoteRepostEvents,
             quotedEvents = quotedEvents,
-            repostedByPubkeys = current.repostedByPubkeys.filterKeys { it in keptEventIds },
-            likedReactions = current.likedReactions.filterKeys { it in keptEventIds },
+            repostedByPubkeys = current.repostedByPubkeys.filterKeys(isKept),
+            likedReactions = current.likedReactions.filterKeys(isKept),
             ownEmojiReactionEventIds = current.ownEmojiReactionEventIds
-                .filterKeys { it in keptEventIds },
-            repostedEvents = current.repostedEvents.filterKeys { it in keptEventIds },
+                .filterKeys(isKept),
+            repostedEvents = current.repostedEvents.filterKeys(isKept),
         )
     }
 
@@ -1453,10 +1464,8 @@ internal class FeedController(
     }
 
     private fun hasRevealableEvents(): Boolean {
-        val floor = historyRevealOldestAt ?: Long.MIN_VALUE
-        return rawEvents.values.any { event ->
-            (eventSortTimes[event.id] ?: event.createdAt) >= floor && !isFiltered(event)
-        }
+        val newest = rawEvents.newestRevealable(::isFiltered) ?: return false
+        return newest >= (historyRevealOldestAt ?: Long.MIN_VALUE)
     }
 
     private fun revealHistoryThrough(createdAt: Long?) {

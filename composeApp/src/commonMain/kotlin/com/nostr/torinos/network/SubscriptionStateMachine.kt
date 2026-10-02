@@ -1,6 +1,8 @@
 package com.nostr.torinos.network
 
+import com.nostr.torinos.model.NostrEvent
 import com.nostr.torinos.model.NostrFilter
+import com.nostr.torinos.model.indexOfMatching
 
 internal enum class RelaySubscriptionPhase {
     Idle,
@@ -119,10 +121,9 @@ internal object SubscriptionStateMachine {
 
     fun onEvent(
         state: RelaySubscriptionState,
-        createdAt: Long? = null,
-        kind: Int? = null,
+        event: NostrEvent? = null,
     ): RelaySubscriptionState {
-        val replaying = state.interruptedAt != null && createdAt != null &&
+        val replaying = state.interruptedAt != null && event != null &&
             (state.phase == RelaySubscriptionPhase.Sent || state.phase == RelaySubscriptionPhase.QueryingPast)
         val next = if (state.phase == RelaySubscriptionPhase.Sent) {
             state.copy(phase = RelaySubscriptionPhase.QueryingPast)
@@ -130,11 +131,9 @@ internal object SubscriptionStateMachine {
             state
         }
         if (!replaying) return next
-        val filterIndex = state.sentFilters
-            ?.indexOfFirst { filter -> filter.kinds?.let { kind in it } ?: true }
-            ?.takeIf { it >= 0 }
-            ?: 0
-        val oldest = minOf(state.replayOldestByFilter[filterIndex] ?: Long.MAX_VALUE, createdAt!!)
+        // 同じ種類のフィルターが複数あっても取り違えないよう、条件全体で振り分ける。
+        val filterIndex = state.sentFilters?.indexOfMatching(event!!) ?: 0
+        val oldest = minOf(state.replayOldestByFilter[filterIndex] ?: Long.MAX_VALUE, event!!.createdAt)
         return next.copy(replayOldestByFilter = state.replayOldestByFilter + (filterIndex to oldest))
     }
 

@@ -2,6 +2,7 @@ package com.nostr.torinos.ui.feed
 
 import com.nostr.torinos.model.NostrEvent
 import com.nostr.torinos.model.NostrFilter
+import com.nostr.torinos.model.indexOfMatching
 import com.nostr.torinos.network.RelayOutcome
 import com.nostr.torinos.network.RelayTarget
 import com.nostr.torinos.network.RetryDisposition
@@ -106,15 +107,18 @@ internal class RelayFeedHistoryCoordinator(
                 relay.hasMore() && (floor == null || relay.coverage() >= floor)
         }.keys
         if (candidates.isEmpty()) {
-            val waiting = relays.values.filter { relay ->
-                relay.hasMore() && (relay.session != null || relay.opening || relay.retryJob != null)
+            val fetching = relays.values.filter { relay ->
+                relay.hasMore() && (relay.session != null || relay.opening)
             }
-            if (waiting.isNotEmpty()) {
-                // 応答待ちのリレーが返ったら続ける。読み込み中にしておくと、画面側も止まらない。
+            // 応答待ちや再試行待ちのリレーが返ったら続ける。
+            if (fetching.isNotEmpty() || relays.values.any { it.hasMore() && it.retryJob != null }) {
                 loadMoreDeferred = true
+            }
+            if (fetching.isNotEmpty()) {
+                // 取得中の間だけ読み込み中にする。再試行待ちだけで表示し続けると、止まらなくなる。
                 foregroundLoading = true
                 // 境界を決めているリレーが応答待ちなら、猶予後に遅延扱いにして表示を進める。
-                if (waiting.any { (it.session != null || it.opening) && !it.lagging }) scheduleSettle()
+                if (fetching.any { !it.lagging }) scheduleSettle()
             }
             publishReveal()
             publishState()
@@ -294,9 +298,9 @@ internal class RelayFeedHistoryCoordinator(
         if (signal.relayUrl != url) return
         relay.oldestReceived = minOf(relay.oldestReceived ?: Long.MAX_VALUE, signal.event.createdAt)
         val page = relay.page ?: return
-        val requested = page.requested.firstOrNull { requestedFilter ->
-            signal.event.matches(baseFilters[requestedFilter.index])
-        } ?: return
+        // 同じ種類のフィルターが複数あっても取り違えないよう、条件全体で振り分ける。
+        val matchedIndex = page.requested.indexOfMatching(signal.event) { baseFilters[it.index] } ?: return
+        val requested = page.requested[matchedIndex]
         page.events.getOrPut(requested.index) { linkedMapOf() }[signal.event.id] = signal.event.createdAt
         page.visibleAdded += visibleAdded
     }
@@ -482,6 +486,7 @@ internal class RelayFeedHistoryCoordinator(
                     relay.hasCompletedInitialPage || relay.suppressed
                 },
                 stalledRelayCount = relays.values.count { it.retryJob != null || it.suppressed },
+                pendingRelayCount = relays.values.count { it.hasMore() && it.failureCount < GIVE_UP_FAILURES },
                 coverageGapCount = relays.values.sumOf { relay ->
                     relay.cursors.count { it.coverageGapAt != null }
                 },
@@ -529,14 +534,13 @@ internal class RelayFeedHistoryCoordinator(
         var visibleAdded: Int = 0,
     )
 
-    private fun NostrEvent.matches(filter: NostrFilter): Boolean =
-        filter.kinds?.let { kind in it } ?: true
-
     private companion object {
         const val DEFAULT_PAGE_SIZE = 30
         const val RETRY_BASE_DELAY_MS = 2_000L
         const val RETRY_MAX_DELAY_MS = 30_000L
         const val MAX_CATCH_UP_PAGES = 3
+        /** 差分取得で、これだけ続けて失敗したリレーは取りきれないものとして扱う。 */
+        const val GIVE_UP_FAILURES = 3
     }
 }
 
@@ -548,5 +552,7 @@ internal data class RelayHistoryUiState(
     val successfulInitialRelayCount: Int,
     val isInitialFetchSettled: Boolean,
     val stalledRelayCount: Int,
+    /** 続きがあり、失敗が続いていないリレーの数。差分取得の完了判定に使う。 */
+    val pendingRelayCount: Int,
     val coverageGapCount: Int,
 )
