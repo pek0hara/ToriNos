@@ -84,6 +84,7 @@ import com.nostr.torinos.model.stripNostrEventUris
 import com.nostr.torinos.ui.components.stripImageUrls
 import com.nostr.torinos.ui.profile.AvatarCircle
 import com.nostr.torinos.ui.components.DismissKeyboardOnLeave
+import com.nostr.torinos.ui.components.avoidStaleAccessibilityFocus
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -632,7 +633,7 @@ private fun EditThreadDialog(
                     label = { Text("チャンネル名") },
                     singleLine = true,
                     enabled = !state.isSaving,
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier.fillMaxWidth().avoidStaleAccessibilityFocus(),
                 )
                 OutlinedTextField(
                     value = descriptionValue,
@@ -643,7 +644,7 @@ private fun EditThreadDialog(
                     label = { Text("説明") },
                     maxLines = 4,
                     enabled = !state.isSaving,
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier.fillMaxWidth().avoidStaleAccessibilityFocus(),
                 )
                 OutlinedTextField(
                     value = state.picture,
@@ -653,7 +654,7 @@ private fun EditThreadDialog(
                     enabled = !state.isSaving && !state.isUploadingPicture,
                     isError = !state.pictureIsValid,
                     supportingText = if (!state.pictureIsValid) {{ Text("https:// の画像URLを入力してください") }} else null,
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier.fillMaxWidth().avoidStaleAccessibilityFocus(),
                 )
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text("推奨リレー: ${state.recommendedRelays.size}件", modifier = Modifier.weight(1f))

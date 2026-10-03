@@ -47,6 +47,7 @@ import com.nostr.torinos.ui.components.rememberDismissKeyboard
 import com.nostr.torinos.ui.components.rememberImagePickerLauncher
 import com.nostr.torinos.ui.components.rememberSyncedTextFieldValue
 import com.nostr.torinos.ui.components.DismissKeyboardOnLeave
+import com.nostr.torinos.ui.components.avoidStaleAccessibilityFocus
 
 @Composable
 fun EditProfileSheet(
@@ -119,7 +120,7 @@ private fun EditProfileSheetContent(
             },
             label = { Text("ユーザー名 (name)") },
             singleLine = true,
-            modifier = Modifier.fillMaxWidth(),
+            modifier = Modifier.fillMaxWidth().avoidStaleAccessibilityFocus(),
         )
 
         OutlinedTextField(
@@ -130,7 +131,7 @@ private fun EditProfileSheetContent(
             },
             label = { Text("表示名 (display_name)") },
             singleLine = true,
-            modifier = Modifier.fillMaxWidth(),
+            modifier = Modifier.fillMaxWidth().avoidStaleAccessibilityFocus(),
         )
 
         OutlinedTextField(
@@ -140,7 +141,7 @@ private fun EditProfileSheetContent(
                 viewModel.onAboutChange(it.text)
             },
             label = { Text("自己紹介 (about)") },
-            modifier = Modifier.fillMaxWidth().height(100.dp),
+            modifier = Modifier.fillMaxWidth().height(100.dp).avoidStaleAccessibilityFocus(),
             maxLines = 4,
         )
 
@@ -155,7 +156,7 @@ private fun EditProfileSheetContent(
                 onValueChange = viewModel::onPictureChange,
                 label = { Text("アイコンURL (picture)") },
                 singleLine = true,
-                modifier = Modifier.weight(1f),
+                modifier = Modifier.weight(1f).avoidStaleAccessibilityFocus(),
                 trailingIcon = {
                     if (state.isUploadingImage) {
                         CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
@@ -187,7 +188,7 @@ private fun EditProfileSheetContent(
                 onValueChange = viewModel::onBannerChange,
                 label = { Text("バナーURL (banner)") },
                 singleLine = true,
-                modifier = Modifier.weight(1f),
+                modifier = Modifier.weight(1f).avoidStaleAccessibilityFocus(),
                 trailingIcon = {
                     if (state.isUploadingImage) {
                         CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
@@ -214,7 +215,7 @@ private fun EditProfileSheetContent(
             onValueChange = viewModel::onNip05Change,
             label = { Text("NIP-05アドレス") },
             singleLine = true,
-            modifier = Modifier.fillMaxWidth(),
+            modifier = Modifier.fillMaxWidth().avoidStaleAccessibilityFocus(),
         )
 
         state.error?.let { error ->
@@ -305,7 +306,7 @@ fun BannerEditDialog(
                         onValueChange = { url = it },
                         label = { Text("バナーURL") },
                         singleLine = true,
-                        modifier = Modifier.weight(1f),
+                        modifier = Modifier.weight(1f).avoidStaleAccessibilityFocus(),
                         enabled = !state.isSaving,
                     )
                     IconButton(
@@ -405,7 +406,7 @@ fun AvatarEditDialog(
                         onValueChange = { url = it },
                         label = { Text("画像URL") },
                         singleLine = true,
-                        modifier = Modifier.weight(1f),
+                        modifier = Modifier.weight(1f).avoidStaleAccessibilityFocus(),
                         enabled = !state.isSaving,
                     )
                     IconButton(
@@ -482,7 +483,7 @@ fun NameEditDialog(
                     onValueChange = { name = it },
                     label = { Text("ユーザー名 (name)") },
                     singleLine = true,
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier.fillMaxWidth().avoidStaleAccessibilityFocus(),
                     enabled = !state.isSaving,
                 )
                 OutlinedTextField(
@@ -490,7 +491,7 @@ fun NameEditDialog(
                     onValueChange = { displayName = it },
                     label = { Text("表示名 (display_name)") },
                     singleLine = true,
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier.fillMaxWidth().avoidStaleAccessibilityFocus(),
                     enabled = !state.isSaving,
                 )
                 OutlinedTextField(
@@ -504,7 +505,7 @@ fun NameEditDialog(
                     placeholder = { Text("alice@example.com") },
                     supportingText = { Text("取得済みのアドレスを入力") },
                     singleLine = true,
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier.fillMaxWidth().avoidStaleAccessibilityFocus(),
                     enabled = !state.isSaving,
                 )
                 Row(verticalAlignment = Alignment.CenterVertically) {
@@ -580,7 +581,7 @@ fun AboutEditDialog(
                     value = about,
                     onValueChange = { about = it },
                     label = { Text("自己紹介 (about)") },
-                    modifier = Modifier.fillMaxWidth().height(120.dp),
+                    modifier = Modifier.fillMaxWidth().height(120.dp).avoidStaleAccessibilityFocus(),
                     maxLines = 6,
                     enabled = !state.isSaving,
                 )

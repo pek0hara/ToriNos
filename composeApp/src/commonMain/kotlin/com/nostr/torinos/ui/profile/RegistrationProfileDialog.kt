@@ -23,6 +23,7 @@ import androidx.compose.ui.unit.dp
 import com.nostr.torinos.ui.components.DismissKeyboardOnLeave
 import com.nostr.torinos.ui.components.rememberDismissKeyboard
 import com.nostr.torinos.ui.components.rememberImagePickerLauncher
+import com.nostr.torinos.ui.components.avoidStaleAccessibilityFocus
 
 /** 新規登録でのみ表示する、最初のプロフィール設定。保存失敗時は入力を残して再試行する。 */
 @Composable
@@ -71,7 +72,7 @@ internal fun RegistrationProfileDialog(
                     label = { Text("ユーザー名") },
                     singleLine = true,
                     enabled = !busy,
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier.fillMaxWidth().avoidStaleAccessibilityFocus(),
                 )
                 OutlinedTextField(
                     value = state.picture,
@@ -79,7 +80,7 @@ internal fun RegistrationProfileDialog(
                     label = { Text("アイコンURL（任意）") },
                     singleLine = true,
                     enabled = !busy,
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier.fillMaxWidth().avoidStaleAccessibilityFocus(),
                 )
                 if (state.isUploadingImage) {
                     CircularProgressIndicator(modifier = Modifier.size(24.dp))

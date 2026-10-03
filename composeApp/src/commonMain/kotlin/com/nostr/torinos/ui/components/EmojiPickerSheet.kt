@@ -190,7 +190,7 @@ internal fun StandardEmojiPickerSheet(
             OutlinedTextField(
                 value = query,
                 onValueChange = { query = it },
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier.fillMaxWidth().avoidStaleAccessibilityFocus(),
                 placeholder = { Text("検索") },
                 leadingIcon = {
                     Icon(imageVector = Icons.Default.Search, contentDescription = null)

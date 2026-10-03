@@ -72,6 +72,7 @@ import com.nostr.torinos.ui.components.PreviewImage
 import com.nostr.torinos.ui.components.StandardEmojiPickerSheet
 import com.nostr.torinos.ui.components.rememberDismissKeyboard
 import kotlin.math.max
+import com.nostr.torinos.ui.components.avoidStaleAccessibilityFocus
 
 internal const val MAX_POST_CHARS = 800
 
@@ -153,6 +154,7 @@ internal fun ColumnScope.ComposerBodyEditor(
             .fillMaxWidth()
             .then(textModifier)
             .focusRequester(textFocusRequester)
+            .avoidStaleAccessibilityFocus()
             .onFocusChanged {
                 if (it.isFocused) showImageSourceMenu = false
                 onTextFocusChanged(it.isFocused)

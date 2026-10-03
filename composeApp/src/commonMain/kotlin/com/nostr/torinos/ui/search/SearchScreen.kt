@@ -51,6 +51,7 @@ import com.nostr.torinos.ui.components.ProfileNameText
 import com.nostr.torinos.ui.components.DismissKeyboardOnLeave
 import com.nostr.torinos.ui.components.rememberDismissKeyboard
 import com.nostr.torinos.ui.profile.AvatarCircle
+import com.nostr.torinos.ui.components.avoidStaleAccessibilityFocus
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -132,7 +133,7 @@ fun SearchScreen(
                 OutlinedTextField(
                     value = inputText,
                     onValueChange = { inputText = it },
-                    modifier = Modifier.weight(1f),
+                    modifier = Modifier.weight(1f).avoidStaleAccessibilityFocus(),
                     placeholder = { Text("キーワードまたは #タグ") },
                     singleLine = true,
                     keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),

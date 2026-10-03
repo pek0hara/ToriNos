@@ -34,6 +34,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.runtime.collectAsState
 import com.nostr.torinos.account.LocalAccountSession
 import com.nostr.torinos.ui.components.DismissKeyboardOnLeave
+import com.nostr.torinos.ui.components.avoidStaleAccessibilityFocus
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -76,7 +77,7 @@ fun NgWordScreen(onBack: () -> Unit = {}) {
                     onValueChange = { input = it },
                     label = { Text("NGワードを追加") },
                     singleLine = true,
-                    modifier = Modifier.weight(1f),
+                    modifier = Modifier.weight(1f).avoidStaleAccessibilityFocus(),
                 )
                 IconButton(
                     onClick = {

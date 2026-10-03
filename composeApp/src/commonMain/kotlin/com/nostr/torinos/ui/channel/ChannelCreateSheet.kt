@@ -67,6 +67,7 @@ import com.nostr.torinos.ui.post.ComposedNote
 import com.nostr.torinos.ui.post.ComposerBodyEditor
 import com.nostr.torinos.ui.post.PostViewModel
 import com.nostr.torinos.ui.post.composeNoteContent
+import com.nostr.torinos.ui.components.avoidStaleAccessibilityFocus
 
 /**
  * チャンネル作成シート(FR-13)。フィード投稿と同じ全画面シートで、名前・説明・アイコン・推奨リレー・
@@ -198,7 +199,7 @@ internal fun ChannelCreateSheet(
                         label = { Text("チャンネル名 *") },
                         singleLine = true,
                         enabled = !locked,
-                        modifier = Modifier.fillMaxWidth(),
+                        modifier = Modifier.fillMaxWidth().avoidStaleAccessibilityFocus(),
                     )
                     OutlinedTextField(
                         value = dialog.about,
@@ -206,7 +207,7 @@ internal fun ChannelCreateSheet(
                         label = { Text("説明") },
                         maxLines = 4,
                         enabled = !locked,
-                        modifier = Modifier.fillMaxWidth(),
+                        modifier = Modifier.fillMaxWidth().avoidStaleAccessibilityFocus(),
                     )
                     ExpandableRelaySelector(
                         sessionId = dialog.sessionId,
@@ -422,7 +423,8 @@ private fun ExpandableRelaySelector(
                 modifier = Modifier
                     .fillMaxWidth()
                     .bringIntoViewRequester(inputBringIntoView)
-                    .onFocusChanged { inputFocused = it.isFocused },
+                    .onFocusChanged { inputFocused = it.isFocused }
+                    .avoidStaleAccessibilityFocus(),
             )
             Button(
                 onClick = ::addRelay,

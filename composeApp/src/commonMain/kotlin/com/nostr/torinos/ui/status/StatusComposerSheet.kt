@@ -65,6 +65,7 @@ import kotlin.time.Instant
 import kotlinx.datetime.TimeZone
 import kotlinx.datetime.toLocalDateTime
 import com.nostr.torinos.ui.components.DismissKeyboardOnLeave
+import com.nostr.torinos.ui.components.avoidStaleAccessibilityFocus
 
 private data class StatusComposerFields(
     val content: String,
@@ -324,7 +325,7 @@ internal fun StatusComposerSheet(
                             label = { Text("カテゴリ名") },
                             singleLine = true,
                             enabled = !isPublishing,
-                            modifier = Modifier.fillMaxWidth(),
+                            modifier = Modifier.fillMaxWidth().avoidStaleAccessibilityFocus(),
                         )
                     }
                     OutlinedTextField(
@@ -337,7 +338,8 @@ internal fun StatusComposerSheet(
                         enabled = !isPublishing,
                         modifier = Modifier
                             .fillMaxWidth()
-                            .focusRequester(contentFocusRequester),
+                            .focusRequester(contentFocusRequester)
+                            .avoidStaleAccessibilityFocus(),
                         supportingText = {
                             Text(
                                 text = "${content.length}文字",
@@ -428,7 +430,7 @@ internal fun StatusComposerSheet(
                             label = { Text("関連URL（任意）") },
                             singleLine = true,
                             enabled = !isPublishing,
-                            modifier = Modifier.fillMaxWidth(),
+                            modifier = Modifier.fillMaxWidth().avoidStaleAccessibilityFocus(),
                         )
                     }
                     errorMessage?.let {

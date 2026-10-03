@@ -97,7 +97,7 @@ internal fun RelayMultiSelectDialog(
                                 enabled = customInput.isNotBlank(),
                             ) { Text("追加") }
                         },
-                        modifier = Modifier.fillMaxWidth(),
+                        modifier = Modifier.fillMaxWidth().avoidStaleAccessibilityFocus(),
                     )
                 }
             }

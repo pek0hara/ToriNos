@@ -7,6 +7,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import com.nostr.torinos.ui.components.avoidStaleAccessibilityFocus
 
 @Composable
 internal actual fun PrivateKeyInputField(
@@ -18,7 +19,7 @@ internal actual fun PrivateKeyInputField(
     OutlinedTextField(
         value = value,
         onValueChange = onValueChange,
-        modifier = modifier,
+        modifier = modifier.avoidStaleAccessibilityFocus(),
         label = { Text(PrivateKeyInputLabel) },
         visualTransformation = PasswordVisualTransformation(),
         singleLine = true,

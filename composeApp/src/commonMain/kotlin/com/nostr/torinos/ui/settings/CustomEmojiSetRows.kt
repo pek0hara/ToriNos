@@ -29,6 +29,7 @@ import com.nostr.torinos.emoji.CustomEmoji
 import com.nostr.torinos.emoji.PublishedEmojiSet
 import com.nostr.torinos.ui.components.DismissKeyboardOnLeave
 import com.nostr.torinos.ui.components.NetworkImage
+import com.nostr.torinos.ui.components.avoidStaleAccessibilityFocus
 
 @Composable
 internal fun EmojiSearchField(
@@ -62,7 +63,8 @@ internal fun EmojiSearchField(
         singleLine = true,
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 16.dp, vertical = 8.dp),
+            .padding(horizontal = 16.dp, vertical = 8.dp)
+            .avoidStaleAccessibilityFocus(),
     )
 }
 

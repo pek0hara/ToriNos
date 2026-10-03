@@ -1604,7 +1604,7 @@ private fun ReportDialog(
                     label = { Text("補足（任意・通報後このユーザーをブロックします）") },
                     minLines = 2,
                     maxLines = 4,
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier.fillMaxWidth().avoidStaleAccessibilityFocus(),
                 )
             }
         },

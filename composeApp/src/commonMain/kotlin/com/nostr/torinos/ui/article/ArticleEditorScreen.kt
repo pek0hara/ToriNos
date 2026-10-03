@@ -62,6 +62,7 @@ import com.nostr.torinos.ui.relay.RelaySettingsViewModel
 import com.nostr.torinos.util.logException
 import kotlinx.coroutines.CancellationException
 import com.nostr.torinos.ui.components.DismissKeyboardOnLeave
+import com.nostr.torinos.ui.components.avoidStaleAccessibilityFocus
 
 private enum class ArticleEditorTab(val label: String) {
     Edit("編集"),
@@ -311,7 +312,7 @@ private fun ArticleEditContent(
             OutlinedTextField(
                 value = state.title,
                 onValueChange = onTitleChange,
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier.fillMaxWidth().avoidStaleAccessibilityFocus(),
                 label = { Text("タイトル（必須）") },
                 singleLine = true,
                 enabled = !state.isPublishing,
@@ -345,7 +346,8 @@ private fun ArticleEditContent(
                     onValueChange = onContentChange,
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(420.dp),
+                        .height(420.dp)
+                        .avoidStaleAccessibilityFocus(),
                     placeholder = {
                         Text("# 見出し\n\n本文をMarkdown形式で入力してください")
                     },
@@ -382,7 +384,7 @@ private fun ArticleEditContent(
                     OutlinedTextField(
                         value = state.coverImageUrl,
                         onValueChange = onCoverImageUrlChange,
-                        modifier = Modifier.weight(1f),
+                        modifier = Modifier.weight(1f).avoidStaleAccessibilityFocus(),
                         label = { Text("HTTPS URL") },
                         singleLine = true,
                         enabled = !state.isUploadingCover && !state.isPublishing,
@@ -404,7 +406,7 @@ private fun ArticleEditContent(
             OutlinedTextField(
                 value = state.summary,
                 onValueChange = onSummaryChange,
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier.fillMaxWidth().avoidStaleAccessibilityFocus(),
                 label = { Text("概要") },
                 minLines = 2,
                 maxLines = 4,
@@ -415,7 +417,7 @@ private fun ArticleEditContent(
             OutlinedTextField(
                 value = state.topicsInput,
                 onValueChange = onTopicsChange,
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier.fillMaxWidth().avoidStaleAccessibilityFocus(),
                 label = { Text("トピック") },
                 placeholder = { Text("nostr, 技術, 日記") },
                 supportingText = { Text("空白またはカンマで区切って入力") },

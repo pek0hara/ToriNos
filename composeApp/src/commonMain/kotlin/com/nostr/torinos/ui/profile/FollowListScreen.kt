@@ -38,6 +38,7 @@ import com.nostr.torinos.crypto.hexToNpub
 import com.nostr.torinos.model.NostrProfile
 import com.nostr.torinos.ui.components.ProfileNameText
 import com.nostr.torinos.ui.components.DismissKeyboardOnLeave
+import com.nostr.torinos.ui.components.avoidStaleAccessibilityFocus
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -101,7 +102,8 @@ fun FollowListScreen(
                         onValueChange = { query = it },
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(horizontal = 16.dp, vertical = 10.dp),
+                            .padding(horizontal = 16.dp, vertical = 10.dp)
+                            .avoidStaleAccessibilityFocus(),
                         singleLine = true,
                         placeholder = { Text("ユーザー検索") },
                     )

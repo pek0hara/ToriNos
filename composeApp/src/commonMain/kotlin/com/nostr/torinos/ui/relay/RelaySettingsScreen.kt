@@ -62,6 +62,7 @@ import com.nostr.torinos.network.RelayLimitation
 import com.nostr.torinos.ui.components.NetworkImage
 import io.ktor.http.Url
 import com.nostr.torinos.ui.components.DismissKeyboardOnLeave
+import com.nostr.torinos.ui.components.avoidStaleAccessibilityFocus
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -125,7 +126,7 @@ fun RelaySettingsScreen(
                 OutlinedTextField(
                     value = input,
                     onValueChange = { input = it },
-                    modifier = Modifier.weight(1f),
+                    modifier = Modifier.weight(1f).avoidStaleAccessibilityFocus(),
                     label = { Text("リレーを追加・検索") },
                     placeholder = { Text("wss://relay.example.com") },
                     singleLine = true,
