@@ -956,7 +956,6 @@ internal fun AppSessionCoordinator(
                             if (currentRoute == "journal") {
                                 composer.journalToggleCalendarRequest++
                             } else {
-                                composer.journalShowCalendarRequest++
                                 navigateJournalTab()
                             }
                         }
@@ -1016,9 +1015,10 @@ internal fun AppSessionCoordinator(
                 floatingActionButton = {
                     if (isWriteSupported) {
                         when (currentRoute) {
-                            // フィードと自分のジャーナルは、投稿の起動・展開を同じFABで扱う。
+                            // フィードは投稿の起動・展開を同じFABで扱う。
+                            // ジャーナルの閉じた状態のFABは、画面側のカレンダー切り替えに譲る。
                             "feed", "journal" -> when (composer.presentation) {
-                                ComposerPresentation.Hidden -> Box(
+                                ComposerPresentation.Hidden -> if (currentRoute == "feed") Box(
                                     modifier = Modifier.graphicsLayer {
                                         translationY = bottomBarHeightPx * activeFeedChromeCollapseFraction()
                                     },
@@ -1348,7 +1348,7 @@ internal fun AppSessionCoordinator(
                         JournalScreen(
                             onBack = { nav.popBackStack() },
                             toggleCalendarRequest = composer.journalToggleCalendarRequest,
-                            showCalendarRequest = composer.journalShowCalendarRequest,
+                            showCalendarToggleFab = composer.presentation == ComposerPresentation.Hidden,
                             accountKey = accountSession?.sessionId.orEmpty(),
                             onOpenThread = { eventId -> nav.navigate(ThreadRoute(eventId)) },
                             onReply = { event, preview ->

@@ -66,6 +66,39 @@ class JournalTimelineTest {
     }
 
     @Test
+    fun memberFilterUsesOnlyTheKindsOfThoseMembers() {
+        val members = JournalMembers(OWNER, OTHER)
+        // OWNER が OTHER にいいね: OWNER の「したいいね」で OTHER の「もらったいいね」。
+        val like = reaction("like", targetId = "t", pubkey = OWNER, targetAuthor = OTHER)
+        val theirs = post("theirs", pubkey = OTHER)
+        val timeline = JournalTimeline.Empty.upsert(listOf(activity(like, members), activity(theirs, members)))
+
+        assertEquals(listOf("like"), timeline.entries(sep15, setOf(Like), setOf(OWNER)).map { it.event.id })
+        assertEquals(emptyList(), timeline.entries(sep15, setOf(Like), setOf(OTHER)).map { it.event.id })
+        assertEquals(listOf("like"), timeline.entries(sep15, setOf(ReceivedLike), setOf(OTHER)).map { it.event.id })
+        assertEquals(listOf("theirs"), timeline.entries(sep15, setOf(Post), setOf(OTHER)).map { it.event.id })
+        assertEquals(emptyList(), timeline.entries(sep15, setOf(Post), setOf(OWNER)).map { it.event.id })
+        assertEquals(2, timeline.entries(sep15, setOf(Post, Like)).size)
+    }
+
+    @Test
+    fun reclassifyFollowsMemberChangesWithoutRefetching() {
+        val like = reaction("like", targetId = "t", pubkey = OWNER, targetAuthor = OTHER)
+        val theirs = post("theirs", pubkey = OTHER)
+        val both = JournalMembers(OWNER, OTHER)
+        val timeline = JournalTimeline.Empty.upsert(listOf(activity(like, both), activity(theirs, both)))
+
+        // OTHER を外すと、OTHER だけに当たる行は消え、自分のいいねは残る。
+        val withoutOther = timeline.reclassify { JournalActivityClassifier.classify(it, SelfOwner, byPTag) }
+        assertEquals(listOf("like"), withoutOther.entries(sep15, setOf(Like, ReceivedLike, Post)).map { it.event.id })
+        assertEquals(mapOf(OWNER to setOf(Like)), withoutOther["like"]?.roles)
+
+        // また加えると、自分のいいねが OTHER の「もらったいいね」にもなる。
+        val readded = withoutOther.reclassify { JournalActivityClassifier.classify(it, both, byPTag) }
+        assertEquals(mapOf(OWNER to setOf(Like), OTHER to setOf(ReceivedLike)), readded["like"]?.roles)
+    }
+
+    @Test
     fun removeMatchingOnlyDropsRequestedKindsOnThatDate() {
         val timeline = JournalTimeline.Empty.upsert(
             listOf(

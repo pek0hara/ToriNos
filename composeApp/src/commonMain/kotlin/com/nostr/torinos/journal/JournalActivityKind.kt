@@ -16,53 +16,49 @@ enum class JournalActivityKind {
 }
 
 /**
- * ジャーナルの持ち主。
- * [isSelf]はボトムナビから開いた自分のジャーナルか。他人のジャーナルでは「したいいね」を扱わない。
+ * ジャーナルに載せる人。自分のジャーナルでは自分と追加したメンバー、他人のジャーナルではその人だけ。
+ * 種類の判定は人ごとに行う（AがBの投稿にいいねすれば、Aの「したいいね」でBの「もらったいいね」）。
  */
-data class JournalOwner(val pubkey: String, val isSelf: Boolean)
+data class JournalMembers(val pubkeys: Set<String>) {
+    constructor(vararg pubkeys: String) : this(pubkeys.toSet())
+}
 
-internal fun availableJournalKinds(isSelf: Boolean): Set<JournalActivityKind> =
-    if (isSelf) {
-        JournalActivityKind.entries.toSet()
-    } else {
-        JournalActivityKind.entries.toSet() - JournalActivityKind.Like
-    }
+internal fun availableJournalKinds(): Set<JournalActivityKind> = JournalActivityKind.entries.toSet()
 
 internal fun defaultJournalKinds(): Set<JournalActivityKind> =
     setOf(JournalActivityKind.Post, JournalActivityKind.Repost, JournalActivityKind.Reply)
 
-/** 何も選んでいなければ既定の種類、選べない種類は除く。 */
-internal fun effectiveJournalKinds(
-    selected: Set<JournalActivityKind>,
-    isSelf: Boolean,
-): Set<JournalActivityKind> {
-    val available = availableJournalKinds(isSelf)
-    return (selected intersect available).ifEmpty { defaultJournalKinds() }
-}
+/** 何も選んでいなければ既定の種類にする。 */
+internal fun effectiveJournalKinds(selected: Set<JournalActivityKind>): Set<JournalActivityKind> =
+    (selected intersect availableJournalKinds()).ifEmpty { defaultJournalKinds() }
 
-/** 取得・表示・件数・日付移動が共有する唯一の種類判定。 */
+/** 取得・表示・件数・日付移動が共有する唯一の種類判定。メンバーごとの種類を返し、該当しないメンバーは含めない。 */
 internal object JournalActivityClassifier {
     fun classify(
         event: NostrEvent,
-        owner: JournalOwner,
+        members: JournalMembers,
         isAddressedTo: (NostrEvent, String) -> Boolean = ReactionEventStore::isAddressedTo,
-    ): Set<JournalActivityKind> {
-        val authored = event.pubkey == owner.pubkey
-        return when (event.kind) {
-            1 -> when {
-                !authored -> emptySet()
-                event.replyTargetId() != null -> setOf(JournalActivityKind.Reply)
-                else -> setOf(JournalActivityKind.Post)
+    ): Map<String, Set<JournalActivityKind>> {
+        val result = mutableMapOf<String, MutableSet<JournalActivityKind>>()
+        fun add(pubkey: String, kind: JournalActivityKind) {
+            result.getOrPut(pubkey) { mutableSetOf() } += kind
+        }
+        val author = event.pubkey.takeIf { it in members.pubkeys }
+        when (event.kind) {
+            1 -> if (author != null) {
+                add(author, if (event.replyTargetId() != null) JournalActivityKind.Reply else JournalActivityKind.Post)
             }
             COMMENT_EVENT_KIND ->
-                if (authored && event.isSupportedTimelineComment()) setOf(JournalActivityKind.Reply) else emptySet()
-            6 -> if (authored) setOf(JournalActivityKind.Repost) else emptySet()
-            7 -> buildSet {
-                if (authored && owner.isSelf) add(JournalActivityKind.Like)
-                if (event.isReceivedLikeFor(owner.pubkey, isAddressedTo)) add(JournalActivityKind.ReceivedLike)
+                if (author != null && event.isSupportedTimelineComment()) add(author, JournalActivityKind.Reply)
+            6, 16 -> if (author != null) add(author, JournalActivityKind.Repost)
+            7 -> {
+                if (author != null) add(author, JournalActivityKind.Like)
+                members.pubkeys
+                    .filter { event.isReceivedLikeFor(it, isAddressedTo) }
+                    .forEach { add(it, JournalActivityKind.ReceivedLike) }
             }
-            else -> emptySet()
         }
+        return result
     }
 }
 

@@ -1,5 +1,10 @@
 package com.nostr.torinos.ui.post
 
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -9,12 +14,14 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.ArrowForward
+import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -24,6 +31,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -70,18 +78,25 @@ internal fun JournalCalendarHeader(
     }
 }
 
+/**
+ * [collapsed]なら選択日を含む週だけを出し、下の取っ手で月全体へ戻す。
+ * 選択週は置いたまま、ほかの週を縦に縮めて消すことで、月が選択週へ畳まれるように見せる。
+ */
 @Composable
 internal fun JournalCalendarGrid(
     state: JournalState,
+    collapsed: Boolean,
     onSelectDate: (LocalDate) -> Unit,
+    onExpand: () -> Unit,
 ) {
-    val weekRows = remember(state.selectedMonth) { calendarWeeks(state.selectedMonth) }
+    val allWeeks = remember(state.selectedMonth) { calendarWeeks(state.selectedMonth) }
+    val keptWeek = calendarWeekContaining(allWeeks, state.selectedDate)
 
+    // 縮めきった週も子として残るため、spacedByではなく各週の上余白で間隔を取る。
     Column(
         modifier = Modifier
             .fillMaxWidth()
             .padding(horizontal = 8.dp, vertical = 4.dp),
-        verticalArrangement = Arrangement.spacedBy(2.dp),
     ) {
         Row(modifier = Modifier.fillMaxWidth()) {
             listOf("日", "月", "火", "水", "木", "金", "土").forEach { label ->
@@ -95,28 +110,55 @@ internal fun JournalCalendarGrid(
             }
         }
 
-        weekRows.forEach { week ->
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(2.dp),
+        allWeeks.forEach { week ->
+            AnimatedVisibility(
+                visible = !collapsed || week == keptWeek,
+                enter = expandVertically(expandFrom = Alignment.Top) + fadeIn(),
+                exit = shrinkVertically(shrinkTowards = Alignment.Top) + fadeOut(),
             ) {
-                week.forEach { date ->
-                    if (date == null) {
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(top = 2.dp),
+                    horizontalArrangement = Arrangement.spacedBy(2.dp),
+                ) {
+                    week.forEach { date ->
+                        if (date == null) {
+                            Box(modifier = Modifier.weight(1f).height(32.dp))
+                        } else {
+                            JournalCalendarDay(
+                                date = date,
+                                selected = date == state.selectedDate,
+                                isToday = date == state.today,
+                                isFuture = date > state.today,
+                                entryCount = state.entryCountsByDate[date] ?: 0,
+                                onClick = { onSelectDate(date) },
+                                modifier = Modifier.weight(1f),
+                            )
+                        }
+                    }
+                    repeat(7 - week.size) {
                         Box(modifier = Modifier.weight(1f).height(32.dp))
-                    } else {
-                        JournalCalendarDay(
-                            date = date,
-                            selected = date == state.selectedDate,
-                            isToday = date == state.today,
-                            entryCount = state.entryCountsByDate[date] ?: 0,
-                            onClick = { onSelectDate(date) },
-                            modifier = Modifier.weight(1f),
-                        )
                     }
                 }
-                repeat(7 - week.size) {
-                    Box(modifier = Modifier.weight(1f).height(32.dp))
-                }
+            }
+        }
+        AnimatedVisibility(
+            visible = collapsed,
+            enter = expandVertically(expandFrom = Alignment.Top) + fadeIn(),
+            exit = shrinkVertically(shrinkTowards = Alignment.Top) + fadeOut(),
+        ) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = 28.dp)
+                    .clickable(onClickLabel = "カレンダーを広げる", onClick = onExpand),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    Icons.Default.ExpandMore,
+                    contentDescription = "カレンダーを広げる",
+                    modifier = Modifier.size(20.dp),
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
             }
         }
     }
@@ -132,11 +174,16 @@ internal fun calendarWeeks(month: LocalDate): List<List<LocalDate?>> {
     return cells.chunked(7)
 }
 
+/** [weeks]のうち[date]を含む週。月外の日なら最初の週。 */
+internal fun calendarWeekContaining(weeks: List<List<LocalDate?>>, date: LocalDate): List<LocalDate?> =
+    weeks.firstOrNull { date in it } ?: weeks.first()
+
 @Composable
 private fun JournalCalendarDay(
     date: LocalDate,
     selected: Boolean,
     isToday: Boolean,
+    isFuture: Boolean,
     entryCount: Int,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
@@ -150,20 +197,26 @@ private fun JournalCalendarDay(
     } else {
         lerp(colorScheme.surface, colorScheme.primary, entryIntensity)
     }
-    val borderColor = if (selected) colorScheme.onSurfaceVariant else colorScheme.outlineVariant
+    val borderColor = when {
+        selected -> colorScheme.onSurface
+        isFuture -> Color.Transparent
+        else -> colorScheme.outlineVariant
+    }
     val contentColor = when {
+        isFuture -> colorScheme.onSurface.copy(alpha = CalendarFutureDayAlpha)
         entryIntensity >= CalendarEntryHighContrastThreshold -> colorScheme.onPrimary
         isToday -> colorScheme.primary
         else -> colorScheme.onSurface
     }
 
     Box(
+        // 文字を大きくしたときは日付の下に今日のドットの場所を残したまま縦に伸ばす。
         modifier = modifier
-            .height(32.dp)
+            .heightIn(min = 32.dp)
             .clip(shape)
             .background(backgroundColor)
-            .border(1.dp, borderColor, shape)
-            .clickable(onClick = onClick)
+            .border(if (selected) 2.dp else 1.dp, borderColor, shape)
+            .clickable(enabled = !isFuture, onClick = onClick)
             .padding(horizontal = 2.dp, vertical = 2.dp),
         contentAlignment = Alignment.Center,
     ) {
@@ -172,6 +225,7 @@ private fun JournalCalendarDay(
             style = MaterialTheme.typography.bodySmall,
             fontWeight = if (selected || isToday) FontWeight.Bold else null,
             color = contentColor,
+            modifier = Modifier.padding(vertical = 4.dp),
         )
         if (isToday) {
             // 今日は枠ではなく数字下のドットで示し、選択枠と競合させない
@@ -197,3 +251,4 @@ private const val CalendarEntryMaxGradientCount = 10
 private const val CalendarEntryMinIntensity = 0.16f
 private const val CalendarEntryMaxIntensity = 0.82f
 private const val CalendarEntryHighContrastThreshold = 0.62f
+private const val CalendarFutureDayAlpha = 0.38f

@@ -13,8 +13,9 @@ import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 class JournalActivityClassifierTest {
-    private fun classify(event: com.nostr.torinos.model.NostrEvent, owner: JournalOwner = SelfOwner) =
-        JournalActivityClassifier.classify(event, owner, byPTag)
+    /** [OWNER]だけのジャーナルで、[OWNER]に当たる種類。 */
+    private fun classify(event: com.nostr.torinos.model.NostrEvent): Set<JournalActivityKind> =
+        JournalActivityClassifier.classify(event, SelfOwner, byPTag)[OWNER].orEmpty()
 
     @Test
     fun ownKindOneIsPostOrReplyByReplyTarget() {
@@ -40,10 +41,25 @@ class JournalActivityClassifierTest {
     }
 
     @Test
-    fun ownLikeIsLikeOnlyInOwnJournal() {
+    fun ownLikeIsLike() {
         val like = reaction("l", targetId = "t", pubkey = OWNER, targetAuthor = OTHER)
-        assertEquals(setOf(Like), classify(like, SelfOwner))
-        assertEquals(emptySet(), classify(like, UserOwner))
+        assertEquals(setOf(Like), classify(like))
+    }
+
+    @Test
+    fun likeBetweenMembersIsLikeForTheSenderAndReceivedLikeForTheTarget() {
+        val like = reaction("l", targetId = "t", pubkey = OWNER, targetAuthor = OTHER)
+        assertEquals(
+            mapOf(OWNER to setOf(Like), OTHER to setOf(ReceivedLike)),
+            JournalActivityClassifier.classify(like, JournalMembers(OWNER, OTHER), byPTag),
+        )
+    }
+
+    @Test
+    fun eachMembersOwnNotesAreClassifiedForThatMember() {
+        val members = JournalMembers(OWNER, OTHER)
+        assertEquals(mapOf(OTHER to setOf(Post)), JournalActivityClassifier.classify(post("a", pubkey = OTHER), members, byPTag))
+        assertEquals(emptyMap(), JournalActivityClassifier.classify(post("b", pubkey = "stranger"), members, byPTag))
     }
 
     @Test
@@ -57,8 +73,7 @@ class JournalActivityClassifierTest {
     @Test
     fun likingYourOwnPostIsBothLikeAndReceivedLike() {
         val selfLike = reaction("l", targetId = "t", pubkey = OWNER, targetAuthor = OWNER)
-        assertEquals(setOf(Like, ReceivedLike), classify(selfLike, SelfOwner))
-        assertEquals(setOf(ReceivedLike), classify(selfLike, UserOwner))
+        assertEquals(setOf(Like, ReceivedLike), classify(selfLike))
     }
 
     @Test
@@ -68,20 +83,18 @@ class JournalActivityClassifierTest {
 
     @Test
     fun noSelectionShowsPostsRepostsAndReplies() {
-        assertEquals(setOf(Post, Repost, Reply), effectiveJournalKinds(emptySet(), isSelf = true))
+        assertEquals(setOf(Post, Repost, Reply), effectiveJournalKinds(emptySet()))
     }
 
     @Test
     fun explicitSelectionShowsOnlySelectedKinds() {
-        assertEquals(setOf(Repost, Reply), effectiveJournalKinds(setOf(Repost, Reply), isSelf = true))
+        assertEquals(setOf(Repost, Reply), effectiveJournalKinds(setOf(Repost, Reply)))
     }
 
     @Test
-    fun likeIsNotAvailableInOthersJournal() {
-        assertFalse(Like in availableJournalKinds(isSelf = false))
-        assertTrue(Like in availableJournalKinds(isSelf = true))
-        assertEquals(setOf(Post, Repost, Reply), effectiveJournalKinds(setOf(Like), isSelf = false))
-        assertEquals(setOf(ReceivedLike), effectiveJournalKinds(setOf(Like, ReceivedLike), isSelf = false))
+    fun everyKindIsAvailable() {
+        assertEquals(JournalActivityKind.entries.toSet(), availableJournalKinds())
+        assertEquals(setOf(Like), effectiveJournalKinds(setOf(Like)))
     }
 
     @Test

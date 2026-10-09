@@ -1,10 +1,11 @@
 package com.nostr.torinos.ui.post
 
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
@@ -18,6 +19,7 @@ import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -50,11 +52,13 @@ internal fun journalKindsFromNames(names: List<String>, available: Set<JournalAc
     names.mapNotNullTo(mutableSetOf()) { name -> JournalActivityKind.entries.firstOrNull { it.name == name } }
         .filterTo(mutableSetOf()) { it in available }
 
+/** [counts]にある種類だけ件数を添える。取得していない種類はアイコンだけにして、0件と区別する。 */
 @Composable
 internal fun JournalFilterHeader(
     kinds: List<JournalActivityKind>,
     selectedKinds: Set<JournalActivityKind>,
     defaultKinds: Set<JournalActivityKind>,
+    counts: Map<JournalActivityKind, Int>,
     onToggle: (JournalActivityKind) -> Unit,
 ) {
     val hasExplicitSelection = selectedKinds.isNotEmpty()
@@ -65,10 +69,13 @@ internal fun JournalFilterHeader(
     ) {
         items(kinds) { kind ->
             val isImplicitlyShown = !hasExplicitSelection && kind in defaultKinds
+            val count = counts[kind]
             FilterChip(
                 selected = kind in selectedKinds,
                 onClick = { onToggle(kind) },
-                modifier = Modifier.semantics { contentDescription = kind.label },
+                modifier = Modifier.semantics {
+                    contentDescription = if (count == null) kind.label else "${kind.label} ${count}件"
+                },
                 colors = FilterChipDefaults.filterChipColors(
                     containerColor = if (isImplicitlyShown) {
                         primary.copy(alpha = 0.12f)
@@ -84,9 +91,10 @@ internal fun JournalFilterHeader(
                     selectedLabelColor = MaterialTheme.colorScheme.onPrimary,
                 ),
                 label = {
-                    Box(
-                        modifier = Modifier.size(36.dp, 24.dp),
-                        contentAlignment = Alignment.Center,
+                    Row(
+                        modifier = Modifier.heightIn(min = 24.dp).widthIn(min = 36.dp),
+                        horizontalArrangement = Arrangement.spacedBy(4.dp, Alignment.CenterHorizontally),
+                        verticalAlignment = Alignment.CenterVertically,
                     ) {
                         if (kind == JournalActivityKind.Like || kind == JournalActivityKind.ReceivedLike) {
                             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -110,6 +118,12 @@ internal fun JournalFilterHeader(
                                 imageVector = kind.icon,
                                 contentDescription = null,
                                 modifier = Modifier.size(20.dp),
+                            )
+                        }
+                        if (count != null) {
+                            Text(
+                                text = count.toString(),
+                                style = MaterialTheme.typography.labelLarge,
                             )
                         }
                     }

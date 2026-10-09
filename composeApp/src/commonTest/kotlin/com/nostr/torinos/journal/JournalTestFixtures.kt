@@ -9,8 +9,7 @@ import kotlinx.datetime.TimeZone
 internal const val OWNER = "owner-pubkey"
 internal const val OTHER = "other-pubkey"
 
-internal val SelfOwner = JournalOwner(OWNER, isSelf = true)
-internal val UserOwner = JournalOwner(OWNER, isSelf = false)
+internal val SelfOwner = JournalMembers(OWNER)
 
 /** 2026-09-15 12:00 UTC に固定した時計。 */
 internal fun utcClock(now: String = "2026-09-15T12:00:00Z"): JournalClock =
@@ -80,9 +79,9 @@ internal val byPTag: (NostrEvent, String) -> Boolean = { event, pubkey ->
     event.tags.any { it.firstOrNull() == "p" && it.getOrNull(1) == pubkey }
 }
 
-internal fun activity(event: NostrEvent, owner: JournalOwner = SelfOwner, clock: JournalClock = utcClock()) =
+internal fun activity(event: NostrEvent, members: JournalMembers = SelfOwner, clock: JournalClock = utcClock()) =
     JournalActivity(
         event = event,
         date = clock.dateOf(event.createdAt),
-        kinds = JournalActivityClassifier.classify(event, owner, byPTag),
+        roles = JournalActivityClassifier.classify(event, members, byPTag),
     )

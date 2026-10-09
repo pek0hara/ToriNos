@@ -47,7 +47,7 @@ internal fun JournalActivityRow(
     onUserClick: (String) -> Unit,
     onOpenThread: (String) -> Unit,
 ) {
-    val isRepost = event.kind == 6
+    val isRepost = event.kind in listOf(6, 16)
     val targetId = event.activityTargetId()
     val accent = if (isRepost) Color(0xFF2BAE66) else Color(0xFFE17055)
 

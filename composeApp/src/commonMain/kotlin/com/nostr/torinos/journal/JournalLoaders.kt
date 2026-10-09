@@ -77,6 +77,40 @@ internal class NostrJournalEngagementSource(
     }
 }
 
+/** [pubkey]が出した・受けたやりとりを[since]以降から集める。メンバー候補の並び替えに使う。 */
+internal fun interface JournalInteractionSource {
+    suspend fun fetch(pubkey: String, since: Long): List<NostrEvent>
+}
+
+internal class NostrJournalInteractionSource(
+    private val openSession: suspend (SubscriptionSpec) -> SubscriptionSession = NostrRepository::openSubscription,
+    private val timeoutMillis: Long = JOURNAL_FETCH_TIMEOUT_MS,
+) : JournalInteractionSource {
+    override suspend fun fetch(pubkey: String, since: Long): List<NostrEvent> =
+        collectFetch(
+            openSession = openSession,
+            spec = SubscriptionSpec(
+                id = journalSubscriptionId("journal-interactions"),
+                filters = listOf(
+                    NostrFilter(
+                        kinds = JournalInteractionEventKinds,
+                        authors = listOf(pubkey),
+                        since = since,
+                        limit = INTERACTION_LIMIT,
+                    ),
+                    NostrFilter(
+                        kinds = JournalInteractionEventKinds,
+                        pTags = listOf(pubkey),
+                        since = since,
+                        limit = INTERACTION_LIMIT,
+                    ),
+                ),
+                target = RelayTarget.AllEnabled,
+                behavior = SubscriptionBehavior.Fetch(timeoutMillis),
+            ),
+        ).events
+}
+
 private class CollectedFetch(val events: List<NostrEvent>, val complete: Boolean)
 
 private suspend fun collectFetch(
@@ -113,3 +147,4 @@ private fun journalSubscriptionId(prefix: String): String =
 private const val JOURNAL_FETCH_TIMEOUT_MS = 8_000L
 private const val JOURNAL_ENGAGEMENT_TIMEOUT_MS = 8_000L
 private const val ENGAGEMENT_LIMIT = 500
+private const val INTERACTION_LIMIT = 1_000

@@ -18,10 +18,13 @@ import com.nostr.torinos.journal.JournalEventSource
 import com.nostr.torinos.journal.JournalFetchPlanner
 import com.nostr.torinos.journal.JournalFetchRequest
 import com.nostr.torinos.journal.JournalFetchResult
-import com.nostr.torinos.journal.JournalOwner
+import com.nostr.torinos.journal.JournalInteractionSource
+import com.nostr.torinos.journal.JournalMemberStorage
+import com.nostr.torinos.journal.JournalMembers
 import com.nostr.torinos.journal.JournalTimeline
 import com.nostr.torinos.journal.NostrJournalEngagementSource
 import com.nostr.torinos.journal.NostrJournalEventSource
+import com.nostr.torinos.journal.NostrJournalInteractionSource
 import com.nostr.torinos.journal.daysOfMonthUntil
 import com.nostr.torinos.journal.effectiveJournalKinds
 import com.nostr.torinos.journal.isSameMonth
@@ -30,6 +33,7 @@ import com.nostr.torinos.journal.mergeProgressive
 import com.nostr.torinos.journal.monthStart
 import com.nostr.torinos.journal.nextMonth
 import com.nostr.torinos.journal.previousMonth
+import com.nostr.torinos.journal.rankJournalInteractions
 import com.nostr.torinos.journal.replaceCompleted
 import com.nostr.torinos.model.COMMENT_EVENT_KIND
 import com.nostr.torinos.model.NostrEvent
@@ -86,13 +90,17 @@ internal class JournalController(
     private val profileSource: JournalProfileSource = JournalProfileSource.Repository,
     private val cachedReceivedLikes: (pubkey: String, since: Long, until: Long) -> List<NostrEvent> =
         ReactionEventStore::receivedReactions,
+    private val memberStorage: JournalMemberStorage = JournalMemberStorage.Local,
+    private val interactionSource: JournalInteractionSource = NostrJournalInteractionSource(),
+    initialShowCalendar: Boolean = false,
 ) {
     private val isSelf = targetPubkey == null
     private val ownPubkey = accountSession?.signer?.pubkey
-    private val owner: JournalOwner? = (targetPubkey ?: ownPubkey)?.let { JournalOwner(it, isSelf) }
+    /** 自分のジャーナルなら自分、他人のジャーナルならその人。メンバーの先頭で、外せない。 */
+    private val primaryPubkey: String? = targetPubkey ?: ownPubkey
 
     private val launcher = SafeCoroutineLauncher(scope, "JournalController")
-    private val store = StateStore(JournalState.initial(isSelf, clock).withDerived())
+    private val store = StateStore(JournalState.initial(isSelf, listOfNotNull(primaryPubkey), clock, initialShowCalendar).withDerived())
     val state: StateFlow<JournalState> = store.state
 
     private val engagementCoordinator = NoteEngagementCoordinator(accountSession?.signer)
@@ -104,7 +112,12 @@ internal class JournalController(
     private var profileObserverJob: Job? = null
     private var relayUrl: String? = null
     private var hasConfiguredRelayUrl = false
+    /** 保存したメンバーを読み終えたか。読み終えるまでは、後で取り直さないよう取得を始めない。 */
+    private var hasLoadedMembers = !isSelf || ownPubkey == null
+    private var candidatesJob: Job? = null
+    private var saveJob: Job? = null
     private var monthGeneration = 0L
+    private var lastCalendarToggleRequest = 0
     private var visibleNoteIds: Set<String> = emptySet()
     private val loadedEngagementNoteIds = mutableSetOf<String>()
     private val watchedPubkeys = mutableSetOf<String>()
@@ -117,18 +130,103 @@ internal class JournalController(
 
     private fun log(message: () -> String) = journalTraceLog { "$logTag ${message()}" }
 
+    init {
+        val own = ownPubkey
+        if (!hasLoadedMembers && own != null) {
+            launcher.launch {
+                // 読めなくても自分だけで表示できるよう、失敗は空として扱う。
+                val saved = try {
+                    memberStorage.load(own)
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (_: Throwable) {
+                    emptyList()
+                }
+                    .filter { it != own }
+                    .distinct()
+                    .take(JOURNAL_MAX_ADDED_MEMBERS)
+                hasLoadedMembers = true
+                log { "members loaded saved=${saved.size}" }
+                // 開いた直後は何も選ばず自分だけを表示し、保存したメンバーはチップだけ出しておく。
+                // 選んでいないメンバーは取得しないので、待たせていた取得は自分の分だけになる。
+                applyMembers(listOf(own) + saved, selected = emptySet())
+                loadMonth(store.value.selectedMonth)
+            }
+        }
+    }
+
     fun consumeEngagementError() = update { it.copy(engagementError = null) }
 
     /** 画面で明示的に選んだ種類。空なら既定の種類を表示する。 */
     fun setKinds(selected: Set<JournalActivityKind>) {
-        val effective = effectiveJournalKinds(selected, isSelf)
+        val effective = effectiveJournalKinds(selected)
         if (effective == store.value.kinds) return
         log { "setKinds selected=$selected effective=$effective" }
         update { it.copy(kinds = effective) }
         loadMonth(store.value.selectedMonth)
     }
 
+    /**
+     * メンバーを追加して表示中のメンバーに加え、追加した人の分を取る。
+     * 保存したメンバーを読み終える前は、読み込みで上書きされるため受け付けない。
+     */
+    fun addMember(pubkey: String) {
+        val current = store.value
+        if (!hasLoadedMembers || !current.canAddMember || pubkey in current.members) return
+        saveAndApplyMembers(current.members + pubkey, selected = current.fetchMembers + pubkey)
+    }
+
+    /** メンバーを外す。先頭（自分、または開いた人）は外せない。 */
+    fun removeMember(pubkey: String) {
+        val current = store.value
+        if (!hasLoadedMembers || pubkey == primaryPubkey || pubkey !in current.members) return
+        saveAndApplyMembers(current.members - pubkey)
+    }
+
+    /**
+     * メンバーの選択を切り替える。誰も選んでいなければ先頭のメンバーだけを表示する。
+     * 取得するのは表示中のメンバーだけなので、表示することになった人の分がこの月で足りなければ取る。
+     * 外すときは取得済みの分を残し、また選べばすぐ出す。
+     */
+    fun toggleMemberSelection(pubkey: String) {
+        update { state ->
+            if (pubkey !in state.members) return@update state
+            val selected = state.selectedMembers
+            state.copy(selectedMembers = if (pubkey in selected) selected - pubkey else selected + pubkey)
+        }
+        val current = store.value
+        if (!current.hasLoadedMonthFor(current.fetchMembers, clock.today())) {
+            loadMonth(current.selectedMonth)
+        }
+    }
+
+    /** メンバー候補を、先頭のメンバー（自分、または開いた人）と直近のやりとりが多い順に集める。 */
+    fun loadMemberCandidates() {
+        val subject = primaryPubkey ?: return
+        if (candidatesJob?.isActive == true) return
+        val fetchedAt = store.value.memberCandidates.fetchedAtMillis
+        if (fetchedAt != null && clock.nowMillis() - fetchedAt < CANDIDATE_CACHE_MS) return
+        update { it.copy(memberCandidates = it.memberCandidates.copy(isLoading = true)) }
+        candidatesJob = launcher.launch {
+            try {
+                val since = clock.nowMillis() / 1_000 - CANDIDATE_LOOKBACK_SECONDS
+                val ranked = rankJournalInteractions(interactionSource.fetch(subject, since), subject)
+                    .take(CANDIDATE_LIMIT)
+                    .map { (pubkey, count) -> JournalMemberCandidate(pubkey, count) }
+                log { "candidates ranked=${ranked.size}" }
+                update {
+                    it.copy(memberCandidates = JournalMemberCandidates(candidates = ranked, fetchedAtMillis = clock.nowMillis()))
+                }
+                watchProfiles(ranked.mapTo(mutableSetOf()) { it.pubkey })
+            } finally {
+                update { it.copy(memberCandidates = it.memberCandidates.copy(isLoading = false)) }
+            }
+        }
+    }
+
+    /** 今日より先の日は記録がないため選ばせない。 */
     fun selectDate(date: LocalDate) {
+        if (date > clock.today()) return
         update { JournalCalendarReducer.reduce(it, JournalCalendarAction.SelectDate(date)) }
         loadDate(date)
     }
@@ -144,9 +242,16 @@ internal class JournalController(
             ?.let(::navigateDate)
     }
 
+    fun goToToday() = navigateDate(clock.today())
+
     fun toggleCalendar() = setCalendarVisible(!store.value.showCalendar)
 
-    fun showCalendar() = setCalendarVisible(true)
+    // 画面へ戻ると LaunchedEffect が再起動するため、処理済みの要求は再実行しない。
+    fun applyCalendarToggleRequest(request: Int) {
+        if (request <= lastCalendarToggleRequest) return
+        lastCalendarToggleRequest = request
+        toggleCalendar()
+    }
 
     fun previousMonth() {
         val current = store.value
@@ -266,7 +371,53 @@ internal class JournalController(
         backfillJob?.cancel()
         engagementJob?.cancel()
         profileObserverJob?.cancel()
+        candidatesJob?.cancel()
     }
+
+    /** 自分のジャーナルだけ保存する。他人のジャーナルで足したメンバーは、その画面を開いている間だけ。 */
+    private fun saveAndApplyMembers(members: List<String>, selected: Set<String>? = null) {
+        applyMembers(members, selected)
+        val own = ownPubkey ?: return
+        if (!isSelf) return
+        // 続けて操作しても古い一覧で上書きしないよう、前の保存を待ってから書く。
+        val previous = saveJob
+        saveJob = launcher.launch {
+            previous?.join()
+            memberStorage.save(own, members.filter { it != own })
+        }
+    }
+
+    /**
+     * メンバーを入れ替える。取得済みの行は捨てずに新しいメンバーで判定し直し、外した人の取得記録だけ消す。
+     * 追加した人が表示中なら、その人の分だけを取る（ほかの人は取得済みなので取り直さない）。
+     * [selected]を渡せば選択を置き換え、渡さなければ残ったメンバーの選択を保つ。
+     */
+    private fun applyMembers(members: List<String>, selected: Set<String>? = null) {
+        val previous = store.value.members
+        if (members == previous) return
+        val added = members - previous.toSet()
+        val removed = previous - members.toSet()
+        log { "applyMembers count=${members.size} added=${added.size} removed=${removed.size}" }
+        val classification = JournalMembers(members.toSet())
+        update {
+            it.copy(
+                members = members,
+                selectedMembers = (selected ?: it.selectedMembers) intersect members.toSet(),
+                timeline = it.timeline.reclassify { event -> JournalActivityClassifier.classify(event, classification) },
+                coverage = it.coverage.forgetMembers(removed),
+            )
+        }
+        watchProfiles(members.toSet())
+        // 選んでいた人を外して先頭のメンバーだけの表示に戻ったときは、その分が足りなければ取る。
+        val current = store.value
+        val needsFetch = added.any { it in current.fetchMembers } ||
+            (removed.isNotEmpty() && !current.hasLoadedMonthFor(current.fetchMembers, clock.today()))
+        if (needsFetch) loadMonth(current.selectedMonth)
+    }
+
+    /** 種類の判定に使う全メンバー。取得は[JournalState.fetchMembers]だけを対象にする。 */
+    private fun currentMembers(): JournalMembers? =
+        store.value.members.takeIf { it.isNotEmpty() }?.let { JournalMembers(it.toSet()) }
 
     private fun setCalendarVisible(visible: Boolean) {
         if (store.value.showCalendar == visible) return
@@ -309,8 +460,8 @@ internal class JournalController(
             "loadMonth month=$monthStart selected=$nextSelectedDate refresh=$refresh reset=$reset " +
                 "generation=$monthGeneration kinds=${current.kinds}"
         }
-        val owner = owner
-        if (owner == null) {
+        val members = currentMembers()
+        if (members == null) {
             log { "loadMonth aborted: no signer" }
             update {
                 it.copy(
@@ -339,19 +490,21 @@ internal class JournalController(
                 state
             }
             if (refresh) next = next.copy(coverage = next.coverage.forgetMonth(monthStart))
-            next.withCachedReceivedLikes(owner, monthStart, today).copy(
+            next.withCachedReceivedLikes(members, next.fetchMembers, monthStart, today).copy(
                 selectedMonth = monthStart,
                 selectedDate = nextSelectedDate,
                 error = null,
             )
         }
         val kinds = store.value.kinds
-        if (!hasConfiguredRelayUrl) {
-            log { "loadMonth skipped: relay not configured yet" }
+        // 取得するのは表示中のメンバーだけ。種類の判定（[members]）は非表示のメンバーも含めて行う。
+        val targets = store.value.fetchMembers
+        if (!hasConfiguredRelayUrl || !hasLoadedMembers) {
+            log { "loadMonth skipped: relay=$hasConfiguredRelayUrl members=$hasLoadedMembers" }
             update { it.copy(isLoading = false) }
             return
         }
-        if (store.value.coverage.hasLoadedMonth(monthStart, kinds, today)) {
+        if (store.value.coverage.hasLoadedMonth(monthStart, kinds, today, targets)) {
             log { "loadMonth cached: $monthStart already loaded for $kinds ${store.value.summary()}" }
             update { it.copy(isLoading = false) }
             return
@@ -361,19 +514,20 @@ internal class JournalController(
         val initialJob = launcher.launch {
             try {
                 val coverage = store.value.coverage
-                val monthReceivedLikes = JournalFetchPlanner.willFetchMonthReceivedLikes(monthStart, today, kinds, coverage)
-                val initialKinds = coverage.missing(nextSelectedDate, kinds).let { missing ->
-                    if (monthReceivedLikes) missing - JournalActivityKind.ReceivedLike else missing
+                val monthReceivedLikes =
+                    JournalFetchPlanner.willFetchMonthReceivedLikes(monthStart, today, kinds, coverage, targets)
+                val initialMissing = coverage.missingByMember(nextSelectedDate, kinds, targets).let { missing ->
+                    if (monthReceivedLikes) missing.withoutReceivedLikes() else missing
                 }
                 val results = fetchAll(
-                    JournalFetchPlanner.forDate(nextSelectedDate, initialKinds, owner, relayUrl, clock),
+                    JournalFetchPlanner.forDate(nextSelectedDate, initialMissing, relayUrl, clock),
                 )
                 if (!isCurrent(token)) return@launch logStale("initial", token)
-                val accepted = applyResults(results, owner, replace = refresh)
+                val accepted = applyResults(results, replace = refresh)
                 update { it.copy(isLoading = false) }
                 log { "initial done date=$nextSelectedDate ${store.value.summary()}" }
                 fetchReferences(accepted)
-                watchProfiles(setOf(owner.pubkey))
+                watchProfiles(targets)
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Throwable) {
@@ -387,32 +541,36 @@ internal class JournalController(
         backfillJob = launcher.launch {
             // 選択日の取得（または、その間に選び直した日の取得）と取り合わないよう、初回取得の後に始める。
             initialJob.join()
-            backfillMonth(token, owner, kinds, today, replace = refresh)
+            backfillMonth(token, kinds, today, replace = refresh)
         }
     }
 
     private suspend fun backfillMonth(
         token: LoadToken,
-        owner: JournalOwner,
         kinds: Set<JournalActivityKind>,
         today: LocalDate,
         replace: Boolean,
     ) {
         log { "backfill start month=${token.month}" }
         try {
-            JournalFetchPlanner.monthReceivedLikes(token.month, today, kinds, store.value.coverage, owner, clock)
+            // 対象は毎回いまの表示中のメンバーから決める。途中で隠した人の分は取らない
+            // （表示に戻した人は、その操作で月を開き直すため、ここで拾う必要はない）。
+            JournalFetchPlanner.monthReceivedLikes(
+                token.month, today, kinds, store.value.coverage, store.value.fetchMembers, clock,
+            )
                 ?.let { request ->
                     val results = fetchAll(listOf(request))
                     if (!isCurrent(token)) return logStale("backfill receivedLikes", token)
-                    fetchReferences(applyResults(results, owner, replace))
+                    fetchReferences(applyResults(results, replace))
                 }
             for (date in token.month.daysOfMonthUntil(today)) {
                 if (!isCurrent(token)) return logStale("backfill $date", token)
-                val missing = store.value.coverage.missing(date, kinds) - JournalActivityKind.ReceivedLike
+                val current = store.value
+                val missing = current.coverage.missingByMember(date, kinds, current.fetchMembers).withoutReceivedLikes()
                 if (missing.isEmpty()) continue
-                val results = fetchAll(JournalFetchPlanner.forDate(date, missing, owner, relayUrl, clock))
+                val results = fetchAll(JournalFetchPlanner.forDate(date, missing, relayUrl, clock))
                 if (!isCurrent(token)) return logStale("backfill $date", token)
-                fetchReferences(applyResults(results, owner, replace))
+                fetchReferences(applyResults(results, replace))
             }
             log { "backfill done month=${token.month} ${store.value.summary()}" }
         } catch (e: CancellationException) {
@@ -433,11 +591,16 @@ internal class JournalController(
         val current = store.value
         if (force) loadedEngagementNoteIds -= current.timeline.eventIdsOn(listOf(date))
         update { it.copy(selectedMonth = date.monthStart(), selectedDate = date, error = null) }
-        val owner = owner ?: return
+        if (currentMembers() == null) return
         val token = LoadToken(monthGeneration, date.monthStart())
-        val missing = if (force) current.kinds else current.coverage.missing(date, current.kinds)
+        val targets = current.fetchMembers
+        val missing = if (force) {
+            targets.associateWith { current.kinds }
+        } else {
+            current.coverage.missingByMember(date, current.kinds, targets)
+        }
         log { "loadDate date=$date force=$force missing=$missing" }
-        if (missing.isEmpty() || !hasConfiguredRelayUrl) {
+        if (missing.isEmpty() || !hasConfiguredRelayUrl || !hasLoadedMembers) {
             update { it.copy(isLoading = false) }
             loadJob = launcher.launch {
                 fetchReferences(store.value.timeline.entries(date, current.kinds).map { it.event })
@@ -447,9 +610,9 @@ internal class JournalController(
         update { it.copy(isLoading = true) }
         loadJob = launcher.launch {
             try {
-                val results = fetchAll(JournalFetchPlanner.forDate(date, missing, owner, relayUrl, clock))
+                val results = fetchAll(JournalFetchPlanner.forDate(date, missing, relayUrl, clock))
                 if (!isCurrent(token)) return@launch logStale("date $date", token)
-                val accepted = applyResults(results, owner, replace = force)
+                val accepted = applyResults(results, replace = force)
                 update { it.copy(isLoading = false) }
                 log { "loadDate done date=$date entries=${store.value.visibleEntries.size} ${store.value.summary()}" }
                 fetchReferences(accepted)
@@ -493,21 +656,27 @@ internal class JournalController(
      */
     private fun applyResults(
         results: List<JournalFetchResult>,
-        owner: JournalOwner,
         replace: Boolean,
     ): List<NostrEvent> {
+        // 取得中にメンバーを外しても取得は続くため、判定は結果が届いた時点のメンバーで行い、
+        // 外した人の取得記録も残さない。
+        val members = currentMembers() ?: return emptyList()
         // 分類は状態更新の外で1回だけ行う（更新関数は競合時に再実行されるため）。
-        val accepted = results.map { result -> result to result.acceptedActivities(owner) }
+        val accepted = results.map { result -> result to result.acceptedActivities(members) }
         update { state ->
             var timeline = state.timeline
             var coverage = state.coverage
             accepted.forEach { (result, activities) ->
                 val request = result.request
                 if (replace && result.complete) {
-                    request.dates.forEach { date -> timeline = timeline.removeMatching(date, request.kinds) }
+                    request.dates.forEach { date ->
+                        timeline = timeline.removeMatching(date, request.kinds, request.members)
+                    }
                 }
                 timeline = timeline.upsert(activities)
-                if (result.complete) coverage = coverage.markLoaded(request.dates, request.kinds)
+                if (result.complete) {
+                    coverage = coverage.markLoaded(request.dates, request.kinds, request.members intersect members.pubkeys)
+                }
             }
             state.copy(timeline = timeline, coverage = coverage)
         }
@@ -519,26 +688,32 @@ internal class JournalController(
         return accepted.flatMap { (_, activities) -> activities.map { it.event } }
     }
 
-    private fun JournalFetchResult.acceptedActivities(owner: JournalOwner): List<JournalActivity> =
+    private fun JournalFetchResult.acceptedActivities(members: JournalMembers): List<JournalActivity> =
         events.mapNotNull { event ->
-            val kinds = JournalActivityClassifier.classify(event, owner)
-            if (request.accepts(kinds)) JournalActivity(event, clock.dateOf(event.createdAt), kinds) else null
+            // 種類は全メンバーで判定し、このリクエストのメンバーと種類に当たるものだけ採る。
+            val roles = JournalActivityClassifier.classify(event, members)
+            if (request.accepts(roles)) JournalActivity(event, clock.dateOf(event.createdAt), roles) else null
         }
 
-    /** `ReactionEventStore`にある、その月のもらったいいねを通信前に表示する。 */
+    /** `ReactionEventStore`にある、その月の[targets]のもらったいいねを通信前に表示する。 */
     private fun JournalState.withCachedReceivedLikes(
-        owner: JournalOwner,
+        members: JournalMembers,
+        targets: Set<String>,
         monthStart: LocalDate,
         today: LocalDate,
     ): JournalState {
         if (JournalActivityKind.ReceivedLike !in kinds) return this
         val days = monthStart.daysOfMonthUntil(today)
         if (days.isEmpty()) return this
-        val activities = cachedReceivedLikes(owner.pubkey, clock.startOfDay(days.first()), clock.endOfDay(days.last()))
+        val since = clock.startOfDay(days.first())
+        val until = clock.endOfDay(days.last())
+        val activities = targets
+            .flatMap { pubkey -> cachedReceivedLikes(pubkey, since, until) }
+            .distinctBy { it.id }
             .mapNotNull { event ->
-                val kinds = JournalActivityClassifier.classify(event, owner)
-                if (JournalActivityKind.ReceivedLike in kinds) {
-                    JournalActivity(event, clock.dateOf(event.createdAt), kinds)
+                val roles = JournalActivityClassifier.classify(event, members)
+                if (roles.values.any { JournalActivityKind.ReceivedLike in it }) {
+                    JournalActivity(event, clock.dateOf(event.createdAt), roles)
                 } else {
                     null
                 }
@@ -681,11 +856,18 @@ internal class JournalController(
 
 /** ログ用の状態の要約。保持量の増え方を追えるよう件数だけを出す。 */
 private fun JournalState.summary(): String =
-    "timeline=${timeline.size} coveredDays=${coverage.byDate.size} refs=${referencedEvents.size} " +
+    "timeline=${timeline.size} coveredDays=${coverage.coveredDays} refs=${referencedEvents.size} " +
         "engagement=${engagement.size} profiles=${profiles.size} month=$selectedMonth selected=$selectedDate"
 
+/** 表示中の[members]が、選択中の月の選択中の種類をすべて取得し終えたか。 */
+private fun JournalState.hasLoadedMonthFor(members: Set<String>, today: LocalDate): Boolean =
+    coverage.hasLoadedMonth(selectedMonth, kinds, today, members)
+
+private fun Map<String, Set<JournalActivityKind>>.withoutReceivedLikes(): Map<String, Set<JournalActivityKind>> =
+    mapValues { (_, kinds) -> kinds - JournalActivityKind.ReceivedLike }.filterValues { it.isNotEmpty() }
+
 private fun JournalState.datesWithEntries(month: LocalDate): List<LocalDate> =
-    timeline.datesWithEntries(month, kinds)
+    timeline.datesWithEntries(month, kinds, visibleMembers)
 
 private fun JournalState.withSummary(
     eventId: String,
@@ -697,3 +879,6 @@ private fun JournalState.withDeleteError(message: String): JournalState =
 
 private const val ENGAGEMENT_STATE_BATCH_MS = 100L
 private const val PROFILE_MAX_AGE_MS = 15 * 60 * 1_000L
+private const val CANDIDATE_LOOKBACK_SECONDS = 30 * 24 * 60 * 60L
+private const val CANDIDATE_LIMIT = 30
+private const val CANDIDATE_CACHE_MS = 5 * 60 * 1_000L
