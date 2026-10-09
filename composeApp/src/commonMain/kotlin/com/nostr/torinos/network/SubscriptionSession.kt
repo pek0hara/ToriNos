@@ -11,6 +11,8 @@ data class SubscriptionSpec(
     val behavior: SubscriptionBehavior = SubscriptionBehavior.Live,
     /** Disable when the consumer must validate before deduplicating by event ID. */
     val deduplicateEvents: Boolean = true,
+    /** キャッシュ済みのリアクションを、リレーの応答より先に流す。リレーの返した件数を数える取得では切る。 */
+    val replayCachedEvents: Boolean = true,
 )
 
 sealed interface SubscriptionBehavior {

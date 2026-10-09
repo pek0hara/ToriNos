@@ -71,6 +71,7 @@ internal object SubscriptionStateMachine {
         state: RelaySubscriptionState?,
         desiredFilters: List<NostrFilter>?,
         connectionGeneration: Long,
+        hasFreeSlot: Boolean = true,
     ): SubscriptionReconcileResult {
         if (desiredFilters.isNullOrEmpty()) {
             return if (state?.sentFilters != null) {
@@ -105,6 +106,12 @@ internal object SubscriptionStateMachine {
                 current.phase == RelaySubscriptionPhase.QueryingPast)
         ) {
             // 同じsubIdの処理中REQへ新しいREQを重ねず、desired側だけを更新する。
+            return SubscriptionReconcileResult(current, null)
+        }
+
+        // 新しく開く REQ はリレーの同時購読数を使う。空きがなければ送らずに待つ（空いたときに改めて調停する）。
+        // 開いている購読の条件変更は同じ購読IDで置き換わるので、空きは要らない。
+        if (!hasFreeSlot && !RelaySubscriptionSlots.occupies(current)) {
             return SubscriptionReconcileResult(current, null)
         }
 
@@ -222,4 +229,35 @@ internal object SubscriptionStateMachine {
         phase = RelaySubscriptionPhase.Idle,
         sentFilters = null,
     )
+}
+
+/** リレーごとの同時購読数（NIP-11 の max_subscriptions）を守るための判定。 */
+internal object RelaySubscriptionSlots {
+    /**
+     * リレー情報が分からないときの上限。max_subscriptions を 8 にしているリレーがあるため、それに合わせる。
+     * リレー情報を取得できたらその値を使う。
+     */
+    const val DEFAULT_LIMIT = 8
+
+    /** リレー上で購読が開いている（REQ を送り、まだ CLOSE も CLOSED もない）。 */
+    fun occupies(state: RelaySubscriptionState?): Boolean = when (state?.phase) {
+        RelaySubscriptionPhase.Sent,
+        RelaySubscriptionPhase.QueryingPast,
+        RelaySubscriptionPhase.Live,
+        -> true
+        else -> false
+    }
+
+    /** [advertised] はリレー情報の値、[lowered] は拒否の通知を受けて下げた値。 */
+    fun limit(advertised: Int?, lowered: Int?): Int {
+        val base = advertised ?: DEFAULT_LIMIT
+        return (if (lowered != null) minOf(base, lowered) else base).coerceAtLeast(1)
+    }
+
+    /** 同時購読数の超過を知らせる NOTICE か。購読IDを含まないため、文言で判定する。 */
+    fun isTooManySubscriptionsNotice(message: String): Boolean {
+        val lower = message.lowercase()
+        return ("too many" in lower && ("req" in lower || "subscription" in lower)) ||
+            "concurrent subscription" in lower
+    }
 }

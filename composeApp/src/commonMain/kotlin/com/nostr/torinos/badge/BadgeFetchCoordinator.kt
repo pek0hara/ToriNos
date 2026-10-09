@@ -2,6 +2,10 @@ package com.nostr.torinos.badge
 
 import com.nostr.torinos.model.NostrEvent
 import com.nostr.torinos.model.NostrFilter
+import com.nostr.torinos.network.packFilters
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.NonCancellable
@@ -67,7 +71,15 @@ internal class BadgeFetchCoordinator(
                 // Slow metadata/deletion checks must not occupy every slot needed for display data.
                 val permits = if (wireFilters.any { it.kinds?.any { it == 8 || it == 30009 || it == 30008 } == true })
                     referencePermits else confirmationPermits
-                val result = permits.withPermit { transport.fetch(wireFilters, relays, onEvent) }
+                // リレーが受け付けるフィルター数に収め、同じ作成者の定義などは1つのフィルターにまとめる。
+                val result = permits.withPermit {
+                    coroutineScope {
+                        packFilters(wireFilters)
+                            .map { request -> async { transport.fetch(request, relays, onEvent) } }
+                            .awaitAll()
+                            .combined()
+                    }
+                }
                 mutex.withLock {
                     batch.forEach { (key, deferred) ->
                         val events = result.events.filter { matchesBadgeFilter(it, key.filter) }
@@ -115,5 +127,15 @@ internal class BadgeFetchCoordinator(
         }
     }
 }
+
+/** 1つの問い合わせを分けて送った結果を、1回で送った場合と同じ形にまとめる。 */
+private fun List<BadgeFetchResult>.combined(): BadgeFetchResult = singleOrNull() ?: BadgeFetchResult(
+    events = flatMap { it.events }.distinctBy { it.id },
+    complete = all { it.complete },
+    answered = map { it.answered }.reduce { a, b -> a intersect b },
+    pages = flatMap { it.pages.entries }.groupBy({ it.key }, { it.value }).mapValues { (_, pages) ->
+        BadgeRelayPage(pages.sumOf { it.count }, pages.minOf { it.oldest })
+    },
+)
 
 internal fun NostrFilter.isExactIdLookup(): Boolean = ids != null && this == NostrFilter(kinds = listOf(8), ids = ids)

@@ -9,6 +9,7 @@ import com.nostr.torinos.model.buildEventMessage
 import com.nostr.torinos.model.buildReqMessage
 import com.nostr.torinos.util.appLog
 import com.nostr.torinos.util.loggingExceptionHandler
+import com.nostr.torinos.util.fetchTraceLog
 import com.nostr.torinos.util.networkTraceLog
 import kotlin.time.Clock
 import kotlinx.coroutines.CancellationException
@@ -90,6 +91,16 @@ object NostrRepository {
     private val relayLastMessageAt = mutableMapOf<String, Long>()
     private val temporaryRelays = mutableMapOf<String, TemporaryRelayHandle>()
     private val temporarySubscriptions = mutableMapOf<String, Pair<NostrFilter, String>>()
+    /** 一時接続ごとに、再同期を済ませた接続世代。 */
+    private val temporaryRelayGenerations = mutableMapOf<String, Long>()
+    /** リレー情報（NIP-11）の max_subscriptions。分からないリレーは既定値を使う。 */
+    private val advertisedSubscriptionLimits = mutableMapOf<String, Int>()
+    /** 同時購読数の超過を知らされて下げた上限。 */
+    private val loweredSubscriptionLimits = mutableMapOf<String, Int>()
+    /** 購読が閉じて空きができたリレー。待っている購読をまとめて開く。 */
+    private val slotsFreedRelays = linkedSetOf<String>()
+    /** リレーごとに最後に新しく開いた購読。購読IDのない拒否の通知を受けたとき、その購読とみなす。 */
+    private val lastOpenedSubscriptions = mutableMapOf<String, String>()
     private val activeRelayCount = MutableStateFlow(0)
     private val _relayConnectionStates = MutableStateFlow<Map<String, RelayConnectionState>>(emptyMap())
     val relayConnectionStates: StateFlow<Map<String, RelayConnectionState>> =
@@ -103,7 +114,7 @@ object NostrRepository {
                         enabledRelayUrls = urls
                         val commands = activeSubscriptions.flatMap { (subId, record) ->
                             reconcileSubscriptionLocked(subId, record)
-                        }
+                        } + drainFreedSlotsLocked()
                         val (removed, added) = reconcileActiveRelaysLocked()
                         Triple(commands, removed, added)
                     }
@@ -123,6 +134,19 @@ object NostrRepository {
     }
 
     private fun createActiveRelayHandle(relay: NostrRelay): ActiveRelayHandle {
+        // 同時購読数の上限をリレー情報から得る。届くまでは控えめな既定値で開く。
+        scope.launch {
+            val limitation = RelayInformationRepository.fetch(relay.url).getOrNull()?.limitation
+            RelayLimits.recordMaxLimit(relay.url, limitation?.maxLimit)
+            val limit = limitation?.maxSubscriptions ?: return@launch
+            val commands = stateMutex.withLock {
+                advertisedSubscriptionLimits[relay.url] = limit
+                slotsFreedRelays += relay.url
+                drainFreedSlotsLocked()
+            }
+            fetchTraceLog { "LIMIT ${relay.url} 同時購読数の上限 $limit（リレー情報）" }
+            sendSubscriptionCommands(commands)
+        }
         // connect() より先に購読を張り、接続直後の EVENT/EOSE を取り逃がさない。
         val messageJob = scope.launch {
             try {
@@ -144,9 +168,10 @@ object NostrRepository {
         // connect() より先に購読を張り、接続完了通知の取り逃がしも防ぐ。
         val connectedJob = scope.launch {
             try {
-                relay.connected.collect {
+                relay.connected.collect { generation ->
                     val commands = stateMutex.withLock {
-                        val generation = (relayConnectionGenerations[relay.url] ?: 0L) + 1L
+                        // この接続より前に決めた REQ/CLOSE は、リレー側で世代が合わずに捨てられている。
+                        // 全購読を未送信に戻し、この接続で1回だけ送る。
                         relayConnectionGenerations[relay.url] = generation
                         // 切断の瞬間は検知が遅れうるため、最後に受信した時刻を控えめな起点にする。
                         val disconnectedAt = relayLastMessageAt[relay.url] ?: nowEpochSeconds()
@@ -159,6 +184,7 @@ object NostrRepository {
                         }
                     }
                     networkTraceLog { "[Repo] relay connected: ${relay.url} syncing ${commands.size} subscriptions" }
+                    FetchTrace.connected(relay.url, commands.size)
                     sendSubscriptionCommands(commands)
                 }
             } catch (e: CancellationException) {
@@ -215,27 +241,105 @@ object NostrRepository {
         return relayUrls.mapNotNull { relayUrl ->
             val desiredFilters = record.filters.takeIf { relayUrl in desiredRelayUrls }
             val generation = relayConnectionGenerations[relayUrl] ?: 0L
+            val previous = record.relayStates[relayUrl]
+            val wasOccupying = RelaySubscriptionSlots.occupies(previous)
             val result = SubscriptionStateMachine.reconcile(
-                state = record.relayStates[relayUrl],
+                state = previous,
                 desiredFilters = desiredFilters,
                 connectionGeneration = generation,
+                hasFreeSlot = occupiedSlotsLocked(relayUrl) < subscriptionLimitLocked(relayUrl),
             )
             if (result.state == null) {
                 record.relayStates.remove(relayUrl)
             } else {
                 record.relayStates[relayUrl] = result.state
             }
+            val occupies = RelaySubscriptionSlots.occupies(result.state)
+            if (wasOccupying && !occupies) slotsFreedRelays += relayUrl
+            if (!wasOccupying && occupies) {
+                lastOpenedSubscriptions[relayUrl] = subscriptionId
+                // 空きを待っていた有限取得は、実際に送った時点から待ち時間を数え直す。
+                // 待っていた間にタイムアウトすると、リレーへ聞く前に取得失敗になる。
+                val behavior = record.behavior
+                if (previous != null && behavior is SubscriptionBehavior.Fetch) {
+                    record.session?.let { restartFetchTimeout(subscriptionId, it, behavior) }
+                }
+            }
+            if (previous == null && desiredFilters != null && result.command == null && !occupies) {
+                fetchTraceLog { "WAIT $subscriptionId → $relayUrl 同時購読数の上限のため空きを待つ" }
+            }
             when (val command = result.command) {
                 is SubscriptionCommandDecision.Open -> SubscriptionWireCommand(
                     relayUrl = relayUrl,
                     message = buildReqMessage(subscriptionId, command.filters),
+                    generation = generation,
+                    subscriptionId = subscriptionId,
+                    filters = command.filters,
                 )
                 SubscriptionCommandDecision.Close -> SubscriptionWireCommand(
                     relayUrl = relayUrl,
                     message = buildCloseMessage(subscriptionId),
+                    generation = generation,
+                    subscriptionId = subscriptionId,
                 )
                 null -> null
             }
+        }
+    }
+
+    private fun restartFetchTimeout(
+        subscriptionId: String,
+        session: SubscriptionSessionImpl,
+        behavior: SubscriptionBehavior.Fetch,
+    ) {
+        session.timeoutJob?.cancel()
+        session.timeoutJob = scope.launch {
+            delay(behavior.timeoutMillis)
+            completeFetch(subscriptionId, timedOut = true)
+        }
+    }
+
+    private fun occupiedSlotsLocked(relayUrl: String): Int =
+        activeSubscriptions.values.count { RelaySubscriptionSlots.occupies(it.relayStates[relayUrl]) }
+
+    private fun subscriptionLimitLocked(relayUrl: String): Int = RelaySubscriptionSlots.limit(
+        advertised = advertisedSubscriptionLimits[relayUrl],
+        lowered = loweredSubscriptionLimits[relayUrl],
+    )
+
+    /** 空きができたリレーで、待っている購読を作成順に開く。 */
+    private fun drainFreedSlotsLocked(): List<SubscriptionWireCommand> {
+        val commands = mutableListOf<SubscriptionWireCommand>()
+        while (slotsFreedRelays.isNotEmpty()) {
+            val relayUrl = slotsFreedRelays.first()
+            slotsFreedRelays.remove(relayUrl)
+            activeSubscriptions.forEach { (subId, record) ->
+                if (occupiedSlotsLocked(relayUrl) >= subscriptionLimitLocked(relayUrl)) return@forEach
+                if (relayUrl !in record.target.urls(enabledRelayUrls)) return@forEach
+                if (RelaySubscriptionSlots.occupies(record.relayStates[relayUrl])) return@forEach
+                commands += reconcileSubscriptionLocked(subId, record, onlyRelayUrl = relayUrl)
+            }
+        }
+        return commands
+    }
+
+    /**
+     * 同時購読数の超過を知らされたとき。通知には購読IDがないので、直前に開いた購読が拒否されたとみなして
+     * 待ちに戻し、そのリレーの上限を今開いている数より1つ下げる。
+     */
+    private fun onTooManySubscriptionsLocked(relayUrl: String) {
+        val occupied = occupiedSlotsLocked(relayUrl)
+        val lowered = (occupied - 1).coerceAtLeast(1)
+        loweredSubscriptionLimits[relayUrl] = minOf(loweredSubscriptionLimits[relayUrl] ?: lowered, lowered)
+        val subId = lastOpenedSubscriptions[relayUrl]
+        val record = subId?.let(activeSubscriptions::get)
+        val state = record?.relayStates?.get(relayUrl)
+        if (record != null && state?.phase == RelaySubscriptionPhase.Sent) {
+            record.relayStates[relayUrl] = SubscriptionStateMachine.prepareRetry(state)
+        }
+        fetchTraceLog {
+            "LIMIT $relayUrl 同時購読数を ${subscriptionLimitLocked(relayUrl)} に下げる（開いていた数 $occupied）" +
+                (if (state?.phase == RelaySubscriptionPhase.Sent) "。$subId を待ちに戻す" else "")
         }
     }
 
@@ -250,7 +354,19 @@ object NostrRepository {
                 ?: fallbackRelays[command.relayUrl]
             if (relay != null) {
                 networkTraceLog { "[Repo] subscription command to ${command.relayUrl}: ${command.message.take(80)}" }
-                relay.send(command.message)
+                val sent = relay.sendControl(command.message, command.generation)
+                command.subscriptionId?.let { subscriptionId ->
+                    val filters = command.filters
+                    when {
+                        !sent -> fetchTraceLog {
+                            "DROP $subscriptionId → ${command.relayUrl} 接続の世代が違うため未送信（次の接続で送る）"
+                        }
+                        filters != null -> FetchTrace.req(subscriptionId, command.relayUrl, filters)
+                        else -> FetchTrace.clientClose(subscriptionId, command.relayUrl)
+                    }
+                }
+            } else {
+                command.subscriptionId?.let { fetchTraceLog { "SKIP $it → ${command.relayUrl} 接続なしのため未送信" } }
             }
         }
     }
@@ -274,12 +390,26 @@ object NostrRepository {
             val subscriptionId = message.subscriptionIdOrNull()
             val record = subscriptionId?.let(activeSubscriptions::get)
             val state = record?.relayStates?.get(relayUrl)
+            if (subscriptionId != null && (record == null || state == null)) {
+                FetchTrace.stray(subscriptionId, relayUrl, message::class.simpleName.orEmpty())
+            }
+            when (message) {
+                is RelayMessage.Notice -> {
+                    FetchTrace.notice(relayUrl, message.message)
+                    if (RelaySubscriptionSlots.isTooManySubscriptionsNotice(message.message)) {
+                        onTooManySubscriptionsLocked(relayUrl)
+                    }
+                }
+                is RelayMessage.Unknown -> FetchTrace.notice(relayUrl, message.raw)
+                else -> Unit
+            }
             if (subscriptionId != null && record != null && state != null) {
                 when (message) {
                     is RelayMessage.Event -> {
                         val wasLive = state.phase == RelaySubscriptionPhase.Live
                         record.relayStates[relayUrl] = SubscriptionStateMachine.onEvent(state, message.event)
                         val isFirstDelivery = !record.deduplicateEvents || record.seenEventIds.add(message.event.id)
+                        FetchTrace.event(subscriptionId, relayUrl, isFirstDelivery, wasLive)
                         emitToLegacyBus = isFirstDelivery
                         if (record.session != null && isFirstDelivery) {
                             signals += record.session to SubscriptionSignal.Event(
@@ -291,6 +421,7 @@ object NostrRepository {
                     }
                     is RelayMessage.EndOfStoredEvents -> {
                         val replayGap = SubscriptionStateMachine.replayGap(state)
+                        FetchTrace.eose(subscriptionId, relayUrl)
                         record.relayStates[relayUrl] = SubscriptionStateMachine.onEose(state)
                         record.session?.let { signals += it to SubscriptionSignal.Eose(relayUrl) }
                         if (record.behavior is SubscriptionBehavior.Live && replayGap != null) {
@@ -311,6 +442,7 @@ object NostrRepository {
                     }
                     is RelayMessage.Closed -> {
                         val classification = classifyClosedReason(message.message)
+                        FetchTrace.closed(subscriptionId, relayUrl, message.message)
                         val next = SubscriptionStateMachine.onClosed(
                             state = state,
                             structural = classification.structural,
@@ -318,6 +450,7 @@ object NostrRepository {
                             closedAt = nowEpochSeconds(),
                         )
                         record.relayStates[relayUrl] = next
+                        if (RelaySubscriptionSlots.occupies(state)) slotsFreedRelays += relayUrl
                         record.session?.let {
                             signals += it to SubscriptionSignal.Closed(
                                 relayUrl = relayUrl,
@@ -340,6 +473,7 @@ object NostrRepository {
                     else -> Unit
                 }
             }
+            commands = commands + drainFreedSlotsLocked()
         }
 
         signals.forEach { (session, signal) -> session.emit(signal) }
@@ -370,7 +504,8 @@ object NostrRepository {
                 return@withLock emptyList()
             }
             record.relayStates[request.relayUrl] = SubscriptionStateMachine.prepareRetry(state)
-            reconcileSubscriptionLocked(request.subscriptionId, record, onlyRelayUrl = request.relayUrl)
+            reconcileSubscriptionLocked(request.subscriptionId, record, onlyRelayUrl = request.relayUrl) +
+                drainFreedSlotsLocked()
         }
         sendSubscriptionCommands(commands)
     }
@@ -395,6 +530,11 @@ object NostrRepository {
             )
         } ?: return
 
+        FetchTrace.fetchCompleted(
+            subscriptionId,
+            completion.outcomes,
+            timedOut || completion.outcomes.values.any { it is RelayOutcome.TimedOut },
+        )
         completion.session.emit(
             SubscriptionSignal.FetchCompleted(
                 outcomes = completion.outcomes,
@@ -425,8 +565,9 @@ object NostrRepository {
         }
         val connectedJob = scope.launch {
             try {
-                relay.connected.collect {
+                relay.connected.collect { generation ->
                     val messages = stateMutex.withLock {
+                        temporaryRelayGenerations[relay.url] = generation
                         temporarySubscriptions.mapNotNull { (subId, filterAndRelay) ->
                             val (storedFilter, storedRelayUrl) = filterAndRelay
                             if (storedRelayUrl == relay.url) {
@@ -437,7 +578,7 @@ object NostrRepository {
                         }
                     }
                     networkTraceLog { "[Repo] temporary relay connected: ${relay.url} resending ${messages.size} subscriptions" }
-                    messages.forEach { relay.send(it) }
+                    messages.forEach { relay.sendControl(it, generation) }
                 }
             } catch (e: CancellationException) {
                 throw e
@@ -478,7 +619,7 @@ object NostrRepository {
             ).also { activeSubscriptions[subscriptionId] = it }
             record.filters = filters
             record.target = target
-            val commands = reconcileSubscriptionLocked(subscriptionId, record)
+            val commands = reconcileSubscriptionLocked(subscriptionId, record) + drainFreedSlotsLocked()
             val (removed, added) = reconcileActiveRelaysLocked()
             SubscriptionUpdateWork(urls, commands, removed, added)
         }
@@ -504,11 +645,12 @@ object NostrRepository {
                 target = spec.target,
                 behavior = spec.behavior,
                 deduplicateEvents = spec.deduplicateEvents,
+                replayCachedEvents = spec.replayCachedEvents,
                 session = session,
                 fetchExpectedRelays = if (spec.behavior is SubscriptionBehavior.Fetch) targetUrls else null,
             )
             activeSubscriptions[spec.id] = record
-            val commands = reconcileSubscriptionLocked(spec.id, record)
+            val commands = reconcileSubscriptionLocked(spec.id, record) + drainFreedSlotsLocked()
             val (removed, added) = reconcileActiveRelaysLocked()
             SessionOpenWork(
                 commands = commands,
@@ -520,15 +662,12 @@ object NostrRepository {
         }
         try {
             if (!completeImmediately && spec.behavior is SubscriptionBehavior.Fetch) {
-                session.timeoutJob = scope.launch {
-                    delay(spec.behavior.timeoutMillis)
-                    completeFetch(spec.id, timedOut = true)
-                }
+                restartFetchTimeout(spec.id, session, spec.behavior)
             }
             newHandles.forEach { it.relay.connect(scope) }
             sendSubscriptionCommands(commands, removedHandles)
             closeRemovedRelayHandles(removedHandles)
-            replayCachedToSession(session, spec.filters, targetRelayUrls)
+            if (spec.replayCachedEvents) replayCachedToSession(session, spec.filters, targetRelayUrls)
             if (completeImmediately) completeFetch(spec.id, timedOut = false)
         } catch (e: Throwable) {
             // 登録後に呼び出し元がキャンセルされると、session を受け取れないまま登録だけが残り、
@@ -550,6 +689,7 @@ object NostrRepository {
         target: RelayTarget,
     ) {
         require(filters.isNotEmpty()) { "購読には1件以上のフィルターが必要です" }
+        var replayCache = true
         val (targetUrls, commands, removedHandles, newHandles) = stateMutex.withLock {
             val record = activeSubscriptions[session.id]
                 ?: error("購読はすでに終了しています: ${session.id}")
@@ -557,14 +697,15 @@ object NostrRepository {
             check(record.behavior is SubscriptionBehavior.Live) { "有限取得セッションは更新できません" }
             record.filters = filters
             record.target = target
-            val commands = reconcileSubscriptionLocked(session.id, record)
+            replayCache = record.replayCachedEvents
+            val commands = reconcileSubscriptionLocked(session.id, record) + drainFreedSlotsLocked()
             val (removed, added) = reconcileActiveRelaysLocked()
             SubscriptionUpdateWork(target.urls(enabledRelayUrls).toSet(), commands, removed, added)
         }
         newHandles.forEach { it.relay.connect(scope) }
         sendSubscriptionCommands(commands, removedHandles)
         closeRemovedRelayHandles(removedHandles)
-        replayCachedToSession(session, filters, targetUrls)
+        if (replayCache) replayCachedToSession(session, filters, targetUrls)
     }
 
     private suspend fun replayCachedToLegacySubscription(
@@ -572,7 +713,9 @@ object NostrRepository {
         filters: List<NostrFilter>,
         targetRelayUrls: Set<String>,
     ) {
-        cachedEventsNotYetDelivered(subscriptionId, filters, targetRelayUrls).forEach { event ->
+        val cached = cachedEventsNotYetDelivered(subscriptionId, filters, targetRelayUrls)
+        FetchTrace.cacheReplay(subscriptionId, cached.size)
+        cached.forEach { event ->
             bus.emit(RelayEnvelope(CACHE_RELAY_URL, RelayMessage.Event(subscriptionId, event)))
         }
     }
@@ -582,7 +725,9 @@ object NostrRepository {
         filters: List<NostrFilter>,
         targetRelayUrls: Set<String>,
     ) {
-        cachedEventsNotYetDelivered(session.id, filters, targetRelayUrls).forEach { event ->
+        val cached = cachedEventsNotYetDelivered(session.id, filters, targetRelayUrls)
+        FetchTrace.cacheReplay(session.id, cached.size)
+        cached.forEach { event ->
             session.emit(
                 SubscriptionSignal.Event(
                     relayUrl = CACHE_RELAY_URL,
@@ -619,9 +764,11 @@ object NostrRepository {
 
     suspend fun subscribeTemporaryRelay(subscriptionId: String, filter: NostrFilter, relayUrl: String) {
         networkTraceLog { "[Repo] subscribeTemporaryRelay() subId='$subscriptionId' relay=$relayUrl filter=$filter" }
-        val existingHandle = stateMutex.withLock {
+        // 追加と世代の読み取りを同じ排他区間で行う。接続済みならその世代で送り、
+        // まだなら接続時の再同期がこの購読も含めて送る（二重に送らない）。
+        val (existingHandle, generation) = stateMutex.withLock {
             temporarySubscriptions[subscriptionId] = Pair(filter, relayUrl)
-            temporaryRelays[relayUrl]
+            temporaryRelays[relayUrl] to temporaryRelayGenerations[relayUrl]
         }
         var createdRelay = false
         val handle = existingHandle ?: run {
@@ -641,8 +788,8 @@ object NostrRepository {
             }
             storedHandle
         }
-        if (!createdRelay) {
-            handle.relay.send(buildReqMessage(subscriptionId, filter))
+        if (!createdRelay && generation != null) {
+            handle.relay.sendControl(buildReqMessage(subscriptionId, filter), generation)
         }
     }
 
@@ -665,10 +812,11 @@ object NostrRepository {
                     subscriptions = temporarySubscriptions,
                     relays = temporaryRelays,
                 )
+                selection?.handleToClose?.let { temporaryRelayGenerations.remove(it.relay.url) }
                 listOfNotNull(selection?.relayHandle?.relay) to
                     listOfNotNull(selection?.handleToClose)
             }
-            targets.forEach { it.send(msg) }
+            targets.forEach { relay -> relay.connectedGeneration()?.let { relay.sendControl(msg, it) } }
             handlesToClose.forEach { it.close() }
         }
     }
@@ -683,14 +831,25 @@ object NostrRepository {
     private suspend fun closeActiveSubscription(subscriptionId: String, closeMessage: String) {
         val (commands, removedHandles, session) = stateMutex.withLock {
             val record = activeSubscriptions.remove(subscriptionId)
+            record?.relayStates?.forEach { (relayUrl, state) ->
+                if (RelaySubscriptionSlots.occupies(state)) slotsFreedRelays += relayUrl
+            }
             val commands = record?.relayStates
                 .orEmpty()
                 .filterValues { it.sentFilters != null }
                 .keys
-                .map { relayUrl -> SubscriptionWireCommand(relayUrl, closeMessage) }
+                .map { relayUrl ->
+                    SubscriptionWireCommand(
+                        relayUrl = relayUrl,
+                        message = closeMessage,
+                        generation = relayConnectionGenerations[relayUrl] ?: 0L,
+                        subscriptionId = subscriptionId,
+                    )
+                } + drainFreedSlotsLocked()
             val (removed, _) = reconcileActiveRelaysLocked()
             Triple(commands, removed, record?.session)
         }
+        FetchTrace.subscriptionEnded(subscriptionId)
         session?.timeoutJob?.cancel()
         sendSubscriptionCommands(commands, removedHandles)
         closeRemovedRelayHandles(removedHandles)
@@ -988,6 +1147,7 @@ private data class ActiveSubscriptionRecord(
     val relayStates: MutableMap<String, RelaySubscriptionState> = mutableMapOf(),
     val seenEventIds: BoundedIdSet = BoundedIdSet(4_096),
     val deduplicateEvents: Boolean = true,
+    val replayCachedEvents: Boolean = true,
     val fetchExpectedRelays: Set<String>? = null,
     val fetchOutcomes: MutableMap<String, RelayOutcome> = mutableMapOf(),
     var fetchCompletionScheduled: Boolean = false,
@@ -1016,6 +1176,11 @@ private class BoundedIdSet(
 private data class SubscriptionWireCommand(
     val relayUrl: String,
     val message: String,
+    /** 送ると決めた時点の接続世代。リレーの現在の接続と違えば送らない。 */
+    val generation: Long,
+    /** 通信ログ用。REQ ならフィルター、CLOSE なら null。 */
+    val subscriptionId: String? = null,
+    val filters: List<NostrFilter>? = null,
 )
 
 private data class SubscriptionUpdateWork(

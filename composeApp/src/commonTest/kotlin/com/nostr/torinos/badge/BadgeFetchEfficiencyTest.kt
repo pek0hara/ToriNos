@@ -25,6 +25,29 @@ class BadgeFetchEfficiencyTest {
         override suspend fun close() = Unit
     }
 
+    @Test fun manyDefinitionLookupsAreSentWithinRelayFilterLimits() = runTest {
+        val opened = mutableListOf<SubscriptionSpec>()
+        val definitions = (0 until 25).map { index ->
+            badgeEvent(30009, badgeIssuer, listOf(listOf("d", "badge-$index")), id = index.toString().padStart(64, '0'))
+        } + badgeEvent(30009, badgeIssuer, listOf(listOf("d", "")), id = "f".repeat(64))
+        val transport = BadgeTransport(open = { opened += it; badgeResponse(it, definitions) }, validate = { true },
+            validationDispatcher = StandardTestDispatcher(testScheduler))
+        val queries = BadgeFetchCoordinator(transport, now = { testScheduler.currentTime })
+        val filters = definitions.map { definition ->
+            NostrFilter(kinds = listOf(30009), authors = listOf(badgeIssuer), dTags = listOf(definition.tags.first()[1]))
+        }
+
+        val result = queries.fetch(filters, relays, 300_000)
+
+        // 1つのREQに入れるフィルターは10件まで。同じ作成者の定義は1つのフィルターにまとめる。
+        // 空の d は拒否するリレーがあるので、他の定義を巻き込まないよう別のREQにする。
+        assertTrue(opened.all { it.filters.size <= 10 })
+        assertEquals(2, opened.size)
+        assertTrue(opened.any { spec -> spec.filters.single().dTags == listOf("") })
+        assertEquals(definitions.map { it.id }.toSet(), result.events.map { it.id }.toSet())
+        assertTrue(result.complete)
+    }
+
     @Test fun badgeAppearsBeforeSlowSelectionAndMetadataEose() = runTest {
         val repo = BadgeRepository(backgroundScope, BadgeTransport(open = { delayed(it, data, 9_000) }, validate = { true },
             validationDispatcher = StandardTestDispatcher(testScheduler)), { relays }, nowMillis = { testScheduler.currentTime })

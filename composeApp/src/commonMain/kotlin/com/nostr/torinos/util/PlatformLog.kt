@@ -31,3 +31,34 @@ internal inline fun journalTraceLog(message: () -> String) {
         platformLog("[Journal] ${message()}")
     }
 }
+
+/** trueにすると購読ごと・リレーごとの通信の流れ（REQ/件数/EOSE/CLOSED/完了）をログ出力する。動作確認用。 */
+internal const val isFetchTraceEnabled = false
+
+internal inline fun fetchTraceLog(message: () -> String) {
+    if (isFetchTraceEnabled) {
+        platformLog("[Fetch] ${message()}")
+    }
+}
+
+/** trueにするとフィードとポスト詳細のリアクション等の取得計画・結果・合算をログ出力する。動作確認用。 */
+internal const val isEngagementTraceEnabled = false
+
+internal inline fun engagementTraceLog(message: () -> String) {
+    if (isEngagementTraceEnabled) {
+        platformLog("[Engagement] ${message()}")
+    }
+}
+
+/**
+ * trueにするとフィードの読み込みのきっかけ（初回・更新・復帰・もっと読む・追いつき・再試行）と、
+ * ページごとの受信件数・新規件数・重複件数、引用・リポスト元・プロフィールの追加取得をログ出力する。
+ * 無駄な通信の調査用。購読IDを出すので、[Fetch] と並べると REQ と対応づけられる。
+ */
+internal const val isFeedTraceEnabled = true
+
+internal inline fun feedTraceLog(message: () -> String) {
+    if (isFeedTraceEnabled) {
+        platformLog("[Feed] ${message()}")
+    }
+}
