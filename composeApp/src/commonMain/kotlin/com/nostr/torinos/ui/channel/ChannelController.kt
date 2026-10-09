@@ -95,18 +95,14 @@ internal class ChannelController(
     val state: StateFlow<UiState> = _state.state
 
     private val sessionKey = accountSession?.sessionId?.hashCode()?.toString() ?: "anonymous"
-    private val shortId = "${channelId.take(16)}-$sessionKey"
     private val relayKey = relayUrl?.hashCode()?.toString() ?: "all"
-    private val metaSubId = "ch-meta-$shortId-$relayKey"
-    private val metaUpdateSubId = "ch-meta-update-$shortId-$relayKey"
-    private val msgSubId = "ch-msg-$shortId-$relayKey"
-    private val histSubId = "ch-hist-$shortId-$relayKey"
-    private val replyCountSubId = "ch-reply-count-$shortId-$relayKey"
-    private val reactionSubId = "ch-react-$shortId-$relayKey"
-    private val repostSubId = "ch-repost-$shortId-$relayKey"
-    private val quoteRepostSubId = "ch-qrepost-$shortId-$relayKey"
-    private val hideSubId = "ch-hide-$shortId-$relayKey"
-    private val unhideSubId = "ch-unhide-$shortId-$relayKey"
+    private val subscriptionIds = ChannelSubscriptionIds(channelId, sessionKey, relayKey)
+    // メタ(kind 40/41)、件数(返信・リアクション・リポスト・引用)、自分の非表示(kind 43/5)はそれぞれ1つの購読にまとめる。
+    private val metaSubId = subscriptionIds.meta
+    private val msgSubId = subscriptionIds.messages
+    private val histSubId = subscriptionIds.history
+    private val engagementSubId = subscriptionIds.engagement
+    private val ownHideSubId = subscriptionIds.ownHides
 
     private val replyStore = ChannelReplyStore(channelId)
     private val seenReactionIds = linkedSetOf<String>()
@@ -179,8 +175,8 @@ internal class ChannelController(
     private val ownHideDeletions = linkedMapOf<String, NostrEvent>()
     private val pendingHides = mutableSetOf<String>()
     private val pendingUnhides = mutableSetOf<String>()
-    // relay context 変更時に張り直すライブ購読。subId -> filter。
-    private val liveFilters = linkedMapOf<String, NostrFilter>()
+    // relay context 変更時に張り直すライブ購読。subId -> filters。
+    private val liveFilters = linkedMapOf<String, List<NostrFilter>>()
 
     private val history = ChannelHistory(
         scope = scope,
@@ -202,7 +198,7 @@ internal class ChannelController(
                 behavior = SubscriptionBehavior.Fetch(10_000),
             ),
             // 応答しない推奨リレーが1件あってもページ全体を未完了にしない。
-            settleAfterFirstEoseMillis = HISTORY_SETTLE_MS,
+            settleAfterEoseMillis = HISTORY_SETTLE_MS,
             onRelayEvent = { relayUrl, event -> rememberMessageSource(event.id, relayUrl) },
         ) { event -> if (noteContext.matches(event)) events.add(event) }
         // メッセージ本体は端末へ保存しない(第16.12節)。一覧プレビュー用に最新1件だけ記録する。
@@ -883,121 +879,33 @@ internal class ChannelController(
         // kind:40 でチャンネルメタ取得
         jobs += launch {
             NostrRepository.events(metaSubId).collect { event ->
-                if (event.kind != 40 || event.id != channelId || channelCreateEvent != null) return@collect
-                channelCreateEvent = event
-                applyMetadataResolution()
-                scheduleProfileFetch(event.pubkey)
-                subscribeLive(metaUpdateSubId, NostrFilter(kinds = listOf(41), eTags = listOf(channelId)))
-            }
-        }
-
-        // kind:41 チャンネルメタ更新。所有者・root marker・JSON妥当性の検証はChannelMetadataResolverへ委譲する。
-        jobs += launch {
-            NostrRepository.events(metaUpdateSubId).collect { event ->
-                if (event.kind != 41) return@collect
-                metadataUpdateCandidates[event.id] = event
-                applyMetadataResolution()
-            }
-        }
-
-        jobs += launch {
-            NostrRepository.events(replyCountSubId).collect { event ->
-                if (!noteContext.matches(event)) return@collect
-                val targetId = noteContext.replyTargetId(event) ?: return@collect
-                if (targetId !in watchedEventIds || !replyStore.receive(event)) return@collect
-                scheduleProfileFetch(event.pubkey)
-                syncReadyState()
-            }
-        }
-
-        jobs += launch {
-            NostrRepository.events(reactionSubId).collect { event ->
-                if (event.kind != 7 || !seenReactionIds.add(event.id)) return@collect
-                rememberReceivedEvent(receivedReactionEvents, event)
-                val targetId = event.tags.lastOrNull { it.firstOrNull() == "e" }?.getOrNull(1) ?: return@collect
-                if (targetId !in watchedEventIds) return@collect
-                currentReactionCounts = currentReactionCounts + (targetId to (currentReactionCounts[targetId] ?: 0) + 1)
-                if (event.isLikeReaction()) {
-                    currentLikeReactionCounts = currentLikeReactionCounts + (
-                        targetId to (currentLikeReactionCounts[targetId] ?: 0) + 1
-                        )
-                }
-                event.toCustomReaction()?.let { reaction ->
-                    currentCustomReactions = currentCustomReactions + (
-                        targetId to currentCustomReactions[targetId]
-                            .orEmpty()
-                            .incrementedWith(reaction)
-                    )
-                }
-                event.toUnicodeReaction()?.let { reaction ->
-                    currentUnicodeReactions = currentUnicodeReactions + (
-                        targetId to currentUnicodeReactions[targetId]
-                            .orEmpty()
-                            .incrementedWithUnicodeReaction(reaction)
-                    )
-                }
-                currentReactionEvents = currentReactionEvents + (
-                    targetId to currentReactionEvents[targetId].orEmpty().plus(event)
-                )
-                if (
-                    ownPubkey != null &&
-                    event.pubkey == ownPubkey &&
-                    event.isLikeReaction() &&
-                    !currentLikedReactions.containsKey(targetId)
-                ) {
-                    currentLikedReactions = currentLikedReactions + (targetId to event.id)
-                }
-                if (ownPubkey != null && event.pubkey == ownPubkey) {
-                    event.toReactionOption()?.let { option ->
-                        currentOwnEmojiReactionEventIds = currentOwnEmojiReactionEventIds + (
-                            targetId to currentOwnEmojiReactionEventIds[targetId].orEmpty()
-                                .plus(option.key to event.id)
-                            )
+                when (event.kind) {
+                    40 -> {
+                        if (event.id != channelId || channelCreateEvent != null) return@collect
+                        channelCreateEvent = event
+                        applyMetadataResolution()
+                        scheduleProfileFetch(event.pubkey)
+                    }
+                    // kind:41 チャンネルメタ更新。所有者・root marker・JSON妥当性の検証はChannelMetadataResolverへ委譲する。
+                    41 -> {
+                        metadataUpdateCandidates[event.id] = event
+                        applyMetadataResolution()
                     }
                 }
-                syncReadyState()
-                scheduleProfileFetch(event.pubkey)
             }
         }
 
+        // 件数の購読は1つ。kind 42 は返信と引用リポストの両方へ渡し、それぞれの条件で判定する。
         jobs += launch {
-            NostrRepository.events(repostSubId).collect { event ->
-                if (event.kind !in listOf(6, 16) || !seenRepostIds.add(event.id)) return@collect
-                rememberReceivedEvent(receivedRepostEvents, event)
-                val targetId = event.tags.lastOrNull { it.firstOrNull() == "e" }?.getOrNull(1) ?: return@collect
-                if (targetId !in watchedEventIds) return@collect
-                currentRepostCounts = currentRepostCounts + (targetId to (currentRepostCounts[targetId] ?: 0) + 1)
-                currentRepostPubkeys = currentRepostPubkeys + (
-                    targetId to currentRepostPubkeys[targetId].orEmpty().plus(event.pubkey).distinct()
-                )
-                if (ownPubkey != null && event.pubkey == ownPubkey && !currentRepostedEvents.containsKey(targetId)) {
-                    currentRepostedEvents = currentRepostedEvents + (targetId to event.id)
+            NostrRepository.events(engagementSubId).collect { event ->
+                when (event.kind) {
+                    7 -> onReactionEvent(event)
+                    6, 16 -> onRepostEvent(event)
+                    else -> {
+                        onReplyEvent(event)
+                        onQuoteRepostEvent(event)
+                    }
                 }
-                syncReadyState()
-                scheduleProfileFetch(event.pubkey)
-            }
-        }
-
-        jobs += launch {
-            NostrRepository.events(quoteRepostSubId).collect { event ->
-                if (!noteContext.matches(event)) return@collect
-                val targetIds = event.tags
-                    .filter { it.firstOrNull() == "q" }
-                    .mapNotNull { it.getOrNull(1) }
-                    .distinct()
-                    .filter { it in watchedEventIds }
-                    .filter { seenQuoteRepostIds.add("${event.id}:$it") }
-                if (targetIds.isEmpty()) return@collect
-                val counts = currentRepostCounts.toMutableMap()
-                targetIds.forEach { targetId ->
-                    counts[targetId] = (counts[targetId] ?: 0) + 1
-                    currentRepostPubkeys = currentRepostPubkeys + (
-                        targetId to currentRepostPubkeys[targetId].orEmpty().plus(event.pubkey).distinct()
-                    )
-                }
-                currentRepostCounts = counts
-                syncReadyState()
-                scheduleProfileFetch(event.pubkey)
             }
         }
 
@@ -1013,15 +921,14 @@ internal class ChannelController(
         }
 
         jobs += launch {
-            NostrRepository.events(hideSubId).collect { event ->
-                if (event.kind != ChannelHiddenMessages.HIDE_KIND || event.pubkey != ownPubkey) return@collect
-                if (ownHideEvents.put(event.id, event) == null) syncReadyState()
-            }
-        }
-        jobs += launch {
-            NostrRepository.events(unhideSubId).collect { event ->
-                if (event.kind != ChannelHiddenMessages.DELETION_KIND || event.pubkey != ownPubkey) return@collect
-                if (ownHideDeletions.put(event.id, event) == null) syncReadyState()
+            NostrRepository.events(ownHideSubId).collect { event ->
+                if (event.pubkey != ownPubkey) return@collect
+                val added = when (event.kind) {
+                    ChannelHiddenMessages.HIDE_KIND -> ownHideEvents.put(event.id, event) == null
+                    ChannelHiddenMessages.DELETION_KIND -> ownHideDeletions.put(event.id, event) == null
+                    else -> false
+                }
+                if (added) syncReadyState()
             }
         }
 
@@ -1074,20 +981,11 @@ internal class ChannelController(
             syncReadyState()
             // メッセージ本体はローカルに持たないため、履歴は常にリレー取得から始める。
             history.initialize(emptyList(), localState?.readingPosition)
-            subscribeLive(metaSubId, NostrFilter(ids = listOf(channelId)))
+            subscribeLive(metaSubId, channelMetaFilters(channelId))
             openMessageSession(NostrFilter(kinds = listOf(42), eTags = listOf(channelId), since = openedAt))
             accountSession?.pubkey?.let { me ->
                 // kind 43 はチャンネル ID を持たないため、自分の分をまとめて取り、表示中のメッセージだけに効かせる。
-                subscribeLive(hideSubId, NostrFilter(kinds = listOf(ChannelHiddenMessages.HIDE_KIND), authors = listOf(me), limit = 500))
-                subscribeLive(
-                    unhideSubId,
-                    NostrFilter(
-                        kinds = listOf(ChannelHiddenMessages.DELETION_KIND),
-                        authors = listOf(me),
-                        parentKindTags = listOf(ChannelHiddenMessages.HIDE_KIND.toString()),
-                        limit = 500,
-                    ),
-                )
+                subscribeLive(ownHideSubId, channelOwnHideFilters(me))
             }
         }
     }
@@ -1243,23 +1141,20 @@ internal class ChannelController(
             delay(300)
             val ids = watchedEventIds.toList()
             // 返信・リアクション集計もメッセージと同じ read relay context を使う(FR-05)。
-            subscribeLive(replyCountSubId, NostrFilter(kinds = listOf(noteContext.eventKind), eTags = ids, limit = 500))
-            subscribeLive(reactionSubId, NostrFilter(kinds = listOf(7), eTags = ids, limit = 500))
-            subscribeLive(repostSubId, NostrFilter(kinds = listOf(6, 16), eTags = ids, limit = 500))
-            subscribeLive(quoteRepostSubId, NostrFilter(kinds = listOf(noteContext.eventKind), qTags = ids, limit = 500))
+            subscribeLive(engagementSubId, channelEngagementFilters(ids, noteContext.eventKind))
         }
     }
 
-    private suspend fun subscribeLive(subscriptionId: String, filter: NostrFilter) {
-        liveFilters[subscriptionId] = filter
-        NostrRepository.subscribe(subscriptionId, filter, readTarget)
+    private suspend fun subscribeLive(subscriptionId: String, filters: List<NostrFilter>) {
+        liveFilters[subscriptionId] = filters
+        NostrRepository.subscribe(subscriptionId, filters, readTarget)
     }
 
     private suspend fun applyReadTarget(urls: Set<String>) {
         readTarget = ChannelRelayPlanner.readTarget(urls, navigationRelayHint)
         // 同じフィルターのまま target だけ変えるため、既存リレーへの REQ は再送されない。
-        liveFilters.toList().forEach { (subscriptionId, filter) ->
-            NostrRepository.subscribe(subscriptionId, filter, readTarget)
+        liveFilters.toList().forEach { (subscriptionId, filters) ->
+            NostrRepository.subscribe(subscriptionId, filters, readTarget)
         }
         messageFilter?.let { filter -> messageSession?.update(listOf(filter), readTarget) }
     }
@@ -1342,6 +1237,99 @@ internal class ChannelController(
         }
     }
 
+    private fun onReplyEvent(event: NostrEvent) {
+        if (!noteContext.matches(event)) return
+        val targetId = noteContext.replyTargetId(event) ?: return
+        if (targetId !in watchedEventIds || !replyStore.receive(event)) return
+        scheduleProfileFetch(event.pubkey)
+        syncReadyState()
+    }
+
+    private fun onReactionEvent(event: NostrEvent) {
+        if (event.kind != 7 || !seenReactionIds.add(event.id)) return
+        rememberReceivedEvent(receivedReactionEvents, event)
+        val targetId = event.tags.lastOrNull { it.firstOrNull() == "e" }?.getOrNull(1) ?: return
+        if (targetId !in watchedEventIds) return
+        currentReactionCounts = currentReactionCounts + (targetId to (currentReactionCounts[targetId] ?: 0) + 1)
+        if (event.isLikeReaction()) {
+            currentLikeReactionCounts = currentLikeReactionCounts + (
+                targetId to (currentLikeReactionCounts[targetId] ?: 0) + 1
+                )
+        }
+        event.toCustomReaction()?.let { reaction ->
+            currentCustomReactions = currentCustomReactions + (
+                targetId to currentCustomReactions[targetId]
+                    .orEmpty()
+                    .incrementedWith(reaction)
+            )
+        }
+        event.toUnicodeReaction()?.let { reaction ->
+            currentUnicodeReactions = currentUnicodeReactions + (
+                targetId to currentUnicodeReactions[targetId]
+                    .orEmpty()
+                    .incrementedWithUnicodeReaction(reaction)
+            )
+        }
+        currentReactionEvents = currentReactionEvents + (
+            targetId to currentReactionEvents[targetId].orEmpty().plus(event)
+        )
+        if (
+            ownPubkey != null &&
+            event.pubkey == ownPubkey &&
+            event.isLikeReaction() &&
+            !currentLikedReactions.containsKey(targetId)
+        ) {
+            currentLikedReactions = currentLikedReactions + (targetId to event.id)
+        }
+        if (ownPubkey != null && event.pubkey == ownPubkey) {
+            event.toReactionOption()?.let { option ->
+                currentOwnEmojiReactionEventIds = currentOwnEmojiReactionEventIds + (
+                    targetId to currentOwnEmojiReactionEventIds[targetId].orEmpty()
+                        .plus(option.key to event.id)
+                    )
+            }
+        }
+        syncReadyState()
+        scheduleProfileFetch(event.pubkey)
+    }
+
+    private fun onRepostEvent(event: NostrEvent) {
+        if (event.kind !in listOf(6, 16) || !seenRepostIds.add(event.id)) return
+        rememberReceivedEvent(receivedRepostEvents, event)
+        val targetId = event.tags.lastOrNull { it.firstOrNull() == "e" }?.getOrNull(1) ?: return
+        if (targetId !in watchedEventIds) return
+        currentRepostCounts = currentRepostCounts + (targetId to (currentRepostCounts[targetId] ?: 0) + 1)
+        currentRepostPubkeys = currentRepostPubkeys + (
+            targetId to currentRepostPubkeys[targetId].orEmpty().plus(event.pubkey).distinct()
+        )
+        if (ownPubkey != null && event.pubkey == ownPubkey && !currentRepostedEvents.containsKey(targetId)) {
+            currentRepostedEvents = currentRepostedEvents + (targetId to event.id)
+        }
+        syncReadyState()
+        scheduleProfileFetch(event.pubkey)
+    }
+
+    private fun onQuoteRepostEvent(event: NostrEvent) {
+        if (!noteContext.matches(event)) return
+        val targetIds = event.tags
+            .filter { it.firstOrNull() == "q" }
+            .mapNotNull { it.getOrNull(1) }
+            .distinct()
+            .filter { it in watchedEventIds }
+            .filter { seenQuoteRepostIds.add("${event.id}:$it") }
+        if (targetIds.isEmpty()) return
+        val counts = currentRepostCounts.toMutableMap()
+        targetIds.forEach { targetId ->
+            counts[targetId] = (counts[targetId] ?: 0) + 1
+            currentRepostPubkeys = currentRepostPubkeys + (
+                targetId to currentRepostPubkeys[targetId].orEmpty().plus(event.pubkey).distinct()
+            )
+        }
+        currentRepostCounts = counts
+        syncReadyState()
+        scheduleProfileFetch(event.pubkey)
+    }
+
     private suspend fun supplementHistoryFrom(relayUrls: Set<String>) {
         val events = mutableListOf<NostrEvent>()
         fetchChannelEvents(
@@ -1353,7 +1341,7 @@ internal class ChannelController(
                 target = RelayTarget.Explicit(relayUrls),
                 behavior = SubscriptionBehavior.Fetch(10_000),
             ),
-            settleAfterFirstEoseMillis = HISTORY_SETTLE_MS,
+            settleAfterEoseMillis = HISTORY_SETTLE_MS,
         ) { event -> if (noteContext.matches(event) && event.id !in locallyDeletedMessageIds) events += event }
         history.supplement(events)
     }
@@ -1413,15 +1401,10 @@ internal class ChannelController(
         engagementBatchJob?.cancel()
         history.close()
         NostrRepository.close(metaSubId)
-        NostrRepository.close(metaUpdateSubId)
         NostrRepository.close(msgSubId)
         NostrRepository.close(histSubId)
-        NostrRepository.close(replyCountSubId)
-        NostrRepository.close(reactionSubId)
-        NostrRepository.close(repostSubId)
-        NostrRepository.close(quoteRepostSubId)
-        NostrRepository.close(hideSubId)
-        NostrRepository.close(unhideSubId)
+        NostrRepository.close(engagementSubId)
+        NostrRepository.close(ownHideSubId)
     }
 
     private fun rememberReceivedEvent(events: LinkedHashMap<String, NostrEvent>, event: NostrEvent) {

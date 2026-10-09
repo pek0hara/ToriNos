@@ -96,7 +96,7 @@ internal class JoinedChannelRepository(
                     target = RelayTarget.Explicit(relays),
                     behavior = SubscriptionBehavior.Fetch(10_000),
                 ),
-                settleAfterFirstEoseMillis = 1_500,
+                settleAfterEoseMillis = 1_500,
             ) { event -> events += event }
             return FetchResult(events, answered)
         }

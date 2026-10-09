@@ -75,6 +75,8 @@ class ChannelListViewModel(
         private const val AUTHOR_SUBSCRIPTION_DELAY_MS = 500L
         private const val EMIT_THROTTLE_MS = 250L
         private const val PAGE_SIZE = 50
+        // 1 REQ に入れるフィルターの数。NIP-11 の max_filters を出すリレーの小さい値（10）に合わせる。
+        private const val ACTIVITY_BATCH_SIZE = 10
         private const val MAX_SEEN_MSG_IDS = 5_000
         private const val PROFILE_MAX_AGE_MS = 15 * 60 * 1_000L
         private const val RELAY_INFO_TIMEOUT_MS = 3_000L
@@ -896,23 +898,24 @@ class ChannelListViewModel(
             visibleChannelIds,
         )
         while (true) {
-            val channelId = activityQueue.takeNext() ?: break
+            val batch = activityQueue.takeBatch(ACTIVITY_BATCH_SIZE).takeIf { it.isNotEmpty() } ?: break
             launch {
                 try {
                     yield()
                     // 未読件数はキャッチアップで数えるため、ここではプレビュー用の最新1件だけを取る。
-                    val since = cachedChannels[channelId]?.latestMessage?.createdAt
-                    fetch(activitySubId, NostrFilter(
-                        kinds = listOf(42), eTags = listOf(channelId), since = since, limit = 1,
-                    )) { event ->
-                        if (event.kind == 42 && event.channelIdFromMessage() == channelId && seenMessageIds.add(event.id)) {
+                    val filters = channelActivityFilters(batch) { cachedChannels[it]?.latestMessage?.createdAt }
+                    val batchIds = batch.toSet()
+                    fetch(activitySubId, filters) { event ->
+                        if (event.kind != 42) return@fetch
+                        val channelId = event.channelIdFromMessage()?.takeIf { it in batchIds } ?: return@fetch
+                        if (seenMessageIds.add(event.id)) {
                             if (seenMessageIds.size > MAX_SEEN_MSG_IDS) seenMessageIds.remove(seenMessageIds.first())
                             updateActivity(event, channelId)
                             emitReady()
                         }
                     }
                 } finally {
-                    activityQueue.complete(channelId)
+                    activityQueue.complete(batch)
                     queueActivityFetches()
                 }
             }

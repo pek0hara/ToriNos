@@ -4,6 +4,7 @@ import com.nostr.torinos.model.NostrEvent
 import com.nostr.torinos.model.NostrFilter
 import com.nostr.torinos.network.*
 import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOf
@@ -69,9 +70,47 @@ class ChannelListFetchTest {
         })
         val longSpec = spec.copy(behavior = SubscriptionBehavior.Fetch(10_000))
         val received = mutableListOf<NostrEvent>()
-        assertTrue(fetchChannelEvents(longSpec, { session }, settleAfterFirstEoseMillis = 1_500) { received += it })
+        assertTrue(fetchChannelEvents(longSpec, { session }, settleAfterEoseMillis = 1_500) { received += it })
         assertEquals(1_500, testScheduler.currentTime)
         assertEquals(listOf(event), received)
+        assertTrue(session.closed)
+    }
+
+    @Test
+    fun settleWaitRestartsWhenAnotherRelayFinishes() = runTest {
+        val early = NostrEvent("early", "author", 10, 40, emptyList(), "{}", "")
+        val late = NostrEvent("late", "author", 11, 40, emptyList(), "{}", "")
+        val session = FakeSession(flow {
+            emit(SubscriptionSignal.Event("fast", early, false))
+            emit(SubscriptionSignal.Eose("fast"))
+            delay(1_000)
+            emit(SubscriptionSignal.Eose("medium"))
+            // 遅れて接続したリレー: 最初の EOSE から1.5秒より後に届く。
+            delay(1_000)
+            emit(SubscriptionSignal.Event("late", late, false))
+            emit(SubscriptionSignal.Eose("late"))
+            awaitCancellation()
+        })
+        val longSpec = spec.copy(behavior = SubscriptionBehavior.Fetch(10_000))
+        val received = mutableListOf<NostrEvent>()
+        assertTrue(fetchChannelEvents(longSpec, { session }, settleAfterEoseMillis = 1_500) { received += it })
+        assertEquals(listOf(early, late), received)
+        assertEquals(3_500, testScheduler.currentTime)
+    }
+
+    @Test
+    fun settleModeSucceedsWhenTheOverallTimeoutComesAfterAnEose() = runTest {
+        val session = FakeSession(flow {
+            emit(SubscriptionSignal.Eose("a"))
+            repeat(20) {
+                delay(1_000)
+                emit(SubscriptionSignal.Eose("r$it"))
+            }
+            awaitCancellation()
+        })
+        val longSpec = spec.copy(behavior = SubscriptionBehavior.Fetch(5_000))
+        assertTrue(fetchChannelEvents(longSpec, { session }, settleAfterEoseMillis = 1_500) {})
+        assertEquals(5_000, testScheduler.currentTime)
         assertTrue(session.closed)
     }
 
@@ -80,17 +119,17 @@ class ChannelListFetchTest {
         val partial = FakeSession(flowOf(SubscriptionSignal.FetchCompleted(
             mapOf("a" to RelayOutcome.Eose, "b" to RelayOutcome.Closed("restricted")), false,
         )))
-        assertTrue(fetchChannelEvents(spec, { partial }, settleAfterFirstEoseMillis = 50) {})
+        assertTrue(fetchChannelEvents(spec, { partial }, settleAfterEoseMillis = 50) {})
         val none = FakeSession(flowOf(SubscriptionSignal.FetchCompleted(
             mapOf("a" to RelayOutcome.TimedOut, "b" to RelayOutcome.Closed("restricted")), true,
         )))
-        assertFalse(fetchChannelEvents(spec, { none }, settleAfterFirstEoseMillis = 50) {})
+        assertFalse(fetchChannelEvents(spec, { none }, settleAfterEoseMillis = 50) {})
     }
 
     @Test
     fun settleModeWithNoEoseStillTimesOut() = runTest {
         val session = FakeSession(flow { awaitCancellation() })
-        assertFalse(fetchChannelEvents(spec, { session }, settleAfterFirstEoseMillis = 50) {})
+        assertFalse(fetchChannelEvents(spec, { session }, settleAfterEoseMillis = 50) {})
         assertEquals(100, testScheduler.currentTime)
     }
 
