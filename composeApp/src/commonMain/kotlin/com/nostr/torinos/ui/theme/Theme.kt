@@ -6,6 +6,9 @@ import androidx.compose.material3.Typography
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.remember
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import torinos.composeapp.generated.resources.NotoSansJP_Regular
@@ -48,11 +51,14 @@ private val DarkColors = darkColorScheme(
 )
 
 @Composable
-fun NostrTheme(content: @Composable () -> Unit) {
+fun NostrTheme(
+    fontScale: AppFontScale = AppFontScale.Default,
+    content: @Composable () -> Unit,
+) {
     val notoSansJP = FontFamily(
         Font(Res.font.NotoSansJP_Regular, weight = FontWeight.Normal),
     )
-    val typography = Typography().run {
+    val baseTypography = Typography().run {
         copy(
             displayLarge = displayLarge.copy(fontFamily = notoSansJP),
             displayMedium = displayMedium.copy(fontFamily = notoSansJP),
@@ -71,9 +77,15 @@ fun NostrTheme(content: @Composable () -> Unit) {
             labelSmall = labelSmall.copy(fontFamily = notoSansJP),
         )
     }
-    MaterialTheme(
-        colorScheme = if (isSystemInDarkTheme()) DarkColors else LightColors,
-        typography = typography,
-        content = content,
-    )
+    // OSの文字サイズは LocalDensity の fontScale として sp に掛かるので、アプリ設定は Typography 側で掛ける。
+    // LocalDensity を差し替えると、Android で別ウィンドウになるダイアログやシートに伝わらないため。
+    val appFontScale = effectiveAppFontScale(fontScale.factor, LocalDensity.current.fontScale)
+    val typography = remember(baseTypography, appFontScale) { baseTypography.scaledBy(appFontScale) }
+    CompositionLocalProvider(LocalAppFontScale provides appFontScale) {
+        MaterialTheme(
+            colorScheme = if (isSystemInDarkTheme()) DarkColors else LightColors,
+            typography = typography,
+            content = content,
+        )
+    }
 }

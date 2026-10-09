@@ -32,11 +32,16 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SegmentedButton
+import androidx.compose.material3.SegmentedButtonDefaults
+import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import com.nostr.torinos.network.DisplayPreferencesStore
 import com.nostr.torinos.ui.components.AppTopBar
+import com.nostr.torinos.ui.theme.AppFontScale
+import com.nostr.torinos.ui.theme.LocalAppFontScale
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -48,6 +53,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalClipboard
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.unit.dp
 import androidx.compose.runtime.collectAsState
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -89,6 +96,7 @@ fun SettingsScreen(
     val showImagePreviews by DisplayPreferencesStore.showImagePreviews.collectAsState()
     val showXPreviews by DisplayPreferencesStore.showXPreviews.collectAsState()
     val useFooterComposer by DisplayPreferencesStore.useFooterComposer.collectAsState()
+    val fontScale by DisplayPreferencesStore.fontScale.collectAsState()
 
     LaunchedEffect(accountViewModel) {
         accountViewModel?.secretKeyEvent?.collect { nsec = it }
@@ -145,6 +153,8 @@ fun SettingsScreen(
                     onShowXPreviewsChange = DisplayPreferencesStore::setShowXPreviews,
                     useFooterComposer = useFooterComposer,
                     onUseFooterComposerChange = DisplayPreferencesStore::setUseFooterComposer,
+                    fontScale = fontScale,
+                    onFontScaleChange = DisplayPreferencesStore::setFontScale,
                 )
                 HorizontalDivider()
             }
@@ -477,6 +487,10 @@ private fun KeySection(
                     text = "●".repeat(24),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.error,
+                    // 伏せ字は文字数に意味がないので、文字を大きくしても折り返さず1行で切る。
+                    maxLines = 1,
+                    overflow = androidx.compose.ui.text.style.TextOverflow.Clip,
+                    softWrap = false,
                     modifier = Modifier.weight(1f),
                 )
             }
@@ -657,6 +671,8 @@ private fun DisplaySection(
     onShowXPreviewsChange: (Boolean) -> Unit,
     useFooterComposer: Boolean,
     onUseFooterComposerChange: (Boolean) -> Unit,
+    fontScale: AppFontScale,
+    onFontScaleChange: (AppFontScale) -> Unit,
 ) {
     Column(
         modifier = Modifier
@@ -685,6 +701,47 @@ private fun DisplaySection(
             checked = useFooterComposer,
             onCheckedChange = onUseFooterComposerChange,
         )
+        FontScaleRow(selected = fontScale, onSelect = onFontScaleChange)
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun FontScaleRow(
+    selected: AppFontScale,
+    onSelect: (AppFontScale) -> Unit,
+) {
+    // 選択肢の文字も設定に合わせて大きくなるので、ラベルとは別の行に全幅で並べる。
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 6.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Text(
+            text = "文字サイズ",
+            style = MaterialTheme.typography.bodyMedium,
+        )
+        SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
+            AppFontScale.entries.forEachIndexed { index, scale ->
+                SegmentedButton(
+                    selected = scale == selected,
+                    onClick = { onSelect(scale) },
+                    shape = SegmentedButtonDefaults.itemShape(index, AppFontScale.entries.size),
+                    // 「小」「特大」だけでは読み上げで何の設定か分からないので、項目名を添える。
+                    modifier = Modifier.semantics { contentDescription = "文字サイズ ${scale.label}" },
+                    label = { Text(scale.label, maxLines = 1) },
+                )
+            }
+        }
+        // OS側の文字サイズがすでに大きいと、崩れを防ぐため拡大を抑えている。選んでも変わらない理由を伝える。
+        if (LocalAppFontScale.current < selected.factor) {
+            Text(
+                text = "端末の文字サイズが大きいため、これ以上は大きくなりません。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
     }
 }
 

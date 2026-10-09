@@ -1,5 +1,7 @@
 package com.nostr.torinos.ui.article
 
+import com.nostr.torinos.ui.theme.appSp
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -7,6 +9,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.height
@@ -27,7 +30,6 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 
 /** 記事一覧上部のセグメントで選ぶ著者フィルター。 */
 enum class ArticleAuthorFilter(val label: String) {
@@ -90,8 +92,10 @@ private fun ArticleAuthorSegmentedControl(
     onSelected: (ArticleAuthorFilter) -> Unit,
 ) {
     Surface(
+        // 文字を大きくしても選択肢が切れないよう、240dpを最小にして一番長い選択肢に合わせて広げる。
         modifier = Modifier
-            .width(240.dp)
+            .widthIn(min = 240.dp)
+            .width(IntrinsicSize.Max)
             .height(SegmentHeight),
         shape = RoundedCornerShape(12.dp),
         color = MaterialTheme.colorScheme.surfaceVariant,
@@ -122,8 +126,11 @@ private fun ArticleAuthorSegmentedControl(
                         } else {
                             MaterialTheme.colorScheme.onSurfaceVariant
                         },
-                        fontSize = 13.sp,
+                        fontSize = 13.appSp,
+                        lineHeight = 18.appSp,
                         fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Normal,
+                        maxLines = 1,
+                        modifier = Modifier.padding(horizontal = 6.dp),
                     )
                 }
             }

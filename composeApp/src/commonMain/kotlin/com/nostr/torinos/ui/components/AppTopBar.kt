@@ -1,5 +1,6 @@
 package com.nostr.torinos.ui.components
 
+import com.nostr.torinos.ui.theme.appSp
 import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
@@ -18,7 +19,6 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 
 @Composable
 @OptIn(ExperimentalMaterial3Api::class)
@@ -55,7 +55,7 @@ fun AppTopBar(
         TopAppBar(
             title = {
                 CompositionLocalProvider(
-                    LocalTextStyle provides MaterialTheme.typography.titleLarge.copy(fontSize = 18.sp),
+                    LocalTextStyle provides MaterialTheme.typography.titleLarge.copy(fontSize = 18.appSp),
                 ) {
                     title()
                 }

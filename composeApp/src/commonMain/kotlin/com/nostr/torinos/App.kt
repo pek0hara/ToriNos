@@ -25,6 +25,7 @@ import androidx.compose.ui.unit.dp
 import com.nostr.torinos.account.AccountSessionHost
 import com.nostr.torinos.account.AccountSessionState
 import com.nostr.torinos.account.AccountSessions
+import com.nostr.torinos.network.DisplayPreferencesStore
 import com.nostr.torinos.network.LocalSettingsStorage
 import com.nostr.torinos.ui.theme.NostrTheme
 import com.nostr.torinos.util.loggingExceptionHandler
@@ -42,7 +43,8 @@ private val WideLayoutMinWidth = 600.dp
 /** アプリ共通状態と、アカウントごとに破棄される画面ツリーの境界。 */
 @Composable
 fun App() {
-    NostrTheme {
+    val fontScale by DisplayPreferencesStore.fontScale.collectAsState()
+    NostrTheme(fontScale = fontScale) {
         val accountSessionState by AccountSessions.manager.state.collectAsState()
         val accountTransitionError by AccountSessions.manager.transitionError.collectAsState()
         val appScope = rememberCoroutineScope()

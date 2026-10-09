@@ -1,5 +1,6 @@
 package com.nostr.torinos.ui.feed
 
+import com.nostr.torinos.ui.theme.appSp
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
@@ -60,7 +61,6 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.Velocity
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import androidx.compose.runtime.collectAsState
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.lifecycle.compose.LifecycleStartEffect
@@ -371,7 +371,9 @@ fun FeedScreen(
                                 Column(modifier = Modifier.weight(1f, fill = false)) {
                                     Text(
                                         text = topBarTitle,
-                                        fontSize = 16.sp,
+                                        fontSize = 16.appSp,
+                                        // 下にリレー数を重ねても60dpのバーに収まるよう、タイトル用の高い行間を引き継がない。
+                                        lineHeight = 20.appSp,
                                         color = feedContentColor,
                                         maxLines = 1,
                                         overflow = TextOverflow.Ellipsis,

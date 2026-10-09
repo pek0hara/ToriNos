@@ -1,5 +1,6 @@
 package com.nostr.torinos.ui.components
 
+import com.nostr.torinos.ui.theme.appSp
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -30,7 +31,6 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import com.nostr.torinos.network.NostrRepository
 import com.nostr.torinos.network.RelayConnectionState
 import com.nostr.torinos.network.RelayInformationRepository
@@ -43,7 +43,7 @@ fun RelaySelector(
     onOpenRelaySettings: () -> Unit,
     modifier: Modifier = Modifier,
     selectedRelayName: String? = null,
-    selectedRelayNameFontSize: TextUnit = 16.sp,
+    selectedRelayNameFontSize: TextUnit = 16.appSp,
     showSelectedRelayUrl: Boolean = true,
     menuDescription: String? = null,
 ) {
@@ -71,6 +71,8 @@ fun RelaySelector(
                     ?: selectedRelayUrl?.relayDisplayName()
                     ?: "—",
                 fontSize = selectedRelayNameFontSize,
+                // 下にURLを重ねても60dpのバーに収まるよう、タイトル用の高い行間を引き継がない。
+                lineHeight = selectedRelayNameFontSize * 1.25f,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )

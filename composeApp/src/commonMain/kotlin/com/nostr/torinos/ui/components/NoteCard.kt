@@ -92,6 +92,7 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.sp
+import com.nostr.torinos.ui.theme.LocalAppFontScale
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import com.nostr.torinos.account.LocalAccountSession
@@ -312,6 +313,8 @@ fun NoteCard(
 
                 BoxWithConstraints(Modifier.fillMaxWidth().heightIn(min = nameRowHeight), contentAlignment = Alignment.CenterStart) {
                     val density = LocalDensity.current
+                    // 名前欄に残す幅は、OSとアプリ設定の両方で大きくした文字に合わせる。
+                    val textScale = density.fontScale * LocalAppFontScale.current
                     val textMeasurer = rememberTextMeasurer()
                     val labelStyle = MaterialTheme.typography.labelSmall
                     val badges = badgesState.value
@@ -321,14 +324,14 @@ fun NoteCard(
                         client?.let { with(density) { textMeasurer.measure(it, labelStyle).size.width.toDp() } }
                     }
                     val clientWidth = measuredClientWidth
-                        ?.coerceAtMost((64f * density.fontScale).dp)
+                        ?.coerceAtMost((64f * textScale).dp)
                         ?.coerceAtMost(maxWidth * 0.25f) ?: 0.dp
                     val availableWidth = (maxWidth - (if (hasMenu) 24.dp else 0.dp) - clientWidth -
                         (if (client != null) 4.dp else 0.dp)).coerceAtLeast(0.dp)
                     val overflowWidth = remember(badges.size, labelStyle, density) {
                         with(density) { textMeasurer.measure("+${badges.size}", labelStyle).size.width.toDp().value }
                     }
-                    val layout = com.nostr.torinos.badge.badgeStripLayout(badges.size, availableWidth.value, density.fontScale, overflowWidth)
+                    val layout = com.nostr.torinos.badge.badgeStripLayout(badges.size, availableWidth.value, textScale, overflowWidth)
                     val badgeWidth = com.nostr.torinos.badge.badgeStripWidth(layout, overflowWidth)
                     Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                         ProfileNameText(
