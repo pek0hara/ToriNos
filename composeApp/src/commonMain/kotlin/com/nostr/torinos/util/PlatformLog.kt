@@ -55,7 +55,7 @@ internal inline fun engagementTraceLog(message: () -> String) {
  * ページごとの受信件数・新規件数・重複件数、引用・リポスト元・プロフィールの追加取得をログ出力する。
  * 無駄な通信の調査用。購読IDを出すので、[Fetch] と並べると REQ と対応づけられる。
  */
-internal const val isFeedTraceEnabled = true
+internal const val isFeedTraceEnabled = false
 
 internal inline fun feedTraceLog(message: () -> String) {
     if (isFeedTraceEnabled) {
