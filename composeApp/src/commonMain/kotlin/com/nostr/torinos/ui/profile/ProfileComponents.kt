@@ -194,10 +194,10 @@ private fun CompactProfileHeader(
                         overflow = TextOverflow.Ellipsis,
                     )
                     Text(
-                        text = profile?.name
-                            ?.takeIf { it.isNotBlank() }
-                            ?.let { if (it.startsWith("@")) it else "@$it" }
-                            ?: ("@" + pubkey.take(8) + "…" + pubkey.takeLast(8)),
+                        text = listOfNotNull(
+                            profileUsername(profile, pubkey),
+                            profile?.nip05?.takeIf { it.isNotBlank() },
+                        ).joinToString("  "),
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         maxLines = 1,
@@ -393,39 +393,49 @@ internal fun ProfileHeader(
             }
 
             Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                Row(modifier = Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically) {
-                    ProfileNameText(
-                        profile = profile,
-                        fallback = pubkey.take(8) + "…" + pubkey.takeLast(8),
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.Bold,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.weight(1f, fill = false),
-                    )
-                    profile?.nip05?.takeIf { it.isNotBlank() }?.let { nip05 ->
-                        Text(
-                            text = nip05,
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.primary,
+                Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        ProfileNameText(
+                            profile = profile,
+                            fallback = pubkey.take(8) + "…" + pubkey.takeLast(8),
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
-                            modifier = Modifier
-                                .padding(start = 8.dp)
-                                .weight(1f, fill = false),
+                            modifier = Modifier.weight(1f, fill = false),
                         )
+                        if (isOwnProfile && onEditName != null) {
+                            IconButton(onClick = onEditName, modifier = Modifier.size(28.dp)) {
+                                Icon(
+                                    Icons.Default.Edit,
+                                    contentDescription = "名前・NIP-05を編集",
+                                    modifier = Modifier.size(14.dp),
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                        }
                     }
-                    profile?.nip05?.takeIf { it.isNotBlank() }?.let { nip05 ->
-                        Nip05VerificationIcon(pubkey, nip05)
-                    }
-                    if (isOwnProfile && onEditName != null) {
-                        IconButton(onClick = onEditName, modifier = Modifier.size(28.dp)) {
-                            Icon(
-                                Icons.Default.Edit,
-                                contentDescription = "名前・NIP-05を編集",
-                                modifier = Modifier.size(14.dp),
-                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            text = profileUsername(profile, pubkey),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f, fill = false),
+                        )
+                        profile?.nip05?.takeIf { it.isNotBlank() }?.let { nip05 ->
+                            Text(
+                                text = nip05,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.primary,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier
+                                    .padding(start = 8.dp)
+                                    .weight(1f, fill = false),
                             )
+                            Nip05VerificationIcon(pubkey, nip05)
                         }
                     }
                 }
@@ -516,6 +526,12 @@ internal fun ProfileHeader(
         }
     }
 }
+
+private fun profileUsername(profile: NostrProfile?, pubkey: String): String =
+    profile?.name
+        ?.takeIf { it.isNotBlank() }
+        ?.let { if (it.startsWith("@")) it else "@$it" }
+        ?: ("@" + pubkey.take(8) + "…" + pubkey.takeLast(8))
 
 @Composable
 private fun ProfileGeneralStatusText(
