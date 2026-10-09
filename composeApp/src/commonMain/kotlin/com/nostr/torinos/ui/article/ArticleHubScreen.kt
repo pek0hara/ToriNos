@@ -112,10 +112,12 @@ fun ArticleHubScreen(
     LaunchedEffect(listState, state.canLoadMore, state.isLoadingMore) {
         snapshotFlow {
             val layoutInfo = listState.layoutInfo
-            val lastVisible = layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: -1
-            lastVisible >= layoutInfo.totalItemsCount - 4 &&
-                state.canLoadMore &&
-                !state.isLoadingMore
+            shouldLoadMoreArticles(
+                lastVisibleIndex = layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: -1,
+                totalItemsCount = layoutInfo.totalItemsCount,
+                canLoadMore = state.canLoadMore,
+                isLoadingMore = state.isLoadingMore,
+            )
         }
             .distinctUntilChanged()
             .filter { it }

@@ -146,7 +146,8 @@ class ArticleEngagementTest {
     fun engagementFiltersQueryByAddressAndVersionIds() {
         val filters = articleEngagementFilters(address, listOf("v1", "v1", "v2"), limit = 100)
         assertEquals(4, filters.size)
-        assertEquals(listOf(5), articleEngagementFilters(address, listOf("v1"), 100, ownPubkey = "me").last().kinds)
+        // 自分の取り消しは件数の問い合わせに含めず、受け取った自分のイベントだけを後から確かめる。
+        assertTrue(filters.none { 5 in it.kinds.orEmpty() })
 
         assertEquals(listOf(address), filters[0].aTags)
         assertEquals(listOf("v1", "v2"), filters[1].eTags)
@@ -184,9 +185,10 @@ class ArticleEngagementTest {
         )
 
         assertEquals(listOf("others"), withoutDeletedEvents(listOf(mine, others), deletions).map { it.id })
-        val filter = ownRecentDeletionsFilter("me")
+        val filter = ownDeletionCheckFilter("me", listOf("mine"))
         assertEquals(listOf(5), filter.kinds)
         assertEquals(listOf("me"), filter.authors)
+        assertEquals(listOf("mine"), filter.eTags)
     }
 
     private fun reaction(

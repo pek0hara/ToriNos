@@ -52,7 +52,6 @@ internal fun articleListEngagementFilters(
     add(NostrFilter(kinds = listOf(1), aTags = addresses, limit = limit))
     if (ownPubkey != null) {
         add(NostrFilter(kinds = listOf(7), authors = listOf(ownPubkey), aTags = addresses, limit = addresses.size))
-        add(ownRecentDeletionsFilter(ownPubkey))
     }
 }
 

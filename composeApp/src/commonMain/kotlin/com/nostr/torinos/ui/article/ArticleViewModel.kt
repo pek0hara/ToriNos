@@ -13,6 +13,8 @@ import com.nostr.torinos.article.ArticleEngagementSummary
 import com.nostr.torinos.article.ArticleEngagementSummaryStore
 import com.nostr.torinos.article.ArticleEngagementTarget
 import com.nostr.torinos.article.articleEngagementFilters
+import com.nostr.torinos.article.articleSubscriptionId
+import com.nostr.torinos.article.fetchArticleEngagementEvents
 import com.nostr.torinos.article.articleEngagementSummaryOf
 import com.nostr.torinos.article.withoutDeletedEvents
 import com.nostr.torinos.article.articleListEngagementFilters
@@ -35,17 +37,13 @@ import com.nostr.torinos.network.NostrRepository
 import com.nostr.torinos.network.ProfileFetchPolicy
 import com.nostr.torinos.network.ProfileRepository
 import com.nostr.torinos.network.RelayStore
-import com.nostr.torinos.network.SubscriptionBehavior
-import com.nostr.torinos.network.SubscriptionSignal
-import com.nostr.torinos.network.SubscriptionSpec
 import com.nostr.torinos.ui.SafeViewModel
+import com.nostr.torinos.util.engagementTraceLog
 import com.nostr.torinos.util.BoundedLruCache
-import kotlin.random.Random
 import kotlin.time.Clock
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.cancelAndJoin
@@ -57,7 +55,6 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.first
-import kotlinx.coroutines.flow.takeWhile
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
@@ -282,11 +279,16 @@ class ArticleListViewModel(
                 batchSize = ARTICLE_LIST_ENGAGEMENT_BATCH_SIZE,
             ).firstOrNull() ?: return
             val addresses = batch.map { it.address }
+            engagementTraceLog {
+                "article-list batch=${addresses.size} visible=${visibleEngagementTargets.size} " +
+                    addresses.joinToString(",") { it.substringAfterLast(':').take(12) }
+            }
             inFlightEngagementAddresses += addresses
             try {
                 // 応答の早いリレーの分から件数を出し、遅いリレーの分は届き次第更新する。
-                fetchEventsProgressively(
+                fetchArticleEngagementEvents(
                     articleListEngagementFilters(addresses, engagementAccountKey, ARTICLE_LIST_ENGAGEMENT_LIMIT),
+                    ownPubkey = engagementAccountKey,
                 ) { events, _ ->
                     val summaries = withContext(Dispatchers.Default) {
                         summarizeArticleEngagementBatch(
@@ -733,13 +735,15 @@ class ArticleDetailViewModel(
 
     /** 記事へのリアクションとコメントを、有効な全リレーから有限取得する。 */
     private suspend fun loadEngagement(article: ArticleItem) {
+        engagementTraceLog { "article-detail ${article.address.substringAfterLast(':').take(12)}" }
         val articleEventIds = setOf(article.event.id)
         val ownPubkey = accountSession?.signer?.pubkey
         val isMuted: (String) -> Boolean = { accountSession?.muteStore?.isMuted(it) == true }
         try {
             // 応答の早いリレーの分から表示し、遅いリレーの分は届き次第更新する。
-            fetchEventsProgressively(
-                articleEngagementFilters(article.address, articleEventIds, ARTICLE_ENGAGEMENT_LIMIT, ownPubkey),
+            fetchArticleEngagementEvents(
+                articleEngagementFilters(article.address, articleEventIds, ARTICLE_ENGAGEMENT_LIMIT),
+                ownPubkey = ownPubkey,
             ) { received, isComplete ->
                 val (reactions, comments, reactors) = withContext(Dispatchers.Default) {
                     val events = withoutDeletedEvents(received, received)
@@ -823,7 +827,7 @@ class ArticleDetailViewModel(
     private suspend fun fetchQuotedEvents(quoteIds: List<String>) {
         val eventIds = quoteIds.distinct()
         if (eventIds.isEmpty()) return
-        val subId = articleSubscriptionId("article-detail-quote", eventIds)
+        val subId = articleSubscriptionId("article-detail-quote")
         try {
             coroutineScope {
                 launch(start = CoroutineStart.UNDISPATCHED) {
@@ -900,7 +904,7 @@ private suspend fun fetchArticleEvents(
     filter: NostrFilter,
     relayUrl: String? = null,
 ): List<NostrEvent> = coroutineScope {
-    val subId = articleSubscriptionId("article", filter)
+    val subId = articleSubscriptionId("article")
     val mutex = Mutex()
     val events = mutableListOf<NostrEvent>()
     var collector: Job? = null
@@ -920,41 +924,6 @@ private suspend fun fetchArticleEvents(
     } finally {
         runCatching { NostrRepository.close(subId) }
         collector?.cancelAndJoin()
-    }
-}
-
-/**
- * 有効な全リレーへ有限購読し、リレーごとの取得完了（EOSE）のたびに、それまでに届いたイベントを渡す。
- * 最後に全リレーの完了またはタイムアウトで`isComplete = true`として渡す。
- */
-private suspend fun fetchEventsProgressively(
-    filters: List<NostrFilter>,
-    onSnapshot: suspend (events: List<NostrEvent>, isComplete: Boolean) -> Unit,
-) {
-    val events = linkedMapOf<String, NostrEvent>()
-    var deliveredCount = -1
-    val session = NostrRepository.openSubscription(
-        SubscriptionSpec(
-            id = articleSubscriptionId("article-engagement", filters),
-            filters = filters,
-            behavior = SubscriptionBehavior.Fetch(timeoutMillis = ARTICLE_FETCH_TIMEOUT_MS),
-        ),
-    )
-    try {
-        session.signals.takeWhile { signal ->
-            when (signal) {
-                is SubscriptionSignal.Event -> events[signal.event.id] = signal.event
-                is SubscriptionSignal.Eose -> if (events.size != deliveredCount) {
-                    deliveredCount = events.size
-                    onSnapshot(events.values.toList(), false)
-                }
-                is SubscriptionSignal.FetchCompleted -> onSnapshot(events.values.toList(), true)
-                else -> Unit
-            }
-            signal !is SubscriptionSignal.FetchCompleted
-        }.collect { }
-    } finally {
-        withContext(NonCancellable) { session.close() }
     }
 }
 
@@ -983,6 +952,3 @@ private const val PROFILE_FETCH_TIMEOUT_MS = 5_000L
 private const val PROFILE_FETCH_LIMIT = 200
 private const val PROFILE_MAX_AGE_MS = 15 * 60 * 1_000L
 private const val NIP09_DELETION_KIND = 5
-
-private fun articleSubscriptionId(prefix: String, key: Any): String =
-    "$prefix-${Clock.System.now().toEpochMilliseconds()}-${key.hashCode()}-${Random.nextInt()}"

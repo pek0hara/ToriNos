@@ -94,10 +94,10 @@ class ArticleEngagementSummaryTest {
         val loggedIn = articleListEngagementFilters(addresses, ownPubkey = "me", limit = 500)
         val loggedOut = articleListEngagementFilters(addresses, ownPubkey = null, limit = 500)
 
-        assertEquals(5, loggedIn.size)
+        assertEquals(4, loggedIn.size)
         assertEquals(listOf("me"), loggedIn[3].authors)
         assertEquals(addresses, loggedIn[3].aTags)
-        assertEquals(listOf(5), loggedIn[4].kinds)
+        assertTrue(loggedIn.none { 5 in it.kinds.orEmpty() })
         assertEquals(3, loggedOut.size)
     }
 

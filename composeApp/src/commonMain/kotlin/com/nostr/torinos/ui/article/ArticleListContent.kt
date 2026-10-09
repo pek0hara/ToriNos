@@ -151,5 +151,20 @@ private fun TrackVisibleArticles(
     }
 }
 
+/**
+ * 一覧の末尾付近が見えたら続きを読む。項目がまだ配置されていない間（1ページ目の結果を受けた直後など）は
+ * 末尾が見えているとはみなさない。配置前に判定すると、開いた直後に2ページ目まで取ってしまう。
+ */
+internal fun shouldLoadMoreArticles(
+    lastVisibleIndex: Int,
+    totalItemsCount: Int,
+    canLoadMore: Boolean,
+    isLoadingMore: Boolean,
+): Boolean = totalItemsCount > 0 &&
+    lastVisibleIndex >= totalItemsCount - LOAD_MORE_THRESHOLD &&
+    canLoadMore &&
+    !isLoadingMore
+
+private const val LOAD_MORE_THRESHOLD = 4
 private const val ENGAGEMENT_PREFETCH_COUNT = 3
 private const val ENGAGEMENT_SETTLE_MILLIS = 300L
