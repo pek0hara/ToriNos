@@ -110,8 +110,8 @@ object NostrRepository {
     private val loweredSubscriptionLimits = mutableMapOf<String, Int>()
     /** 購読が閉じて空きができたリレー。待っている購読をまとめて開く。 */
     private val slotsFreedRelays = linkedSetOf<String>()
-    /** リレーごとに最後に新しく開いた購読。購読IDのない拒否の通知を受けたとき、その購読とみなす。 */
-    private val lastOpenedSubscriptions = mutableMapOf<String, String>()
+    /** リレーごとに購読を開いた順。購読IDのない超過の通知を受けたとき、拒否された購読を選ぶのに使う。 */
+    private val openOrder = RelayOpenOrder()
     private val activeRelayCount = MutableStateFlow(0)
     private val _relayConnectionStates = MutableStateFlow<Map<String, RelayConnectionState>>(emptyMap())
     val relayConnectionStates: StateFlow<Map<String, RelayConnectionState>> =
@@ -268,7 +268,7 @@ object NostrRepository {
             val occupies = RelaySubscriptionSlots.occupies(result.state)
             if (wasOccupying && !occupies) slotsFreedRelays += relayUrl
             if (!wasOccupying && occupies) {
-                lastOpenedSubscriptions[relayUrl] = subscriptionId
+                openOrder.opened(relayUrl, subscriptionId)
                 // 空きを待っていた有限取得は、実際に送った時点から待ち時間を数え直す。
                 // 待っていた間にタイムアウトすると、リレーへ聞く前に取得失敗になる。
                 val behavior = record.behavior
@@ -335,23 +335,47 @@ object NostrRepository {
     }
 
     /**
-     * 同時購読数の超過を知らされたとき。通知には購読IDがないので、直前に開いた購読が拒否されたとみなして
-     * 待ちに戻し、そのリレーの上限を今開いている数より1つ下げる。
+     * 同時購読数の超過を知らされたとき。通知には購読IDがなく、拒否1件ごとに1つ届く。
+     * 後から送った REQ から拒否されるので、最後に開いてまだ何も返していない購読を1つ待ちに戻し、
+     * そのリレーの上限をまだ開いている数まで下げる。該当する購読がなければ上限も変えない。
      */
     private fun onTooManySubscriptionsLocked(relayUrl: String) {
-        val occupied = occupiedSlotsLocked(relayUrl)
-        val lowered = (occupied - 1).coerceAtLeast(1)
-        loweredSubscriptionLimits[relayUrl] = minOf(loweredSubscriptionLimits[relayUrl] ?: lowered, lowered)
-        val subId = lastOpenedSubscriptions[relayUrl]
+        val generation = relayConnectionGenerations[relayUrl] ?: 0L
+        val subId = openOrder.rejectedByTooManyNotice(relayUrl) { id ->
+            val state = activeSubscriptions[id]?.relayStates?.get(relayUrl)
+            state?.phase == RelaySubscriptionPhase.Sent && state.connectionGeneration == generation
+        }
         val record = subId?.let(activeSubscriptions::get)
         val state = record?.relayStates?.get(relayUrl)
-        if (record != null && state?.phase == RelaySubscriptionPhase.Sent) {
-            record.relayStates[relayUrl] = SubscriptionStateMachine.prepareRetry(state)
+        if (record == null || state == null) {
+            fetchTraceLog { "LIMIT $relayUrl 超過の通知に当たる購読なし（上限は変えない）" }
+            return
         }
+        record.relayStates[relayUrl] = SubscriptionStateMachine.prepareRetry(state)
+        val stillOpen = occupiedSlotsLocked(relayUrl)
+        loweredSubscriptionLimits[relayUrl] = RelaySubscriptionSlots.lowered(loweredSubscriptionLimits[relayUrl], stillOpen)
         fetchTraceLog {
-            "LIMIT $relayUrl 同時購読数を ${subscriptionLimitLocked(relayUrl)} に下げる（開いていた数 $occupied）" +
-                (if (state?.phase == RelaySubscriptionPhase.Sent) "。$subId を待ちに戻す" else "")
+            "LIMIT $relayUrl 同時購読数を ${subscriptionLimitLocked(relayUrl)} に下げる（開いている数 $stillOpen）。$subId を待ちに戻す"
         }
+    }
+
+    /** 有限取得がこのリレーで終わった。開いていれば CLOSE を送り、他のリレーを待つ間も枠を空けておく。 */
+    private fun finishFetchOnRelayLocked(
+        subscriptionId: String,
+        record: ActiveSubscriptionRecord,
+        relayUrl: String,
+        state: RelaySubscriptionState,
+    ): SubscriptionWireCommand? {
+        val result = SubscriptionStateMachine.finishFetch(state)
+        record.relayStates[relayUrl] = result.state!!
+        if (RelaySubscriptionSlots.occupies(state)) slotsFreedRelays += relayUrl
+        if (result.command == null) return null
+        return SubscriptionWireCommand(
+            relayUrl = relayUrl,
+            message = buildCloseMessage(subscriptionId),
+            generation = relayConnectionGenerations[relayUrl] ?: 0L,
+            subscriptionId = subscriptionId,
+        )
     }
 
     private suspend fun sendSubscriptionCommands(
@@ -460,7 +484,11 @@ object NostrRepository {
                             }
                         }
                         record.fetchOutcomes[relayUrl] = RelayOutcome.Eose
-                        commands = reconcileSubscriptionLocked(subscriptionId, record, onlyRelayUrl = relayUrl)
+                        commands = if (record.behavior is SubscriptionBehavior.Fetch) {
+                            listOfNotNull(finishFetchOnRelayLocked(subscriptionId, record, relayUrl, record.relayStates.getValue(relayUrl)))
+                        } else {
+                            reconcileSubscriptionLocked(subscriptionId, record, onlyRelayUrl = relayUrl)
+                        }
                         if (record.shouldCompleteFetchLocked()) {
                             record.fetchCompletionScheduled = true
                             fetchToComplete = subscriptionId
@@ -477,6 +505,10 @@ object NostrRepository {
                         )
                         record.relayStates[relayUrl] = next
                         if (RelaySubscriptionSlots.occupies(state)) slotsFreedRelays += relayUrl
+                        // 有限取得はこのリレーでの応答が終わったので、再接続しても送り直さない。
+                        if (record.behavior is SubscriptionBehavior.Fetch) {
+                            finishFetchOnRelayLocked(subscriptionId, record, relayUrl, next)
+                        }
                         record.session?.let {
                             signals += it to SubscriptionSignal.Closed(
                                 relayUrl = relayUrl,
@@ -861,6 +893,7 @@ object NostrRepository {
     private suspend fun closeActiveSubscription(subscriptionId: String, closeMessage: String) {
         val (commands, removedHandles, session) = stateMutex.withLock {
             val record = activeSubscriptions.remove(subscriptionId)
+            openOrder.forget(subscriptionId)
             record?.relayStates?.forEach { (relayUrl, state) ->
                 if (RelaySubscriptionSlots.occupies(state)) slotsFreedRelays += relayUrl
             }

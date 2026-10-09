@@ -12,6 +12,8 @@ internal enum class RelaySubscriptionPhase {
     Closing,
     Closed,
     Suppressed,
+    /** 有限取得がこのリレーで終わった（EOSE か CLOSED）。枠を使わず、再接続しても送り直さない。 */
+    Finished,
 }
 
 internal data class RelaySubscriptionState(
@@ -89,6 +91,9 @@ internal object SubscriptionStateMachine {
         }
 
         val current = state ?: RelaySubscriptionState(connectionGeneration = connectionGeneration)
+        if (current.phase == RelaySubscriptionPhase.Finished) {
+            return SubscriptionReconcileResult(current, null)
+        }
         if (
             current.phase == RelaySubscriptionPhase.Suppressed &&
             current.refusedFilters == desiredFilters
@@ -179,7 +184,9 @@ internal object SubscriptionStateMachine {
         state: RelaySubscriptionState,
         nextConnectionGeneration: Long,
         disconnectedAt: Long? = null,
-    ): RelaySubscriptionState = state.copy(
+    ): RelaySubscriptionState = if (state.phase == RelaySubscriptionPhase.Finished) {
+        state.copy(connectionGeneration = nextConnectionGeneration)
+    } else state.copy(
         phase = RelaySubscriptionPhase.Idle,
         sentFilters = null,
         connectionGeneration = nextConnectionGeneration,
@@ -225,6 +232,16 @@ internal object SubscriptionStateMachine {
             slowDelayMillis
         }
 
+    /**
+     * 有限取得がこのリレーで終わった。開いたままなら CLOSE を送って枠を空け、他のリレーの応答を待つ間もふさがない。
+     * リレーが CLOSED で閉じた場合は送るものがない。
+     */
+    fun finishFetch(state: RelaySubscriptionState): SubscriptionReconcileResult {
+        val next = state.copy(phase = RelaySubscriptionPhase.Finished, sentFilters = null)
+        val command = if (RelaySubscriptionSlots.occupies(state)) SubscriptionCommandDecision.Close else null
+        return SubscriptionReconcileResult(next, command)
+    }
+
     fun prepareRetry(state: RelaySubscriptionState): RelaySubscriptionState = state.copy(
         phase = RelaySubscriptionPhase.Idle,
         sentFilters = null,
@@ -254,10 +271,42 @@ internal object RelaySubscriptionSlots {
         return (if (lowered != null) minOf(base, lowered) else base).coerceAtLeast(1)
     }
 
+    /** 超過の通知を受けて下げる上限。まだ開いている数に合わせ、一度下げた値は上げ直さない。 */
+    fun lowered(previous: Int?, stillOpen: Int): Int =
+        minOf(previous ?: stillOpen, stillOpen).coerceAtLeast(1)
+
     /** 同時購読数の超過を知らせる NOTICE か。購読IDを含まないため、文言で判定する。 */
     fun isTooManySubscriptionsNotice(message: String): Boolean {
         val lower = message.lowercase()
         return ("too many" in lower && ("req" in lower || "subscription" in lower)) ||
             "concurrent subscription" in lower
+    }
+}
+
+/**
+ * リレーごとに、購読を開いた順。同時購読数を超えた REQ は後から送ったものから拒否され、
+ * 拒否1件ごとに購読IDのない通知が届くので、通知のたびに最後に開いてまだ応答のない購読を1つ取り出す。
+ */
+internal class RelayOpenOrder {
+    private val order = mutableMapOf<String, LinkedHashSet<String>>()
+
+    fun opened(relayUrl: String, subscriptionId: String) {
+        val ids = order.getOrPut(relayUrl) { linkedSetOf() }
+        ids.remove(subscriptionId)
+        ids.add(subscriptionId)
+    }
+
+    /** 購読が終わった。どのリレーの記録からも外す。 */
+    fun forget(subscriptionId: String) {
+        order.values.forEach { it.remove(subscriptionId) }
+        order.values.removeAll { it.isEmpty() }
+    }
+
+    /** 拒否されたとみなす購読。[isUnanswered] はまだ何も返していない（EVENT も EOSE もない）か。 */
+    fun rejectedByTooManyNotice(relayUrl: String, isUnanswered: (String) -> Boolean): String? {
+        val ids = order[relayUrl] ?: return null
+        val rejected = ids.lastOrNull(isUnanswered) ?: return null
+        ids.remove(rejected)
+        return rejected
     }
 }
