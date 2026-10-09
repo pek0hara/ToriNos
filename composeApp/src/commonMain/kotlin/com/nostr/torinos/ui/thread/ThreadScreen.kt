@@ -317,6 +317,7 @@ fun ThreadScreen(
                                     { deleteTargetId = root.id }
                                 } else null,
                             )
+                            PostRelayInfo(event = root)
                             HorizontalDivider()
                         }
                         item {
