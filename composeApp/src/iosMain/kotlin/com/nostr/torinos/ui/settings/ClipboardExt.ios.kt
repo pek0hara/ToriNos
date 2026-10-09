@@ -8,3 +8,5 @@ import androidx.compose.ui.ExperimentalComposeUiApi
 actual suspend fun Clipboard.setPlainText(text: String) {
     setClipEntry(ClipEntry.withPlainText(text))
 }
+
+actual suspend fun Clipboard.setSensitiveText(text: String) = setPlainText(text)

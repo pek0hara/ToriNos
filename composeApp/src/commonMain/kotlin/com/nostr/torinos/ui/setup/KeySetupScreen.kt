@@ -64,7 +64,7 @@ import com.nostr.torinos.network.ProfileFetchPolicy
 import com.nostr.torinos.network.ProfileRepository
 import com.nostr.torinos.ui.components.ProfileNameText
 import com.nostr.torinos.ui.profile.AvatarCircle
-import com.nostr.torinos.ui.settings.setPlainText
+import com.nostr.torinos.ui.settings.setSensitiveText
 import com.nostr.torinos.util.loggingExceptionHandler
 import com.nostr.torinos.util.logException
 import com.nostr.torinos.ui.components.DismissKeyboardOnLeave
@@ -522,7 +522,7 @@ private fun GeneratedKeyValues(npub: String, nsec: String) {
                             modifier = Modifier.padding(vertical = 8.dp),
                         )
                     }
-                    IconButton(onClick = { scope.launch { clipboard.setPlainText(nsec) } }) {
+                    IconButton(onClick = { scope.launch { clipboard.setSensitiveText(nsec) } }) {
                         Icon(
                             imageVector = Icons.Default.ContentCopy,
                             contentDescription = "コピー",

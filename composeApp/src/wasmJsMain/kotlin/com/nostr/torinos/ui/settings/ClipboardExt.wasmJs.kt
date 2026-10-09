@@ -40,3 +40,5 @@ private fun copyWithExecCommand(text: String): Boolean =
         })()
         """,
     )
+
+actual suspend fun Clipboard.setSensitiveText(text: String) = setPlainText(text)

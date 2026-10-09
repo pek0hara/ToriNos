@@ -96,7 +96,7 @@ fun SettingsScreen(
 
     LaunchedEffect(accountViewModel) {
         accountViewModel?.secretKeyClipboardEvent?.collect { key ->
-            clipboard.setPlainText(key)
+            clipboard.setSensitiveText(key)
             nsecClipboardCopied = true
         }
     }
@@ -484,7 +484,7 @@ private fun KeySection(
                 onClick = {
                     if (isSecretVisible && nsec != null) {
                         coroutineScope.launch {
-                            clipboard.setPlainText(nsec)
+                            clipboard.setSensitiveText(nsec)
                             nsecDirectCopied = true
                         }
                     } else {
