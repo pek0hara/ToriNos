@@ -9,9 +9,13 @@
 
 ## アーキテクチャ
 
+- [`nip-compatibility-design.md`](./nip-compatibility-design.md) — 下書きのNIP-37互換、リポストのkindと取得先、リアクションとBech32検証の共通規則
+
 - [`account-session-viewmodel-architecture.md`](./account-session-viewmodel-architecture.md) — アカウント切り替え時の状態所有権とライフサイクル
 - [`subscription-architecture-design.md`](./subscription-architecture-design.md) — Nostr購読セッション、リレー別状態管理、フィードのエンゲージメント履歴取得と送信キュー
+- [`engagement-fetch-redesign.md`](./engagement-fetch-redesign.md) — リアクション・返信・リポストの件数を共有ストアのイベント集合から導出する再設計と、実機ログで見つかった購読・通信層の不備（二重REQ、同時購読数、NOTICE拒否）の修正方針（未着手）
 - [`feed-relay-merge-design.md`](./feed-relay-merge-design.md) — フォローフィードのリレー別履歴カーソル、停止リレー分離、復旧マージ
+- [`feed-relay-loading-fix-plan.md`](./feed-relay-loading-fix-plan.md) — 2026-10-03レビューに基づく短いページの終端判定、未取得差分の保持、保存と表示の分離の修正方針（未着手）
 - [`feed-scroll-performance-design.md`](./feed-scroll-performance-design.md) — フィードの状態分離、描画軽量化、位置保持、画像・プリフェッチ方針
 - [`feed-chrome-interaction-design.md`](./feed-chrome-interaction-design.md) — フィードヘッダー／ボトムナビのドラッグ、慣性中断、先頭再表示を扱う操作状態機械
 - [`feed-chrome-refactor-design.md`](./feed-chrome-refactor-design.md) — 現行のフィードヘッダー動作を固定したまま分岐を純粋ロジックへ移す段階的リファクタ計画
@@ -25,7 +29,7 @@
 - [`profile-cache-design.md`](./profile-cache-design.md) — kind 0プロフィールの取得、キャッシュ、更新方針
 - [`cache-performance-refactor-design.md`](./cache-performance-refactor-design.md) — キャッシュと長寿命状態の上限、差分通知、DB・画像メモリの性能改善方針
 - [`search-performance-fix-plan.md`](./search-performance-fix-plan.md) — 検索性能の設計と導入状況、キャッシュ・購読・WebSocketのライフサイクル
-- [`post-search-refactor-design.md`](./post-search-refactor-design.md) — 投稿検索の実装レビュー、ページ状態と有限購読の統合、付随情報の分離、段階的な移行案
+- [`post-search-refactor-design.md`](./post-search-refactor-design.md) — 投稿検索のページ状態機械、有限購読、付随情報（プロフィール・集計）の取得と中断・再開、同秒境界の扱い
 - [`notification-target-resolution-design.md`](./notification-target-resolution-design.md) — 通知対象のKind非依存取得、取得状態とKind別表示・遷移の境界
 - [`post-auto-translation-design.md`](./post-auto-translation-design.md) — OS機能を使う投稿言語判定、自動翻訳、言語モデル準備と安全なフォールバック
 - [`web-private-key-login-design.md`](./web-private-key-login-design.md) — Web版(Kotlin/Wasm)の署名実装、ブラウザでの秘密鍵保存、未対応機能とテスト方針
