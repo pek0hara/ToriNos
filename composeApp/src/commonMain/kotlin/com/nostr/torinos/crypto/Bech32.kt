@@ -12,6 +12,9 @@ object Bech32 {
 
     /** bech32 文字列を (hrp, data bytes) に変換。検証失敗時は例外。 */
     fun decode(bech32: String): Pair<String, ByteArray> {
+        require(!(bech32.any { it in 'a'..'z' } && bech32.any { it in 'A'..'Z' })) {
+            "大文字と小文字が混在しています"
+        }
         val lower = bech32.lowercase()
         val sepIdx = lower.lastIndexOf('1')
         require(sepIdx > 0) { "セパレータ '1' が見つかりません" }
@@ -45,6 +48,9 @@ object Bech32 {
                 bits -= toBits
                 result.add(((acc shr bits) and maxv).toByte())
             }
+        }
+        if (!pad) {
+            require(bits < fromBits && ((acc shl (toBits - bits)) and maxv) == 0) { "不正なパディングです" }
         }
         if (pad && bits > 0) {
             result.add(((acc shl (toBits - bits)) and maxv).toByte())

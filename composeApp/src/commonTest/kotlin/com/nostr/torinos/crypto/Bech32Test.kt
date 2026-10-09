@@ -62,6 +62,18 @@ class Bech32Test {
         }
     }
 
+    @Test
+    fun decode_rejectsMixedCaseBeforeNormalization() {
+        val lower = Bech32.encode("npub", zeros32)
+        assertFailsWith<IllegalArgumentException> { Bech32.decode("N" + lower.drop(1)) }
+    }
+
+    @Test
+    fun decode_rejectsChecksummedNonZeroAndExcessPadding() {
+        assertFailsWith<IllegalArgumentException> { Bech32.decode("npub1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqplkg8xt") }
+        assertFailsWith<IllegalArgumentException> { Bech32.decode("npub1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqzp99kd") }
+    }
+
     // --- encode ---
 
     @Test
