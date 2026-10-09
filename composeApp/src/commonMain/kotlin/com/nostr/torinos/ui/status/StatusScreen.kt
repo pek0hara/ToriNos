@@ -17,11 +17,15 @@ import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AccessTime
+import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.Link
+import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.Settings
-import androidx.compose.material3.AssistChip
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -34,24 +38,30 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.LifecycleStartEffect
 import kotlin.time.Clock
+import kotlinx.coroutines.delay
 import com.nostr.torinos.account.accountSessionViewModel
 import com.nostr.torinos.model.NostrProfile
 import com.nostr.torinos.network.RelayStore
 import com.nostr.torinos.status.GENERAL_STATUS_IDENTIFIER
+import com.nostr.torinos.status.MUSIC_STATUS_IDENTIFIER
 import com.nostr.torinos.status.StatusEntry
 import com.nostr.torinos.status.StatusPublishState
 import com.nostr.torinos.ui.components.LinkedText
 import com.nostr.torinos.ui.components.ProfileNameText
-import com.nostr.torinos.ui.components.formatTimestamp
 import com.nostr.torinos.ui.profile.AvatarCircle
 import com.nostr.torinos.ui.components.RelaySelector
 import com.nostr.torinos.ui.service.ServiceTab
@@ -65,6 +75,7 @@ fun StatusScreen(
     ownProfile: NostrProfile? = null,
     showComposer: Boolean,
     onComposerShown: () -> Unit,
+    onRequestComposer: () -> Unit,
     onUserClick: (String) -> Unit,
     onOpenProfile: () -> Unit = {},
     onOpenRelaySettings: () -> Unit = {},
@@ -183,40 +194,56 @@ fun StatusScreen(
                 color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f),
             )
             Box(modifier = Modifier.fillMaxSize()) {
-                when {
-                    state.loadState == StatusLoadState.Loading && state.statuses.isEmpty() -> {
-                        CircularProgressIndicator(modifier = Modifier.align(Alignment.Center))
+                if (state.loadState == StatusLoadState.Loading && state.statuses.isEmpty()) {
+                    CircularProgressIndicator(modifier = Modifier.align(Alignment.Center))
+                } else {
+                    val now by produceState(Clock.System.now().epochSeconds) {
+                        while (true) {
+                            delay(RELATIVE_TIME_REFRESH_MS)
+                            value = Clock.System.now().epochSeconds
+                        }
                     }
-                    state.selectedCategories.isEmpty() -> {
-                        Text(
-                            text = "カテゴリが選択されていません",
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.align(Alignment.Center),
-                        )
+                    val groups = remember(state.statuses, ownPubkey) {
+                        groupStatusesByUser(state.statuses, excludePubkey = ownPubkey)
                     }
-                    state.statuses.isEmpty() -> {
-                        Text(
-                            text = "ステータスがありません",
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.align(Alignment.Center),
-                        )
-                    }
-                    else -> {
-                        LazyColumn(modifier = Modifier.fillMaxSize()) {
-                            items(
-                                items = state.statuses,
-                                key = { it.key },
+                    LazyColumn(
+                        modifier = Modifier.fillMaxSize(),
+                        // 末尾の行が投稿ボタンの裏に隠れないようにする。
+                        contentPadding = PaddingValues(bottom = 88.dp),
+                    ) {
+                        if (ownPubkey != null) {
+                            item(key = "own", contentType = "own") {
+                                OwnStatusCard(
+                                    pubkey = ownPubkey,
+                                    profile = ownProfile,
+                                    statuses = remember(state.ownStatuses) {
+                                        state.ownStatuses.values.sortedForDisplay()
+                                    },
+                                    now = now,
+                                    onClick = onRequestComposer,
+                                )
+                                StatusDivider()
+                            }
+                        }
+                        when {
+                            state.selectedCategories.isEmpty() -> item(key = "empty", contentType = "empty") {
+                                StatusEmptyText("カテゴリが選択されていません")
+                            }
+                            groups.isEmpty() -> item(key = "empty", contentType = "empty") {
+                                StatusEmptyText("ステータスがありません")
+                            }
+                            else -> items(
+                                items = groups,
+                                key = { it.pubkey },
                                 contentType = { "status" },
-                            ) { status ->
-                                StatusRow(
-                                    status = status,
-                                    profile = state.profiles[status.event.pubkey],
-                                    onUserClick = { onUserClick(status.event.pubkey) },
+                            ) { group ->
+                                StatusGroupRow(
+                                    group = group,
+                                    profile = state.profiles[group.pubkey],
+                                    now = now,
+                                    onUserClick = { onUserClick(group.pubkey) },
                                 )
-                                HorizontalDivider(
-                                    thickness = 0.5.dp,
-                                    color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f),
-                                )
+                                StatusDivider()
                             }
                         }
                     }
@@ -283,38 +310,111 @@ private fun CategoryFilterRow(
         verticalAlignment = Alignment.CenterVertically,
     ) {
         items(availableCategories) { category ->
+            val selected = category in selectedCategories
             FilterChip(
-                selected = category in selectedCategories,
+                selected = selected,
                 onClick = { onToggle(category) },
-                label = { StatusTagText(category) },
+                label = {
+                    Text(
+                        text = category.statusFilterLabel(),
+                        style = MaterialTheme.typography.labelLarge,
+                        maxLines = 1,
+                    )
+                },
+                leadingIcon = if (selected) {
+                    {
+                        Icon(
+                            imageVector = Icons.Default.Check,
+                            contentDescription = null,
+                            modifier = Modifier.size(FilterChipDefaults.IconSize),
+                        )
+                    }
+                } else {
+                    null
+                },
             )
         }
     }
 }
 
 @Composable
-private fun StatusRow(
-    status: StatusEntry,
+private fun OwnStatusCard(
+    pubkey: String,
     profile: NostrProfile?,
-    onUserClick: () -> Unit,
+    statuses: List<StatusEntry>,
+    now: Long,
+    onClick: () -> Unit,
 ) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .background(MaterialTheme.colorScheme.surfaceContainerLow)
+            .padding(horizontal = 16.dp, vertical = 10.dp),
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+        verticalAlignment = if (statuses.isEmpty()) Alignment.CenterVertically else Alignment.Top,
+    ) {
+        AvatarCircle(
+            pubkey = pubkey,
+            name = profile?.bestName,
+            pictureUrl = profile?.picture,
+            size = 36,
+        )
+        Column(
+            modifier = Modifier.weight(1f),
+            verticalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            if (statuses.isEmpty()) {
+                Text(
+                    text = "ステータスを設定…",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            } else {
+                Text(
+                    text = "自分のステータス",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                statuses.forEach { status -> StatusLine(status = status, now = now) }
+            }
+        }
+        Icon(
+            imageVector = Icons.Default.Edit,
+            contentDescription = "ステータスを編集",
+            modifier = Modifier.size(18.dp),
+            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+}
+
+@Composable
+private fun StatusGroupRow(
+    group: StatusUserGroup,
+    profile: NostrProfile?,
+    now: Long,
+    onUserClick: () -> Unit,
+) {
+    val latestCreatedAt = group.latestCreatedAt
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
             .clickable(onClick = onUserClick)
+            // 1日以上更新のない人は「今」の情報として弱いので控えめに見せる。
+            .alpha(if (isStaleStatus(latestCreatedAt, now)) STALE_ROW_ALPHA else 1f)
             .padding(horizontal = 16.dp, vertical = 8.dp),
         horizontalArrangement = Arrangement.spacedBy(12.dp),
         verticalAlignment = Alignment.Top,
     ) {
         AvatarCircle(
-            pubkey = status.event.pubkey,
+            pubkey = group.pubkey,
             name = profile?.bestName,
             pictureUrl = profile?.picture,
-            size = 42,
+            size = 36,
         )
         Column(
             modifier = Modifier.weight(1f),
-            verticalArrangement = Arrangement.spacedBy(4.dp),
+            verticalArrangement = Arrangement.spacedBy(2.dp),
         ) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -323,8 +423,8 @@ private fun StatusRow(
             ) {
                 ProfileNameText(
                     profile = profile,
-                    fallback = status.event.pubkey.take(8) + "…" + status.event.pubkey.takeLast(8),
-                    style = MaterialTheme.typography.labelMedium,
+                    fallback = group.pubkey.take(8) + "…" + group.pubkey.takeLast(8),
+                    style = MaterialTheme.typography.titleSmall,
                     fontWeight = FontWeight.Bold,
                     color = MaterialTheme.colorScheme.primary,
                     maxLines = 1,
@@ -332,76 +432,120 @@ private fun StatusRow(
                     modifier = Modifier.weight(1f),
                 )
                 Text(
-                    text = formatTimestamp(status.event.createdAt, todayTimeOnly = true),
+                    text = statusRelativeTimeText(latestCreatedAt, now),
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(start = 8.dp),
                 )
             }
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.Top) {
-                StatusTagLabel(status.identifier)
-                LinkedText(
-                    text = status.event.content,
-                    style = MaterialTheme.typography.bodyMedium,
-                    customEmojis = status.customEmojis,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.weight(1f),
-                )
-            }
-            status.referenceUrls.forEach { url ->
-                LinkedText(
-                    text = url,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.primary,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-            }
-            status.expiration?.let { expiration ->
-                Row(
-                    horizontalArrangement = Arrangement.spacedBy(4.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.AccessTime,
-                        contentDescription = null,
-                        modifier = Modifier.size(14.dp),
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                    Text(
-                        text = statusExpirationRemainingText(expiration, Clock.System.now().epochSeconds),
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-            }
+            group.statuses.forEach { status -> StatusLine(status = status, now = now) }
         }
     }
 }
 
 @Composable
-private fun StatusTagLabel(statusTag: String) {
-    if (statusTag.isDefaultStatusTag()) {
-        StatusTagText(statusTag)
-    } else {
-        AssistChip(
-            onClick = {},
-            label = { StatusTagText(statusTag) },
+private fun StatusLine(
+    status: StatusEntry,
+    now: Long,
+) {
+    val isGeneral = status.identifier == GENERAL_STATUS_IDENTIFIER
+    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            when (status.identifier) {
+                GENERAL_STATUS_IDENTIFIER -> Unit
+                MUSIC_STATUS_IDENTIFIER -> Icon(
+                    imageVector = Icons.Default.MusicNote,
+                    contentDescription = "音楽",
+                    modifier = Modifier.size(16.dp),
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                else -> Text(
+                    text = "#" + customStatusTagLabel(status.identifier),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                )
+            }
+            LinkedText(
+                text = status.event.content,
+                style = MaterialTheme.typography.bodyMedium,
+                customEmojis = status.customEmojis,
+                maxLines = if (isGeneral) 2 else 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f, fill = false),
+            )
+        }
+        status.referenceUrls.forEach { url -> ReferenceUrlLine(url) }
+        status.expiration?.let { expiration ->
+            StatusMetaLine(
+                icon = Icons.Default.AccessTime,
+                text = statusExpirationRemainingText(expiration, now),
+            )
+        }
+    }
+}
+
+@Composable
+private fun ReferenceUrlLine(url: String) {
+    val uriHandler = LocalUriHandler.current
+    StatusMetaLine(
+        icon = Icons.Default.Link,
+        text = referenceUrlDisplayHost(url),
+        color = MaterialTheme.colorScheme.primary,
+        modifier = Modifier.clickable { runCatching { uriHandler.openUri(url) } },
+    )
+}
+
+@Composable
+private fun StatusMetaLine(
+    icon: ImageVector,
+    text: String,
+    modifier: Modifier = Modifier,
+    color: Color = MaterialTheme.colorScheme.onSurfaceVariant,
+) {
+    Row(
+        modifier = modifier,
+        horizontalArrangement = Arrangement.spacedBy(4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(
+            imageVector = icon,
+            contentDescription = null,
+            modifier = Modifier.size(14.dp),
+            tint = color,
+        )
+        Text(
+            text = text,
+            style = MaterialTheme.typography.bodySmall,
+            color = color,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
         )
     }
 }
 
 @Composable
-private fun StatusTagText(statusTag: String) {
-    Text(
-        text = statusTag.statusTagDisplayLabel(),
-        style = if (statusTag.isDefaultStatusTag()) {
-            MaterialTheme.typography.bodyLarge
-        } else {
-            MaterialTheme.typography.labelSmall
-        },
+private fun StatusDivider() {
+    HorizontalDivider(
+        thickness = 0.5.dp,
+        color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f),
     )
+}
+
+@Composable
+private fun StatusEmptyText(text: String) {
+    Box(
+        modifier = Modifier.fillMaxWidth().padding(vertical = 48.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            text = text,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
 }
 
 internal fun statusExpirationRemainingText(expiration: Long, now: Long): String {
@@ -415,12 +559,12 @@ internal fun statusExpirationRemainingText(expiration: Long, now: Long): String 
     }
 }
 
-private fun String.statusTagDisplayLabel(): String =
-    when {
-        this == "general" -> "💬"
-        this == "music" -> "♫"
-        else -> this
+private fun String.statusFilterLabel(): String =
+    when (this) {
+        GENERAL_STATUS_IDENTIFIER -> "💬 一般"
+        MUSIC_STATUS_IDENTIFIER -> "♫ 音楽"
+        else -> "#" + customStatusTagLabel(this)
     }
 
-private fun String.isDefaultStatusTag(): Boolean =
-    this == "general" || this == "music"
+private const val STALE_ROW_ALPHA = 0.6f
+private const val RELATIVE_TIME_REFRESH_MS = 60_000L

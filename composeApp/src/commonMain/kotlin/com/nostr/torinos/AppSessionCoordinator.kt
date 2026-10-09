@@ -1247,6 +1247,11 @@ internal fun AppSessionCoordinator(
                                     ownProfile = ownProfile,
                                     showComposer = composer.showStatusComposer,
                                     onComposerShown = { composer.showStatusComposer = false },
+                                    onRequestComposer = {
+                                        runWithPrivateKey(PendingKeyAction.Status) {
+                                            composer.showStatusComposer = true
+                                        }
+                                    },
                                     onUserClick = ::openProfileDrawer,
                                     onOpenProfile = {
                                         requestOwnProfile()
