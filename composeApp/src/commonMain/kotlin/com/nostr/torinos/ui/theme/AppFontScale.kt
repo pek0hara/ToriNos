@@ -10,10 +10,10 @@ import androidx.compose.ui.unit.sp
 
 /** 設定画面で選べるアプリ内の文字サイズ。OSの文字サイズにさらに掛ける倍率。 */
 enum class AppFontScale(val storageValue: String, val label: String, val factor: Float) {
-    Small("small", "小", 0.85f),
-    Default("default", "標準", 1f),
-    Large("large", "大", 1.15f),
-    ExtraLarge("extra_large", "特大", 1.3f),
+    Small("small", "極小", 0.85f),
+    Default("default", "小", 1f),
+    Large("large", "標準", 1.15f),
+    ExtraLarge("extra_large", "大", 1.3f),
     ;
 
     companion object {

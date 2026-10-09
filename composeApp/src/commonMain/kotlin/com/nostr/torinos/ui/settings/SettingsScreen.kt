@@ -728,7 +728,7 @@ private fun FontScaleRow(
                     selected = scale == selected,
                     onClick = { onSelect(scale) },
                     shape = SegmentedButtonDefaults.itemShape(index, AppFontScale.entries.size),
-                    // 「小」「特大」だけでは読み上げで何の設定か分からないので、項目名を添える。
+                    // 「小」「大」だけでは読み上げで何の設定か分からないので、項目名を添える。
                     modifier = Modifier.semantics { contentDescription = "文字サイズ ${scale.label}" },
                     label = { Text(scale.label, maxLines = 1) },
                 )

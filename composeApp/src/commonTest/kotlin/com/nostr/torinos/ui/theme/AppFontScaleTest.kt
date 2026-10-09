@@ -26,6 +26,11 @@ class AppFontScaleTest {
     }
 
     @Test
+    fun labelsReadFromExtraSmallToLarge() {
+        assertEquals(listOf("極小", "小", "標準", "大"), AppFontScale.entries.map { it.label })
+    }
+
+    @Test
     fun levelsGrowFromSmallToExtraLargeAroundDefault() {
         val factors = AppFontScale.entries.map { it.factor }
         assertEquals(factors.sorted(), factors)
