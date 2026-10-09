@@ -1,7 +1,18 @@
 package com.nostr.torinos.ui.article
 
 import com.nostr.torinos.ui.theme.appSp
+import com.nostr.torinos.model.MATOMETR_TOPIC
+import com.nostr.torinos.model.ArticleItem
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.getValue
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material.icons.filled.ArrowDropDown
+
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -18,6 +29,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -48,8 +60,9 @@ internal fun ArticleAuthorFilter.toAuthorScope(ownPubkey: String?): ArticleAutho
     }
 
 /**
- * 一覧の上に重ねて表示するフィルター。[authorFilter]がnullなら著者セグメントを出さず、
- * [topic]がnullならトピックのチップを出さない。
+ * 一覧の上に重ねて表示するフィルター。著者セグメント([authorFilter]がnullなら出さない)と、
+ * [tagCandidates]を渡した時はその右にタグの選択欄を置く。[tagCandidates]がnullなら、
+ * 絞り込み中の[topic]だけを2行目に解除できるチップで出す。
  */
 @Composable
 internal fun ArticleFloatingFilters(
@@ -57,6 +70,8 @@ internal fun ArticleFloatingFilters(
     onAuthorFilterChange: (ArticleAuthorFilter) -> Unit,
     topic: String?,
     onClearTopic: () -> Unit,
+    tagCandidates: List<String>? = null,
+    onSelectTag: (String) -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     Column(
@@ -64,26 +79,117 @@ internal fun ArticleFloatingFilters(
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(FloatingFilterSpacing),
     ) {
-        if (authorFilter != null) {
-            ArticleAuthorSegmentedControl(
-                selected = authorFilter,
-                onSelected = onAuthorFilterChange,
-            )
+        if (authorFilter != null || tagCandidates != null) Row(
+            modifier = Modifier.height(if (authorFilter != null) SegmentHeight else TopicChipHeight),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            if (authorFilter != null) {
+                ArticleAuthorSegmentedControl(
+                    selected = authorFilter,
+                    onSelected = onAuthorFilterChange,
+                )
+            }
+            if (tagCandidates != null) {
+                ArticleTagSelector(topic = topic, candidates = tagCandidates, onSelect = onSelectTag, onClear = onClearTopic)
+            }
         }
-        if (topic != null) {
+        if (tagCandidates == null && topic != null) {
             ArticleTopicChip(topic = topic, onClear = onClearTopic)
         }
     }
 }
 
 /** [ArticleFloatingFilters]の下に一覧の先頭が隠れないよう空ける高さ。 */
-internal fun articleFloatingFiltersHeight(hasAuthorFilter: Boolean, hasTopic: Boolean): Dp {
-    if (!hasAuthorFilter && !hasTopic) return 0.dp
-    var height = FloatingFilterTopPadding
-    if (hasAuthorFilter) height += SegmentHeight
-    if (hasAuthorFilter && hasTopic) height += FloatingFilterSpacing
-    if (hasTopic) height += TopicChipHeight
+internal fun articleFloatingFiltersHeight(hasAuthorFilter: Boolean, hasTopic: Boolean, hasTagSelector: Boolean = false): Dp {
+    val firstRow = when {
+        hasAuthorFilter -> SegmentHeight
+        hasTagSelector -> TopicChipHeight
+        else -> null
+    }
+    // With a tag selector the chosen topic is shown in it, so there is no second row.
+    val topicRow = hasTopic && !hasTagSelector
+    if (firstRow == null && !topicRow) return 0.dp
+    var height = FloatingFilterTopPadding + (firstRow ?: 0.dp)
+    if (firstRow != null && topicRow) height += FloatingFilterSpacing
+    if (topicRow) height += TopicChipHeight
     return height - 2.dp
+}
+
+/**
+ * タグの選択欄。未選択なら「タグ ▽」、選択中はタグ名と解除の✕を出す。本体のタップで候補を開き直せる。
+ * `#matometr`はNostr上ではほかのタグと同じなので、専用ボタンにせず候補の先頭に置く。
+ */
+@Composable
+private fun ArticleTagSelector(
+    topic: String?,
+    candidates: List<String>,
+    onSelect: (String) -> Unit,
+    onClear: () -> Unit,
+) {
+    var expanded by remember { mutableStateOf(false) }
+    val selected = topic != null
+    val content = if (selected) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant
+    Box {
+        Surface(
+            modifier = Modifier.height(TopicChipHeight).widthIn(max = 150.dp),
+            shape = RoundedCornerShape(16.dp),
+            color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant,
+            shadowElevation = 4.dp,
+            onClick = { expanded = true },
+        ) {
+            Row(
+                modifier = Modifier.padding(start = 12.dp, end = if (selected) 4.dp else 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    text = topic?.let { "#$it" } ?: "タグ",
+                    color = content,
+                    fontSize = 13.appSp,
+                    lineHeight = 18.appSp,
+                    fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f, fill = false),
+                )
+                if (selected) {
+                    Box(
+                        modifier = Modifier.size(28.dp).clip(RoundedCornerShape(14.dp)).clickable(onClick = onClear),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Icon(Icons.Default.Close, contentDescription = "タグの絞り込みを解除", tint = content, modifier = Modifier.size(16.dp))
+                    }
+                } else {
+                    Icon(Icons.Default.ArrowDropDown, contentDescription = null, tint = content, modifier = Modifier.size(20.dp))
+                }
+            }
+        }
+        DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+            candidates.forEach { tag ->
+                DropdownMenuItem(
+                    text = { Text("#$tag", maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                    trailingIcon = if (tag.equals(topic, ignoreCase = true)) {
+                        { Icon(Icons.Default.Check, contentDescription = "選択中", modifier = Modifier.size(18.dp)) }
+                    } else null,
+                    onClick = { expanded = false; onSelect(tag) },
+                )
+            }
+        }
+    }
+}
+
+/**
+ * タグの候補。`#matometr`を常に先頭にし、最近選んだタグ、読み込み済みの記事に多いタグの順に並べる。
+ * 大文字小文字だけ違うタグは同じものとして扱う。
+ */
+internal fun articleTagCandidates(articles: List<ArticleItem>, recent: List<String>, frequentLimit: Int = 5): List<String> {
+    val frequent = articles.flatMap { article -> article.meta.topics.distinctBy { it.lowercase() } }
+        .groupingBy { it.lowercase() }.eachCount()
+        .entries.sortedWith(compareByDescending<Map.Entry<String, Int>> { it.value }.thenBy { it.key })
+        .map { it.key }
+        .filterNot { it == MATOMETR_TOPIC }
+        .take(frequentLimit)
+    return (listOf(MATOMETR_TOPIC) + recent + frequent).filter { it.isNotBlank() }.distinctBy { it.lowercase() }
 }
 
 @Composable

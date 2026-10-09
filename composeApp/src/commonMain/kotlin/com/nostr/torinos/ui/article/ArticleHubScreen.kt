@@ -1,5 +1,11 @@
 package com.nostr.torinos.ui.article
 
+import com.nostr.torinos.model.MATOMETR_TOPIC
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import com.nostr.torinos.network.LocalSettingsStorage
+
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -73,6 +79,19 @@ fun ArticleHubScreen(
     LaunchedEffect(viewModel, query) { viewModel.setQuery(query) }
     LaunchedEffect(viewModel, isActive) { if (isActive) viewModel.start() }
     val state by viewModel.state.collectAsState()
+    // Remember topics the user filtered by, whether chosen from the menu or tapped on a card.
+    var recentTags by remember { mutableStateOf<List<String>?>(null) }
+    LaunchedEffect(Unit) { recentTags = loadRecentArticleTags() }
+    LaunchedEffect(topic, recentTags == null) {
+        // Wait for the stored list, or saving the current topic would overwrite it.
+        val loaded = recentTags ?: return@LaunchedEffect
+        val chosen = topic ?: return@LaunchedEffect
+        if (chosen.equals(MATOMETR_TOPIC, ignoreCase = true)) return@LaunchedEffect
+        val next = (listOf(chosen) + loaded.filterNot { it.equals(chosen, ignoreCase = true) }).take(RecentTagLimit)
+        if (next == loaded) return@LaunchedEffect
+        recentTags = next
+        saveRecentArticleTags(next)
+    }
     val listState = rememberSaveable(activeRelayUrl, query, saver = LazyListState.Saver) { LazyListState() }
     // 未ログイン時は著者セグメントを出さず「すべて」に固定する。
     val showAuthorFilter = ownPubkey != null
@@ -144,8 +163,10 @@ fun ArticleHubScreen(
                     top = articleFloatingFiltersHeight(
                         hasAuthorFilter = showAuthorFilter,
                         hasTopic = topic != null,
+                        hasTagSelector = true,
                     ),
                 ),
+                hiddenTopic = topic,
                 emptyText = when {
                     query == ArticleQuery() -> "記事がありません"
                     query == ArticleQuery(authorScope = ArticleAuthorScope.Following) ->
@@ -159,8 +180,21 @@ fun ArticleHubScreen(
                 onAuthorFilterChange = onAuthorFilterChange,
                 topic = topic,
                 onClearTopic = { onTopicChange(null) },
+                tagCandidates = remember(state.articles, recentTags) { articleTagCandidates(state.articles, recentTags.orEmpty()) },
+                onSelectTag = onTopicChange,
                 modifier = Modifier.fillMaxWidth(),
             )
         }
     }
+}
+
+private const val RecentTagLimit = 5
+private const val RecentTagsKey = "article_recent_tags"
+
+private suspend fun loadRecentArticleTags(): List<String> =
+    runCatching { LocalSettingsStorage.getString(RecentTagsKey) }.getOrNull()
+        ?.split('\n')?.filter { it.isNotBlank() }?.take(RecentTagLimit).orEmpty()
+
+private suspend fun saveRecentArticleTags(tags: List<String>) {
+    runCatching { LocalSettingsStorage.putString(RecentTagsKey, tags.joinToString("\n")) }
 }

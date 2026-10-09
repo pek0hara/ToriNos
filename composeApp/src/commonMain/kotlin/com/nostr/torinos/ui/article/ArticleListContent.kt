@@ -45,6 +45,8 @@ internal fun ArticleListContent(
     modifier: Modifier = Modifier,
     contentPadding: PaddingValues = PaddingValues(),
     emptyText: String = "記事がありません",
+    /** The topic the list is filtered by; every card has it, so cards leave it out. */
+    hiddenTopic: String? = null,
 ) {
     if (onVisibleArticlesChanged != null) {
         TrackVisibleArticles(listState, state.articles, onVisibleArticlesChanged)
@@ -82,6 +84,7 @@ internal fun ArticleListContent(
                     onAuthorClick = onAuthorClick?.let { { it(article.event.pubkey) } },
                     onTopicClick = onTopicClick,
                     engagement = engagement,
+                    hiddenTopic = hiddenTopic,
                 )
                 HorizontalDivider()
             }

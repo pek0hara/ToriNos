@@ -48,7 +48,12 @@ internal fun ArticleCard(
     onAuthorClick: (() -> Unit)?,
     onTopicClick: ((String) -> Unit)?,
     engagement: StateFlow<ArticleEngagementSummary?>? = null,
+    hiddenTopic: String? = null,
 ) {
+    // The filtered topic would repeat on every card.
+    val topics = article.meta.topics.filterNot {
+        it.equals(hiddenTopic, ignoreCase = true)
+    }
     val imageUrl = article.meta.imageUrl?.takeIf { it.isNotBlank() }
     Column(
         modifier = Modifier
@@ -127,9 +132,9 @@ internal fun ArticleCard(
                 ArticleCardEngagement(engagement)
             }
         }
-        if (article.meta.topics.isNotEmpty()) {
+        if (topics.isNotEmpty()) {
             ArticleTopics(
-                topics = article.meta.topics.take(5),
+                topics = topics.take(5),
                 onTopicClick = onTopicClick,
                 maxLines = 1,
             )
