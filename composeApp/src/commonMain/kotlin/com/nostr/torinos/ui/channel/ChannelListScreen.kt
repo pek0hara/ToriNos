@@ -61,9 +61,7 @@ import com.nostr.torinos.network.RelayStore
 import com.nostr.torinos.ui.components.LinkedText
 import com.nostr.torinos.ui.components.RelaySelector
 import com.nostr.torinos.ui.profile.AvatarCircle
-import com.nostr.torinos.ui.service.ServiceTab
-import com.nostr.torinos.ui.service.ServiceTabRow
-import com.nostr.torinos.ui.service.serviceTabSwipe
+import com.nostr.torinos.ui.service.ServiceHeaderDivider
 import kotlin.time.Clock
 import kotlinx.coroutines.flow.distinctUntilChanged
 
@@ -76,8 +74,8 @@ fun ChannelListScreen(
     onOpenProfile: () -> Unit = {},
     onOpenRelaySettings: () -> Unit = {},
     onOpenSettings: () -> Unit = {},
-    selectedServiceTab: ServiceTab = ServiceTab.Channels,
-    onServiceTabSelected: (ServiceTab) -> Unit = {},
+    /** false の間は描画だけして、購読や一覧の取得を始めない。 */
+    isActive: Boolean = true,
 ) {
     val relays by RelayStore.relays.collectAsState(initial = emptyList())
     val selectedRelayUrl by RelayStore.selectedChannelRelayUrl.collectAsState()
@@ -104,13 +102,16 @@ fun ChannelListScreen(
         ChannelListViewModel(
             relayUrl = activeRelayUrl,
             accountSession = accountSession,
+            autoStart = false,
         )
     }
     val state by viewModel.state.collectAsState()
     val listState = rememberSaveable(activeRelayUrl, saver = LazyListState.Saver) { LazyListState() }
     val createdChannelIdToOpen = (state as? ChannelListViewModel.UiState.Ready)?.createdChannelIdToOpen
 
-    LaunchedEffect(viewModel) {
+    LaunchedEffect(viewModel, isActive) {
+        if (!isActive) return@LaunchedEffect
+        viewModel.activate()
         viewModel.onScreenShown()
     }
 
@@ -197,10 +198,7 @@ fun ChannelListScreen(
                         }
                     },
                 )
-                ServiceTabRow(
-                    selectedTab = selectedServiceTab,
-                    onTabSelected = onServiceTabSelected,
-                )
+                ServiceHeaderDivider()
             }
         },
         floatingActionButton = {
@@ -216,11 +214,7 @@ fun ChannelListScreen(
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(padding)
-                .serviceTabSwipe(
-                    selectedTab = selectedServiceTab,
-                    onTabSelected = onServiceTabSelected,
-                ),
+                .padding(padding),
         ) {
             when (val s = state) {
                 is ChannelListViewModel.UiState.Loading -> {

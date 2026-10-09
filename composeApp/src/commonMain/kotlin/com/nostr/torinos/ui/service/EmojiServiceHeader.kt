@@ -22,7 +22,6 @@ fun EmojiServiceHeader(
     onOpenProfile: () -> Unit,
     onOpenSettings: () -> Unit,
     onOpenRelaySettings: () -> Unit,
-    onServiceTabSelected: (ServiceTab) -> Unit,
 ) {
     val relays by RelayStore.relays.collectAsState(initial = emptyList())
     val selectedRelay by RelayStore.selectedEmojiRelayUrl.collectAsState()
@@ -55,6 +54,6 @@ fun EmojiServiceHeader(
                 }
             },
         )
-        ServiceTabRow(selectedTab = ServiceTab.Emojis, onTabSelected = onServiceTabSelected)
+        ServiceHeaderDivider()
     }
 }

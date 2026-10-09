@@ -198,8 +198,11 @@ class ArticleListViewModel(
     initialQuery: ArticleQuery,
     private val relayUrl: String? = null,
     private val accountSession: AccountSession? = null,
+    autoStart: Boolean = true,
 ) : SafeViewModel() {
     private var query = initialQuery
+    // false の間は取得条件だけを受け取り、[start] まで読み込まない。
+    private var started = false
     private val engagementAccountKey = accountSession?.signer?.pubkey
     private var visibleEngagementTargets: List<ArticleEngagementTarget> = emptyList()
     private val inFlightEngagementAddresses = mutableSetOf<String>()
@@ -218,7 +221,7 @@ class ArticleListViewModel(
         }
         launch {
             accountSession?.followRepository?.followedPubkeys?.drop(1)?.collect {
-                if (query.authorScope == ArticleAuthorScope.Following) refresh()
+                if (started && query.authorScope == ArticleAuthorScope.Following) refresh()
             }
         }
         launch {
@@ -236,6 +239,13 @@ class ArticleListViewModel(
                 applyLocalArticleDeletion(deletion.address)
             }
         }
+        if (autoStart) start()
+    }
+
+    /** 最初の読み込みを始める。2回目以降は何もしない。 */
+    fun start() {
+        if (started) return
+        started = true
         refresh()
     }
 
@@ -243,7 +253,7 @@ class ArticleListViewModel(
     fun setQuery(newQuery: ArticleQuery) {
         if (newQuery == query) return
         query = newQuery
-        refresh()
+        if (started) refresh()
     }
 
     /** カードが自分の記事の件数だけを購読するための[StateFlow]。 */

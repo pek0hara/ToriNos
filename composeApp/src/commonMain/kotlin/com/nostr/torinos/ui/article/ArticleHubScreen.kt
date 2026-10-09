@@ -29,9 +29,7 @@ import com.nostr.torinos.network.RelayStore
 import com.nostr.torinos.ui.components.AppTopBar
 import com.nostr.torinos.ui.components.RelaySelector
 import com.nostr.torinos.ui.profile.AvatarCircle
-import com.nostr.torinos.ui.service.ServiceTab
-import com.nostr.torinos.ui.service.ServiceTabRow
-import com.nostr.torinos.ui.service.serviceTabSwipe
+import com.nostr.torinos.ui.service.ServiceHeaderDivider
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.filter
 
@@ -49,8 +47,8 @@ fun ArticleHubScreen(
     onAuthorFilterChange: (ArticleAuthorFilter) -> Unit,
     topic: String?,
     onTopicChange: (String?) -> Unit,
-    selectedServiceTab: ServiceTab,
-    onServiceTabSelected: (ServiceTab) -> Unit,
+    /** false の間は描画だけして、一覧や件数を取得しない。 */
+    isActive: Boolean = true,
 ) {
     val relays by RelayStore.relays.collectAsState(initial = emptyList())
     val selectedRelayUrl by RelayStore.selectedArticleRelayUrl.collectAsState()
@@ -70,9 +68,10 @@ fun ArticleHubScreen(
         topic = topic,
     )
     val viewModel: ArticleListViewModel = accountSessionViewModel(key = "article-hub-$activeRelayUrl") { session ->
-        ArticleListViewModel(initialQuery = query, relayUrl = activeRelayUrl, accountSession = session)
+        ArticleListViewModel(initialQuery = query, relayUrl = activeRelayUrl, accountSession = session, autoStart = false)
     }
     LaunchedEffect(viewModel, query) { viewModel.setQuery(query) }
+    LaunchedEffect(viewModel, isActive) { if (isActive) viewModel.start() }
     val state by viewModel.state.collectAsState()
     val listState = rememberSaveable(activeRelayUrl, query, saver = LazyListState.Saver) { LazyListState() }
     // 未ログイン時は著者セグメントを出さず「すべて」に固定する。
@@ -128,10 +127,7 @@ fun ArticleHubScreen(
                         }
                     },
                 )
-                ServiceTabRow(
-                    selectedTab = selectedServiceTab,
-                    onTabSelected = onServiceTabSelected,
-                )
+                ServiceHeaderDivider()
             }
         },
     ) { padding ->
@@ -143,7 +139,7 @@ fun ArticleHubScreen(
                 onAuthorClick = onAuthorClick,
                 onTopicClick = onTopicChange,
                 engagementFor = viewModel::engagementFlow,
-                onVisibleArticlesChanged = viewModel::onVisibleArticlesChanged,
+                onVisibleArticlesChanged = if (isActive) viewModel::onVisibleArticlesChanged else null,
                 contentPadding = PaddingValues(
                     top = articleFloatingFiltersHeight(
                         hasAuthorFilter = showAuthorFilter,
@@ -156,12 +152,7 @@ fun ArticleHubScreen(
                         "フォロー中のユーザーの記事がありません"
                     else -> "条件に合う記事がありません"
                 },
-                modifier = Modifier
-                    .fillMaxSize()
-                    .serviceTabSwipe(
-                        selectedTab = selectedServiceTab,
-                        onTabSelected = onServiceTabSelected,
-                    ),
+                modifier = Modifier.fillMaxSize(),
             )
             ArticleFloatingFilters(
                 authorFilter = authorFilter.takeIf { showAuthorFilter },

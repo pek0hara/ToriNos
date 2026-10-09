@@ -63,6 +63,8 @@ fun CustomEmojiSettingsScreen(
     onOpenRelaySettings: () -> Unit = {},
     onOpenProfile: (String) -> Unit = {},
     returnToSourceOnDetailBack: Boolean = false,
+    /** false の間は描画だけして、公開セットや登録人数を取得しない。 */
+    isActive: Boolean = true,
     modifier: Modifier = Modifier,
 ) {
     val account = LocalAccountSession.current
@@ -104,17 +106,17 @@ fun CustomEmojiSettingsScreen(
     }
 
     // 公開セット一覧はリレーごとに共有し、フォローの増減では取り直さない。
-    DisposableEffect(selectedRelay, relaysLoaded) {
-        val release = if (relaysLoaded) selectedRelay?.let(EmojiSetDiscovery::acquire) else null
+    DisposableEffect(selectedRelay, relaysLoaded, isActive) {
+        val release = if (isActive && relaysLoaded) selectedRelay?.let(EmojiSetDiscovery::acquire) else null
         onDispose { release?.invoke() }
     }
     // 登録人数の取得はセッションで共有するので、最後の画面が離れたときだけ止める。
-    DisposableEffect(account?.emojiAdoption) {
-        val release = account?.emojiAdoption?.acquire()
+    DisposableEffect(account?.emojiAdoption, isActive) {
+        val release = if (isActive) account?.emojiAdoption?.acquire() else null
         onDispose { release?.invoke() }
     }
-    LaunchedEffect(selectedRelay, relaysLoaded, followsLoaded, follows) {
-        if (relaysLoaded && selectedRelay != null && followsLoaded) account?.emojiAdoption?.start(selectedRelay!!, follows)
+    LaunchedEffect(selectedRelay, relaysLoaded, followsLoaded, follows, isActive) {
+        if (isActive && relaysLoaded && selectedRelay != null && followsLoaded) account?.emojiAdoption?.start(selectedRelay!!, follows)
     }
     LaunchedEffect(selectedRelay) {
         if (previousRelay != selectedRelay) {
@@ -125,8 +127,8 @@ fun CustomEmojiSettingsScreen(
             discoverListState.scrollToItem(0)
         }
     }
-    LaunchedEffect(selectedRelay, adoption.isLoading, adoption.latest, discovery.isLoading, referenceBudget) {
-        if (selectedRelay != null && !adoption.isLoading && !discovery.isLoading && counts.isNotEmpty()) {
+    LaunchedEffect(selectedRelay, adoption.isLoading, adoption.latest, discovery.isLoading, referenceBudget, isActive) {
+        if (isActive && selectedRelay != null && !adoption.isLoading && !discovery.isLoading && counts.isNotEmpty()) {
             EmojiSetDiscovery.fetchReferences(emojiReferencesToRequest(
                 counts, discovery.publishedSets, discovery.failedReferences, referenceBudget))
         }

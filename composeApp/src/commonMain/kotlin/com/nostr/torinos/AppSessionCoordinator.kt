@@ -1,5 +1,23 @@
 package com.nostr.torinos
 
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.LinearOutSlowInEasing
+import androidx.compose.animation.core.FastOutLinearInEasing
+import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.togetherWith
+import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.foundation.layout.width
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
@@ -9,6 +27,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
@@ -26,14 +45,10 @@ import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.ModalDrawerSheet
 import androidx.compose.material3.ModalNavigationDrawer
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.NavigationBar
-import androidx.compose.material3.NavigationBarItem
-import androidx.compose.material3.NavigationBarItemDefaults
 import androidx.compose.material3.NavigationRail
 import androidx.compose.material3.NavigationRailItem
 import androidx.compose.material3.NavigationRailItemDefaults
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.material3.Snackbar
 import androidx.compose.material3.SnackbarDuration
 import androidx.compose.material3.SnackbarHost
@@ -54,8 +69,8 @@ import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.runtime.setValue
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.requiredHeight
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.ui.Alignment
@@ -114,6 +129,7 @@ import com.nostr.torinos.ui.notification.NotificationTargetDestination
 import com.nostr.torinos.ui.settings.MuteListScreen
 import com.nostr.torinos.ui.settings.NgWordScreen
 import com.nostr.torinos.ui.components.rememberDismissKeyboard
+import com.nostr.torinos.ui.components.TopLevelBackHandler
 import com.nostr.torinos.ui.post.FeedInlineComposerBackHandler
 import com.nostr.torinos.ui.post.FeedInlinePostComposer
 import com.nostr.torinos.ui.post.JournalScreen
@@ -130,7 +146,11 @@ import com.nostr.torinos.ui.settings.CustomEmojiSettingsScreen
 import com.nostr.torinos.ui.settings.SettingsScreen
 import com.nostr.torinos.ui.service.EmojiServiceHeader
 import com.nostr.torinos.ui.service.ServiceTab
-import com.nostr.torinos.ui.service.serviceTabSwipe
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.PagerState
+import androidx.compose.runtime.snapshotFlow
+import kotlin.math.abs
+import kotlin.math.sign
 import com.nostr.torinos.ui.status.StatusScreen
 import com.nostr.torinos.ui.thread.ThreadScreen
 import com.nostr.torinos.ui.thread.ThreadViewModel
@@ -235,6 +255,8 @@ internal fun AppSessionCoordinator(
         val followingFeedListState = remember { LazyListState() }
         val globalFeedListState = remember { LazyListState() }
         var currentServiceTab by remember { mutableStateOf(ServiceTab.Articles) }
+        // 最後に開いていたメインタブ（"feed" / "journal"）。サービスフッターの「戻る」の行き先。
+        var lastMainRoute by remember { mutableStateOf("feed") }
         // 記事タブの絞り込み。リレー切り替えでは維持し、アカウント切り替えとアプリ再起動で既定値へ戻る。
         var articleAuthorFilter by remember { mutableStateOf(ArticleAuthorFilter.Following) }
         var articleTopic by remember { mutableStateOf<String?>(null) }
@@ -300,8 +322,9 @@ internal fun AppSessionCoordinator(
                 if (currentRoute == "feed") return
                 // URL の #journal から直接起動した場合も、グラフの起点を残してフィードへ戻す。
                 nav.navigate("feed") {
-                    popUpTo(nav.graph.id)
+                    popUpTo(nav.graph.id) { saveState = true }
                     launchSingleTop = true
+                    restoreState = true
                 }
                 return
             }
@@ -317,10 +340,43 @@ internal fun AppSessionCoordinator(
             navigateTopLevelRoute("services")
         }
 
-        fun navigateNextServiceTab() {
-            val currentIndex = ServiceTab.entries.indexOf(currentServiceTab).coerceAtLeast(0)
-            val nextIndex = (currentIndex + 1) % ServiceTab.entries.size
-            navigateServiceTab(ServiceTab.entries[nextIndex])
+        fun hasBackStackEntry(route: String): Boolean =
+            runCatching { nav.getBackStackEntry(route) }.isSuccess
+
+        // URL から直接開いたチャンネル画面など、どのタブにも属さない画面は保存せずに閉じてから移動する。
+        fun closeOrphanPagesAndNavigate(route: String) {
+            nav.navigate(route) {
+                popUpTo(nav.graph.id) { inclusive = true }
+                launchSingleTop = true
+            }
+        }
+
+        // サービスフッターから選ぶ。チャンネル詳細などからはサービス一覧まで戻し、途中の画面を積み残さない。
+        fun selectServiceTab(tab: ServiceTab) {
+            currentServiceTab = tab
+            if (currentRoute == "services") return
+            if (nav.popBackStack(route = "services", inclusive = false)) return
+            // フィードなどの上に積んだチャンネル画面は、取り除いてから切り替える。
+            // 積んだまま保存すると、あとでそのタブへ戻ったときにチャンネル画面が復元される。
+            nav.popBackStack(route = lastMainRoute, inclusive = false)
+            if (hasBackStackEntry(lastMainRoute)) {
+                navigateTopLevelRoute("services")
+            } else {
+                closeOrphanPagesAndNavigate("services")
+            }
+        }
+
+        // サービスフッターの「戻る」。サービス外から開いたチャンネル画面はそのタブの上に積まれているので、
+        // 切り替えずにそこまで戻す(切り替えると保存したスタックごと復元され、同じ画面に戻ってしまう)。
+        fun returnToMainTab() {
+            val target = if (lastMainRoute == "journal" && ownPubkey != null) "journal" else "feed"
+            if (target == "feed") feedChromeState.collapseFraction = 0f
+            if (nav.popBackStack(route = target, inclusive = false)) return
+            if (!hasBackStackEntry("services")) {
+                closeOrphanPagesAndNavigate(target)
+                return
+            }
+            if (target == "journal") navigateJournalTab() else navigateFeedTab()
         }
 
         fun requestRelaySettings() {
@@ -536,7 +592,8 @@ internal fun AppSessionCoordinator(
         val hasBottomBar = currentRoute in bottomBarRoutes || isChannelThreadRoute || isProfileRoute
         val isWideLayout = LocalIsWideLayout.current
         val density = LocalDensity.current
-        val bottomBarHeightPx = with(density) { AppNavigationBarHeight.toPx() }.toInt()
+        val bottomBarHeight = appNavigationBarHeight()
+        val bottomBarHeightPx = with(density) { bottomBarHeight.toPx() }.toInt()
         val isFeedRoute = currentRoute == "feed"
         val isNewPostRoute = currentRoute == "feed" || currentRoute == "journal"
         // フィードでは下部バーをリストに重ね、高さは変えずに下へずらして隠す。
@@ -549,6 +606,11 @@ internal fun AppSessionCoordinator(
             if (currentRoute != "feed") {
                 feedChromeState.collapseFraction = 0f
             }
+        }
+
+        // サービスフッターの「戻る」で、サービスに入る前のタブへ戻す。
+        LaunchedEffect(currentRoute) {
+            if (currentRoute == "feed" || currentRoute == "journal") lastMainRoute = currentRoute
         }
 
         // 画面が変わったら簡易コンポーザーを閉じ、新規投稿状態を破棄する。
@@ -597,6 +659,33 @@ internal fun AppSessionCoordinator(
                     }
                 }
                 wasPosting = state.isPosting
+            }
+        }
+
+        // タブの最上位でのBackはすぐにアプリを閉じない。ジャーナルとコンテンツはホームへ戻し、
+        // ホームでは案内を出して、続けてもう一度Backしたときだけシステムに任せて閉じる。
+        // 簡易投稿欄やドロワーのBackを優先させるため、それらより先に登録する。
+        var isExitArmed by remember { mutableStateOf(false) }
+        var exitArmJob by remember { mutableStateOf<Job?>(null) }
+        val isTopLevelRoute = (currentRoute == "feed" || currentRoute == "journal" || currentRoute == "services") &&
+            nav.previousBackStackEntry == null
+        TopLevelBackHandler(
+            enabled = isTopLevelRoute && !(currentRoute == "feed" && isExitArmed),
+        ) {
+            if (currentRoute != "feed") {
+                navigateFeedTab()
+                return@TopLevelBackHandler
+            }
+            isExitArmed = true
+            exitArmJob?.cancel()
+            exitArmJob = scope.launch {
+                launch {
+                    snackbarHostState.currentSnackbarData?.dismiss()
+                    snackbarHostState.showSnackbar("もう一度戻るとアプリを終了します")
+                }
+                delay(TopLevelExitWindowMillis)
+                isExitArmed = false
+                snackbarHostState.currentSnackbarData?.dismiss()
             }
         }
 
@@ -934,65 +1023,99 @@ internal fun AppSessionCoordinator(
                 isChannelThreadRoute ||
                 currentRoute == "status"
             // ボトムバーとNavigationRailで同じ導線を共有する。
-            val mainDestinations = listOf(
-                MainDestination(
-                    icon = Icons.Default.Home,
-                    selected = currentRoute == "feed",
-                    onClick = {
-                        feedChromeState.collapseFraction = 0f
-                        if (currentRoute == "feed") {
-                            feedScrollToTopTargetTab = currentFeedTab
-                            feedScrollToTopRequest++
+            val homeDestination = MainDestination(
+                icon = Icons.Default.Home,
+                label = "ホーム",
+                selected = currentRoute == "feed",
+                onClick = {
+                    feedChromeState.collapseFraction = 0f
+                    if (currentRoute == "feed") {
+                        feedScrollToTopTargetTab = currentFeedTab
+                        feedScrollToTopRequest++
+                    } else {
+                        navigateFeedTab()
+                    }
+                },
+            )
+            val journalDestination = MainDestination(
+                icon = Icons.Default.Today,
+                label = "ジャーナル",
+                selected = currentRoute == "journal",
+                onClick = {
+                    runWithPrivateKey(PendingKeyAction.Journal) {
+                        if (currentRoute == "journal") {
+                            composer.journalToggleCalendarRequest++
                         } else {
-                            navigateFeedTab()
+                            navigateJournalTab()
                         }
-                    },
-                ),
+                    }
+                },
+            )
+            // チャンネル詳細は通知などサービス外から開くこともあるので、ルートからチャンネルを選択中とする。
+            val activeServiceTab = if (isChannelRoute || isChannelThreadRoute) ServiceTab.Channels else currentServiceTab
+            val serviceTabDestinations = ServiceTab.entries.map { tab ->
                 MainDestination(
-                    icon = Icons.Default.Today,
-                    selected = currentRoute == "journal",
-                    onClick = {
-                        runWithPrivateKey(PendingKeyAction.Journal) {
-                            if (currentRoute == "journal") {
-                                composer.journalToggleCalendarRequest++
-                            } else {
-                                navigateJournalTab()
-                            }
-                        }
-                    },
-                ),
+                    icon = tab.icon,
+                    label = tab.label,
+                    selected = isServiceRoute && activeServiceTab == tab,
+                    onClick = { selectServiceTab(tab) },
+                )
+            }
+            val mainBarDestinations = listOf(
+                homeDestination,
+                journalDestination,
                 MainDestination(
                     icon = Icons.Default.Apps,
+                    label = "コンテンツ",
                     selected = isServiceRoute,
-                    onClick = {
-                        if (currentRoute == "services") {
-                            navigateNextServiceTab()
-                        } else {
-                            navigateServiceTab(currentServiceTab)
-                        }
-                    },
+                    // 前回使ったサービスを開く。
+                    onClick = { navigateServiceTab(currentServiceTab) },
                 ),
             )
+            val serviceBarDestinations = listOf(
+                MainDestination(
+                    icon = Icons.AutoMirrored.Filled.ArrowBack,
+                    label = "戻る",
+                    selected = false,
+                    onClick = ::returnToMainTab,
+                ),
+            ) + serviceTabDestinations
             AppScaffold(
                 navigationRail = if (isWideLayout && hasBottomBar) {
                     {
                         NavigationRail(containerColor = MaterialTheme.colorScheme.background) {
-                            Spacer(Modifier.weight(1f))
-                            mainDestinations.forEach { destination ->
-                                NavigationRailItem(
-                                    icon = {
-                                        Icon(
-                                            destination.icon,
-                                            contentDescription = null,
-                                            modifier = Modifier.size(if (destination.selected) 26.dp else 24.dp),
-                                        )
-                                    },
-                                    selected = destination.selected,
-                                    colors = appNavigationRailItemColors(),
-                                    onClick = destination.onClick,
-                                )
+                            // サービスもモードを切り替えずに並べる。横向きのスマートフォンなど縦が足りないときはスクロールする。
+                            val railGroups = listOf(listOf(homeDestination, journalDestination), serviceTabDestinations)
+                            BoxWithConstraints(modifier = Modifier.weight(1f)) {
+                                Column(
+                                    modifier = Modifier
+                                        .verticalScroll(rememberScrollState())
+                                        .heightIn(min = maxHeight),
+                                    verticalArrangement = Arrangement.spacedBy(4.dp, Alignment.CenterVertically),
+                                    horizontalAlignment = Alignment.CenterHorizontally,
+                                ) {
+                                    railGroups.forEachIndexed { groupIndex, group ->
+                                        if (groupIndex > 0) {
+                                            HorizontalDivider(modifier = Modifier.width(48.dp).padding(vertical = 4.dp))
+                                        }
+                                        group.forEach { destination ->
+                                            NavigationRailItem(
+                                                icon = {
+                                                    Icon(
+                                                        destination.icon,
+                                                        contentDescription = null,
+                                                        modifier = Modifier.size(if (destination.selected) 26.dp else 24.dp),
+                                                    )
+                                                },
+                                                label = { Text(destination.label) },
+                                                selected = destination.selected,
+                                                colors = appNavigationRailItemColors(),
+                                                onClick = destination.onClick,
+                                            )
+                                        }
+                                    }
+                                }
                             }
-                            Spacer(Modifier.weight(1f))
                         }
                     }
                 } else {
@@ -1097,33 +1220,34 @@ internal fun AppSessionCoordinator(
                     } else if (hasBottomBar && !isWideLayout) {
                         Box(
                             modifier = Modifier
-                                .height(AppNavigationBarHeight)
+                                .fillMaxWidth()
+                                .height(bottomBarHeight)
                                 .graphicsLayer {
                                     translationY = bottomBarHeightPx * activeFeedChromeCollapseFraction()
                                 }
                                 .background(MaterialTheme.colorScheme.background),
                         ) {
-                            NavigationBar(
+                            // サービス内ではフッターをサービス用に切り替える。横にずらして切り替わりを見せる。
+                            // サービスに入るときも「戻る」(←)でも、右から左へ動かす。
+                            // 幅いっぱいに動かすと重く見えるので、少しだけずらして前半で消し後半で出す（Material の shared axis X）。
+                            val footerShiftPx = with(density) { FooterSwitchShift.roundToPx() }
+                            AnimatedContent(
+                                targetState = isServiceRoute,
+                                transitionSpec = {
+                                    (
+                                        slideInHorizontally(tween(FooterSwitchMillis, easing = FastOutSlowInEasing)) { footerShiftPx } +
+                                            fadeIn(tween(FooterSwitchMillis - FooterFadeOutMillis, delayMillis = FooterFadeOutMillis, easing = LinearOutSlowInEasing))
+                                        ) togetherWith (
+                                        slideOutHorizontally(tween(FooterSwitchMillis, easing = FastOutSlowInEasing)) { -footerShiftPx } +
+                                            fadeOut(tween(FooterFadeOutMillis, easing = FastOutLinearInEasing))
+                                        )
+                                },
                                 modifier = Modifier
-                                    .requiredHeight(AppNavigationBarHeight)
+                                    .clipToBounds()
                                     .graphicsLayer { alpha = 1f - activeFeedChromeCollapseFraction() },
-                                containerColor = MaterialTheme.colorScheme.background,
-                                tonalElevation = 0.dp,
-                            ) {
-                                mainDestinations.forEach { destination ->
-                                    NavigationBarItem(
-                                        icon = {
-                                            Icon(
-                                                destination.icon,
-                                                contentDescription = null,
-                                                modifier = Modifier.size(if (destination.selected) 26.dp else 24.dp),
-                                            )
-                                        },
-                                        selected = destination.selected,
-                                        colors = appNavigationBarItemColors(),
-                                        onClick = destination.onClick,
-                                    )
-                                }
+                                label = "bottomBarMode",
+                            ) { serviceMode ->
+                                AppBottomBarRow(if (serviceMode) serviceBarDestinations else mainBarDestinations)
                             }
                         }
                     }
@@ -1179,90 +1303,120 @@ internal fun AppSessionCoordinator(
                         )
                     }
                     composable("services") {
-                        when (currentServiceTab) {
-                            ServiceTab.Emojis -> {
-                                CustomEmojiSettingsScreen(
-                                    modifier = Modifier.serviceTabSwipe(
-                                        selectedTab = currentServiceTab,
-                                        onTabSelected = { currentServiceTab = it },
-                                    ),
-                                    onOpenRelaySettings = ::requestRelaySettings,
-                                    onOpenProfile = ::openProfileDrawer,
-                                    serviceHeader = {
-                                        EmojiServiceHeader(
-                                            ownPubkey = ownPubkey,
-                                            ownProfile = ownProfile,
-                                            onOpenProfile = ::requestOwnProfile,
-                                            onOpenSettings = { openSettings() },
-                                            onOpenRelaySettings = ::requestRelaySettings,
-                                            onServiceTabSelected = { currentServiceTab = it },
-                                        )
-                                    },
-                                )
+                        // コンテンツは左右スワイプでめくれる。描画は見えたページから行い、
+                        // 読み込みや購読は移動が止まって確定したページだけが始める。
+                        val servicePagerState = remember {
+                            PagerState(currentPage = currentServiceTab.ordinal) { ServiceTab.entries.size }
+                        }
+                        // フッターなどから選んで動かしている間は、通過するページを選択扱いにしない。
+                        var serviceScrollToken by remember { mutableStateOf<Any?>(null) }
+                        LaunchedEffect(servicePagerState) {
+                            snapshotFlow { servicePagerState.currentPage to (serviceScrollToken == null) }
+                                .collect { (page, isUserDriven) ->
+                                    if (isUserDriven) currentServiceTab = ServiceTab.entries[page]
+                                }
+                        }
+                        LaunchedEffect(currentServiceTab) {
+                            val target = currentServiceTab.ordinal
+                            if (servicePagerState.currentPage == target) return@LaunchedEffect
+                            val token = Any()
+                            serviceScrollToken = token
+                            try {
+                                // 離れたタブへは隣まで一瞬で飛び、最後の1ページだけ動かす。
+                                val distance = target - servicePagerState.currentPage
+                                if (abs(distance) > 1) servicePagerState.scrollToPage(target - distance.sign)
+                                servicePagerState.animateScrollToPage(target)
+                            } finally {
+                                if (serviceScrollToken === token) serviceScrollToken = null
                             }
-                            ServiceTab.Channels -> {
-                                ChannelListScreen(
-                                    onChannelClick = { id -> nav.navigate(ChannelRoute(id)) },
-                                    ownPubkey = ownPubkey,
-                                    ownProfile = ownProfile,
-                                    onOpenProfile = {
-                                        requestOwnProfile()
-                                    },
-                                    onOpenRelaySettings = {
-                                        requestRelaySettings()
-                                    },
-                                    onOpenSettings = { openSettings() },
-                                    selectedServiceTab = currentServiceTab,
-                                    onServiceTabSelected = { currentServiceTab = it },
-                                )
-                            }
-                            ServiceTab.Articles -> {
-                                ArticleHubScreen(
-                                    ownPubkey = ownPubkey,
-                                    ownProfile = ownProfile,
-                                    onOpenProfile = {
-                                        requestOwnProfile()
-                                    },
-                                    onOpenSettings = { openSettings() },
-                                    onOpenRelaySettings = {
-                                        requestRelaySettings()
-                                    },
-                                    onArticleClick = { pubkey, identifier ->
-                                        nav.navigate(ArticleRoute(pubkey, identifier))
-                                    },
-                                    onAuthorClick = { pubkey ->
-                                        nav.navigate(UserArticlesRoute(pubkey))
-                                    },
-                                    authorFilter = articleAuthorFilter,
-                                    onAuthorFilterChange = { articleAuthorFilter = it },
-                                    topic = articleTopic,
-                                    onTopicChange = { articleTopic = it },
-                                    selectedServiceTab = currentServiceTab,
-                                    onServiceTabSelected = { currentServiceTab = it },
-                                )
-                            }
-                            ServiceTab.Status -> {
-                                StatusScreen(
-                                    ownPubkey = ownPubkey,
-                                    ownProfile = ownProfile,
-                                    showComposer = composer.showStatusComposer,
-                                    onComposerShown = { composer.showStatusComposer = false },
-                                    onRequestComposer = {
-                                        runWithPrivateKey(PendingKeyAction.Status) {
-                                            composer.showStatusComposer = true
-                                        }
-                                    },
-                                    onUserClick = ::openProfileDrawer,
-                                    onOpenProfile = {
-                                        requestOwnProfile()
-                                    },
-                                    onOpenRelaySettings = {
-                                        requestRelaySettings()
-                                    },
-                                    onOpenSettings = { openSettings() },
-                                    selectedServiceTab = currentServiceTab,
-                                    onServiceTabSelected = { currentServiceTab = it },
-                                )
+                        }
+                        val activeServicePage = servicePagerState.settledPage.takeIf { serviceScrollToken == null }
+                        HorizontalPager(
+                            state = servicePagerState,
+                            // めくっている途中のページが横のナビゲーションレールに重ならないようにする。
+                            modifier = Modifier.fillMaxSize().clipToBounds(),
+                            key = { ServiceTab.entries[it].name },
+                        ) { page ->
+                            val tab = ServiceTab.entries[page]
+                            val isActive = page == activeServicePage
+                            when (tab) {
+                                ServiceTab.Emojis -> {
+                                    CustomEmojiSettingsScreen(
+                                        isActive = isActive,
+                                        onOpenRelaySettings = ::requestRelaySettings,
+                                        onOpenProfile = ::openProfileDrawer,
+                                        serviceHeader = {
+                                            EmojiServiceHeader(
+                                                ownPubkey = ownPubkey,
+                                                ownProfile = ownProfile,
+                                                onOpenProfile = ::requestOwnProfile,
+                                                onOpenSettings = { openSettings() },
+                                                onOpenRelaySettings = ::requestRelaySettings,
+                                            )
+                                        },
+                                    )
+                                }
+                                ServiceTab.Channels -> {
+                                    ChannelListScreen(
+                                        onChannelClick = { id -> nav.navigate(ChannelRoute(id)) },
+                                        ownPubkey = ownPubkey,
+                                        ownProfile = ownProfile,
+                                        onOpenProfile = {
+                                            requestOwnProfile()
+                                        },
+                                        onOpenRelaySettings = {
+                                            requestRelaySettings()
+                                        },
+                                        onOpenSettings = { openSettings() },
+                                        isActive = isActive,
+                                    )
+                                }
+                                ServiceTab.Articles -> {
+                                    ArticleHubScreen(
+                                        ownPubkey = ownPubkey,
+                                        ownProfile = ownProfile,
+                                        onOpenProfile = {
+                                            requestOwnProfile()
+                                        },
+                                        onOpenSettings = { openSettings() },
+                                        onOpenRelaySettings = {
+                                            requestRelaySettings()
+                                        },
+                                        onArticleClick = { pubkey, identifier ->
+                                            nav.navigate(ArticleRoute(pubkey, identifier))
+                                        },
+                                        onAuthorClick = { pubkey ->
+                                            nav.navigate(UserArticlesRoute(pubkey))
+                                        },
+                                        authorFilter = articleAuthorFilter,
+                                        onAuthorFilterChange = { articleAuthorFilter = it },
+                                        topic = articleTopic,
+                                        onTopicChange = { articleTopic = it },
+                                        isActive = isActive,
+                                    )
+                                }
+                                ServiceTab.Status -> {
+                                    StatusScreen(
+                                        ownPubkey = ownPubkey,
+                                        ownProfile = ownProfile,
+                                        showComposer = composer.showStatusComposer,
+                                        onComposerShown = { composer.showStatusComposer = false },
+                                        onRequestComposer = {
+                                            runWithPrivateKey(PendingKeyAction.Status) {
+                                                composer.showStatusComposer = true
+                                            }
+                                        },
+                                        onUserClick = ::openProfileDrawer,
+                                        onOpenProfile = {
+                                            requestOwnProfile()
+                                        },
+                                        onOpenRelaySettings = {
+                                            requestRelaySettings()
+                                        },
+                                        onOpenSettings = { openSettings() },
+                                        isActive = isActive,
+                                    )
+                                }
                             }
                         }
                     }
@@ -1750,7 +1904,7 @@ private fun AppModalNavigationDrawer(
 }
 
 @Composable
-private fun appNavigationBarItemColors() = NavigationBarItemDefaults.colors(
+private fun appNavigationRailItemColors() = NavigationRailItemDefaults.colors(
     selectedIconColor = MaterialTheme.colorScheme.primary,
     selectedTextColor = MaterialTheme.colorScheme.primary,
     unselectedIconColor = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -1758,19 +1912,9 @@ private fun appNavigationBarItemColors() = NavigationBarItemDefaults.colors(
     indicatorColor = Color.Transparent,
 )
 
-@Composable
-private fun appNavigationRailItemColors() = NavigationRailItemDefaults.colors(
-    selectedIconColor = MaterialTheme.colorScheme.primary,
-    unselectedIconColor = MaterialTheme.colorScheme.onSurfaceVariant,
-    indicatorColor = Color.Transparent,
-)
-
-private class MainDestination(
-    val icon: ImageVector,
-    val selected: Boolean,
-    val onClick: () -> Unit,
-)
-
-private val AppNavigationBarHeight = 80.dp
+private const val FooterSwitchMillis = 250
+private const val FooterFadeOutMillis = 90
+private const val TopLevelExitWindowMillis = 2_000L
+private val FooterSwitchShift = 30.dp
 private const val ProfileDrawerWidthFraction = 0.92f
 private val ProfileDrawerWideMaxWidth = 480.dp

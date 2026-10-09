@@ -64,9 +64,7 @@ import com.nostr.torinos.ui.components.LinkedText
 import com.nostr.torinos.ui.components.ProfileNameText
 import com.nostr.torinos.ui.profile.AvatarCircle
 import com.nostr.torinos.ui.components.RelaySelector
-import com.nostr.torinos.ui.service.ServiceTab
-import com.nostr.torinos.ui.service.ServiceTabRow
-import com.nostr.torinos.ui.service.serviceTabSwipe
+import com.nostr.torinos.ui.service.ServiceHeaderDivider
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -81,8 +79,8 @@ fun StatusScreen(
     onOpenRelaySettings: () -> Unit = {},
     onOpenSettings: () -> Unit = {},
     modifier: Modifier = Modifier,
-    selectedServiceTab: ServiceTab = ServiceTab.Status,
-    onServiceTabSelected: (ServiceTab) -> Unit = {},
+    /** false の間は描画だけして、購読しない。 */
+    isActive: Boolean = true,
 ) {
     val relays by RelayStore.relays.collectAsState(initial = emptyList())
     val selectedRelayUrl by RelayStore.selectedStatusRelayUrl.collectAsState()
@@ -113,9 +111,11 @@ fun StatusScreen(
     val headerBackgroundColor = MaterialTheme.colorScheme.background
     val headerContentColor = MaterialTheme.colorScheme.onBackground
 
-    LifecycleStartEffect(viewModel, activeRelayUrl) {
-        viewModel.start(activeRelayUrl)
-        onStopOrDispose { viewModel.stop() }
+    if (isActive) {
+        LifecycleStartEffect(viewModel, activeRelayUrl) {
+            viewModel.start(activeRelayUrl)
+            onStopOrDispose { viewModel.stop() }
+        }
     }
 
     LaunchedEffect(showComposer) {
@@ -168,21 +168,14 @@ fun StatusScreen(
                         }
                     },
                 )
-                ServiceTabRow(
-                    selectedTab = selectedServiceTab,
-                    onTabSelected = onServiceTabSelected,
-                )
+                ServiceHeaderDivider()
             }
         },
     ) { padding ->
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(padding)
-                .serviceTabSwipe(
-                    selectedTab = selectedServiceTab,
-                    onTabSelected = onServiceTabSelected,
-                ),
+                .padding(padding),
         ) {
             CategoryFilterRow(
                 availableCategories = state.availableCategories,
