@@ -58,6 +58,8 @@ import com.nostr.torinos.network.ProfileFetchPolicy
 import com.nostr.torinos.network.ProfileRepository
 import com.nostr.torinos.ui.SafeCoroutineLauncher
 import com.nostr.torinos.ui.timeline.NoteEngagementCoordinator
+import com.nostr.torinos.ui.timeline.NoteDeletion
+import com.nostr.torinos.ui.timeline.NoteDeletionSync
 import com.nostr.torinos.ui.timeline.StateStore
 import com.nostr.torinos.ui.timeline.SignedEventPublisher
 import com.nostr.torinos.ui.timeline.SignedPublishResult
@@ -106,7 +108,7 @@ internal class ChannelController(
     private val hideSubId = "ch-hide-$shortId-$relayKey"
     private val unhideSubId = "ch-unhide-$shortId-$relayKey"
 
-    private val seenReplyIds = linkedSetOf<String>()
+    private val replyStore = ChannelReplyStore(channelId)
     private val seenReactionIds = linkedSetOf<String>()
     private val seenRepostIds = linkedSetOf<String>()
     private val seenQuoteRepostIds = linkedSetOf<String>()
@@ -138,7 +140,6 @@ internal class ChannelController(
     private var cachedMetadataSource: CachedMetadataSource? = null
     private var currentMessages = emptyList<NostrEvent>()
     private var currentProfiles = emptyMap<String, NostrProfile>()
-    private var currentReplyCounts = emptyMap<String, Int>()
     private var currentReactionCounts = emptyMap<String, Int>()
     private var currentLikeReactionCounts = emptyMap<String, Int>()
     private var currentCustomReactions = emptyMap<String, List<CustomReaction>>()
@@ -225,6 +226,12 @@ internal class ChannelController(
         lifecycleJobs += launch {
             ownPubkey = accountSession?.pubkey
             reconcileOwnEngagement()
+        }
+        lifecycleJobs += launch {
+            NoteDeletionSync.updates.collect { deletion ->
+                if (deletion.sessionId != accountSession?.sessionId) return@collect
+                removeMessageLocally(deletion.eventId)
+            }
         }
         if (autoStart) start()
     }
@@ -438,9 +445,8 @@ internal class ChannelController(
             )
             when (result) {
                 is SignedPublishResult.Published -> {
-                    locallyDeletedMessageIds += eventId
-                    history.remove(eventId)
-                    ChannelLocalStore.clearLatestMessage(channelId, eventId)
+                    NoteDeletionSync.publish(NoteDeletion(accountSession?.sessionId, eventId))
+                    removeMessageLocally(eventId)
                 }
                 SignedPublishResult.MissingSigner -> {
                     val ready = _state.value as? UiState.Ready
@@ -455,6 +461,20 @@ internal class ChannelController(
                     }
                 }
             }
+        }
+    }
+
+    private suspend fun removeMessageLocally(eventId: String) {
+        if (!locallyDeletedMessageIds.add(eventId)) return
+        replyStore.remove(eventId)
+        history.remove(eventId)
+        if (_state.value is UiState.Ready) syncReadyState()
+        try {
+            ChannelLocalStore.clearLatestMessage(channelId, eventId)
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (error: Exception) {
+            logException("ChannelController", error, "Could not clear deleted channel message preview")
         }
     }
 
@@ -853,6 +873,9 @@ internal class ChannelController(
         jobs += launch {
             history.state.collect { snapshot ->
                 currentMessages = snapshot.messages
+                currentMessages.forEach { event ->
+                    if (replyStore.receive(event)) scheduleProfileFetch(event.pubkey)
+                }
                 syncReadyState()
             }
         }
@@ -879,10 +902,10 @@ internal class ChannelController(
 
         jobs += launch {
             NostrRepository.events(replyCountSubId).collect { event ->
-                if (!noteContext.matches(event) || !seenReplyIds.add(event.id)) return@collect
+                if (!noteContext.matches(event)) return@collect
                 val targetId = noteContext.replyTargetId(event) ?: return@collect
-                if (targetId !in watchedEventIds) return@collect
-                currentReplyCounts = currentReplyCounts + (targetId to (currentReplyCounts[targetId] ?: 0) + 1)
+                if (targetId !in watchedEventIds || !replyStore.receive(event)) return@collect
+                scheduleProfileFetch(event.pubkey)
                 syncReadyState()
             }
         }
@@ -1106,7 +1129,8 @@ internal class ChannelController(
             channelOwnerPubkey = currentChannelOwnerPubkey,
             messages = filteredMessages(hidden),
             profiles = currentProfiles,
-            replyCounts = currentReplyCounts,
+            replyCounts = replyStore.counts,
+            replies = replyPreviews(hidden),
             reactionCounts = currentReactionCounts,
             likeReactionCounts = currentLikeReactionCounts,
             customReactions = currentCustomReactions,
@@ -1142,7 +1166,8 @@ internal class ChannelController(
             channelOwnerPubkey = currentChannelOwnerPubkey,
             messages = filteredMessages(hidden),
             profiles = currentProfiles,
-            replyCounts = currentReplyCounts,
+            replyCounts = replyStore.counts,
+            replies = replyPreviews(hidden),
             reactionCounts = currentReactionCounts,
             likeReactionCounts = currentLikeReactionCounts,
             customReactions = currentCustomReactions,
@@ -1164,11 +1189,22 @@ internal class ChannelController(
         )
     }
 
+    private fun replyPreviews(hidden: Map<String, String>): Map<String, List<NostrEvent>> =
+        channelReplyPreviews(
+            channelId = channelId,
+            // 本文キャッシュから落ちても、一覧に残っている返信はプレビューに使える。
+            events = currentMessages + replyStore.events,
+            hiddenIds = hidden.keys + locallyDeletedMessageIds,
+            mutedPubkeys = accountSession?.muteStore?.mutedPubkeys?.value.orEmpty(),
+            ngWords = accountSession?.ngWordStore?.ngWords?.value.orEmpty(),
+        )
+
     private fun filteredMessages(hidden: Map<String, String>): List<NostrEvent> {
         val muted = accountSession?.muteStore?.mutedPubkeys?.value.orEmpty()
         val ngWords = accountSession?.ngWordStore?.ngWords?.value.orEmpty()
         return currentMessages.filter { msg ->
             msg.id !in hidden &&
+                msg.id !in locallyDeletedMessageIds &&
                 !muted.contains(msg.pubkey) &&
                 (ngWords.isEmpty() || ngWords.none { msg.content.contains(it, ignoreCase = true) })
         }
@@ -1245,7 +1281,7 @@ internal class ChannelController(
                     is SubscriptionSignal.Event -> {
                         clearRelayRefusal(signal.relayUrl)
                         val event = signal.event
-                        if (!noteContext.matches(event)) return@collect
+                        if (!noteContext.matches(event) || event.id in locallyDeletedMessageIds) return@collect
                         rememberMessageSource(event.id, signal.relayUrl)
                         history.receive(event)
                         recordLatestMessage(event)

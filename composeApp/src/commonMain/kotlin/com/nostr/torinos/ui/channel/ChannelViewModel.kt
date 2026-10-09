@@ -33,6 +33,7 @@ class ChannelViewModel(
             val messages: List<NostrEvent> = emptyList(),
             val profiles: Map<String, NostrProfile> = emptyMap(),
             val replyCounts: Map<String, Int> = emptyMap(),
+            val replies: Map<String, List<NostrEvent>> = emptyMap(),
             val reactionCounts: Map<String, Int> = emptyMap(),
             val likeReactionCounts: Map<String, Int> = emptyMap(),
             val customReactions: Map<String, List<CustomReaction>> = emptyMap(),

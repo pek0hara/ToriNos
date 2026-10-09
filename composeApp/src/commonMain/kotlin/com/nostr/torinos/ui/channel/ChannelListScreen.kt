@@ -5,16 +5,13 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.WindowInsets
-import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
@@ -112,6 +109,10 @@ fun ChannelListScreen(
     val state by viewModel.state.collectAsState()
     val listState = rememberSaveable(activeRelayUrl, saver = LazyListState.Saver) { LazyListState() }
     val createdChannelIdToOpen = (state as? ChannelListViewModel.UiState.Ready)?.createdChannelIdToOpen
+
+    LaunchedEffect(viewModel) {
+        viewModel.onScreenShown()
+    }
 
     LaunchedEffect(createdChannelIdToOpen) {
         val channelId = createdChannelIdToOpen ?: return@LaunchedEffect
@@ -262,6 +263,8 @@ fun ChannelListScreen(
                         LazyColumn(
                             state = listState,
                             modifier = Modifier.fillMaxSize(),
+                            // 最下部までスクロールしたとき、最後の行の操作が FAB に隠れないようにする。
+                            contentPadding = PaddingValues(bottom = 88.dp),
                         ) {
                             items(s.channels, key = { it.event.id }) { item ->
                                 ChannelRow(
@@ -418,29 +421,16 @@ private fun ChannelRow(
 ) {
     val activityTime = item.lastActivityAt ?: item.event.createdAt
     val timeText = relativeTime(activityTime)
-    val barColor = if (item.hasBeenOpened) Color(0xFF4DD0E1) else Color(0xFFBDBDBD)
     var menuExpanded by remember(item.event.id) { mutableStateOf(false) }
 
     Row(
         modifier = Modifier
             .fillMaxWidth()
             .clickable(onClick = onClick)
-            .height(IntrinsicSize.Min),
-        verticalAlignment = Alignment.CenterVertically,
+            .padding(horizontal = 16.dp, vertical = 12.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.Top,
     ) {
-        Box(
-            modifier = Modifier
-                .width(6.dp)
-                .fillMaxHeight()
-                .background(barColor),
-        )
-        Row(
-            modifier = Modifier
-                .weight(1f)
-                .padding(horizontal = 16.dp, vertical = 12.dp),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.Top,
-        ) {
         Column(
             modifier = Modifier.weight(1f),
             verticalArrangement = Arrangement.spacedBy(4.dp),
@@ -566,8 +556,7 @@ private fun ChannelRow(
                 }
             }
         }
-        } // inner Row
-    } // outer Row
+    }
 }
 
 private fun relativeTime(epochSeconds: Long): String {

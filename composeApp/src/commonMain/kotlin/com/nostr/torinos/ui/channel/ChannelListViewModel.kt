@@ -60,13 +60,13 @@ data class ChannelItem(
     val unreadCountIsLowerBound: Boolean = false,
     /** 未開封チャンネルでセッション中に新着を観測した(第16.12.4節)。 */
     val hasNewActivity: Boolean = false,
-    val hasBeenOpened: Boolean = false,
     val isFavorite: Boolean = false,
 )
 
 class ChannelListViewModel(
     private val relayUrl: String? = null,
     private val accountSession: AccountSession? = null,
+    autoStart: Boolean = true,
 ) : SafeViewModel() {
 
     companion object {
@@ -167,6 +167,9 @@ class ChannelListViewModel(
     private val seenMessageIds = linkedSetOf<String>()
     private val authorProfiles = mutableMapOf<String, NostrProfile>()
     private val cachedChannels = linkedMapOf<String, ChannelLocalState>()
+
+    /** ★を切り替えたチャンネルの切り替え前の値。押した行が目の前から消えないよう、次に画面を開くまで並び順はこの値で決める。 */
+    private val favoriteSortOverrides = mutableMapOf<String, Boolean>()
     private val cacheReady = CompletableDeferred<Unit>()
     private val unreadTracker = ChannelUnreadTracker()
     // 参加中チャンネル(kind 10005)。ログイン中のアカウントだけ同期する(匿名は端末内の★のみ)。
@@ -197,7 +200,16 @@ class ChannelListViewModel(
     private val createPublishStates = mutableMapOf<String, ChannelPublishUiState>()
     private val reportedPartialCreateEvents = mutableSetOf<String>()
 
+    private var started = false
+
     init {
+        if (autoStart) activate()
+    }
+
+    /** 購読と一覧の取得を始める。一度始めたら ViewModel が破棄されるまで続ける。 */
+    fun activate() {
+        if (started) return
+        started = true
         start()
     }
 
@@ -407,6 +419,7 @@ class ChannelListViewModel(
         val current = _state.value as? UiState.Ready ?: return
         val item = current.channels.firstOrNull { it.event.id == channelId } ?: return
         val newFavorite = !item.isFavorite
+        favoriteSortOverrides.getOrPut(channelId) { item.isFavorite }
         launch {
             ChannelLocalStore.setFavorite(channelId, newFavorite)
             val repository = joinedChannels ?: return@launch
@@ -419,6 +432,13 @@ class ChannelListViewModel(
                     _state.value = s.copy(notice = "参加状態を同期できませんでした: ${error.message ?: "不明なエラー"}")
                 }
         }
+    }
+
+    /** 画面を開き直したときに呼ぶ。★の切り替えを並び順へ反映する。 */
+    fun onScreenShown() {
+        if (favoriteSortOverrides.isEmpty()) return
+        favoriteSortOverrides.clear()
+        if (_state.value is UiState.Ready) emitReady(immediate = true)
     }
 
     /** 他端末・他クライアントで参加したチャンネルを★にする。端末内だけの★は外さない(意図しない公開を避ける)。 */
@@ -968,15 +988,11 @@ class ChannelListViewModel(
                         unreadCount = badge.count,
                         unreadCountIsLowerBound = badge.isLowerBound,
                         hasNewActivity = badge.hasNewActivity,
-                        hasBeenOpened = cached?.lastReadAt != null,
                         isFavorite = cached?.isFavorite ?: false,
                     )
                 }
             }
-            .sortedWith(
-                compareBy<ChannelItem> { it.lastActivityAt == null }
-                    .thenByDescending { it.lastActivityAt ?: it.event.createdAt },
-            )
+            .sortedForChannelList { favoriteSortOverrides[it.event.id] ?: it.isFavorite }
 
     private fun ChannelLocalState.toChannelItem(): ChannelItem =
         ChannelItem(
@@ -1013,6 +1029,16 @@ class ChannelListViewModel(
         super.onCleared()
     }
 }
+
+/** お気に入りを先頭に固定し、残りは最終アクティビティの新しい順に並べる。 */
+internal fun List<ChannelItem>.sortedForChannelList(
+    isFavoriteForSort: (ChannelItem) -> Boolean = { it.isFavorite },
+): List<ChannelItem> =
+    sortedWith(
+        compareByDescending(isFavoriteForSort)
+            .thenBy { it.lastActivityAt == null }
+            .thenByDescending { it.lastActivityAt ?: it.event.createdAt },
+    )
 
 internal fun ChannelListViewModel.UiState.Ready.withCreateDialogSession(
     sessionId: Long,
