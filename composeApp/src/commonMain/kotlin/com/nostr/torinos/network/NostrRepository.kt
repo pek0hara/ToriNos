@@ -50,10 +50,19 @@ sealed interface RelayTarget {
 data class RelayPublishResult(
     val succeededRelays: Set<String>,
     val failedRelays: Map<String, String>,
+    val rejectedRelays: Set<String> = emptySet(),
 ) {
     val successCount: Int get() = succeededRelays.size
     val failureCount: Int get() = failedRelays.size
     val totalCount: Int get() = successCount + failureCount
+}
+
+internal class RelayRejectedException(message: String) : IllegalStateException(message)
+
+/** OK false の応答。rate-limited は時間をおけば受理されうるので、拒否ではなく一時的な失敗として扱う。 */
+private fun relayRejection(message: String): IllegalStateException {
+    val reason = message.ifBlank { "リレーに拒否されました" }
+    return if (reason.startsWith("rate-limited:")) IllegalStateException(reason) else RelayRejectedException(reason)
 }
 
 /**
@@ -935,6 +944,7 @@ object NostrRepository {
             return@coroutineScope RelayPublishResult(
                 succeededRelays = emptySet(),
                 failedRelays = rejectedTargets.associateWith { "NIP-65でread専用に設定されています" },
+                rejectedRelays = rejectedTargets.toSet(),
             )
         }
 
@@ -949,7 +959,7 @@ object NostrRepository {
                         check(withTimeoutOrNull(PUBLISH_TIMEOUT_MS) {
                             if (awaitAcceptance) {
                                 val response = activeRelay.sendEventAndAwaitOk(message, event.id)
-                                check(response.accepted) { response.message.ifBlank { "リレーに拒否されました" } }
+                                if (!response.accepted) throw relayRejection(response.message)
                             } else {
                                 activeRelay.sendAndAwait(message)
                             }
@@ -966,7 +976,7 @@ object NostrRepository {
                                 relay.connected.first()
                                 if (awaitAcceptance) {
                                     val response = relay.sendEventAndAwaitOk(message, event.id)
-                                    check(response.accepted) { response.message.ifBlank { "リレーに拒否されました" } }
+                                    if (!response.accepted) throw relayRejection(response.message)
                                 } else {
                                     relay.sendAndAwait(message)
                                 }
@@ -983,6 +993,7 @@ object NostrRepository {
         }.awaitAll()
 
         RelayPublishResult(
+            rejectedRelays = rejectedTargets.toSet() + results.filter { it.second.exceptionOrNull() is RelayRejectedException }.map { it.first },
             succeededRelays = results.filter { it.second.isSuccess }.mapTo(linkedSetOf()) { it.first },
             failedRelays = buildMap {
                 rejectedTargets.forEach { url ->
