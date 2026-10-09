@@ -7,6 +7,7 @@ import com.nostr.torinos.model.NostrProfile
 import com.nostr.torinos.network.NostrRepository
 import com.nostr.torinos.network.ProfileFetchPolicy
 import com.nostr.torinos.network.ProfileRepository
+import com.nostr.torinos.network.RelayTarget
 import com.nostr.torinos.status.GENERAL_STATUS_IDENTIFIER
 import com.nostr.torinos.status.MUSIC_STATUS_IDENTIFIER
 import com.nostr.torinos.status.PublishStatusCommand
@@ -28,6 +29,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.withTimeoutOrNull
 
 private val DEFAULT_CATEGORIES = listOf(GENERAL_STATUS_IDENTIFIER, MUSIC_STATUS_IDENTIFIER)
 
@@ -50,7 +52,7 @@ data class StatusState(
 internal interface StatusSubscriptionGateway {
     fun events(subscriptionId: String): Flow<NostrEvent>
     fun eose(subscriptionId: String): Flow<Unit>
-    suspend fun subscribe(subscriptionId: String, filter: NostrFilter, relayUrl: String)
+    suspend fun subscribe(subscriptionId: String, filters: List<NostrFilter>, relayUrl: String)
     fun close(subscriptionId: String)
 }
 
@@ -58,8 +60,8 @@ private object NostrStatusSubscriptionGateway : StatusSubscriptionGateway {
     override fun events(subscriptionId: String): Flow<NostrEvent> = NostrRepository.events(subscriptionId)
     override fun eose(subscriptionId: String): Flow<Unit> = NostrRepository.eose(subscriptionId)
 
-    override suspend fun subscribe(subscriptionId: String, filter: NostrFilter, relayUrl: String) {
-        NostrRepository.subscribe(subscriptionId, filter, relayUrl = relayUrl)
+    override suspend fun subscribe(subscriptionId: String, filters: List<NostrFilter>, relayUrl: String) {
+        NostrRepository.subscribe(subscriptionId, filters, RelayTarget.Single(relayUrl))
     }
 
     override fun close(subscriptionId: String) = NostrRepository.close(subscriptionId)
@@ -68,7 +70,7 @@ private object NostrStatusSubscriptionGateway : StatusSubscriptionGateway {
 internal interface StatusProfileGateway {
     fun observeChanges(): Flow<Set<String>>
     fun getCached(pubkeys: Set<String>): Map<String, NostrProfile>
-    suspend fun ensureProfiles(pubkeys: Set<String>, relayHint: String)
+    suspend fun awaitProfiles(pubkeys: Set<String>, relayHint: String)
 }
 
 private object RepositoryStatusProfileGateway : StatusProfileGateway {
@@ -76,8 +78,9 @@ private object RepositoryStatusProfileGateway : StatusProfileGateway {
     override fun getCached(pubkeys: Set<String>): Map<String, NostrProfile> =
         ProfileRepository.getCached(pubkeys)
 
-    override suspend fun ensureProfiles(pubkeys: Set<String>, relayHint: String) {
-        ProfileRepository.ensureProfiles(
+    /** 取得の依頼だけでなく、届くか待ちの上限まで待つ（最初の表示で名前をそろえて出すため）。 */
+    override suspend fun awaitProfiles(pubkeys: Set<String>, relayHint: String) {
+        ProfileRepository.awaitProfiles(
             pubkeys,
             ProfileFetchPolicy.CacheFirst(PROFILE_MAX_AGE_MS),
             relayHint = relayHint,
@@ -104,6 +107,7 @@ internal class StatusViewModel(
     private val pendingPubkeys = linkedSetOf<String>()
     private val sessionJobs = mutableListOf<Job>()
     private var profileBatchJob: Job? = null
+    private var revealJob: Job? = null
     private var publishJob: Job? = null
     private var activeRelayUrl: String? = null
     private var lastRelayUrl: String? = null
@@ -124,6 +128,8 @@ internal class StatusViewModel(
         statusSubId = currentStatusSubId
         ownStatusSubId = currentOwnSubId
 
+        // 同じリレーに戻ったときは前回の結果を残し、それより新しい分だけを取る（同じ秒を含める）。
+        val since = if (reusingSnapshot) snapshot.latestByAddress.values.maxOfOrNull { it.event.createdAt } else null
         if (!reusingSnapshot) {
             snapshot = StatusSnapshot()
             pendingPubkeys.clear()
@@ -132,6 +138,8 @@ internal class StatusViewModel(
             _state.update {
                 it.copy(loadState = if (it.statuses.isEmpty()) StatusLoadState.Loading else StatusLoadState.Ready)
             }
+            // 前回の表示中に取り切れなかったプロフィールを取り直す。
+            if (_state.value.loadState == StatusLoadState.Ready && pendingPubkeys.isNotEmpty()) launchProfileBatch()
         }
 
         sessionJobs += launch {
@@ -148,16 +156,12 @@ internal class StatusViewModel(
         }
         sessionJobs += launch {
             subscriptions.eose(currentStatusSubId).collect {
-                if (isCurrent(currentGeneration, relayUrl)) {
-                    _state.update { state -> state.copy(loadState = StatusLoadState.Ready) }
-                }
+                if (isCurrent(currentGeneration, relayUrl)) revealAfterProfiles(currentGeneration, relayUrl)
             }
         }
         sessionJobs += launch {
             delay(INITIAL_LOAD_TIMEOUT_MS)
-            if (isCurrent(currentGeneration, relayUrl)) {
-                _state.update { state -> state.copy(loadState = StatusLoadState.Ready) }
-            }
+            if (isCurrent(currentGeneration, relayUrl)) revealAfterProfiles(currentGeneration, relayUrl)
         }
         sessionJobs += launch {
             profileGateway.observeChanges().collect { changedPubkeys ->
@@ -185,19 +189,18 @@ internal class StatusViewModel(
             }
         }
         sessionJobs += launch {
-            subscriptions.subscribe(
-                currentStatusSubId,
-                NostrFilter(kinds = listOf(STATUS_EVENT_KIND), limit = STATUS_LIMIT),
-                relayUrl,
-            )
+            subscriptions.subscribe(currentStatusSubId, statusFilters(since), relayUrl)
             accountSession?.pubkey?.let { ownPubkey ->
                 if (!isCurrent(currentGeneration, relayUrl)) return@let
                 subscriptions.subscribe(
                     currentOwnSubId,
-                    NostrFilter(
-                        kinds = listOf(STATUS_EVENT_KIND),
-                        authors = listOf(ownPubkey),
-                        limit = OWN_STATUS_LIMIT,
+                    listOf(
+                        NostrFilter(
+                            kinds = listOf(STATUS_EVENT_KIND),
+                            authors = listOf(ownPubkey),
+                            since = since,
+                            limit = OWN_STATUS_LIMIT,
+                        ),
                     ),
                     relayUrl,
                 )
@@ -212,6 +215,8 @@ internal class StatusViewModel(
         sessionJobs.clear()
         profileBatchJob?.cancel()
         profileBatchJob = null
+        revealJob?.cancel()
+        revealJob = null
         publishJob?.cancel()
         publishJob = null
         statusSubId?.let(subscriptions::close)
@@ -345,12 +350,48 @@ internal class StatusViewModel(
         }
     }
 
+    /**
+     * 最初の表示。名前が16進のまま出て後から差し替わらないよう、EOSE の後に、受け取った人のプロフィール取得を
+     * [REVEAL_PROFILE_WAIT_MS]まで待ってから一覧を出す。取得はそのまま続け、届いた分は後から反映する。
+     */
+    private fun revealAfterProfiles(expectedGeneration: Long, relayUrl: String) {
+        if (_state.value.loadState == StatusLoadState.Ready || revealJob?.isActive == true) return
+        val requested = pendingPubkeys.toSet()
+        pendingPubkeys.removeAll(requested)
+        revealJob = launch {
+            val fetch = launch {
+                var fetchedAll = false
+                try {
+                    if (requested.isNotEmpty()) profileGateway.awaitProfiles(requested, relayUrl)
+                    fetchedAll = true
+                } finally {
+                    // 途中で止めた（タブを離れた）ときは、次に表示したときに取り直す。
+                    if (!fetchedAll) pendingPubkeys.addAll(requested)
+                }
+                val fetched = profileGateway.getCached(requested)
+                if (fetched.isNotEmpty() && isCurrent(expectedGeneration, relayUrl)) {
+                    _state.update { it.copy(profiles = it.profiles + fetched) }
+                }
+            }
+            withTimeoutOrNull(REVEAL_PROFILE_WAIT_MS) { fetch.join() }
+            if (isCurrent(expectedGeneration, relayUrl)) {
+                _state.update { it.copy(loadState = StatusLoadState.Ready) }
+            }
+        }
+    }
+
     private fun scheduleProfileFetch(pubkey: String) {
         if (pubkey in _state.value.profiles || !pendingPubkeys.add(pubkey)) return
         val cached = profileGateway.getCached(setOf(pubkey))
         if (cached.isNotEmpty()) {
             _state.update { it.copy(profiles = it.profiles + cached) }
         }
+        // 最初の表示の前は、EOSE でまとめて取る（revealAfterProfiles）。
+        if (_state.value.loadState != StatusLoadState.Ready) return
+        launchProfileBatch()
+    }
+
+    private fun launchProfileBatch() {
         profileBatchJob?.cancel()
         val relayUrl = activeRelayUrl ?: return
         val expectedGeneration = generation
@@ -359,7 +400,7 @@ internal class StatusViewModel(
             if (!isCurrent(expectedGeneration, relayUrl)) return@launch
             val requested = pendingPubkeys.toSet()
             pendingPubkeys.removeAll(requested)
-            if (requested.isNotEmpty()) profileGateway.ensureProfiles(requested, relayUrl)
+            if (requested.isNotEmpty()) profileGateway.awaitProfiles(requested, relayUrl)
         }
     }
 
@@ -369,14 +410,31 @@ internal class StatusViewModel(
     }
 
     private companion object {
-        const val STATUS_LIMIT = 200
         const val OWN_STATUS_LIMIT = 100
         const val INITIAL_LOAD_TIMEOUT_MS = 5_000L
         const val EXPIRATION_REFRESH_INTERVAL_MS = 60_000L
         const val PROFILE_BATCH_DELAY_MS = 300L
+        const val REVEAL_PROFILE_WAIT_MS = 1_000L
         var nextKey = 0
         fun nextInstanceKey(): Int = nextKey++
     }
 }
 
 private const val PROFILE_MAX_AGE_MS = 15 * 60 * 1_000L
+
+/**
+ * ステータス一覧の購読フィルター。他のアプリが大量に出す種類（`security:scan:…` など）で件数の上限が埋まらないよう、
+ * 表示する一般・音楽を種類で絞って取り、それ以外の種類は見つけるために少しだけ取る。
+ */
+internal fun statusFilters(since: Long?): List<NostrFilter> = listOf(
+    NostrFilter(
+        kinds = listOf(STATUS_EVENT_KIND),
+        dTags = DEFAULT_CATEGORIES,
+        since = since,
+        limit = STATUS_DEFAULT_CATEGORY_LIMIT,
+    ),
+    NostrFilter(kinds = listOf(STATUS_EVENT_KIND), since = since, limit = STATUS_OTHER_CATEGORY_LIMIT),
+)
+
+private const val STATUS_DEFAULT_CATEGORY_LIMIT = 200
+private const val STATUS_OTHER_CATEGORY_LIMIT = 50

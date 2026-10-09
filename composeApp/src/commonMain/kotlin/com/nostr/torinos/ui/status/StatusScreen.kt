@@ -187,9 +187,7 @@ fun StatusScreen(
                 color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f),
             )
             Box(modifier = Modifier.fillMaxSize()) {
-                if (state.loadState == StatusLoadState.Loading && state.statuses.isEmpty()) {
-                    CircularProgressIndicator(modifier = Modifier.align(Alignment.Center))
-                } else {
+                run {
                     val now by produceState(Clock.System.now().epochSeconds) {
                         while (true) {
                             delay(RELATIVE_TIME_REFRESH_MS)
@@ -199,6 +197,11 @@ fun StatusScreen(
                     val groups = remember(state.statuses, ownPubkey) {
                         groupStatusesByUser(state.statuses, excludePubkey = ownPubkey)
                     }
+                    val listContent = statusListContent(
+                        loadState = state.loadState,
+                        hasGroups = groups.isNotEmpty(),
+                        hasCategories = state.selectedCategories.isNotEmpty(),
+                    )
                     LazyColumn(
                         modifier = Modifier.fillMaxSize(),
                         // 末尾の行が投稿ボタンの裏に隠れないようにする。
@@ -218,14 +221,20 @@ fun StatusScreen(
                                 StatusDivider()
                             }
                         }
-                        when {
-                            state.selectedCategories.isEmpty() -> item(key = "empty", contentType = "empty") {
+                        // 自分のカードは常に出し、一覧の欄だけを読み込み中・空・一覧で切り替える（行が出入りしてずれないように）。
+                        when (listContent) {
+                            StatusListContent.NoCategory -> item(key = "empty", contentType = "empty") {
                                 StatusEmptyText("カテゴリが選択されていません")
                             }
-                            groups.isEmpty() -> item(key = "empty", contentType = "empty") {
+                            StatusListContent.Loading -> item(key = "loading", contentType = "loading") {
+                                Box(Modifier.fillMaxWidth().padding(32.dp), contentAlignment = Alignment.Center) {
+                                    CircularProgressIndicator()
+                                }
+                            }
+                            StatusListContent.Empty -> item(key = "empty", contentType = "empty") {
                                 StatusEmptyText("ステータスがありません")
                             }
-                            else -> items(
+                            StatusListContent.List -> items(
                                 items = groups,
                                 key = { it.pubkey },
                                 contentType = { "status" },

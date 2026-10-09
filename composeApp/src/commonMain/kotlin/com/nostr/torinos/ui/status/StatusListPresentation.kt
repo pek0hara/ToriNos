@@ -77,3 +77,22 @@ internal fun referenceUrlDisplayHost(url: String): String {
 private const val CUSTOM_TAG_MAX_LENGTH = 12
 private const val CUSTOM_TAG_SHORT_LENGTH = 8
 private const val STALE_STATUS_SECONDS = 86400L
+
+/** 一覧の欄に出すもの。自分のステータスのカードはこれとは別に常に出す。 */
+internal enum class StatusListContent { Loading, Empty, NoCategory, List }
+
+/**
+ * 最初の表示が済むまで（開始前のタブ切り替え中を含む）は、空でも「ありません」と言わない。
+ * 同じリレーへ戻ったときなど、前回の一覧があれば取り直し中もそれを出す。
+ */
+internal fun statusListContent(
+    loadState: StatusLoadState,
+    hasGroups: Boolean,
+    hasCategories: Boolean,
+): StatusListContent = when {
+    !hasCategories -> StatusListContent.NoCategory
+    loadState == StatusLoadState.Loading -> StatusListContent.Loading
+    hasGroups -> StatusListContent.List
+    loadState == StatusLoadState.Idle -> StatusListContent.Loading
+    else -> StatusListContent.Empty
+}
