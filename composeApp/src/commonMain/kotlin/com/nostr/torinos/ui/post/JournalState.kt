@@ -54,7 +54,13 @@ data class JournalState(
     val entryCountsByDate: Map<LocalDate, Int> = emptyMap(),
     /** 表示中の日（月一覧では月）の種類ごとの件数。取得し終えていない種類は含めない。 */
     val kindCounts: Map<JournalActivityKind, Int> = emptyMap(),
+    /** 表示中の日（月一覧では月の初回分）を取得中。[initial]では取得を始める前から true にする。 */
     val isLoading: Boolean = false,
+    /**
+     * 月の残りの日を取得中。参照先と名前がそろうまで（名前は待ちの上限まで）を含む。
+     * 月一覧はこれが終わってから1回で出す。
+     */
+    val isBackfilling: Boolean = false,
     val error: String? = null,
     val engagementError: String? = null,
     val noteDeleteDialog: JournalNoteDeleteDialogState? = null,
@@ -92,6 +98,8 @@ data class JournalState(
                 today = today,
                 selectedMonth = today.monthStart(),
                 selectedDate = today,
+                // 取得を始める前（タブの切り替え中など）に「投稿はありません」を出さない。
+                isLoading = true,
             )
         }
 

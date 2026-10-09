@@ -134,6 +134,8 @@ fun JournalScreen(
     var todayScrolledMonth by rememberSaveable(accountKey, targetPubkey) { mutableStateOf<String?>(null) }
     // 日表示から月表示へ切り替えたか。切り替えたときは今日ではなく、日表示で見ていた行から見せる。
     var listEnteredFromDay by rememberSaveable(accountKey, targetPubkey) { mutableStateOf(false) }
+    // 今月を開いたとき、一覧の最初の配置の前に今日の位置へ合わせる（先頭で1コマ描いてから跳ばないように）。
+    val pendingTodayScroll = remember { booleanArrayOf(false) }
     // 日表示で先頭に見えていた行と、その行の中のずれ。
     var dayViewAnchor by remember(accountKey, targetPubkey) { mutableStateOf<JournalDayViewAnchor?>(null) }
     val calendarCollapseConnection = remember(journalListState, accountKey, targetPubkey) {
@@ -198,6 +200,7 @@ fun JournalScreen(
         }
         if (todayScrolledMonth == month) return@LaunchedEffect
         todayScrolledMonth = month
+        pendingTodayScroll[0] = true
         // 最後に自分で合わせた位置。ここから動いていれば利用者がスクロールしたとみなす。
         // 今日が一覧の末尾近くだと先頭まで上げられず、上に行が増えるたびに末尾へ寄せ直される。
         // そのため、合わせたときに末尾にいて今も末尾にいるなら、動かしていないとみなす。
@@ -375,28 +378,23 @@ fun JournalScreen(
                 },
             )
             val journalContent: @Composable BoxScope.() -> Unit = {
-                when {
-                    state.isLoading && state.timeline.isEmpty() -> {
+                when (
+                    journalListContent(
+                        isLoading = state.isLoading,
+                        isBackfilling = state.isBackfilling,
+                        showCalendar = state.showCalendar,
+                        hasEntries = visibleEntries.isNotEmpty(),
+                        hasError = state.error != null,
+                    )
+                ) {
+                    JournalListContent.Loading -> {
                         CircularProgressIndicator(modifier = Modifier.align(Alignment.Center))
                     }
-                    state.isLoading && visibleEntries.isEmpty() -> {
-                        Column(
-                            modifier = Modifier.align(Alignment.Center),
-                            horizontalAlignment = Alignment.CenterHorizontally,
-                            verticalArrangement = Arrangement.spacedBy(12.dp),
-                        ) {
-                            CircularProgressIndicator()
-                            Text(
-                                "ジャーナルを読み込んでいます",
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                        }
-                    }
-                    state.error != null -> JournalMessage(
+                    JournalListContent.Error -> JournalMessage(
                         text = state.error.orEmpty(),
                         color = MaterialTheme.colorScheme.error,
                     )
-                    visibleEntries.isEmpty() -> JournalMessage(
+                    JournalListContent.Empty -> JournalMessage(
                         text = when {
                             JournalActivityKind.ReceivedLike in state.kinds -> "被いいねされた投稿はありません"
                             state.showCalendar -> "この日の投稿はありません"
@@ -404,25 +402,33 @@ fun JournalScreen(
                         },
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
-                    else -> LazyColumn(
-                        state = journalListState,
-                        modifier = Modifier.fillMaxSize(),
-                    ) {
-                        items(
-                            items = visibleEntries,
-                            key = { entry -> JournalNoteKeyPrefix + entry.event.id },
-                            contentType = { "note" },
-                        ) { entry ->
-                            JournalEntryRow(
-                                entry = entry,
-                                state = state,
-                                viewModel = viewModel,
-                                ownPubkey = ownPubkey,
-                                onOpenThread = onOpenThread,
-                                onReply = onReply,
-                                onUserClick = onUserClick,
-                            )
-                            HorizontalDivider()
+                    JournalListContent.Entries -> {
+                        if (pendingTodayScroll[0] && !state.showCalendar) {
+                            state.todayScrollIndex()?.let { index ->
+                                journalListState.requestScrollToItem(index)
+                                pendingTodayScroll[0] = false
+                            }
+                        }
+                        LazyColumn(
+                            state = journalListState,
+                            modifier = Modifier.fillMaxSize(),
+                        ) {
+                            items(
+                                items = visibleEntries,
+                                key = { entry -> JournalNoteKeyPrefix + entry.event.id },
+                                contentType = { "note" },
+                            ) { entry ->
+                                JournalEntryRow(
+                                    entry = entry,
+                                    state = state,
+                                    viewModel = viewModel,
+                                    ownPubkey = ownPubkey,
+                                    onOpenThread = onOpenThread,
+                                    onReply = onReply,
+                                    onUserClick = onUserClick,
+                                )
+                                HorizontalDivider()
+                            }
                         }
                     }
                 }
@@ -569,7 +575,10 @@ private fun JournalSelectionHeading(
     // 月一覧では真上に月の見出しがあるため、ここでは繰り返さない。
     val title = if (state.showCalendar) journalDayTitle(state.selectedDate) else "この月"
     val countText = state.visibleEntries.size
-        .takeIf { it > 0 || (!state.isLoading && state.error == null) }
+        .takeIf {
+            journalListContent(state.isLoading, state.isBackfilling, state.showCalendar, it > 0, state.error != null) in
+                setOf(JournalListContent.Entries, JournalListContent.Empty)
+        }
         ?.let { "・${it}件" }
         .orEmpty()
     Row(
@@ -727,4 +736,24 @@ private suspend fun LazyListState.scrollWhenLaidOut(index: Int, offset: Int = 0)
     return withTimeoutOrNull(JournalLayoutWaitMs) {
         snapshotFlow { layoutInfo.visibleItemsInfo.firstOrNull()?.index == firstVisibleItemIndex }.first { it }
     } != null
+}
+
+/** 一覧の欄に出すもの。 */
+internal enum class JournalListContent { Loading, Error, Empty, Entries }
+
+/**
+ * 月一覧は月の残りの取得（参照先・名前を含む）が終わってから1回で出す。先に届いた今日の分だけを出すと、
+ * 後から行が増えて一覧が跳ぶため。日表示はその日の取得が終われば出す。
+ */
+internal fun journalListContent(
+    isLoading: Boolean,
+    isBackfilling: Boolean,
+    showCalendar: Boolean,
+    hasEntries: Boolean,
+    hasError: Boolean,
+): JournalListContent = when {
+    isLoading || (!showCalendar && isBackfilling) -> JournalListContent.Loading
+    hasError -> JournalListContent.Error
+    hasEntries -> JournalListContent.Entries
+    else -> JournalListContent.Empty
 }

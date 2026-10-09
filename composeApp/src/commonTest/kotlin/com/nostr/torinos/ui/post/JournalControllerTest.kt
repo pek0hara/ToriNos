@@ -26,6 +26,7 @@ import com.nostr.torinos.model.NostrFilter
 import com.nostr.torinos.model.NostrProfile
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.runTest
@@ -101,6 +102,50 @@ class JournalControllerTest {
         assertEquals(mapOf(sep3 to 1, sep15 to 1), state.entryCountsByDate)
         assertTrue(state.coverage.hasLoadedMonth(sep1, state.kinds, sep15, setOf(OWNER)))
         assertFalse(state.isLoading)
+    }
+
+    @Test
+    fun journalStartsAsLoadingBeforeTheFirstFetch() = runTest {
+        // 開く前（タブの切り替え中）に「投稿はありません・0件」を出さない。
+        val controller = controller(FakeRelay(), showCalendar = false)
+        assertTrue(controller.state.value.isLoading)
+        // リレーが決まる前に読み込みが呼ばれても、読み込み中のまま待つ。
+        controller.setKinds(setOf(JournalActivityKind.Repost))
+        settle()
+        assertTrue(controller.state.value.isLoading)
+    }
+
+    @Test
+    fun monthListIsRevealedOnceTheMonthReferencesAndNamesAreReady() = runTest {
+        val relay = FakeRelay(post("earlier", createdAt = epochOf(sep3)))
+        relay.backfillGate = CompletableDeferred()
+        val controller = controller(relay, showCalendar = false, profiles = KnownProfiles(OWNER))
+
+        controller.setRelayUrl("wss://memo")
+        settle()
+        // 今日の分（0件）を取り終えても、月の残りの取得中は「取得中」のまま。
+        assertFalse(controller.state.value.isLoading)
+        assertTrue(controller.state.value.isBackfilling)
+
+        relay.backfillGate?.complete(Unit)
+        settle()
+        assertFalse(controller.state.value.isBackfilling)
+        assertEquals(listOf("earlier"), controller.state.value.visibleEntries.map { it.event.id })
+        assertEquals("name-$OWNER", controller.state.value.profiles[OWNER]?.name)
+    }
+
+    @Test
+    fun missingNamesDoNotHoldTheMonthListForever() = runTest {
+        val relay = FakeRelay(post("earlier", createdAt = epochOf(sep3)))
+        val controller = controller(relay, showCalendar = false, profiles = SilentProfiles)
+
+        controller.setRelayUrl("wss://memo")
+        settle()
+        assertTrue(controller.state.value.isBackfilling)
+
+        testScheduler.advanceTimeBy(1_001)
+        settle()
+        assertFalse(controller.state.value.isBackfilling)
     }
 
     @Test
@@ -635,6 +680,8 @@ class JournalControllerTest {
         storage: JournalMemberStorage = FakeMemberStorage(),
         interactions: JournalInteractionSource = JournalInteractionSource { _, _ -> emptyList() },
         references: JournalReferenceSource = NoReferences,
+        profiles: JournalProfileSource = NoProfiles,
+        showCalendar: Boolean = true,
     ) = JournalController(
         accountSession = session(),
         scope = backgroundScope,
@@ -642,13 +689,29 @@ class JournalControllerTest {
         eventSource = relay,
         engagementSource = engagement,
         referenceSource = references,
-        profileSource = NoProfiles,
+        profileSource = profiles,
         cachedReceivedLikes = { _, _, _ -> emptyList() },
         memberStorage = storage,
         interactionSource = interactions,
         // 既存のテストは日ごとの表示で確かめる。
-        initialShowCalendar = true,
+        initialShowCalendar = showCalendar,
     )
+
+    /** プロフィールが届かない（監視は続く）取得元。 */
+    private object SilentProfiles : JournalProfileSource {
+        override fun cached(pubkeys: Set<String>): Map<String, NostrProfile> = emptyMap()
+        override fun observe(pubkeys: Set<String>): Flow<Map<String, NostrProfile>> = MutableStateFlow(emptyMap())
+        override suspend fun ensure(pubkeys: Set<String>, relayHint: String?) = Unit
+    }
+
+    /** 指定した人のプロフィールを持っているプロフィール取得元。 */
+    private class KnownProfiles(vararg pubkeys: String) : JournalProfileSource {
+        private val profiles = pubkeys.associateWith { NostrProfile(name = "name-$it") }
+        override fun cached(pubkeys: Set<String>): Map<String, NostrProfile> = emptyMap()
+        override fun observe(pubkeys: Set<String>): Flow<Map<String, NostrProfile>> =
+            flowOf(profiles.filterKeys { it in pubkeys })
+        override suspend fun ensure(pubkeys: Set<String>, relayHint: String?) = Unit
+    }
 
     private class FakeMemberStorage(vararg initial: String) : JournalMemberStorage {
         var saved: List<String> = initial.toList()
@@ -676,10 +739,13 @@ class JournalControllerTest {
         var complete = true
         var pageLimit: Int? = null
         var gate: CompletableDeferred<Unit>? = null
+        /** 2回目以降（月の残りの取得）だけを止める。 */
+        var backfillGate: CompletableDeferred<Unit>? = null
 
         override suspend fun fetch(request: JournalFetchRequest): JournalFetchResult {
             requests += request
             gate?.await()
+            if (requests.size > 1) backfillGate?.await()
             val matched = events
                 .filter { event -> request.filters.any { it.matches(event) } }
                 .sortedByDescending { it.createdAt }

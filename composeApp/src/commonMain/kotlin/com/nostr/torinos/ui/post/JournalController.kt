@@ -59,6 +59,8 @@ import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.firstOrNull
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.datetime.LocalDate
 
 /** プロフィールの取得と監視。テストではネットワークを使わない実装に差し替える。 */
@@ -495,6 +497,8 @@ internal class JournalController(
                 selectedMonth = monthStart,
                 selectedDate = nextSelectedDate,
                 error = null,
+                // 前の月の取得を途中でやめた場合も、ここで戻す（取得するなら下でまた立てる）。
+                isBackfilling = false,
             )
         }
         val kinds = store.value.kinds
@@ -502,7 +506,7 @@ internal class JournalController(
         val targets = store.value.fetchMembers
         if (!hasConfiguredRelayUrl || !hasLoadedMembers) {
             log { "loadMonth skipped: relay=$hasConfiguredRelayUrl members=$hasLoadedMembers" }
-            update { it.copy(isLoading = false) }
+            // リレーとメンバーがそろったら読み込むので、それまでは読み込み中のままにする（「ありません」を出さない）。
             return
         }
         if (store.value.coverage.hasLoadedMonth(monthStart, kinds, today, targets)) {
@@ -513,7 +517,7 @@ internal class JournalController(
             return
         }
 
-        update { it.copy(isLoading = true) }
+        update { it.copy(isLoading = true, isBackfilling = true) }
         val initialJob = launcher.launch {
             try {
                 val coverage = store.value.coverage
@@ -544,7 +548,11 @@ internal class JournalController(
         backfillJob = launcher.launch {
             // 選択日の取得（または、その間に選び直した日の取得）と取り合わないよう、初回取得の後に始める。
             initialJob.join()
-            backfillMonth(token, kinds, today, replace = refresh)
+            try {
+                backfillMonth(token, kinds, today, replace = refresh)
+            } finally {
+                if (isCurrent(token)) update { it.copy(isBackfilling = false) }
+            }
         }
     }
 
@@ -571,6 +579,8 @@ internal class JournalController(
             // 参照先は日ごとではなく、月の分がそろってから1回で取る。返信の親やいいねの対象が
             // 同じ月の自分の投稿なら、取得済みの行から解決できる。
             fetchReferences(store.value.monthEvents(token.month, kinds))
+            // 月一覧は名前がそろってから出す（16進のまま出て後から差し替わらないように）。待ちには上限がある。
+            awaitWatchedProfiles()
         } catch (e: CancellationException) {
             throw e
         } catch (e: Throwable) {
@@ -830,6 +840,15 @@ internal class JournalController(
         watchProfiles(events.mapTo(mutableSetOf()) { it.pubkey } + (inTimeline + fetched).map { it.pubkey })
     }
 
+    /** 監視中の人のプロフィールがそろうのを[REVEAL_PROFILE_WAIT_MS]まで待つ。取得はその後も続く。 */
+    private suspend fun awaitWatchedProfiles() {
+        val pubkeys = watchedPubkeys.toSet()
+        if (pubkeys.isEmpty() || store.value.profiles.keys.containsAll(pubkeys)) return
+        withTimeoutOrNull(REVEAL_PROFILE_WAIT_MS) {
+            profileSource.observe(pubkeys).firstOrNull { profiles -> (store.value.profiles.keys + profiles.keys).containsAll(pubkeys) }
+        }?.let { profiles -> update { it.copy(profiles = it.profiles + profiles) } }
+    }
+
     private fun watchProfiles(pubkeys: Set<String>) {
         val added = pubkeys - watchedPubkeys
         if (added.isEmpty()) return
@@ -926,6 +945,7 @@ private fun JournalState.withDeleteError(message: String): JournalState =
 
 private const val ENGAGEMENT_STATE_BATCH_MS = 100L
 private const val PROFILE_MAX_AGE_MS = 15 * 60 * 1_000L
+private const val REVEAL_PROFILE_WAIT_MS = 1_000L
 private const val CANDIDATE_LOOKBACK_SECONDS = 30 * 24 * 60 * 60L
 private const val CANDIDATE_LIMIT = 30
 private const val CANDIDATE_CACHE_MS = 5 * 60 * 1_000L
