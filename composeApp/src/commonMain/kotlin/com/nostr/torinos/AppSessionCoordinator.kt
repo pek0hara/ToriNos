@@ -118,6 +118,7 @@ import com.nostr.torinos.ui.article.UserArticleListScreen
 import com.nostr.torinos.ui.channel.ChannelListScreen
 import com.nostr.torinos.ui.channel.ChannelScreen
 import com.nostr.torinos.ui.components.AppFloatingActionButton
+import com.nostr.torinos.ui.components.LocalArticleNavigator
 import com.nostr.torinos.ui.components.LocalQuotePostHandler
 import com.nostr.torinos.ui.feed.FeedTab
 import com.nostr.torinos.ui.feed.FeedChromeState
@@ -731,6 +732,10 @@ internal fun AppSessionCoordinator(
                 composer.openFullScreen()
             }
         }
+        // 投稿の中の記事引用から記事を開く。
+        val articleNavigator = remember(nav) {
+            { pubkey: String, identifier: String -> nav.navigate(ArticleRoute(pubkey, identifier)) }
+        }
         // プロフィールドロワーの中身。PCブラウザの横長画面では左パネルに表示する。
         val profilePanelContent: @Composable (ProfileDrawerDestination?, Boolean) -> Unit = { drawerDestination, isReady ->
             when {
@@ -946,6 +951,7 @@ internal fun AppSessionCoordinator(
                 CompositionLocalProvider(
                     LocalCustomEmojiNavigator provides openCustomEmoji,
                     LocalQuotePostHandler provides quotePostHandler,
+                    LocalArticleNavigator provides articleNavigator,
                 ) {
                     // 閉じるアニメーション中は、最後に表示していたプロフィールを出し続ける。
                     SlidingSidePanel(value = drawerCoordinator.profileDestination) { displayed ->
@@ -957,6 +963,7 @@ internal fun AppSessionCoordinator(
                 CompositionLocalProvider(
                     LocalCustomEmojiNavigator provides openCustomEmoji,
                     LocalQuotePostHandler provides quotePostHandler,
+                    LocalArticleNavigator provides articleNavigator,
                 ) {
                     SidePanelHost(sidePanelNavigator) { destination ->
                         sidePanelScreen(destination)
@@ -967,6 +974,7 @@ internal fun AppSessionCoordinator(
         CompositionLocalProvider(
             LocalCustomEmojiNavigator provides openCustomEmoji,
             LocalQuotePostHandler provides quotePostHandler,
+            LocalArticleNavigator provides articleNavigator,
         ) {
         AppModalNavigationDrawer(
             drawerState = profileDrawerState,

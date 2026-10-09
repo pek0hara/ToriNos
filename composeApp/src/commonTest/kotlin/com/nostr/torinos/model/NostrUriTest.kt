@@ -126,6 +126,35 @@ class NostrUriTest {
     }
 
     @Test
+    fun encodeNaddr_matchesNip19Tlv() {
+        // @scure/base で同じ TLV を bech32 にした値。
+        assertEquals(
+            "naddr1qq9hgmmjd9hx7uedv93xxqgdwaehxw309aukzcn49ekk2q3q0xlxvlhemja6c4dqv22uapctqupfhlxm9h8z3k2e72q4k9hcz7vqxpqqqp65w9kslpc",
+            encodeNaddr(
+                kind = 30023,
+                pubkey = "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
+                identifier = "torinos-abc",
+                relayUrls = listOf("wss://yabu.me"),
+            ),
+        )
+    }
+
+    @Test
+    fun decodeNaddr_roundTripsAndIsFoundInText() {
+        val pubkey = "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"
+        val naddr = encodeNaddr(30023, pubkey, "torinos-abc", listOf("wss://yabu.me"))
+
+        assertEquals(NostrAddressReference(30023, pubkey, "torinos-abc", listOf("wss://yabu.me")), decodeNaddr(naddr))
+        assertEquals(
+            listOf("30023:$pubkey:torinos-abc"),
+            extractNostrAddressReferences("見て nostr:$naddr と $naddr").map { it.address },
+        )
+        // naddr はイベント参照ではないので、nevent の抽出には含めない。
+        assertTrue(extractNostrEventReferences("nostr:$naddr").isEmpty())
+        assertNull(decodeNaddr(encodeNevent(zeroId)))
+    }
+
+    @Test
     fun decode_unknownHrp_returnsNull() {
         val encoded = com.nostr.torinos.crypto.Bech32.encode("npub", zeroBytes)
         assertNull(decodeNostrEventReference(encoded))

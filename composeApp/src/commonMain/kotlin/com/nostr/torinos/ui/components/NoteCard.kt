@@ -107,6 +107,9 @@ import com.nostr.torinos.model.isUnicodeEmojiReactionContent
 import com.nostr.torinos.model.toCustomReaction
 import com.nostr.torinos.model.toReactionOption
 import com.nostr.torinos.model.stripNostrEventUris
+import com.nostr.torinos.model.NostrAddressReference
+import com.nostr.torinos.model.extractArticleQuoteReferences
+import com.nostr.torinos.ui.article.QuotedArticleCard
 import com.nostr.torinos.model.parseImetaTags
 import com.nostr.torinos.model.parseNip94Event
 import com.nostr.torinos.model.timelinePreviewUrl
@@ -123,6 +126,9 @@ import kotlin.time.Clock
 import kotlin.time.Instant
 
 val LocalQuotePostHandler = compositionLocalOf<((NostrEvent) -> Unit)?> { null }
+
+/** 引用した記事カードのタップで記事を開く。null なら記事カードはタップできない。 */
+val LocalArticleNavigator = compositionLocalOf<((pubkey: String, identifier: String) -> Unit)?> { null }
 
 @Composable
 fun NoteCard(
@@ -543,6 +549,10 @@ fun NoteCard(
                         showXPreview = showXPreviews,
                         showImagePreview = showImagePreviews,
                     )
+                }
+                parsedContent.articleQuotes.forEach { reference ->
+                    Spacer(modifier = Modifier.height(8.dp))
+                    QuotedArticleCard(reference)
                 }
                 quotedEvents.forEach { quote ->
                     Spacer(modifier = Modifier.height(8.dp))
@@ -1652,6 +1662,8 @@ data class ParsedNoteContent(
     val linkPreviewUrl: String?,
     /** 投稿カード内のプレイヤーで再生する動画・音声。本文での出現順。 */
     val playableMedia: List<MediaMetadata> = emptyList(),
+    /** naddr で引用している記事。本文からは取り除き、記事カードで表示する。 */
+    val articleQuotes: List<NostrAddressReference> = emptyList(),
 ) {
     val imageUrls: List<String> get() = images.map { it.url }
 }
@@ -1686,6 +1698,7 @@ fun parseNoteContent(event: NostrEvent): ParsedNoteContent {
         images = images,
         linkPreviewUrl = linkPreviewUrl,
         playableMedia = playableMedia,
+        articleQuotes = extractArticleQuoteReferences(content),
     )
 }
 
