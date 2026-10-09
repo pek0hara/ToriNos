@@ -54,6 +54,8 @@ object FollowedRelayDiscovery {
                 followedPubkeys
             } else {
                 followedPubkeys.filterTo(linkedSetOf()) { pubkey ->
+                    // 利用人数の集計に使うリレー一覧を持たない旧キャッシュは取り直す。
+                    if (pubkey !in cache.relayUrlsByPubkey) return@filterTo true
                     val lastFetchedAt = cache.fetchedAtByPubkey[pubkey] ?: return@filterTo true
                     now - lastFetchedAt >= CACHE_TTL_SECONDS
                 }
@@ -82,9 +84,35 @@ object FollowedRelayDiscovery {
                 .apply {
                     fetchResult.completedPubkeys.forEach { pubkey -> put(pubkey, now) }
                 }
-            saveCache(ownPubkey, DiscoveryCache(fetchedAtByPubkey = nextFetchedAt))
+            val nextRelayUrls = cache.relayUrlsByPubkey
+                .filterKeys { it in followedPubkeys }
+                .toMutableMap()
+                .apply {
+                    fetchResult.completedPubkeys.forEach { pubkey ->
+                        put(pubkey, fetchResult.relayUrlsByPubkey[pubkey].orEmpty())
+                    }
+                }
+            saveCache(
+                ownPubkey,
+                DiscoveryCache(
+                    fetchedAtByPubkey = nextFetchedAt,
+                    relayUrlsByPubkey = nextRelayUrls,
+                ),
+            )
             FollowedRelayDiscoveryResult.Completed(addedCount)
         }
+
+    /** キャッシュ済みのフォロー先リレーリストを、リレーごとの利用者一覧に逆引きする。 */
+    suspend fun relayUsers(
+        ownPubkey: String?,
+        followedPubkeys: Set<String>,
+    ): Map<String, List<String>> {
+        ownPubkey ?: return emptyMap()
+        return relayUsersByUrl(
+            relayUrlsByPubkey = loadCache(ownPubkey).relayUrlsByPubkey,
+            followedPubkeys = followedPubkeys,
+        )
+    }
 
     private suspend fun fetchRelayLists(
         pubkeys: List<String>,
@@ -159,7 +187,7 @@ object FollowedRelayDiscovery {
             subscriptionIds.forEach { NostrRepository.closeSuspending(it) }
         }
 
-        val (completedPubkeys, discoveredRelayUrls) = stateMutex.withLock {
+        val (completedPubkeys, relayUrlsByPubkey) = stateMutex.withLock {
             val completedSubscriptionIds = completedRelays
                 .filterValues { it.containsAll(expectedRelayUrls) }
                 .keys
@@ -170,20 +198,18 @@ object FollowedRelayDiscovery {
                         .flatten(),
                 )
             }
-            val discovered = latestEvents.values
-                .flatMap { event ->
-                    event.tags.mapNotNull { tag ->
-                        tag.takeIf { it.size >= 2 && it[0] == "r" }
-                            ?.get(1)
-                            ?.let(::normalizeRelayUrl)
-                    }
-                }
-                .distinct()
-            completed to discovered
+            val relayUrls = latestEvents.mapValues { (_, event) ->
+                event.tags.mapNotNull { tag ->
+                    tag.takeIf { it.size >= 2 && it[0] == "r" }
+                        ?.get(1)
+                        ?.let(::normalizeRelayUrl)
+                }.distinct()
+            }
+            completed to relayUrls
         }
         FetchResult(
             completedPubkeys = completedPubkeys,
-            discoveredRelayUrls = discoveredRelayUrls,
+            relayUrlsByPubkey = relayUrlsByPubkey,
         )
     }
 
@@ -202,12 +228,16 @@ object FollowedRelayDiscovery {
     @Serializable
     private data class DiscoveryCache(
         val fetchedAtByPubkey: Map<String, Long> = emptyMap(),
+        val relayUrlsByPubkey: Map<String, List<String>> = emptyMap(),
     )
 
     private data class FetchResult(
         val completedPubkeys: Set<String>,
-        val discoveredRelayUrls: List<String>,
-    )
+        val relayUrlsByPubkey: Map<String, List<String>>,
+    ) {
+        val discoveredRelayUrls: List<String>
+            get() = relayUrlsByPubkey.values.flatten().distinct()
+    }
 
     private const val RELAY_LIST_KIND = 10002
     private const val AUTHOR_BATCH_SIZE = 100
@@ -223,3 +253,15 @@ internal fun shouldCompleteFollowedRelayFetch(
 ): Boolean = expectedRelayUrls.isNotEmpty() &&
     completedRelaysByBatch.isNotEmpty() &&
     completedRelaysByBatch.all { it.containsAll(expectedRelayUrls) }
+
+internal fun relayUsersByUrl(
+    relayUrlsByPubkey: Map<String, List<String>>,
+    followedPubkeys: Set<String>,
+): Map<String, List<String>> {
+    val users = mutableMapOf<String, MutableList<String>>()
+    relayUrlsByPubkey.forEach { (pubkey, urls) ->
+        if (pubkey !in followedPubkeys) return@forEach
+        urls.toSet().forEach { url -> users.getOrPut(url) { mutableListOf() } += pubkey }
+    }
+    return users
+}

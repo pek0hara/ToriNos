@@ -290,6 +290,34 @@ class RelayStoreTest {
     }
 
     @Test
+    fun relayListUpdatesRewriteDirectionInPlace() {
+        val result = applyRelayListChanges(
+            currentTags = listOf(
+                listOf("r", "wss://both.example"),
+                listOf("alt", "relay list metadata"),
+                listOf("r", "wss://both.example/"),
+                listOf("r", "wss://other.example"),
+            ),
+            additions = emptyList(),
+            removals = emptySet(),
+            updates = listOf(
+                RelayEntry("wss://both.example", enabled = true, read = true, write = false),
+                RelayEntry("wss://unpublished.example", enabled = true, read = false, write = true),
+            ),
+        )
+
+        assertEquals(
+            listOf(
+                listOf("r", "wss://both.example", "read"),
+                listOf("alt", "relay list metadata"),
+                listOf("r", "wss://other.example"),
+                listOf("r", "wss://unpublished.example", "write"),
+            ),
+            result,
+        )
+    }
+
+    @Test
     fun legacyKind3RelayConfigurationCanSeedNip65List() {
         val event = NostrEvent(
             id = "id",

@@ -57,10 +57,11 @@ class RelayListSynchronizer internal constructor(
         true
     }
 
-    /** 読み込み済みの kind:10002 に、明示された追加・削除だけを反映する。 */
+    /** 読み込み済みの kind:10002 に、明示された追加・削除・受信/送信の変更だけを反映する。 */
     suspend fun updatePublishedRelayList(
         additions: Collection<RelayEntry>,
         removals: Set<String>,
+        updates: Collection<RelayEntry> = emptyList(),
     ): RelayListUpdateResult = operationMutex.withLock {
         val pubkey = session.pubkey
         val latestEvent = RelayListEventCache.getOrLoad(pubkey)
@@ -75,6 +76,7 @@ class RelayListSynchronizer internal constructor(
             currentTags = currentTags,
             additions = additions,
             removals = removals,
+            updates = updates,
         )
         checkRelayListCanBePublished(updatedTags)
         val updatedRelayUrls = relayUrlsFromTags(updatedTags)
@@ -444,13 +446,21 @@ internal fun relayEntriesFromTags(tags: List<List<String>>): List<RelayEntry> {
 internal fun relayUrlsFromTags(tags: List<List<String>>): List<String> =
     relayEntriesFromTags(tags).map { it.url }
 
-/** 既存タグを保ったまま、ユーザーが明示した URL の追加・削除だけを適用する。 */
+/** 既存タグを保ったまま、ユーザーが明示した URL の追加・削除・受信/送信の変更だけを適用する。 */
 internal fun applyRelayListChanges(
     currentTags: List<List<String>>,
     additions: Collection<RelayEntry>,
     removals: Set<String>,
+    updates: Collection<RelayEntry> = emptyList(),
 ): List<List<String>> {
     val normalizedRemovals = removals.mapNotNull(::normalizeRelayUrl).toSet()
+    val normalizedUpdates = updates
+        .mapNotNull { entry ->
+            val url = normalizeRelayUrl(entry.url) ?: return@mapNotNull null
+            entry.copy(url = url).takeIf { it.read || it.write }
+        }
+        .filterNot { it.url in normalizedRemovals }
+        .associateBy { it.url }
     val normalizedAdditions = additions
         .mapNotNull { entry ->
             val url = normalizeRelayUrl(entry.url) ?: return@mapNotNull null
@@ -458,12 +468,23 @@ internal fun applyRelayListChanges(
         }
         .filterNot { it.url in normalizedRemovals }
         .distinctBy { it.url }
-    val retainedTags = currentTags.filterNot { tag ->
-        tag.size >= 2 && tag[0] == "r" && normalizeRelayUrl(tag[1]) in normalizedRemovals
+    val updatedUrls = mutableSetOf<String>()
+    val retainedTags = currentTags.mapNotNull { tag ->
+        if (tag.size < 2 || tag[0] != "r") return@mapNotNull tag
+        val url = normalizeRelayUrl(tag[1])
+        when {
+            url in normalizedRemovals -> null
+            url != null && url in normalizedUpdates ->
+                // 同じ URL の重複タグは一つにまとめる。
+                if (updatedUrls.add(url)) relayTagFromEntry(normalizedUpdates.getValue(url)) else null
+            else -> tag
+        }
     }
     val retainedRelayUrls = relayUrlsFromTags(retainedTags).toSet()
-    return retainedTags + normalizedAdditions
+    // 公開リストに無い URL の変更は、その設定で追加する。
+    return retainedTags + (normalizedAdditions + normalizedUpdates.values)
         .filterNot { it.url in retainedRelayUrls }
+        .distinctBy { it.url }
         .map(::relayTagFromEntry)
 }
 

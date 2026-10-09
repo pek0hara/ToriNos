@@ -1,6 +1,7 @@
 package com.nostr.torinos.network
 
 import kotlin.test.Test
+import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
@@ -44,6 +45,23 @@ class FollowedRelayDiscoveryTest {
                 completedRelaysByBatch = listOf(emptySet()),
                 expectedRelayUrls = expectedRelays,
             ),
+        )
+    }
+
+    @Test
+    fun relayUsersListEachFollowedPubkeyOnce() {
+        val users = relayUsersByUrl(
+            relayUrlsByPubkey = mapOf(
+                "alice" to listOf("wss://a.example", "wss://b.example", "wss://a.example"),
+                "bob" to listOf("wss://a.example"),
+                "unfollowed" to listOf("wss://a.example", "wss://c.example"),
+            ),
+            followedPubkeys = setOf("alice", "bob"),
+        )
+
+        assertEquals(
+            mapOf("wss://a.example" to listOf("alice", "bob"), "wss://b.example" to listOf("alice")),
+            users,
         )
     }
 }

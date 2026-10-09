@@ -828,7 +828,10 @@ internal fun AppSessionCoordinator(
                     onUserClick = ::openProfileDrawer,
                 )
                 SidePanelDestination.NgWords -> NgWordScreen(onBack = sidePanelNavigator::back)
-                SidePanelDestination.RelaySettings -> RelaySettingsScreen(onBack = sidePanelNavigator::back)
+                SidePanelDestination.RelaySettings -> RelaySettingsScreen(
+                    onBack = sidePanelNavigator::back,
+                    onOpenProfile = ::openProfileDrawer,
+                )
                 is SidePanelDestination.CustomEmoji -> CustomEmojiSettingsScreen(
                     onBack = sidePanelNavigator::back,
                     onOpenRelaySettings = { sidePanelNavigator.push(SidePanelDestination.RelaySettings) },
@@ -1456,7 +1459,10 @@ internal fun AppSessionCoordinator(
                         NgWordScreen(onBack = { nav.popBackStack() })
                     }
                     composable("relay-settings") {
-                        RelaySettingsScreen(onBack = { nav.popBackStack() })
+                        RelaySettingsScreen(
+                            onBack = { nav.popBackStack() },
+                            onOpenProfile = ::openProfileDrawer,
+                        )
                     }
                     composable<CustomEmojiRoute> { backStack ->
                         val route = backStack.toRoute<CustomEmojiRoute>()

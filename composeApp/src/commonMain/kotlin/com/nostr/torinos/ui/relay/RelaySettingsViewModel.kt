@@ -10,6 +10,8 @@ import com.nostr.torinos.network.RelayInformation
 import com.nostr.torinos.network.RelayInformationRepository
 import com.nostr.torinos.network.NostrRepository
 import com.nostr.torinos.network.RelayStore
+import com.nostr.torinos.network.normalizeRelayUrl
+import com.nostr.torinos.network.writableRelayUrls
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -39,13 +41,19 @@ data class PublishedRelayListUiState(
     val hasPublishedEvent: Boolean = false,
     val pendingAdditions: Set<String> = emptySet(),
     val pendingRemovals: Set<String> = emptySet(),
+    val pendingUpdates: Set<String> = emptySet(),
+    /** 確定後に送信できるリレーが残るか。0件になる変更は確定させない。 */
+    val hasWritableRelay: Boolean = true,
     val isPublishing: Boolean = false,
     val message: String? = null,
     val failedRelayUrls: List<String> = emptyList(),
     val errorMessage: String? = null,
 ) {
-    val hasChanges: Boolean get() = pendingAdditions.isNotEmpty() || pendingRemovals.isNotEmpty()
-    val canPublishChanges: Boolean get() = hasCompletedInitialFetch && hasChanges && !isPublishing
+    val hasChanges: Boolean
+        get() = pendingAdditions.isNotEmpty() || pendingRemovals.isNotEmpty() || pendingUpdates.isNotEmpty()
+    val changeCount: Int get() = pendingAdditions.size + pendingRemovals.size + pendingUpdates.size
+    val canPublishChanges: Boolean
+        get() = hasCompletedInitialFetch && hasChanges && hasWritableRelay && !isPublishing
 }
 
 internal fun initialPublishedRelayListUiState(canSyncPublishedRelayList: Boolean) =
@@ -74,6 +82,10 @@ class RelaySettingsViewModel(
     )
     val publishedRelayListState: StateFlow<PublishedRelayListUiState> =
         _publishedRelayListState.asStateFlow()
+    private val _relayUsers = MutableStateFlow<Map<String, List<String>>>(emptyMap())
+
+    /** リレーごとの、そのリレーを NIP-65 に載せているフォロー先の pubkey。 */
+    val relayUsers: StateFlow<Map<String, List<String>>> = _relayUsers.asStateFlow()
 
     private var fetchInformationJob: Job? = null
     private val relayInformationJobs = mutableMapOf<String, Job>()
@@ -85,17 +97,25 @@ class RelaySettingsViewModel(
     init {
         observeStoredEntries()
         loadRelayInformation(_entries.value.mapTo(linkedSetOf()) { it.url })
-        if (accountSession != null) discoverFollowedRelays()
+        if (accountSession != null) {
+            launch { loadRelayUsers() }
+            discoverFollowedRelays()
+        }
         if (canSyncPublishedRelayList) refreshPublishedRelayList()
     }
 
     fun add(url: String) {
         if (_publishedRelayListState.value.isPublishing) return
-        val trimmed = url.trim()
-        if (trimmed.isBlank() || entries.value.any { it.url == trimmed }) return
-        _entries.update { it + RelayEntry(trimmed, enabled = true) }
-        loadRelayInformation(setOf(trimmed))
-        changedRelayUrls += trimmed
+        val normalized = relayUrlFromInput(url) ?: return
+        val existing = entries.value.firstOrNull { it.url == normalized }
+        if (existing != null) {
+            // 候補として登録済みのリレーは、追加操作で有効化する。
+            if (!existing.enabled) setEnabled(normalized, true)
+            return
+        }
+        _entries.update { it + RelayEntry(normalized, enabled = true) }
+        loadRelayInformation(setOf(normalized))
+        changedRelayUrls += normalized
         reconcilePublishedRelayChanges()
     }
 
@@ -110,10 +130,36 @@ class RelaySettingsViewModel(
     fun setEnabled(url: String, enabled: Boolean) {
         if (_publishedRelayListState.value.isPublishing) return
         if (entries.value.firstOrNull { it.url == url }?.enabled == enabled) return
+        _entries.update { list -> setRelayEnabledInDraft(list, committedEntries, url, enabled) }
+        changedRelayUrls += url
+        reconcilePublishedRelayChanges()
+    }
+
+    /** 受信・送信の使い方を変える。両方とも外す操作は受け付けない。 */
+    fun setReadWrite(url: String, read: Boolean, write: Boolean) {
+        if (_publishedRelayListState.value.isPublishing) return
+        if (!read && !write) return
+        val current = entries.value.firstOrNull { it.url == url } ?: return
+        if (current.read == read && current.write == write) return
         _entries.update { list ->
-            list.map { entry -> if (entry.url == url) entry.copy(enabled = enabled) else entry }
+            list.map { entry -> if (entry.url == url) entry.copy(read = read, write = write) else entry }
         }
         changedRelayUrls += url
+        reconcilePublishedRelayChanges()
+    }
+
+    /** 一つのリレーの未確定の変更だけを取り消す。 */
+    fun revertChange(url: String) {
+        if (_publishedRelayListState.value.isPublishing) return
+        val committed = committedEntries.firstOrNull { it.url == url }
+        _entries.update { list ->
+            if (committed == null) {
+                list.filterNot { it.url == url }
+            } else {
+                list.map { entry -> if (entry.url == url) committed else entry }
+            }
+        }
+        changedRelayUrls -= url
         reconcilePublishedRelayChanges()
     }
 
@@ -137,6 +183,9 @@ class RelaySettingsViewModel(
                             draftEntries.firstOrNull { it.url == url }
                         },
                         removals = state.pendingRemovals,
+                        updates = state.pendingUpdates.mapNotNull { url ->
+                            draftEntries.firstOrNull { it.url == url }
+                        },
                     )
                 } else {
                     null
@@ -187,6 +236,7 @@ class RelaySettingsViewModel(
             it.copy(
                 pendingAdditions = emptySet(),
                 pendingRemovals = emptySet(),
+                pendingUpdates = emptySet(),
                 message = null,
                 failedRelayUrls = emptyList(),
                 errorMessage = null,
@@ -240,11 +290,13 @@ class RelaySettingsViewModel(
             committedEntries = committedEntries,
             draftEntries = entries.value,
         )
-        changedRelayUrls.retainAll(changes.additions + changes.removals)
+        changedRelayUrls.retainAll(changes.additions + changes.removals + changes.updates)
         _publishedRelayListState.update { state ->
             state.copy(
                 pendingAdditions = changes.additions,
                 pendingRemovals = changes.removals,
+                pendingUpdates = changes.updates,
+                hasWritableRelay = writableRelayUrls(entries.value).isNotEmpty(),
                 message = null,
                 failedRelayUrls = emptyList(),
             )
@@ -319,6 +371,21 @@ class RelaySettingsViewModel(
                     errorMessage = e.message ?: "フォロー先のリレーを取得できませんでした",
                 )
             }
+            loadRelayUsers()
+        }
+    }
+
+    private suspend fun loadRelayUsers() {
+        val session = accountSession ?: return
+        try {
+            _relayUsers.value = FollowedRelayDiscovery.relayUsers(
+                ownPubkey = session.pubkey,
+                followedPubkeys = session.followRepository.followedPubkeys.value,
+            )
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Throwable) {
+            // 人数は並び替えの手がかりなので、読めなくても一覧は表示する。
         }
     }
 
@@ -369,6 +436,7 @@ class RelaySettingsViewModel(
 internal data class PublishedRelayListChanges(
     val additions: Set<String>,
     val removals: Set<String>,
+    val updates: Set<String> = emptySet(),
 )
 
 internal fun calculatePublishedRelayListChanges(
@@ -382,14 +450,46 @@ internal fun calculatePublishedRelayListChanges(
         additions = changedUrls.filterTo(linkedSetOf()) { url ->
             val committed = committedByUrl[url]
             val draft = draftByUrl[url]
-            draft != null && (committed == null || (!committed.enabled && draft.enabled))
+            draft != null && draft.enabled && (committed == null || !committed.enabled)
         },
         removals = changedUrls.filterTo(linkedSetOf()) { url ->
             val committed = committedByUrl[url]
             val draft = draftByUrl[url]
             committed != null && (draft == null || (committed.enabled && !draft.enabled))
         },
+        updates = changedUrls.filterTo(linkedSetOf()) { url ->
+            val committed = committedByUrl[url]
+            val draft = draftByUrl[url]
+            committed != null && draft != null && committed.enabled && draft.enabled &&
+                (committed.read != draft.read || committed.write != draft.write)
+        },
     )
+}
+
+/** 下書きでリレーの使用を切り替える。保存前に追加したリレーを外すときは、追加自体を取り消す。 */
+internal fun setRelayEnabledInDraft(
+    draftEntries: List<RelayEntry>,
+    committedEntries: List<RelayEntry>,
+    url: String,
+    enabled: Boolean,
+): List<RelayEntry> =
+    if (!enabled && committedEntries.none { it.url == url }) {
+        draftEntries.filterNot { it.url == url }
+    } else {
+        draftEntries.map { entry -> if (entry.url == url) entry.copy(enabled = enabled) else entry }
+    }
+
+/**
+ * 入力欄の文字列を追加候補のリレー URL にする。
+ * スキーム省略時は wss:// を補うが、検索語と区別するためドメインらしい入力に限る。
+ */
+internal fun relayUrlFromInput(input: String): String? {
+    val trimmed = input.trim()
+    if (trimmed.isEmpty()) return null
+    val hasScheme = trimmed.startsWith("wss://", ignoreCase = true) ||
+        trimmed.startsWith("ws://", ignoreCase = true)
+    if (!hasScheme && '.' !in trimmed.substringBefore('/')) return null
+    return normalizeRelayUrl(if (hasScheme) trimmed else "wss://$trimmed")
 }
 
 /** 外部で更新された一覧へ、編集中の URL に対する操作意図だけを再適用する。 */
