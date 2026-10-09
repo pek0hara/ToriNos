@@ -2,7 +2,8 @@
 
 ## 1. 対象と結論
 
-2026-10-02時点の作業ツリーをレビューした設計案。実装変更は行っていない。
+状態: 7章の段階1〜5と同秒境界の改善を実装済み（2026-10-02）。確定した構成は9章、実装状況と設計から変えた点は10章。
+1〜8章は2026-10-02時点の作業ツリーをレビューした設計案で、行番号はリファクタ前のもの。
 対象は `ui/search/SearchViewModel.kt`、`SearchScreen.kt` と、その通信・プロフィール・集計境界。
 ユーザー検索は投稿検索と共有する検索語、タブ、画面ライフサイクルの互換性を守るために確認した。
 
@@ -194,7 +195,7 @@ sealed interface PageState {
 各段階で動作変更と機械的な抽出をレビュー上区別する。ユーザー検索の通信APIまで同時に作り直さない。
 要件のTimeout/部分結果、復帰時の付随取得、初回境界、共有プロフィールの所有範囲を
 `app-requirements.md` と `search-performance-fix-plan.md` に実装と同じ変更セットで反映する。
-本書は未実装の提案であり、現行仕様を上書きしない。実装完了後は残す境界をアーキテクチャ文書へ移し、本書を整理する。
+要件の変更は `app-requirements.md` と `search-performance-fix-plan.md` に反映済み。
 
 ## 8. 検証と受け入れ条件
 
@@ -223,4 +224,117 @@ Coroutineの仮想時間と偽Transportを使い、実リレーなしで再現�
 連続検索前後のフィードのフレーム時間と比較する。検索語そのものの追加ログは不要。
 停止後に検索所有のセッションと監視が0になり、完了済み画面への復帰で投稿REQが増えないことを受け入れ条件とする。
 
-本レビューは静的コード確認。今回、テスト実行・実機計測・通信再現は行っていない。
+（1〜8章のレビュー時点では静的なコード確認のみ。検証結果は10章。）
+
+## 9. 実装設計（確定事項）
+
+2026-10-02に本書の提案を実装するにあたり、未確定だった点を次のとおり確定した。
+
+### 9.1 構成
+
+| ファイル | 役割 |
+| --- | --- |
+| `SearchConfig.kt` | 6章の数値をまとめた設定。既定値は現行値と同じ |
+| `SearchGateway.kt` | 購読の開始、プロフィールキャッシュ・取得依頼、ユーザー検索を包む差し替え可能な境界 |
+| `PostPageFetcher.kt` | 1ページの有限取得。`signals` を1本で順に処理し、終了理由を `PageFetchEnd` に変換。finallyで `NonCancellable` close |
+| `PostSearchController.kt` | 検索世代、ページ状態、結果ID索引、確定カーソル、UI発行（100ms） |
+| `SearchResultEnricher.kt` | プロフィールの参照・未送信キュー・監視、付随情報の差分バッチ |
+| `SearchEngagementAccumulator.kt` | 対象別の集計済みID索引と集計値（受信処理は純粋ロジック） |
+| `SearchController.kt` | 検索語、選択タブ、ユーザー検索、投稿検索の開始・停止・再開の仲介 |
+| `SearchViewModel.kt` | `SearchController` を `viewModelScope` で所有するだけの薄い層 |
+| `SearchScreen.kt` / `PostSearchResults.kt` | Route（ViewModel・ライフサイクル）と Content（表示）、結果一覧 |
+
+ViewModelは `Dispatchers.Main` に依存するため、テストは `SearchController` 以下を `TestScope` で検証する。
+
+### 9.2 型
+
+```kotlin
+data class PageRequest(val generation: Int, val serial: Int, val kind: PageKind, val until: Long, val limit: Int)
+sealed interface PageFailure { Timeout; Closed(reason); Unavailable(reason); Overflow; Error(message) }
+sealed interface PostPageState { Idle; Loading(request); Interrupted(request); Incomplete(request, failure); Complete(end) }
+sealed interface PageEnd { More(nextUntil); Exhausted; ResultLimit; BoundaryLimit }
+```
+
+- 初回ページの `until` は検索開始時刻で固定する。中断後の再開・再試行は同じ `PageRequest` を新しい購読IDで送る。
+- 実行ごとに `attempt` を進め、取消済みの古い実行の通知はすべて無視する。
+- 購読IDは `srch-<所有者ごとの乱数>-<世代>-<用途><連番>`。
+
+### 9.3 ページの終了
+
+| `FetchCompleted` / 収集結果 | 状態 |
+| --- | --- |
+| すべての対象リレーが `Eose` | `Complete`。一意受信件数が `limit` 未満なら `Exhausted` |
+| `TimedOut` / `Closed` / `Unavailable` / 例外 | `Incomplete`。部分結果は残し、カーソルは動かさない |
+| ページ内の一意受信が `limit` を超えた分が `overflowBudget` を超過 | 購読を閉じて `Incomplete(Overflow)` |
+| 検索全体の保持件数が `maxResultEvents` に到達 | 以後の受理を止め、ページ完了時に `ResultLimit` |
+
+`limit` を超えた受信は表示に加えず、カーソルは受理したイベントの最古時刻から決める。
+
+### 9.4 同秒境界（段階6）
+
+満杯ページ（一意受信が `limit` 件）の最古時刻を `t` とすると、
+
+- `t < until` なら次ページは `until = t`（境界秒を重ねて取得し、IDで重複排除）。
+- `t == until`（全件が境界秒）なら、同じ `until` で `limit` を2倍、4倍にして再取得する（`boundaryRetryLimit` 回まで）。
+  それでも全件が境界秒なら `BoundaryLimit` として終了し、「同じ時刻の投稿が多く、これ以上さかのぼれません」と表示する。
+
+### 9.5 表示
+
+| ページ状態 | 結果0件 | 結果あり |
+| --- | --- | --- |
+| `Idle` | 「検索ボタンを押して再検索してください」 | （発生しない） |
+| 初回 `Loading` / `Interrupted` | 中央に「検索中…」 | 中央に「検索中…」（初回は完了まで一覧を出さない） |
+| 初回 `Incomplete` | 失敗理由と「再試行」 | 一覧＋末尾に失敗理由と「再試行」 |
+| 追加 `Loading` / `Interrupted` | — | 一覧＋末尾に進捗 |
+| 追加 `Incomplete` | — | 一覧＋末尾に失敗理由と「再試行」 |
+| `Complete(More)` | — | 一覧＋「さらに読み込む」 |
+| `Complete(Exhausted)` | 「結果はありませんでした」 | 一覧のみ |
+| `Complete(ResultLimit / BoundaryLimit)` | — | 一覧＋末尾に上限の説明 |
+
+投稿・ユーザーの一覧は別々の `LazyListState` を持ち、タブを往復してもスクロール位置を保つ。新しい検索では先頭へ戻す。
+
+## 10. 実装状況（2026-10-02）
+
+### 10.1 実装したもの
+
+7章の段階1〜5と、9.4節の同秒境界をすべて実装した。
+`SearchPageProgress` は `PageProgress` と `PostPageState` に置き換えて削除した。
+
+### 10.2 設計から変えた点
+
+- **ViewModelを薄くした。** 6章ではViewModelが検索語・タブ・ユーザー検索を持つ案だったが、ViewModelは
+  `Dispatchers.Main` に依存してテストしにくいため、これらを `SearchController` へ移した。
+- **Enricher と Accumulator を最初の段階で抽出した。** 4章では「初期移行ではController内部に集計を残してよい」としたが、
+  付随取得の中断・再開と重複排除を同時に直す必要があったため、最初から分けた。
+- **付随取得の失敗はログのみ。** 5章の「他の例外は失敗状態へ反映」は、ページ取得には適用したが、付随情報には
+  カード単位の失敗表示がないため、取得範囲内の集計を表示してログへ記録するだけにした。
+- **初回ページは完了まで一覧を出さない。** 現行どおり、初回の `Loading` / `Interrupted` 中は部分受信があっても
+  「検索中…」を表示する。受信順で並びが入れ替わる途中経過を見せないため。
+- **初期クエリの再適用を止めた（レビューで発見した既存不具合）。** `LaunchedEffect(initialQuery)` は、投稿詳細から戻って
+  画面が作り直されるたびに再実行され、初期クエリ付きの検索（ハッシュタグなど）を再検索して結果とスクロール位置を
+  失っていた。Spotify URI の場合は外部アプリを再度開いていた。ViewModelが適用済みの初期クエリを覚え、同じ値は再適用しない。
+  入力欄も `rememberSaveable` にして、戻ったときに入力中の文字列を保つ。
+- **接続不可はタイムアウトとして表示されることがある。** 接続を拒否された場合、購読基盤は再接続を続けるため、
+  `Unavailable` ではなく有限取得のタイムアウトで終わる。どちらも失敗として再試行を表示するので、要件上の差はない。
+
+### 10.3 検証
+
+- 単体テスト（`ui/search/`、偽の `SearchGateway` と仮想時間）: 43件。8章の検証表のうち、UI操作以外の項目をすべて扱う。
+  主なものは、タブ往復での取得回数、30件→EOSE、追加ページ中の停止→再開、0件/1件/満杯でのTimeout、
+  CLOSED/接続不可/例外、EOSE直前の連続受信、新検索後の旧結果と旧付随バッチ、完了後の離脱とプロフィール更新、
+  500ms待機中・付随取得中の離脱、連続受信中の固定時間バッチ、追跡上限を超えた対象の再計上防止、
+  2つのControllerの同時検索、LoadMore連打とSTOP連続、同秒境界、要求件数超過。
+- 実装をわざと壊して、テストが落ちることを確認した（停止で中断にしない、Timeoutを成功にする、対象ごとの重複排除をやめる）。
+- iOS Simulator 1,050件、wasmJs 1,025件のテストがすべて成功。Androidは `compileAndroidMain` まで確認。
+- Web版（ヘッドレスChrome、実リレー `search.nos.today`、EVENT送信は遮断）で次を確認した。
+  - 初回REQに固定の `until`、EOSE直後のCLOSE、検索リレーとの切断。付随情報は所有者ごとのIDで1回だけ取得
+  - 「さらに読み込む」の `until` が前ページの最古時刻と一致
+  - 投稿詳細から戻ったとき、通常の検索・初期クエリ付きの検索とも検索REQが0回、スクロール位置と入力が残る
+  - 検索リレーへの接続を遮断すると「検索がタイムアウトしました」と「再試行」。解除後の再試行が同じ `until` で成功
+  - ユーザータブ往復で投稿の再取得なし
+
+### 10.4 未実施
+
+- iOS・Androidの実機での操作確認と、8章末尾の計測（ページ件数、活動中購読数、UI発行数、検索前後のフィードのフレーム時間）。
+- 高密度の検索語での同秒境界の有効性評価（リレーの実応答が必要）。
+- 検索リレーが関連度順で返す場合のページ境界の扱い（現行どおり時刻境界で進める）。

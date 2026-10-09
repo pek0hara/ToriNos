@@ -40,10 +40,10 @@ class SearchScreenTest {
         val eventIds = listOf("event-1", "event-2")
         val since = 1234L
 
-        val filters = engagementFilters(eventIds, since)
+        val filters = engagementFilters(eventIds, since, limit = 200)
 
         assertEquals(6, filters.size)
-        assertTrue(filters.all { it.limit == SearchViewModel.ENGAGEMENT_FILTER_LIMIT })
+        assertTrue(filters.all { it.limit == 200 })
         assertTrue(filters.all { it.since == since })
         assertTrue(filters.all { filter ->
             filter.eTags == eventIds || filter.rootEventTags == eventIds || filter.qTags == eventIds

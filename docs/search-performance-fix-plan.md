@@ -70,48 +70,19 @@
 
 ## 4. 状態モデル
 
-ポストとユーザーでロード状態、結果、エラー、ページング状態を分離する。
+ポストとユーザーでロード状態、結果、ページング状態を分離する。2026-10-02のリファクタで、
+ポスト検索のページ状態は `PostPageState`（`Idle` / `Loading` / `Interrupted` / `Incomplete` / `Complete`）
+1つにまとめた。型、遷移、表示の対応は
+[`post-search-refactor-design.md`](./post-search-refactor-design.md) の9章を正とする。
+ユーザー検索は従来どおり `SearchLoadState` で表す。
 
-```kotlin
-enum class SearchTab {
-    Posts,
-    Users,
-}
+### 4.1 画面離脱による中断
 
-enum class SearchLoadState {
-    NotRequested,
-    Loading,
-    Interrupted,
-    Ready,
-    Failed,
-}
-
-data class UiState(
-    val query: String = "",
-    val selectedTab: SearchTab = SearchTab.Posts,
-    val postsLoadState: SearchLoadState = SearchLoadState.NotRequested,
-    val usersLoadState: SearchLoadState = SearchLoadState.NotRequested,
-    val events: List<NostrEvent> = emptyList(),
-    val users: List<Pair<String, NostrProfile>> = emptyList(),
-    val canLoadMore: Boolean = false,
-    // プロフィール、リアクション、返信、リポストの表示用フィールドも保持する。
-)
-```
-
-`SearchScreen`の選択タブは`SearchViewModel.UiState`で管理する。ポストとユーザーのロード状態は独立し、
-未取得タブへの初回切り替えだけがそのタブの検索を開始する。`Failed`は現時点ではメッセージを保持せず、
-画面には共通の再検索案内を表示する。
-
-### 4.1 画面離脱による中断（Loop 5a-R4）
-
-`Loading` 中に画面が非表示になった場合、受信済み結果を残したまま `Interrupted` へ遷移する。
-実行中ページの `until` 境界を保持し、復帰時または該当タブの再選択時に同じ境界を再取得する。
-イベントIDで結果を重複排除する一方、ページの満杯判定はその再取得で受信した一意ID数を使う。
-次ページの `until` も完了したページで受信した最古時刻から決め、停止前にたまたま受信した古いイベントへ飛ばない。
-これにより部分ページの途中から古い境界へ飛ばず、完了したページだけを `Ready` としてページ送り可能にする。
-新しい検索語の入力時は中断境界を破棄する。ユーザー検索も中断後の復帰で再実行する。
-
-Loop 5a-R4 の実装レビューでは `SearchPageProgress` に境界とページ内ID集合を集約し、1件受信後の中断・同じ境界での再開・重複除外・新検索時の破棄を単体テストで確認した。iPhone 17 Simulatorでは検索画面の表示を確認したが、実通信中断のタイミングを伴うGUI操作は未実施であり、隔離テスト環境での回帰項目として残す。
+`Loading` 中に画面が非表示になった場合、初回・追加のどちらのページも受信済み結果を残したまま
+`Interrupted` へ遷移する。復帰時は選択中タブのページだけを同じ `PageRequest`（同じ `until`）で
+取り直す。満杯判定は再取得で受信した一意ID数を使い、次ページの `until` は正常に完了したページからだけ決める。
+初回ページの `until` は検索開始時刻で固定するため、再開しても対象範囲は変わらない。
+新しい検索語の入力時は中断したページを破棄する。ユーザー検索も中断後の復帰で再実行する。
 
 ## 5. 取得フロー
 
@@ -271,8 +242,8 @@ UI状態のバッチ化と`ReactionEventStore`への保存は別責務である�
 4. エンゲージメントを有限取得へ変更する。
 5. 画面STOP時の一括キャンセルを追加する。
 
-ポスト検索のページは一時購読を明示的に閉じる方式で、有限取得セッションへの統一は未実装。
-プロフィール検索も既存の一時購読方式を維持している。
+ポスト検索のページは Phase 5 で有限取得セッションへ統一した。
+プロフィール検索は既存の一時購読方式を維持している。
 
 ### Phase 3: 集計と状態発行を軽量化する — 一部実装
 
@@ -280,6 +251,24 @@ UI状態のバッチ化と`ReactionEventStore`への保存は別責務である�
 2. UI状態更新は100msでバッチ化済み。件数到達による早期発行は未実装。
 3. プロフィール変更通知は、検索結果で参照するpubkeyとの積集合だけを反映する。
 4. 検索経由の`ReactionEventStore`増加量と照合時間は、下記「検索後のスクロール低下の原因切り分け」で計測済み。
+
+### Phase 5: ページ状態と付随取得の整理（2026-10-02） — 実装済み
+
+[`post-search-refactor-design.md`](./post-search-refactor-design.md) に従い、次を実装した。
+
+1. ポスト検索のページを `SubscriptionSession` の有限取得（`RelayTarget.Explicit`）へ移し、一時購読と独自タイマーを撤去した。
+   イベントと終了を1本の `signals` で順に処理し、`Timeout` / `CLOSED` / 接続不可を成功と区別する。
+2. 追加ページ中の離脱を `Interrupted` として記録し、復帰時に同じ境界で再開する。
+3. 部分結果を残したまま失敗理由と「再試行」を表示する。通信失敗を「結果なし」と表示しない。
+4. プロフィールの未送信キューと参照済みを分け、固定時間でまとめて依頼する。監視は表示中に1本だけ維持し、復帰時に読み直す。
+5. 付随情報は新しく加わった投稿だけを取得し、中断したバッチは復帰時に取り直す。重複排除の索引を対象ごとに集計値と同じ寿命で持つ。
+6. 受信ごとのソートと Map コピーをやめ、100msの発行時にまとめて作る。
+7. ページ内の一意受理件数、検索全体の保持件数（600件）、同秒境界の取り直し回数に上限を設けた。
+8. 購読IDに所有者ごとの接頭辞を付け、通常画面とサイドパネルの同時検索で衝突しないようにした。
+
+Web版（ヘッドレスChrome、実リレー）で、初回ページのEOSE直後のCLOSE、検索リレーとの切断、
+次ページの境界、投稿詳細から戻ったときに再検索しないこと、接続不可時の再試行を確認した。
+iOS・Androidの実機確認は未実施。
 
 ### Phase 4: 必要な場合だけ可視範囲取得へ進む
 
@@ -333,6 +322,8 @@ Phase 1〜3の実装後も「投稿・ユーザーのどちらを検索しても
 以下は今後追加する回帰テストであり、実装・実機計測済みを意味しない。
 
 ### 10.1 ViewModel単体テスト
+
+2026-10-02以降は `SearchController` 以下を偽の `SearchGateway` で検証している（`ui/search/PostSearchControllerTest.kt`、`SearchResultEnricherTest.kt`）。下記の項目はそこで確認する。
 
 ネットワーク呼び出しを記録できる`SearchDataSource`または検索Coordinatorをインターフェースとして注入し、
 次を検証する。
@@ -391,14 +382,10 @@ Macrobenchmark/JankStats、iOSはInstrumentsのCore AnimationとTime Profilerを
 
 ## 12. 対象ファイル
 
-今回変更したファイルは次のとおり。
+検索の実装は `ui/search/` にある。役割分担は
+[`post-search-refactor-design.md`](./post-search-refactor-design.md) の9.1節を参照する。
 
-- `ui/search/SearchScreen.kt`
-- `ui/search/SearchViewModel.kt`
-- `ui/search/SearchScreenTest.kt`
-
-今後、受信件数の厳密な上限、検索ごとの購読終了を検証するテスト、プロフィール検索やページ検索の
-有限セッションへの統一が必要になった場合は、`network/ProfileRepository.kt`、
+今後、プロフィール検索の有限セッションへの統一が必要になった場合は、`network/ProfileRepository.kt`、
 `network/NostrRepository.kt`または有限購読Coordinatorも変更対象になる。
 
 `ReactionEventStore`自体の大規模な再設計は本修正の必須範囲に含めない。Phase 1〜3で検索からの不要な

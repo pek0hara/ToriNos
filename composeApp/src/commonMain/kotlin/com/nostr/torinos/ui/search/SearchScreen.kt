@@ -10,15 +10,15 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Search
-import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -32,28 +32,27 @@ import com.nostr.torinos.ui.components.AppTopBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
-import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.runtime.collectAsState
 import androidx.lifecycle.compose.LifecycleStartEffect
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.nostr.torinos.model.NostrProfile
-import com.nostr.torinos.ui.components.NoteCard
 import com.nostr.torinos.ui.components.ProfileNameText
 import com.nostr.torinos.ui.components.DismissKeyboardOnLeave
 import com.nostr.torinos.ui.components.rememberDismissKeyboard
 import com.nostr.torinos.ui.profile.AvatarCircle
 import com.nostr.torinos.ui.components.avoidStaleAccessibilityFocus
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SearchScreen(
     initialQuery: String = "",
@@ -65,12 +64,85 @@ fun SearchScreen(
     onOpenReposts: (eventId: String) -> Unit = {},
     viewModel: SearchViewModel = viewModel(key = "search") { SearchViewModel() },
 ) {
-    var inputText by remember(initialQuery) { mutableStateOf(initialQuery) }
     val state by viewModel.state.collectAsState()
+    val posts by viewModel.posts.collectAsState()
+    val uriHandler = LocalUriHandler.current
+
+    // 遷移先から戻るとこの画面は作り直されるが、ViewModelは残る。初期クエリは同じ値で1回だけ適用する。
+    LaunchedEffect(initialQuery) {
+        if (!viewModel.markInitialQueryApplied(initialQuery)) return@LaunchedEffect
+        val spotifySearchUri = spotifySearchUriOrNull(initialQuery)
+        if (spotifySearchUri != null) {
+            uriHandler.openUri(spotifySearchUri)
+        } else if (initialQuery.isNotBlank()) {
+            viewModel.search(initialQuery, viewModel.state.value.selectedTab)
+        }
+    }
+
+    LifecycleStartEffect(viewModel) {
+        viewModel.resume()
+        onStopOrDispose { viewModel.stop() }
+    }
+    DismissKeyboardOnLeave()
+
+    val actions = remember(viewModel, onBack, onUserClick, onOpenThread, onOpenReplies, onOpenLikes, onOpenReposts) {
+        SearchActions(
+            onBack = onBack,
+            onSearch = { query -> viewModel.search(query, viewModel.state.value.selectedTab) },
+            onSelectTab = viewModel::selectTab,
+            onLoadMore = viewModel::loadMore,
+            onRetryPosts = viewModel::retryPosts,
+            onRetryUsers = viewModel::retryUsers,
+            onUserClick = onUserClick,
+            onOpenThread = onOpenThread,
+            onOpenReplies = onOpenReplies,
+            onOpenLikes = onOpenLikes,
+            onOpenReposts = onOpenReposts,
+        )
+    }
+    SearchContent(initialQuery = initialQuery, state = state, posts = posts, actions = actions)
+}
+
+internal class SearchActions(
+    val onBack: () -> Unit,
+    val onSearch: (query: String) -> Unit,
+    val onSelectTab: (SearchTab) -> Unit,
+    val onLoadMore: () -> Unit,
+    val onRetryPosts: () -> Unit,
+    val onRetryUsers: () -> Unit,
+    val onUserClick: (pubkey: String) -> Unit,
+    val onOpenThread: (eventId: String) -> Unit,
+    val onOpenReplies: (eventId: String) -> Unit,
+    val onOpenLikes: (eventId: String) -> Unit,
+    val onOpenReposts: (eventId: String) -> Unit,
+)
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+internal fun SearchContent(
+    initialQuery: String,
+    state: SearchUiState,
+    posts: PostSearchUiState,
+    actions: SearchActions,
+) {
+    // 遷移先から戻ったときも、入力中の文字列を保つ。
+    var inputText by rememberSaveable(initialQuery) { mutableStateOf(initialQuery) }
     val selectedTab = state.selectedTab
     val uriHandler = LocalUriHandler.current
     val headerBackgroundColor = MaterialTheme.colorScheme.background
     val headerContentColor = MaterialTheme.colorScheme.onBackground
+    // タブを往復しても位置を保つため、タブごとに一覧の状態を持つ。
+    val postsListState = rememberLazyListState()
+    val usersListState = rememberLazyListState()
+    var listedSearchId by rememberSaveable { mutableIntStateOf(posts.searchId) }
+
+    LaunchedEffect(posts.searchId) {
+        if (posts.searchId != listedSearchId) {
+            listedSearchId = posts.searchId
+            postsListState.scrollToItem(0)
+            usersListState.scrollToItem(0)
+        }
+    }
 
     // hide()だけではフォーカスが残り、iOSでは画面を離れた後もテキスト入力セッションが続いて
     // 戻った先のスクロールが重くなる。フォーカスごと外す。
@@ -82,39 +154,26 @@ fun SearchScreen(
             uriHandler.openUri(uri)
             return
         }
-        viewModel.search(inputText, selectedTab)
+        actions.onSearch(inputText)
     }
-
-    LaunchedEffect(initialQuery) {
-        val spotifySearchUri = spotifySearchUriOrNull(initialQuery)
-        if (spotifySearchUri != null) {
-            uriHandler.openUri(spotifySearchUri)
-        } else if (initialQuery.isNotBlank()) {
-            viewModel.search(initialQuery, selectedTab)
-        }
-    }
-
-    LifecycleStartEffect(viewModel) {
-        viewModel.resume()
-        onStopOrDispose { viewModel.stop() }
-    }
-    DismissKeyboardOnLeave()
 
     Scaffold(
         contentWindowInsets = WindowInsets(0),
         topBar = {
-            AppTopBar(
-                title = { Text("検索") },
-                navigationIcon = {
-                    IconButton(onClick = onBack) {
-                        Icon(
-                            Icons.AutoMirrored.Filled.ArrowBack,
-                            contentDescription = "戻る",
-                            tint = headerContentColor,
-                        )
-                    }
-                },
-            )
+            Column {
+                AppTopBar(
+                    title = { Text("検索") },
+                    navigationIcon = {
+                        IconButton(onClick = actions.onBack) {
+                            Icon(
+                                Icons.AutoMirrored.Filled.ArrowBack,
+                                contentDescription = "戻る",
+                                tint = headerContentColor,
+                            )
+                        }
+                    },
+                )
+            }
         },
     ) { padding ->
         Column(
@@ -156,149 +215,83 @@ fun SearchScreen(
             ) {
                 Tab(
                     selected = selectedTab == SearchTab.Posts,
-                    onClick = { viewModel.selectTab(SearchTab.Posts) },
+                    onClick = { actions.onSelectTab(SearchTab.Posts) },
                     text = { Text("ポスト") },
                 )
                 Tab(
                     selected = selectedTab == SearchTab.Users,
-                    onClick = { viewModel.selectTab(SearchTab.Users) },
+                    onClick = { actions.onSelectTab(SearchTab.Users) },
                     text = { Text("ユーザー") },
                 )
             }
 
             // 結果エリア
             Box(modifier = Modifier.fillMaxSize()) {
-                val loadState = when (selectedTab) {
-                    SearchTab.Posts -> state.postsLoadState
-                    SearchTab.Users -> state.usersLoadState
-                }
                 when {
-                    state.query.isBlank() -> {
-                        Text(
-                            text = "キーワードまたは #タグ を入力して検索",
-                            modifier = Modifier
-                                .align(Alignment.Center)
-                                .padding(horizontal = 32.dp),
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            textAlign = TextAlign.Center,
+                    state.query.isBlank() -> SearchMessage(
+                        text = "キーワードまたは #タグ を入力して検索",
+                        modifier = Modifier.align(Alignment.Center),
+                    )
+                    selectedTab == SearchTab.Posts -> {
+                        PostSearchResults(
+                            query = state.query,
+                            state = posts,
+                            listState = postsListState,
+                            onLoadMore = actions.onLoadMore,
+                            onRetry = actions.onRetryPosts,
+                            onUserClick = actions.onUserClick,
+                            onOpenThread = actions.onOpenThread,
+                            onOpenReplies = actions.onOpenReplies,
+                            onOpenLikes = actions.onOpenLikes,
+                            onOpenReposts = actions.onOpenReposts,
                         )
                     }
+                    else -> UserSearchResults(
+                        state = state,
+                        listState = usersListState,
+                        onRetry = actions.onRetryUsers,
+                        onUserClick = actions.onUserClick,
+                    )
+                }
+            }
+        }
+    }
+}
 
-                    loadState == SearchLoadState.Loading || loadState == SearchLoadState.Interrupted -> {
-                        Column(
-                            modifier = Modifier.align(Alignment.Center),
-                            horizontalAlignment = Alignment.CenterHorizontally,
-                            verticalArrangement = Arrangement.spacedBy(16.dp),
-                        ) {
-                            CircularProgressIndicator()
-                            Text(
-                                text = "検索中…",
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                        }
-                    }
-
-                    loadState == SearchLoadState.Failed -> {
-                        Text(
-                            text = "検索に失敗しました。もう一度検索してください",
-                            modifier = Modifier
-                                .align(Alignment.Center)
-                                .padding(horizontal = 32.dp),
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.error,
-                            textAlign = TextAlign.Center,
+@Composable
+private fun UserSearchResults(
+    state: SearchUiState,
+    listState: LazyListState,
+    onRetry: () -> Unit,
+    onUserClick: (pubkey: String) -> Unit,
+) {
+    Box(modifier = Modifier.fillMaxSize()) {
+        when (state.usersLoadState) {
+            SearchLoadState.Loading, SearchLoadState.Interrupted ->
+                SearchLoadingIndicator(Modifier.align(Alignment.Center))
+            SearchLoadState.Failed -> SearchFailure(
+                message = "ユーザー検索に失敗しました",
+                onRetry = onRetry,
+                modifier = Modifier.align(Alignment.Center),
+            )
+            SearchLoadState.NotRequested -> SearchMessage(
+                text = "検索ボタンを押して再検索してください",
+                modifier = Modifier.align(Alignment.Center),
+            )
+            SearchLoadState.Ready -> if (state.users.isEmpty()) {
+                SearchMessage(
+                    text = "「${state.query}」に一致するユーザーはいません",
+                    modifier = Modifier.align(Alignment.Center),
+                )
+            } else {
+                LazyColumn(state = listState, modifier = Modifier.fillMaxSize()) {
+                    items(state.users, key = { it.first }) { (pubkey, profile) ->
+                        UserSearchRow(
+                            pubkey = pubkey,
+                            profile = profile,
+                            onClick = { onUserClick(pubkey) },
                         )
-                    }
-
-                    loadState == SearchLoadState.NotRequested -> {
-                        Text(
-                            text = "検索ボタンを押して再検索してください",
-                            modifier = Modifier
-                                .align(Alignment.Center)
-                                .padding(horizontal = 32.dp),
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            textAlign = TextAlign.Center,
-                        )
-                    }
-
-                    selectedTab == SearchTab.Users -> {
-                        if (state.users.isEmpty()) {
-                            Text(
-                                text = "「${state.query}」に一致するユーザーはいません",
-                                modifier = Modifier
-                                    .align(Alignment.Center)
-                                    .padding(horizontal = 32.dp),
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                textAlign = TextAlign.Center,
-                            )
-                        } else {
-                            LazyColumn(modifier = Modifier.fillMaxSize()) {
-                                items(state.users, key = { it.first }) { (pubkey, profile) ->
-                                    UserSearchRow(
-                                        pubkey = pubkey,
-                                        profile = profile,
-                                        onClick = { onUserClick(pubkey) },
-                                    )
-                                    HorizontalDivider()
-                                }
-                            }
-                        }
-                    }
-
-                    else -> {
-                        if (state.events.isEmpty()) {
-                            Text(
-                                text = "「${state.query}」の結果はありませんでした",
-                                modifier = Modifier
-                                    .align(Alignment.Center)
-                                    .padding(horizontal = 32.dp),
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                textAlign = TextAlign.Center,
-                            )
-                        } else {
-                            LazyColumn(modifier = Modifier.fillMaxSize()) {
-                                items(state.events, key = { it.id }) { event ->
-                                    NoteCard(
-                                        event = event,
-                                        profile = state.profiles[event.pubkey],
-                                        profiles = state.profiles,
-                                        replyCount = state.replyCounts[event.id] ?: 0,
-                                        reactionCount = state.reactionCounts[event.id] ?: 0,
-                                        likeReactionCount = state.likeReactionCounts[event.id] ?: 0,
-                                        customReactions = state.customReactions[event.id].orEmpty(),
-                                        unicodeReactions = state.unicodeReactions[event.id].orEmpty(),
-                                        reactionEvents = state.reactionEvents[event.id].orEmpty(),
-                                        repostCount = state.repostCounts[event.id] ?: 0,
-                                        repostPubkeys = state.repostPubkeys[event.id].orEmpty(),
-                                        onUserClick = onUserClick,
-                                        onNoteClick = onOpenThread,
-                                        onOpenReplies = { onOpenReplies(event.id) },
-                                        onOpenLikes = { onOpenLikes(event.id) },
-                                        onOpenReposts = { onOpenReposts(event.id) },
-                                    )
-                                    HorizontalDivider()
-                                }
-                                if (state.canLoadMore) {
-                                    item {
-                                        Box(
-                                            modifier = Modifier
-                                                .fillMaxWidth()
-                                                .padding(16.dp),
-                                            contentAlignment = Alignment.Center,
-                                        ) {
-                                            FilledTonalButton(onClick = viewModel::loadMore) {
-                                                Text("さらに読み込む")
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
+                        HorizontalDivider()
                     }
                 }
             }
