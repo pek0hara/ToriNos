@@ -71,6 +71,13 @@ class AccountSession internal constructor(
         writableRelays = { relayStore.writableRelayUrlsSnapshot().toSet() },
         ensureActive = ::ensureActive,
     )
+    internal val badgeIssuer = com.nostr.torinos.badge.AccountBadgeIssuer(
+        pubkey = pubkey, signer = signer, scope = resources.scope,
+        repository = badgeRepository,
+        relays = { (relayStore.enabledRelayUrlsSnapshot() + relayStore.writableRelayUrlsSnapshot()).toSet() },
+        writableRelays = { relayStore.writableRelayUrlsSnapshot().toSet() },
+        ensureActive = ::ensureActive,
+    )
     val followRepository = FollowRepository(this, resources.scope)
     private val privateMuteListStore = PrivateMuteListStore(
         signer = signer,
@@ -106,6 +113,7 @@ class AccountSession internal constructor(
         resources.onClose(customEmojis::close)
         resources.onClose(emojiAdoption::close)
         resources.onClose(badges::close)
+        resources.onClose(badgeIssuer::close)
     }
 
     internal fun ensureActive() {
@@ -130,6 +138,7 @@ class AccountSession internal constructor(
         customEmojis.start()
         emojiPreferenceSync.start()
         badges.start()
+        badgeIssuer.start()
     }
 
     /** アプリが前面に戻ったとき。 */
@@ -137,6 +146,7 @@ class AccountSession internal constructor(
         if (!resources.lease.isActive) return
         emojiPreferenceSync.onAppForeground()
         badges.onForeground()
+        badgeIssuer.onForeground()
     }
 
     internal fun onClose(action: () -> Unit) {

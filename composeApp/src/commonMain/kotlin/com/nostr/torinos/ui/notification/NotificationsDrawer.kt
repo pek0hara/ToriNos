@@ -32,6 +32,7 @@ import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.EmojiEvents
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.MailOutline
 import androidx.compose.material.icons.filled.PersonAdd
@@ -57,6 +58,7 @@ import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.nostr.torinos.account.LocalAccountSession
+import com.nostr.torinos.badge.BadgeAwardNotice
 import com.nostr.torinos.model.NostrEvent
 import com.nostr.torinos.model.NostrProfile
 import com.nostr.torinos.network.TargetLoadState
@@ -213,6 +215,13 @@ private fun NotificationGroupRow(
         NotificationType.Repost -> EngagementNotification(group, state, onUserClick, onOpenTarget, onRetryTarget)
         NotificationType.Follow -> Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp)) {
             NotificationGroupHeader(group, state.profiles, onUserClick)
+        }
+        NotificationType.BadgeAward -> Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp)) {
+            NotificationGroupHeader(group, state.profiles, onUserClick)
+            group.latest.event?.let { award ->
+                Spacer(modifier = Modifier.height(6.dp))
+                BadgeAwardNotice(award = award, recipient = ownPubkey, onUserClick = onUserClick)
+            }
         }
     }
 }
@@ -424,6 +433,7 @@ private fun notificationAccent(type: NotificationType): Color = when (type) {
     NotificationType.Repost -> Color(0xFF2BAE66)
     NotificationType.Like -> Color(0xFFE17055)
     NotificationType.Follow -> MaterialTheme.colorScheme.tertiary
+    NotificationType.BadgeAward -> Color(0xFFD4A017)
 }
 
 private fun notificationIcon(type: NotificationType): ImageVector = when (type) {
@@ -431,6 +441,7 @@ private fun notificationIcon(type: NotificationType): ImageVector = when (type) 
     NotificationType.Repost -> Icons.Default.Repeat
     NotificationType.Like -> Icons.Default.Favorite
     NotificationType.Follow -> Icons.Default.PersonAdd
+    NotificationType.BadgeAward -> Icons.Default.EmojiEvents
 }
 
 @Composable
@@ -463,6 +474,7 @@ private fun notificationTitleSuffix(type: NotificationType): String =
         NotificationType.Repost -> "がリポスト"
         NotificationType.Like -> "がいいね"
         NotificationType.Follow -> "がフォロー"
+        NotificationType.BadgeAward -> "がバッジを授与"
     }
 
 private fun shortPubkey(pubkey: String): String = pubkey.take(8) + "..." + pubkey.takeLast(8)

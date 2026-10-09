@@ -46,6 +46,25 @@ class AccountBadgeStoreTest {
         assertTrue(f.storage.isNotEmpty())
         store.close()
     }
+    @Test fun addToDisplayAppendsTheAwardWithTheRelayItCameFrom() = runTest {
+        val f = Fixture(backgroundScope); val store = f.store()
+        assertTrue(store.addToDisplay(badgeAddress, badgeAward().id), store.state.value.message)
+        val latest = store.state.value.latest!!
+        assertEquals(listOf(listOf("a", badgeAddress.value), listOf("e", badgeAward().id, "wss://one.example")), latest.tags)
+        assertTrue(store.isDisplayed(badgeAddress.value))
+        // Adding again leaves the list as it is.
+        assertTrue(store.addToDisplay(badgeAddress, badgeAward().id))
+        assertEquals(latest, store.state.value.latest)
+        store.close()
+    }
+    @Test fun addToDisplayRejectsAnAwardForSomeoneElse() = runTest {
+        val f = Fixture(backgroundScope)
+        f.events = listOf(badgeEvent(8, badgeIssuer, listOf(listOf("a", badgeAddress.value), listOf("p", badgeIssuer)), id = "d".repeat(64)), badgeDefinition())
+        val store = f.store()
+        assertFalse(store.addToDisplay(badgeAddress, "d".repeat(64)))
+        assertNull(store.state.value.latest)
+        store.close()
+    }
     @Test fun failedFetchDoesNotAllowFirstSave() = runTest {
         val f = Fixture(backgroundScope); f.complete = false; val store = f.store()
         assertFalse(store.refreshSelection())

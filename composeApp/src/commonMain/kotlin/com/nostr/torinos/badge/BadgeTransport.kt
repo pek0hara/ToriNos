@@ -24,6 +24,8 @@ internal data class BadgeFetchResult(
     val complete: Boolean,
     val answered: Set<String> = emptySet(),
     val pages: Map<String, BadgeRelayPage> = emptyMap(),
+    /** The first relay each event arrived from; used as a relay hint when referencing it. */
+    val sources: Map<String, String> = emptyMap(),
 )
 
 internal class BadgeTransport(
@@ -39,6 +41,7 @@ internal class BadgeTransport(
         if (relays.isEmpty()) return BadgeFetchResult(emptyList(), false)
         val events = linkedMapOf<String, NostrEvent>()
         val pages = mutableMapOf<String, BadgeRelayPage>()
+        val sources = mutableMapOf<String, String>()
         val seen = mutableMapOf<String, MutableSet<String>>()
         var complete = false
         var answered = emptySet<String>()
@@ -60,7 +63,7 @@ internal class BadgeTransport(
                             val known = events[event.id] == event || (filters.any { matchesBadgeFilter(event, it) } &&
                                 withContext(validationDispatcher) { validate(event) } && event.id !in events && run {
                                     if (events.size >= 10_000) { truncated = true; false }
-                                    else { events[event.id] = event; onEvent(event); true }
+                                    else { events[event.id] = event; sources[event.id] = signal.relayUrl; onEvent(event); true }
                                 })
                             if (known && seen.getOrPut(signal.relayUrl) { mutableSetOf() }.add(event.id)) {
                                 val page = pages[signal.relayUrl]
@@ -85,7 +88,7 @@ internal class BadgeTransport(
         } finally {
             kotlinx.coroutines.withContext(kotlinx.coroutines.NonCancellable) { session?.close() }
         }
-        return BadgeFetchResult(events.values.toList(), complete, answered, pages)
+        return BadgeFetchResult(events.values.toList(), complete, answered, pages, sources)
     }
 
     suspend fun publish(event: NostrEvent, relays: Set<String>): RelayPublishResult = send(event, relays)

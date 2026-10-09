@@ -35,7 +35,8 @@ fun groupNotifications(
             NotificationType.Like,
             NotificationType.Repost -> item.targetEventId?.let { "${item.type}:$it:$date" }
             NotificationType.Follow -> "${item.type}:$date"
-            NotificationType.Reply -> null
+            NotificationType.Reply,
+            NotificationType.BadgeAward -> null
         } ?: "item:${item.id}"
         groups.getOrPut(key) { date to mutableListOf() }.second += item
     }

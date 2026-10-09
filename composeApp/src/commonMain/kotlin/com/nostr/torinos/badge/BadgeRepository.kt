@@ -218,6 +218,12 @@ internal class BadgeRepository(
         return result
     }
 
+    /** NIP-65 read relays per recipient (at most 2 each), looked up so awards reach where recipients read. */
+    internal suspend fun readRelaysOf(pubkeys: Set<String>, base: Set<String> = readRelays()): Map<String, Set<String>> {
+        if (pubkeys.isNotEmpty()) discoverRelays(pubkeys, base)
+        return pubkeys.associateWith { relaysFor(setOf(it), readMentions = true, base = emptySet()) }
+    }
+
     internal fun display(item: BadgeSelectionItem, recipient: String): BadgeDisplayItem? = lock.withLock {
         val address = item.address ?: return@withLock null
         val award = item.awardId?.let { cache[it] } ?: return@withLock null

@@ -1,5 +1,7 @@
 package com.nostr.torinos.ui.notification
 
+import com.nostr.torinos.badge.badgeAwardAddress
+import com.nostr.torinos.crypto.isValidEvent
 import com.nostr.torinos.model.NostrEvent
 import com.nostr.torinos.model.NostrFilter
 import com.nostr.torinos.model.COMMENT_EVENT_KIND
@@ -46,6 +48,7 @@ enum class NotificationType {
     Repost,
     Like,
     Follow,
+    BadgeAward,
 }
 
 data class NotificationsState(
@@ -208,6 +211,7 @@ class NotificationsViewModel(
             activitySubId,
             listOf(
                 NostrFilter(kinds = listOf(1, 6, 16, 7), pTags = listOf(ownPubkey), limit = limit),
+                NostrFilter(kinds = listOf(8), pTags = listOf(ownPubkey), limit = limit),
                 NostrFilter(
                     kinds = listOf(COMMENT_EVENT_KIND),
                     rootKindTags = listOf("1"),
@@ -239,7 +243,19 @@ class NotificationsViewModel(
             1, COMMENT_EVENT_KIND -> NotificationType.Reply
             6, 16 -> NotificationType.Repost
             7 -> NotificationType.Like
+            8 -> NotificationType.BadgeAward
             else -> return
+        }
+        if (type == NotificationType.BadgeAward) {
+            // Anyone can award anyone, so only a correctly signed award naming this account is shown.
+            if (badgeAwardAddress(event, ownPubkey) == null || !withContext(Dispatchers.Default) { isValidEvent(event) }) {
+                rememberSeenId(event.id)
+                return
+            }
+            addItem(NotificationItem(id = event.id, type = type, actorPubkey = event.pubkey, createdAt = event.createdAt,
+                receivedAt = event.createdAt, targetEventId = null, event = event))
+            scheduleProfileFetch(event.pubkey)
+            return
         }
         val resolved = withContext(Dispatchers.Default) { resolveNotificationTarget(event) }
         val targetEventId = (resolved.reference as? TargetReference.EventId)?.id

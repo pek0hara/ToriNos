@@ -13,6 +13,16 @@ import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import kotlin.time.Clock
 
+// Messages the sheet tells apart (BadgeSheetModel): sync status, conflicts, and partial fetches.
+internal const val BADGE_MESSAGE_CONFLICT = "別の端末で表示バッジが更新されました。最新版を読み込んで再編集してください"
+internal const val BADGE_MESSAGE_STALE_DRAFT = "別の端末で更新されました。ドラフトを保持しています。最新版を読み込んで再編集してください"
+internal const val BADGE_MESSAGE_NO_RELAYS = "送信先が未設定です"
+internal const val BADGE_MESSAGE_PARTIAL_SYNC = "一部のリレーに未同期"
+internal const val BADGE_MESSAGE_PENDING = "送信待ち"
+internal const val BADGE_MESSAGE_SAVED = "保存済み"
+internal const val BADGE_MESSAGE_REFRESH_FAILED = "表示バッジの最新情報を取得できませんでした。再試行してください"
+internal const val BADGE_MESSAGE_AWARDS_PARTIAL = "受け取ったバッジを一部取得できませんでした"
+
 @Serializable
 internal data class BadgeSavedState(
     val latest: NostrEvent? = null,
@@ -61,6 +71,9 @@ internal class AccountBadgeStore(
     private var liveJob: Job? = null
     private var release: (() -> Unit)? = null
     private val received = linkedMapOf<String, NostrEvent>()
+    // Relay each award was received from, written into the `e` tag as a hint. Replaced, never mutated,
+    // so the sheet can read it on the main thread while awardsMutex serializes writers.
+    private var awardSources: Map<String, String> = emptyMap()
     private var boundary: Long? = null
     private var pageLimit = 100
     private val mutableState = MutableStateFlow(BadgeManagementState())
@@ -115,11 +128,11 @@ internal class AccountBadgeStore(
     private fun effectiveLatest(): NostrEvent? = selectBadgeProfile(listOfNotNull(saved.latest, saved.pending), pubkey)
 
     private fun syncMessage(): String? = when {
-        saved.conflict -> "別の端末で表示バッジが更新されました。最新版を読み込んで再編集してください"
+        saved.conflict -> BADGE_MESSAGE_CONFLICT
         saved.pending == null -> null
-        saved.pendingRelays.isEmpty() && saved.succeededRelays.isEmpty() -> "送信先が未設定です"
-        saved.succeededRelays.isNotEmpty() -> "一部のリレーに未同期"
-        else -> "送信待ち"
+        saved.pendingRelays.isEmpty() && saved.succeededRelays.isEmpty() -> BADGE_MESSAGE_NO_RELAYS
+        saved.succeededRelays.isNotEmpty() -> BADGE_MESSAGE_PARTIAL_SYNC
+        else -> BADGE_MESSAGE_PENDING
     }
 
     suspend fun refreshSelection(): Boolean {
@@ -131,7 +144,7 @@ internal class AccountBadgeStore(
             ensureActive()
             confirmedAbsent = result.complete && remote == null
             if (remote != null) acceptRemoteLocked(remote)
-            publishState(if (result.complete) syncMessage() else "表示バッジの最新情報を取得できませんでした。再試行してください")
+            publishState(if (result.complete) syncMessage() else BADGE_MESSAGE_REFRESH_FAILED)
         }
         return result.complete
     }
@@ -166,7 +179,7 @@ internal class AccountBadgeStore(
                 ensureActive()
                 val latest = effectiveLatest()
                 if (latest?.id != draft.baselineId) {
-                    publishState("別の端末で更新されました。ドラフトを保持しています。最新版を読み込んで再編集してください")
+                    publishState(BADGE_MESSAGE_STALE_DRAFT)
                     return false
                 }
                 check(latest != null || confirmedAbsent) { "初回保存の前に最新情報を取得してください" }
@@ -220,7 +233,7 @@ internal class AccountBadgeStore(
             val next = saved.copy(pending = if (remaining.isEmpty()) null else pending.first,
                 pendingRelays = remaining, succeededRelays = saved.succeededRelays + result.succeededRelays)
             persist(next)
-            publishState(if (remaining.isEmpty()) "保存済み" else syncMessage())
+            publishState(if (remaining.isEmpty()) BADGE_MESSAGE_SAVED else syncMessage())
         }
     }
 
@@ -233,6 +246,7 @@ internal class AccountBadgeStore(
             val result = repository.transport.fetch(listOf(NostrFilter(kinds = listOf(8), pTags = listOf(pubkey), until = boundary, limit = requestedLimit)), repository.relaysFor(setOf(pubkey), readMentions = true, base = relays()))
             ensureActive()
             result.events.forEach { received[it.id] = it }
+            awardSources = result.sources + awardSources
             repository.ingest(result.events)
             val items = received.values.mapNotNull { event ->
                 val address = event.tags.firstOrNull { it.firstOrNull() == "a" }?.getOrNull(1)?.let(BadgeAddress::parse) ?: return@mapNotNull null
@@ -250,10 +264,43 @@ internal class AccountBadgeStore(
                 else { boundary = next; pageLimit = 100 }
             }
             mutableState.update { it.copy(awards = displays, incomplete = !result.complete || pageLimit == 2_000,
-                canLoadMore = !result.complete || next != null, message = if (!result.complete) "受け取ったバッジを一部取得できませんでした" else syncMessage()) }
+                canLoadMore = !result.complete || next != null, message = if (!result.complete) BADGE_MESSAGE_AWARDS_PARTIAL else syncMessage()) }
         } catch (e: CancellationException) { throw e }
         catch (e: Exception) { showError(e) }
         finally { mutableState.update { it.copy(busy = false) } }
+    }
+
+    /** The display pair for an award, with the relay it was received from when known. */
+    fun selectionItem(address: String, awardId: String): BadgeSelectionItem =
+        BadgeSelectionItem(listOf(listOf("a", address), listOfNotNull("e", awardId, awardSources[awardId])))
+
+    fun isDisplayed(address: String): Boolean =
+        state.value.latest?.let { repository.expand(it, Int.MAX_VALUE) }.orEmpty().any { it.address?.value == address }
+
+    /**
+     * Appends one received award to the display list (used from notifications). The award is fetched
+     * by id first so the pair can carry a relay hint and save() can verify it.
+     */
+    suspend fun addToDisplay(address: BadgeAddress, awardId: String): Boolean {
+        try {
+            initialize()
+            val item = awardsMutex.withLock {
+                if (awardId !in awardSources) {
+                    val result = repository.transport.fetch(listOf(NostrFilter(kinds = listOf(8), ids = listOf(awardId))),
+                        repository.relaysFor(setOf(pubkey), readMentions = true, base = relays()))
+                    ensureActive()
+                    repository.ingest(result.events)
+                    result.sources[awardId]?.let { awardSources = awardSources + (awardId to it) }
+                }
+                selectionItem(address.value, awardId)
+            }
+            repository.resolveItems(listOf(item), relays())
+            if (!refreshSelection()) return false
+            if (isDisplayed(address.value)) return true
+            val draft = draft()
+            return save(draft.copy(items = draft.items + item))
+        } catch (e: CancellationException) { throw e }
+        catch (e: Exception) { showError(e); return false }
     }
 
     private fun showError(error: Exception) { mutableState.update { it.copy(message = error.message ?: "バッジ処理に失敗しました") } }

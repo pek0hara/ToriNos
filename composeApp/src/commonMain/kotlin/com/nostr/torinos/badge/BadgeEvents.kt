@@ -136,6 +136,9 @@ internal fun badgeDisplay(definition: NostrEvent, award: NostrEvent, recipient: 
     )
 }
 
+/** A definition shown on its own (issuer screens); it has no award, so award fields describe the definition. */
+internal fun badgeDefinitionDisplay(definition: NostrEvent): BadgeDisplayItem = badgeDisplay(definition, definition, "")
+
 internal data class BadgeStripLayout(val visibleCount: Int, val overflowCount: Int)
 internal fun badgeStripWidth(layout: BadgeStripLayout, overflowWidth: Float = 24f): Float {
     val slots = layout.visibleCount + if (layout.overflowCount > 0) 1 else 0

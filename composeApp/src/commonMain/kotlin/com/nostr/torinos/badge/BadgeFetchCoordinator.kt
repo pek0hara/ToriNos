@@ -136,6 +136,7 @@ private fun List<BadgeFetchResult>.combined(): BadgeFetchResult = singleOrNull()
     pages = flatMap { it.pages.entries }.groupBy({ it.key }, { it.value }).mapValues { (_, pages) ->
         BadgeRelayPage(pages.sumOf { it.count }, pages.minOf { it.oldest })
     },
+    sources = fold(emptyMap()) { sources, result -> result.sources + sources },
 )
 
 internal fun NostrFilter.isExactIdLookup(): Boolean = ids != null && this == NostrFilter(kinds = listOf(8), ids = ids)

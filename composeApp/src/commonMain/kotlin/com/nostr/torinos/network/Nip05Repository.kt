@@ -73,6 +73,23 @@ internal suspend fun verifyNip05(
     }
 }
 
+private val nip05Json = Json { ignoreUnknownKeys = true }
+
+/** The public key an address points to, or null when it cannot be resolved. */
+internal suspend fun resolveNip05(address: String, fetch: suspend (String) -> String): String? {
+    val parsed = parseNip05Address(address) ?: return null
+    return try {
+        nip05Json.decodeFromString<Nip05Document>(fetch(parsed.url))
+            .names[parsed.name]?.takeIf { it.matches(Regex("[0-9a-f]{64}")) }
+    } catch (_: TimeoutCancellationException) {
+        null
+    } catch (e: CancellationException) {
+        throw e
+    } catch (_: Exception) {
+        null
+    }
+}
+
 /** Verification outcomes are shared by all screens and keyed by both address and public key. */
 internal class Nip05VerificationStore(
     private val scope: CoroutineScope,
@@ -131,16 +148,18 @@ object Nip05Repository {
     private val store = Nip05VerificationStore(
         scope = CoroutineScope(SupervisorJob() + Dispatchers.Default),
     ) { address, pubkey ->
-        verifyNip05(address, pubkey) { url ->
-            withTimeout(5_000L) {
-                val response = client.get(url)
-                check(response.status.isSuccess()) { "HTTP ${response.status.value}" }
-                response.bodyAsText()
-            }
-        }
+        verifyNip05(address, pubkey, ::fetchDocument)
+    }
+
+    private suspend fun fetchDocument(url: String): String = withTimeout(5_000L) {
+        val response = client.get(url)
+        check(response.status.isSuccess()) { "HTTP ${response.status.value}" }
+        response.bodyAsText()
     }
 
     fun observe(address: String, pubkey: String): Flow<Nip05Status> = store.observe(address, pubkey)
+
+    suspend fun resolve(address: String): String? = resolveNip05(address, ::fetchDocument)
 
     suspend fun verify(address: String, pubkey: String, forceRefresh: Boolean = false): Nip05Status =
         store.verify(address, pubkey, forceRefresh)
