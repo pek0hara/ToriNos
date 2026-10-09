@@ -37,6 +37,7 @@ internal fun FeedInlinePostComposer(
         placeholder = "今何してる？",
         modifier = modifier,
         isSending = state.isPosting,
+        enabled = !state.isFrozen,
         error = state.error,
         leadingContent = onClose?.let { close ->
             {

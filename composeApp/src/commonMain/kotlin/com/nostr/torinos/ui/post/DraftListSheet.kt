@@ -194,7 +194,12 @@ private fun DraftRow(
         Column(modifier = Modifier.weight(1f)) {
             Text(
                 text = item.memo.text.ifBlank {
-                    if (item.memo.imageUrls.isNotEmpty()) "画像 ${item.memo.imageUrls.size} 件" else "（本文なし）"
+                    val quotes = item.memo.quoteInputs()
+                    when {
+                        quotes.isNotEmpty() -> "引用${quotes.size}件: ${quotes.first().displayPreview}"
+                        item.memo.imageUrls.isNotEmpty() -> "画像 ${item.memo.imageUrls.size} 件"
+                        else -> "（本文なし）"
+                    }
                 },
                 maxLines = 2,
                 overflow = TextOverflow.Ellipsis,

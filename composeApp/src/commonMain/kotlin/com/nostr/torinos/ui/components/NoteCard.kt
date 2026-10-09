@@ -116,6 +116,7 @@ import com.nostr.torinos.model.timelinePreviewUrl
 import com.nostr.torinos.network.DisplayPreferencesStore
 import com.nostr.torinos.emoji.customEmojiMap
 import com.nostr.torinos.ui.profile.AvatarCircle
+import com.nostr.torinos.article.canSelectForMatometr
 import com.nostr.torinos.ui.settings.setPlainText
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.Json
@@ -183,6 +184,7 @@ fun NoteCard(
     /** 件数・操作欄とは独立してリアクションの内訳を表示する。 */
     showReactions: Boolean = showEngagement,
 ) {
+    val matometrSession = LocalAccountSession.current
     val onQuote = LocalQuotePostHandler.current
     // Read inside the name row only, so badge updates do not recompose the whole card.
     val badgesState = com.nostr.torinos.badge.rememberBadges(event.pubkey)
@@ -209,8 +211,9 @@ fun NoteCard(
     val hasOwnReaction = isLiked || ownEmojiReactionEventIds.isNotEmpty()
 
     if (showDetails) {
-        NoteDetailsDialog(
+        EventDataDialog(
             event = event,
+            title = "投稿のデータ",
             onDismiss = { showDetails = false },
         )
     }
@@ -289,6 +292,7 @@ fun NoteCard(
                 textAlign = TextAlign.Center,
                 softWrap = false,
             )
+            com.nostr.torinos.ui.article.MatometrSelectionCheckbox(event)
         }
 
         Column(modifier = Modifier.weight(1f)) {
@@ -389,7 +393,7 @@ fun NoteCard(
                                 onDismissRequest = { showMenu = false },
                             ) {
                                 DropdownMenuItem(
-                                    text = { Text("詳細を表示") },
+                                    text = { Text("データを表示") },
                                     onClick = {
                                         showMenu = false
                                         showDetails = true
@@ -404,6 +408,12 @@ fun NoteCard(
                                         }
                                     },
                                 )
+                                if (event.canSelectForMatometr() && matometrSession != null) {
+                                    DropdownMenuItem(text = { Text("まとめに追加") }, onClick = {
+                                        showMenu = false
+                                        matometrSession.matometrSelection.toggle(event)
+                                    })
+                                }
                                 if (onQuote != null) {
                                     DropdownMenuItem(
                                         text = { Text("投稿を引用") },
@@ -749,9 +759,11 @@ internal fun extractEventUrls(event: NostrEvent): List<String> =
         .distinct()
         .toList()
 
+/** イベントの種類・日時・URLと、生のJSONを見せる全画面ダイアログ。投稿と記事の「データを表示」で使う。 */
 @Composable
-private fun NoteDetailsDialog(
+internal fun EventDataDialog(
     event: NostrEvent,
+    title: String,
     onDismiss: () -> Unit,
 ) {
     val clipboard = LocalClipboard.current
@@ -772,7 +784,7 @@ private fun NoteDetailsDialog(
         ) {
             Column(modifier = Modifier.fillMaxSize()) {
                 AppTopBar(
-                    title = "投稿の詳細",
+                    title = title,
                     navigationIcon = {
                         IconButton(onClick = onDismiss) {
                             Icon(

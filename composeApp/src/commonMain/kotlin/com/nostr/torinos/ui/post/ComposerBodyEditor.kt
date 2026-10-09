@@ -94,6 +94,7 @@ internal fun ColumnScope.ComposerBodyEditor(
     onOpenCustomEmojiSettings: (() -> Unit)?,
     onContentWarningChange: ((Boolean) -> Unit)? = null,
     onTextChange: (String) -> Unit,
+    onCursorChange: (Int, Int) -> Unit = { _, _ -> },
     onCustomEmojiInserted: (String, CustomEmoji) -> Unit,
     textFocusRequester: FocusRequester,
     onTextFocusChanged: (Boolean) -> Unit,
@@ -102,24 +103,27 @@ internal fun ColumnScope.ComposerBodyEditor(
 ) {
     // 簡易コンポーザーから展開したときも、本文の末尾から続けて入力できるようカーソルを末尾に置く。
     var textValue by remember {
-        mutableStateOf(TextFieldValue(state.text, selection = TextRange(state.text.length)))
+        mutableStateOf(TextFieldValue(state.text, selection = TextRange(state.cursorStart.takeIf { it >= 0 }?.coerceAtMost(state.text.length) ?: state.text.length, state.cursorEnd.takeIf { it >= 0 }?.coerceAtMost(state.text.length) ?: state.text.length)))
     }
     val accountSession = LocalAccountSession.current
     var showCustomEmojiPicker by remember { mutableStateOf(false) }
     var showImageSourceMenu by remember { mutableStateOf(false) }
     var expandedImageData by remember { mutableStateOf<Any?>(null) }
+    // 画像データ自体を保持せず、投稿・破棄・画像削除後は拡大表示の参照も外す。
+    var expandedImageId by remember { mutableStateOf<Int?>(null) }
     val dismissKeyboard = rememberDismissKeyboard()
 
     LaunchedEffect(state.text) {
         if (state.text != textValue.text) {
             textValue = TextFieldValue(
                 text = state.text,
-                selection = TextRange(state.text.length),
+                selection = TextRange(state.cursorStart.takeIf { it >= 0 }?.coerceAtMost(state.text.length) ?: state.text.length, state.cursorEnd.takeIf { it >= 0 }?.coerceAtMost(state.text.length) ?: state.text.length),
             )
         }
     }
 
     fun insertEmoji(option: ReactionOption) {
+        if (state.isFrozen || accountSession?.inputFrozen?.value == true) return
         val inserted = insertDraftEmoji(
             text = textValue.text,
             selectionStart = textValue.selection.start,
@@ -128,6 +132,7 @@ internal fun ColumnScope.ComposerBodyEditor(
             retained = state.customEmojis,
             maxLength = MAX_POST_CHARS,
         ) ?: return
+        onCursorChange(inserted.cursor, inserted.cursor)
         textValue = TextFieldValue(
             text = inserted.text,
             selection = TextRange(inserted.cursor),
@@ -144,10 +149,14 @@ internal fun ColumnScope.ComposerBodyEditor(
 
     BasicTextField(
         value = textValue,
+        readOnly = state.isFrozen || state.isPosting,
         onValueChange = {
+            if (!state.isFrozen && accountSession?.inputFrozen?.value != true) {
+            onCursorChange(it.selection.start, it.selection.end)
             if (it.text.length <= MAX_POST_CHARS) {
                 textValue = it
                 onTextChange(it.text)
+            }
             }
         },
         modifier = Modifier
@@ -196,7 +205,10 @@ internal fun ColumnScope.ComposerBodyEditor(
                 Surface(
                     shape = MaterialTheme.shapes.small,
                     color = MaterialTheme.colorScheme.surfaceVariant,
-                    onClick = { expandedImageData = emoji.imageUrl },
+                    onClick = {
+                        expandedImageId = null
+                        expandedImageData = emoji.imageUrl
+                    },
                 ) {
                     Row(
                         modifier = Modifier.padding(8.dp),
@@ -236,7 +248,8 @@ internal fun ColumnScope.ComposerBodyEditor(
                 ImageThumbnail(
                     attachment = attachment,
                     onPreview = {
-                        expandedImageData = attachment.previewBytes ?: attachment.uploadedUrl
+                        expandedImageData = null
+                        expandedImageId = attachment.id
                     },
                     onRemove = { onRemoveImage(attachment.id) },
                 )
@@ -377,9 +390,9 @@ internal fun ColumnScope.ComposerBodyEditor(
             }
             Spacer(modifier = Modifier.weight(1f))
             Text(
-                text = state.text.length.toString(),
+                text = state.contentLength.toString(),
                 style = MaterialTheme.typography.labelSmall,
-                color = if (state.text.length >= MAX_POST_CHARS)
+                color = if (state.contentLength >= MAX_POST_CHARS)
                     MaterialTheme.colorScheme.error
                 else
                     MaterialTheme.colorScheme.onSurfaceVariant,
@@ -395,10 +408,18 @@ internal fun ColumnScope.ComposerBodyEditor(
         )
     }
 
-    expandedImageData?.let { data ->
+    val imageData = if (expandedImageId != null) {
+        state.images.firstOrNull { it.id == expandedImageId }?.fullSizePreviewData
+    } else {
+        expandedImageData
+    }
+    imageData?.let { data ->
         PostImagePreviewDialog(
             data = data,
-            onDismiss = { expandedImageData = null },
+            onDismiss = {
+                expandedImageData = null
+                expandedImageId = null
+            },
         )
     }
 }

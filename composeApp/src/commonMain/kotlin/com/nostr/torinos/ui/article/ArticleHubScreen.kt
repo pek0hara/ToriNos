@@ -1,5 +1,7 @@
 package com.nostr.torinos.ui.article
 
+import com.nostr.torinos.ui.post.PostQuote
+import com.nostr.torinos.ui.post.articleQuote
 import com.nostr.torinos.model.MATOMETR_TOPIC
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.mutableStateOf
@@ -14,8 +16,12 @@ import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.ui.unit.dp
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.EditNote
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -43,6 +49,7 @@ import kotlinx.coroutines.flow.filter
 @Composable
 fun ArticleHubScreen(
     ownPubkey: String?,
+    onOpenDrafts: () -> Unit = {},
     ownProfile: NostrProfile?,
     onOpenProfile: () -> Unit,
     onOpenSettings: () -> Unit,
@@ -53,6 +60,7 @@ fun ArticleHubScreen(
     onAuthorFilterChange: (ArticleAuthorFilter) -> Unit,
     topic: String?,
     onTopicChange: (String?) -> Unit,
+    onShareToFeed: ((PostQuote) -> Unit)? = null,
     /** false の間は描画だけして、一覧や件数を取得しない。 */
     isActive: Boolean = true,
 ) {
@@ -62,10 +70,13 @@ fun ArticleHubScreen(
 
     val activeRelayUrl = selectedRelayUrl
     if (!isRelayStoreLoaded || activeRelayUrl == null) {
-        RelaySelectionPendingContent(
-            isLoaded = isRelayStoreLoaded,
-            hasEnabledRelays = relays.isNotEmpty(),
-        )
+        Column {
+            if (ownPubkey != null) androidx.compose.material3.TextButton(onClick = onOpenDrafts) { androidx.compose.material3.Text("記事下書き") }
+            RelaySelectionPendingContent(
+                isLoaded = isRelayStoreLoaded,
+                hasEnabledRelays = relays.isNotEmpty(),
+            )
+        }
         return
     }
 
@@ -137,6 +148,19 @@ fun ArticleHubScreen(
                         )
                     },
                     actions = {
+                        if (ownPubkey != null) {
+                            // アイコンだけでは用途が伝わりにくいので文字を添える。
+                            androidx.compose.material3.TextButton(
+                                onClick = onOpenDrafts,
+                                contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 8.dp),
+                            ) {
+                                Icon(Icons.Default.EditNote, contentDescription = null, tint = headerContentColor,
+                                    modifier = Modifier.size(20.dp))
+                                androidx.compose.foundation.layout.Spacer(Modifier.width(4.dp))
+                                androidx.compose.material3.Text("下書き", color = headerContentColor,
+                                    style = MaterialTheme.typography.labelLarge)
+                            }
+                        }
                         IconButton(onClick = onOpenSettings) {
                             Icon(
                                 Icons.Default.Settings,
@@ -167,6 +191,9 @@ fun ArticleHubScreen(
                     ),
                 ),
                 hiddenTopic = topic,
+                onShareToFeed = onShareToFeed?.let { share ->
+                    { article -> share(articleQuote(article.event.pubkey, article.meta.identifier, article.displayTitle, activeRelayUrl)) }
+                },
                 emptyText = when {
                     query == ArticleQuery() -> "記事がありません"
                     query == ArticleQuery(authorScope = ArticleAuthorScope.Following) ->

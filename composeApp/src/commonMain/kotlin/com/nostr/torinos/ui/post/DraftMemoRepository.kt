@@ -54,7 +54,9 @@ internal class DraftMemoRepository(
         } finally {
             runCatching { session.close() }
         }
-        val drafts = events.values.mapNotNull { event -> decode(event, signer) }
+        // 削除版や読み込めない最新版も勝者とし、古い版を復活させない。
+        val latest = latestPostDraftEvents(events.values.filter { it.kind == MEMO_EVENT_KIND && it.pubkey == signer.pubkey })
+        val drafts = latest.mapNotNull { event -> decode(event, signer) }
         return mergeDraftMemos(emptyList(), drafts)
     }
 
@@ -63,8 +65,9 @@ internal class DraftMemoRepository(
 
     private fun decode(event: NostrEvent, signer: AccountSigner): DraftMemo? {
         if (event.kind != MEMO_EVENT_KIND || event.pubkey != signer.pubkey) return null
+        if (event.tags.any { it == listOf("k", "30023") }) return null
         val payload = runCatching {
-            memoJson.decodeFromString<PostMemoPayload>(signer.decrypt(event.content, signer.pubkey))
+            decodePostDraft(signer.decrypt(event.content, signer.pubkey), event)
         }.getOrNull() ?: return null
         return DraftMemo(
             eventId = event.id,
@@ -108,3 +111,9 @@ internal fun draftDeletionTags(draft: DraftMemo): List<List<String>> = buildList
 }
 
 private const val DRAFT_LIMIT = 5_000
+
+/** 空contentや復号不能な最新版も含めて選ぶ。復号はこの後に行う。 */
+internal fun latestPostDraftEvents(events: Collection<NostrEvent>): List<NostrEvent> =
+    events.groupBy { event -> Triple(event.pubkey, event.kind,
+        event.tags.firstOrNull { it.firstOrNull() == "d" }?.getOrNull(1) ?: "event:${event.id}") }
+        .values.map { versions -> versions.sortedWith(compareByDescending<NostrEvent> { it.createdAt }.thenBy { it.id }).first() }

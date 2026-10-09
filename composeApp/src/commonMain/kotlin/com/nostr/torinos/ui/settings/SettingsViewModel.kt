@@ -203,21 +203,15 @@ class SettingsViewModel : SafeViewModel() {
                 )
             }
             try {
-                val signer = accountSessionManager.currentSession?.signer
-                    ?: error("秘密鍵が保存されていません")
-                val deletedProfile = signer.sign(
-                    content = Json.encodeToString(
-                        buildJsonObject {
+                val nextState = accountSessionManager.deleteCurrentAccount { signer ->
+                    val deletedProfile = signer.sign(
+                        content = Json.encodeToString(buildJsonObject {
                             put("name", "nobody")
                             put("about", "account deleted")
-                        },
-                    ),
-                    kind = 0,
-                )
-                // Damus と同様、削除済みプロフィールを配信してからローカル鍵を破棄する。
-                // publish は少なくとも1つの有効リレーへの送信成功を保証する。
-                NostrRepository.publish(deletedProfile)
-                val nextState = accountSessionManager.deleteCurrentAccount().getOrThrow()
+                        }), kind = 0,
+                    )
+                    NostrRepository.publish(deletedProfile)
+                }.getOrThrow()
                 val accounts = accountSessionManager.listAccounts()
                 _state.update {
                     it.copy(

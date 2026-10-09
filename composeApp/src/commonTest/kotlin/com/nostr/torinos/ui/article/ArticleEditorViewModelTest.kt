@@ -1,5 +1,6 @@
 package com.nostr.torinos.ui.article
 
+import androidx.compose.ui.text.TextRange
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -79,5 +80,26 @@ class ArticleEditorViewModelTest {
 
         assertFalse(editing.hasUnsavedChanges)
         assertTrue(editing.copy(content = "更新した本文").hasUnsavedChanges)
+    }
+
+    @Test
+    fun nextArticleSaveDelay_waitsForAPauseButNotPastTheMaximum() {
+        assertEquals(10_000, nextArticleSaveDelay(0, 10_000, 60_000))
+        assertEquals(5_000, nextArticleSaveDelay(55_000, 10_000, 60_000))
+        assertEquals(0, nextArticleSaveDelay(90_000, 10_000, 60_000))
+    }
+
+    @Test
+    fun wrapMarkdownSelection_selectsPlaceholderOrKeepsSelectedText() {
+        assertEquals("ab**太字**c" to TextRange(4, 6), wrapMarkdownSelection("abc", TextRange(2), "**", "**", "太字"))
+        assertEquals("a**bc**" to TextRange(3, 5), wrapMarkdownSelection("abc", TextRange(1, 3), "**", "**", "太字"))
+    }
+
+    @Test
+    fun toggleMarkdownLinePrefix_editsTheCaretLineStart() {
+        assertEquals("one\n## two" to TextRange(9), toggleMarkdownLinePrefix("one\ntwo", TextRange(6), "## "))
+        assertEquals("one\ntwo" to TextRange(6), toggleMarkdownLinePrefix("one\n## two", TextRange(9), "## "))
+        assertEquals("## title" to TextRange(5), toggleMarkdownLinePrefix("### title", TextRange(6), "## "))
+        assertEquals("## " to TextRange(3), toggleMarkdownLinePrefix("", TextRange(0), "## "))
     }
 }

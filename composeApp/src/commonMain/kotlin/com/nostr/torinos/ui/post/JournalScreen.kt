@@ -36,6 +36,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -73,6 +74,7 @@ import com.nostr.torinos.model.NostrProfile
 import com.nostr.torinos.model.quotedEventIds
 import com.nostr.torinos.model.replyTargetId
 import com.nostr.torinos.network.RelayStore
+import com.nostr.torinos.ui.article.LocalMatometrSelectionEnabled
 import com.nostr.torinos.ui.components.AppFloatingActionButton
 import com.nostr.torinos.ui.components.AppTopBar
 import com.nostr.torinos.ui.components.DeleteNoteDialog
@@ -295,6 +297,7 @@ fun JournalScreen(
                     }
                 },
                 actions = {
+                    com.nostr.torinos.ui.article.MatometrStartButton()
                     IconButton(onClick = { showFilterHeader = !showFilterHeader }) {
                         Icon(
                             Icons.Default.FilterList,
@@ -304,6 +307,7 @@ fun JournalScreen(
                     }
                 },
             )
+            com.nostr.torinos.ui.article.MatometrSelectionBar()
             }
         },
     ) { padding ->
@@ -482,71 +486,73 @@ private fun JournalEntryRow(
     onUserClick: (String) -> Unit,
 ) {
     val event = entry.event
-    when (event.kind) {
-        1, COMMENT_EVENT_KIND -> {
-            val engagement = state.engagementOf(event.id)
-            val summary = engagement.summary
-            val isLiked = summary.ownLikeEventId != null ||
-                summary.pendingOperations[EngagementSlot.Reaction]?.request is EngagementRequest.AddLike
-            val replyParentId = event.replyTargetId()
-            NoteCard(
-                event = event,
-                profile = state.profiles[event.pubkey],
-                profiles = state.profiles,
-                replyParent = replyParentId
-                    ?.let { state.referencedEvents[it] }
-                    ?.let { QuotedEvent(event = it, profile = state.profiles[it.pubkey]) },
-                quotedEvents = quotedEventIds(event)
-                    .filter { it != replyParentId }
-                    .mapNotNull { id ->
-                        state.referencedEvents[id]?.let { QuotedEvent(event = it, profile = state.profiles[it.pubkey]) }
-                    },
-                replyCount = engagement.replyCount,
-                replies = engagement.replies,
-                reactionCount = summary.reactionCount,
-                likeReactionCount = summary.likeReactionCount,
-                customReactions = summary.customReactions,
-                unicodeReactions = summary.unicodeReactions,
-                reactionEvents = engagement.reactionEvents,
-                repostCount = summary.repostCount,
-                repostPubkeys = engagement.repostPubkeys,
-                isLiked = isLiked,
-                ownEmojiReactionEventIds = summary.displayOwnEmojiReactionEventIds,
-                onUserClick = onUserClick,
-                ownPubkey = ownPubkey,
-                onDelete = if (event.pubkey == ownPubkey) {
-                    { viewModel.showNoteDeleteDialog(event) }
-                } else null,
-                onLike = if (ownPubkey != null) {
-                    {
-                        if (isLiked) viewModel.unreact(event.id) else viewModel.react(event.id, event.pubkey)
-                    }
-                } else null,
-                onEmojiReact = if (ownPubkey != null) {
-                    { option -> viewModel.reactWithEmoji(event.id, event.pubkey, option) }
-                } else null,
-                onEmojiUnreact = if (ownPubkey != null) {
-                    { option -> viewModel.unreactWithEmoji(event.id, option) }
-                } else null,
-                onReply = if (ownPubkey != null && onReply != null) {
-                    { onReply(event, event.content.take(100)) }
-                } else null,
-                onOpenReplies = { onOpenThread(event.id) },
-                onNoteClick = { onOpenThread(event.id) },
-            )
+    CompositionLocalProvider(LocalMatometrSelectionEnabled provides true) {
+        when (event.kind) {
+            1, COMMENT_EVENT_KIND -> {
+                val engagement = state.engagementOf(event.id)
+                val summary = engagement.summary
+                val isLiked = summary.ownLikeEventId != null ||
+                    summary.pendingOperations[EngagementSlot.Reaction]?.request is EngagementRequest.AddLike
+                val replyParentId = event.replyTargetId()
+                NoteCard(
+                    event = event,
+                    profile = state.profiles[event.pubkey],
+                    profiles = state.profiles,
+                    replyParent = replyParentId
+                        ?.let { state.referencedEvents[it] }
+                        ?.let { QuotedEvent(event = it, profile = state.profiles[it.pubkey]) },
+                    quotedEvents = quotedEventIds(event)
+                        .filter { it != replyParentId }
+                        .mapNotNull { id ->
+                            state.referencedEvents[id]?.let { QuotedEvent(event = it, profile = state.profiles[it.pubkey]) }
+                        },
+                    replyCount = engagement.replyCount,
+                    replies = engagement.replies,
+                    reactionCount = summary.reactionCount,
+                    likeReactionCount = summary.likeReactionCount,
+                    customReactions = summary.customReactions,
+                    unicodeReactions = summary.unicodeReactions,
+                    reactionEvents = engagement.reactionEvents,
+                    repostCount = summary.repostCount,
+                    repostPubkeys = engagement.repostPubkeys,
+                    isLiked = isLiked,
+                    ownEmojiReactionEventIds = summary.displayOwnEmojiReactionEventIds,
+                    onUserClick = onUserClick,
+                    ownPubkey = ownPubkey,
+                    onDelete = if (event.pubkey == ownPubkey) {
+                        { viewModel.showNoteDeleteDialog(event) }
+                    } else null,
+                    onLike = if (ownPubkey != null) {
+                        {
+                            if (isLiked) viewModel.unreact(event.id) else viewModel.react(event.id, event.pubkey)
+                        }
+                    } else null,
+                    onEmojiReact = if (ownPubkey != null) {
+                        { option -> viewModel.reactWithEmoji(event.id, event.pubkey, option) }
+                    } else null,
+                    onEmojiUnreact = if (ownPubkey != null) {
+                        { option -> viewModel.unreactWithEmoji(event.id, option) }
+                    } else null,
+                    onReply = if (ownPubkey != null && onReply != null) {
+                        { onReply(event, event.content.take(100)) }
+                    } else null,
+                    onOpenReplies = { onOpenThread(event.id) },
+                    onNoteClick = { onOpenThread(event.id) },
+                )
+            }
+            6, 16, 7 -> {
+                val target = event.activityTargetId()?.let { state.referencedEvents[it] }
+                JournalActivityRow(
+                    event = event,
+                    profile = state.profiles[event.pubkey],
+                    targetEvent = target ?: event.embeddedRepostTarget(),
+                    targetProfile = target?.let { state.profiles[it.pubkey] },
+                    onUserClick = onUserClick,
+                    onOpenThread = onOpenThread,
+                )
+            }
+            else -> Unit
         }
-        6, 16, 7 -> {
-            val target = event.activityTargetId()?.let { state.referencedEvents[it] }
-            JournalActivityRow(
-                event = event,
-                profile = state.profiles[event.pubkey],
-                targetEvent = target ?: event.embeddedRepostTarget(),
-                targetProfile = target?.let { state.profiles[it.pubkey] },
-                onUserClick = onUserClick,
-                onOpenThread = onOpenThread,
-            )
-        }
-        else -> Unit
     }
 }
 

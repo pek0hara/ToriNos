@@ -3,6 +3,14 @@ package com.nostr.torinos.ui.article
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.MailOutline
+import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.IconButton
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import com.nostr.torinos.ui.components.EventDataDialog
 import androidx.compose.material3.Icon
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -22,6 +30,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -49,6 +58,7 @@ internal fun ArticleCard(
     onTopicClick: ((String) -> Unit)?,
     engagement: StateFlow<ArticleEngagementSummary?>? = null,
     hiddenTopic: String? = null,
+    onShareToFeed: (() -> Unit)? = null,
 ) {
     // The filtered topic would repeat on every card.
     val topics = article.meta.topics.filterNot {
@@ -125,12 +135,15 @@ internal fun ArticleCard(
             horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
             // 件数を右端に必要な幅だけ置き、残りの幅を著者行に渡す。著者行のタップ範囲は中身の幅に留める。
-            Box(modifier = Modifier.weight(1f)) {
-                ArticleAuthorLine(article = article, onUserClick = onAuthorClick)
+            Row(modifier = Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically) {
+                Box(modifier = Modifier.weight(1f, fill = false)) {
+                    ArticleAuthorLine(article = article, onUserClick = onAuthorClick, avatarOnlyClickable = true)
+                }
             }
             if (engagement != null) {
                 ArticleCardEngagement(engagement)
             }
+            ArticleCardMenu(article, onShareToFeed)
         }
         if (topics.isNotEmpty()) {
             ArticleTopics(
@@ -142,14 +155,57 @@ internal fun ArticleCard(
     }
 }
 
+/** カード右端のメニュー。記事イベントのデータ表示と、記事を引用した投稿の作成。 */
+@Composable
+private fun ArticleCardMenu(article: ArticleItem, onShareToFeed: (() -> Unit)?) {
+    var showMenu by remember { mutableStateOf(false) }
+    var showData by remember { mutableStateOf(false) }
+    Box {
+        IconButton(onClick = { showMenu = true }, modifier = Modifier.size(24.dp)) {
+            Icon(
+                Icons.Default.MoreVert,
+                contentDescription = "メニュー",
+                modifier = Modifier.size(16.dp),
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        DropdownMenu(expanded = showMenu, onDismissRequest = { showMenu = false }) {
+            DropdownMenuItem(
+                text = { Text("データを表示") },
+                onClick = {
+                    showMenu = false
+                    showData = true
+                },
+            )
+            if (onShareToFeed != null) {
+                DropdownMenuItem(
+                    text = { Text("投稿フィードに共有") },
+                    onClick = {
+                        showMenu = false
+                        onShareToFeed()
+                    },
+                )
+            }
+        }
+    }
+    if (showData) {
+        EventDataDialog(event = article.event, title = "記事のデータ", onDismiss = { showData = false })
+    }
+}
+
 @Composable
 internal fun ArticleAuthorLine(
     article: ArticleItem,
     onUserClick: (() -> Unit)?,
     modifier: Modifier = Modifier,
+    avatarOnlyClickable: Boolean = false,
 ) {
+    // 一覧のカードでは名前と日時のタップをカード（記事を開く）に任せ、作者の記事一覧はアバターからだけ開く。
+    // 行全体を押せる範囲にすると、記事を開くつもりのタップが作者一覧へ流れやすい。
+    val rowClick = onUserClick?.takeUnless { avatarOnlyClickable }
+    val avatarClick = onUserClick?.takeIf { avatarOnlyClickable }
     Row(
-        modifier = if (onUserClick != null) modifier.clickable(onClick = onUserClick) else modifier,
+        modifier = if (rowClick != null) modifier.clickable(onClick = rowClick) else modifier,
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(8.dp),
     ) {
@@ -158,6 +214,7 @@ internal fun ArticleAuthorLine(
             name = article.authorProfile?.bestName,
             pictureUrl = article.authorProfile?.picture,
             size = 24,
+            modifier = if (avatarClick != null) Modifier.clip(CircleShape).clickable(onClickLabel = "作者の記事一覧", onClick = avatarClick) else Modifier,
         )
         // 名前が長い場合は名前を省略し、日時は折り返さない。
         ProfileNameText(

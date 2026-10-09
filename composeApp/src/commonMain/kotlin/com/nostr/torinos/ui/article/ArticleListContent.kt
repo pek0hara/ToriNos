@@ -47,6 +47,8 @@ internal fun ArticleListContent(
     emptyText: String = "記事がありません",
     /** The topic the list is filtered by; every card has it, so cards leave it out. */
     hiddenTopic: String? = null,
+    /** カードのメニューの「投稿フィードに共有」。null なら出さない。 */
+    onShareToFeed: ((ArticleItem) -> Unit)? = null,
 ) {
     if (onVisibleArticlesChanged != null) {
         TrackVisibleArticles(listState, state.articles, onVisibleArticlesChanged)
@@ -85,6 +87,7 @@ internal fun ArticleListContent(
                     onTopicClick = onTopicClick,
                     engagement = engagement,
                     hiddenTopic = hiddenTopic,
+                    onShareToFeed = onShareToFeed?.let { share -> { share(article) } },
                 )
                 HorizontalDivider()
             }

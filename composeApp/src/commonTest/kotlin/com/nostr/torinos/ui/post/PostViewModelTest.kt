@@ -7,10 +7,90 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertNull
+import kotlin.test.assertSame
 import kotlin.test.assertTrue
 import kotlinx.serialization.encodeToString
 
 class PostViewModelTest {
+    @Test
+    fun expandedImageUsesUploadBytesWhileThumbnailKeepsTheSmallPreview() {
+        val upload = byteArrayOf(1, 2, 3)
+        val thumbnail = byteArrayOf(4)
+        val attachment = ImageAttachment(1, thumbnail, "https://media.example/image.jpg", false,
+            uploadBytes = upload)
+
+        assertSame(upload, attachment.fullSizePreviewData)
+        assertSame(thumbnail, attachment.previewBytes)
+        assertSame(upload, attachment.copy(isUploading = false).uploadBytes)
+    }
+
+    @Test
+    fun restoredImageUsesUploadedUrlForExpansionAndIsRemovedOnDeleteOrReset() {
+        val url = "https://media.example/image.jpg"
+        val memo = PostMemoData("", listOf(url), null, null, 1, null, 1)
+        val viewModel = PostViewModel()
+        viewModel.restoreMemo(memo)
+        val image = viewModel.state.value.images.single()
+
+        assertNull(image.uploadBytes)
+        assertEquals(url, image.fullSizePreviewData)
+        viewModel.removeImage(image.id)
+        assertTrue(viewModel.state.value.images.isEmpty())
+        viewModel.restoreMemo(memo)
+        viewModel.reset()
+        assertTrue(viewModel.state.value.images.isEmpty())
+    }
+
+    @Test fun oldMemoPayloadWithoutQuotesRemainsReadable() {
+        val memo = memoJson.decodeFromString<PostMemoPayload>("""{"text":"以前の下書き","updatedAt":1}""").toPostMemoData()
+        assertEquals("以前の下書き", memo.text)
+        assertTrue(memo.quotes.isEmpty())
+    }
+
+    @Test fun quoteOnlyDraftRoundTripKeepsPreviewsAndAllowsPostingAndSaving() {
+        val quotes = listOf("22", "11").map {
+            PostQuote(it.repeat(32), "nostr:${com.nostr.torinos.model.encodeNevent(it.repeat(32))}", "引用$it")
+        }
+        val payload = PostMemoPayload(quotes = quotes, updatedAt = 10)
+        val memo = memoJson.decodeFromString<PostMemoPayload>(memoJson.encodeToString(payload)).toPostMemoData()
+        val viewModel = PostViewModel()
+        viewModel.restoreMemo(memo)
+        assertEquals(quotes, viewModel.state.value.quotes)
+        assertTrue(viewModel.state.value.canPost)
+        assertTrue(viewModel.state.value.canSaveMemo)
+        assertEquals(quotes, viewModel.currentMemoSnapshot()!!.quotes)
+        viewModel.reset()
+        assertTrue(viewModel.state.value.quotes.isEmpty())
+        assertNull(viewModel.currentMemoSnapshot())
+    }
+
+    @Test fun quotesCountTowardsTheLengthLimitAtTheSendBoundary() {
+        val quote = PostQuote("11".repeat(32), "nostr:${com.nostr.torinos.model.encodeNevent("11".repeat(32))}", "引用")
+        val viewModel = PostViewModel()
+        viewModel.addQuote(quote)
+        viewModel.onTextChange("あ".repeat(MAX_POST_CHARS - quote.uri.length - 2))
+        assertEquals(MAX_POST_CHARS, viewModel.state.value.contentLength)
+        assertTrue(viewModel.state.value.canPost)
+        viewModel.post(relayUrls = emptyList())
+        assertEquals("送信先リレーを1つ以上選択してください", viewModel.state.value.error)
+        viewModel.onTextChange(viewModel.state.value.text + "あ")
+        assertFalse(viewModel.state.value.canPost)
+        viewModel.post()
+        assertEquals("引用参照を含む本文は${MAX_POST_CHARS}文字以内にしてください", viewModel.state.value.error)
+        assertFalse(viewModel.state.value.isPosting)
+    }
+
+    @Test fun legacySingleQuoteMemoRestoresAsOnePreview() {
+        val memo = PostMemoData("", emptyList(), null, null, 1, null, 1,
+            quoteEventId = "11".repeat(32), quotePubkey = "aa".repeat(32), quotePreview = "従来の引用")
+        val viewModel = PostViewModel()
+        viewModel.restoreMemo(memo)
+        assertEquals(1, viewModel.state.value.quotes.size)
+        assertEquals("従来の引用", viewModel.state.value.quotes.single().displayPreview)
+        viewModel.addQuote(viewModel.state.value.quotes.single())
+        assertEquals(1, viewModel.state.value.quotes.size)
+    }
+
     @Test
     fun failedImageOnlyDraftCannotSilentlyBecomeAnEmptyFirstPost() {
         val failed = PostState(images = listOf(ImageAttachment(1, null, null, false)))
@@ -120,7 +200,9 @@ class PostViewModelTest {
 
     @Test
     fun successOfTheCurrentDraftClearsTheInputAndKeepsOnlyTheCompletion() {
-        val typing = PostState(text = "送信した本文", isPosting = true)
+        val typing = PostState(text = "送信した本文", isPosting = true,
+            images = listOf(ImageAttachment(1, byteArrayOf(4), "https://media.example/image.jpg", false,
+                uploadBytes = byteArrayOf(1, 2, 3))))
 
         val next = reducePostSuccess(typing, isCurrent = true, completion = completion(fromCurrentDraft = true))
 
@@ -153,7 +235,10 @@ class PostViewModelTest {
 
     @Test
     fun failureOfTheCurrentDraftKeepsTheTextAndShowsTheError() {
-        val posting = PostState(text = "送信した本文", isPosting = true)
+        val upload = byteArrayOf(1, 2, 3)
+        val posting = PostState(text = "送信した本文", isPosting = true,
+            images = listOf(ImageAttachment(1, byteArrayOf(4), "https://media.example/image.jpg", false,
+                uploadBytes = upload)))
 
         val next = reducePostFailure(posting, isCurrent = true, message = "ポストに失敗しました")
 
@@ -161,6 +246,7 @@ class PostViewModelTest {
         assertEquals("ポストに失敗しました", next.error)
         assertFalse(next.isPosting)
         assertNull(next.staleFailure)
+        assertSame(upload, next.images.single().fullSizePreviewData)
     }
 
     @Test

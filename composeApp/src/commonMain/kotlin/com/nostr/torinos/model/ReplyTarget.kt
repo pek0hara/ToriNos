@@ -23,7 +23,8 @@ sealed interface ReplyTarget {
 
         override fun tags(): List<List<String>> = buildList {
             root.address?.let { add(addressTag("A", it, root)) }
-            add(eventTag("E", root))
+            if (root.id.isNotBlank()) add(eventTag("E", root))
+            else require(root.address != null) { "返信のルートにはIDまたはaddressが必要です" }
             add(listOf("K", root.kind.toString()))
             add(pubkeyTag("P", root))
             parent.address?.let { add(addressTag("a", it, parent)) }

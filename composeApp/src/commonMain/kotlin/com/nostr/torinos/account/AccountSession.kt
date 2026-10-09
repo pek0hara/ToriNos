@@ -33,6 +33,8 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.withTimeout
+import com.nostr.torinos.util.SynchronousLock
+import com.nostr.torinos.util.withLock
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 
@@ -59,7 +61,36 @@ class AccountSession internal constructor(
     val signer: AccountSigner,
     internal val resources: AccountSessionResources,
 ) {
+    private val _inputFrozen = MutableStateFlow(false)
+    internal val inputFrozen = _inputFrozen.asStateFlow()
+    internal val matometrSelection = com.nostr.torinos.article.MatometrSelectionCoordinator {
+        !_inputFrozen.value && resources.lease.isActive
+    }
+    private val inputRegistryLock = SynchronousLock()
+    private val transitionPreparations = mutableMapOf<String, suspend () -> Unit>()
+    internal fun registerInput(id: String, flush: suspend () -> Unit): () -> Unit {
+        inputRegistryLock.withLock { transitionPreparations[id] = flush }
+        return { inputRegistryLock.withLock { transitionPreparations.remove(id) } }
+    }
+    internal suspend fun flushInputs() {
+        inputRegistryLock.withLock { transitionPreparations.values.toList() }.forEach { it() }
+    }
+    internal fun cancelTransitionPreparation() { _inputFrozen.value = false }
+    internal suspend fun prepareTransition() {
+        ensureActive()
+        _inputFrozen.value = true
+        try { withTimeout(20_000L) { flushInputs() } }
+        catch (e: Throwable) { _inputFrozen.value = false; throw e }
+    }
     val relayStore = AccountRelayStore(this)
+    internal val articleDraftStore by lazy {
+        com.nostr.torinos.article.ArticleDraftStore(transport = com.nostr.torinos.article.ArticleDraftRepository(
+            signer = signer,
+            readRelays = { (relayStore.enabledRelayUrlsSnapshot() + relayStore.writableRelayUrlsSnapshot()).toSet() },
+            writableRelays = relayStore::writableRelayUrlsSnapshot,
+            ensureActive = ::ensureActive,
+        ))
+    }
     internal val badgeRepository = com.nostr.torinos.badge.BadgeRepository(
         scope = resources.scope,
         readRelays = { relayStore.enabledRelayUrlsSnapshot().toSet() },
@@ -361,6 +392,13 @@ class AccountSessionManager internal constructor(
         val current = (previous as? AccountSessionState.Active)?.session
         if (current?.pubkey == pubkey) return@withLock Result.success(current)
 
+        if (current != null) {
+            val prepared = runCatching { current.prepareTransition() }
+            if (prepared.isFailure) {
+                _transitionError.value = "保存できないため切り替えられません。再試行または編集を続けてください: ${prepared.exceptionOrNull()?.message}"
+                return@withLock Result.failure(prepared.exceptionOrNull()!!)
+            }
+        }
         _state.value = AccountSessionState.Switching(
             fromPubkey = current?.pubkey,
             toPubkey = pubkey,
@@ -391,6 +429,14 @@ class AccountSessionManager internal constructor(
         transitionMutex.withLock {
             _transitionError.value = null
             val previous = _state.value
+            val preparingSession = (previous as? AccountSessionState.Active)?.session
+            if (preparingSession != null) {
+                val prepared = runCatching { preparingSession.prepareTransition() }
+                if (prepared.isFailure) {
+                    _transitionError.value = "保存できないため切り替えられません。再試行または編集を続けてください: ${prepared.exceptionOrNull()?.message}"
+                    return@withLock Result.failure(prepared.exceptionOrNull()!!)
+                }
+            }
             _state.value = AccountSessionState.Switching(
                 fromPubkey = (previous as? AccountSessionState.Active)?.session?.pubkey,
                 toPubkey = expectedPubkey,
@@ -421,6 +467,14 @@ class AccountSessionManager internal constructor(
     private suspend fun logoutInternal(): Result<AccountSessionState> = transitionMutex.withLock {
         _transitionError.value = null
         val previous = _state.value
+        val preparingSession = (previous as? AccountSessionState.Active)?.session
+        if (preparingSession != null) {
+            val prepared = runCatching { preparingSession.prepareTransition() }
+            if (prepared.isFailure) {
+                _transitionError.value = "保存できないため切り替えられません。再試行または編集を続けてください: ${prepared.exceptionOrNull()?.message}"
+                return@withLock Result.failure(prepared.exceptionOrNull()!!)
+            }
+        }
         _state.value = AccountSessionState.Switching(
             fromPubkey = (previous as? AccountSessionState.Active)?.session?.pubkey,
             toPubkey = null,
@@ -436,23 +490,35 @@ class AccountSessionManager internal constructor(
         }
     }
 
-    suspend fun deleteCurrentAccount(): Result<AccountSessionState> =
-        transitionScope.async { deleteCurrentAccountInternal() }.await()
+    suspend fun deleteCurrentAccount(beforeDelete: suspend (AccountSigner) -> Unit = {}): Result<AccountSessionState> =
+        transitionScope.async { deleteCurrentAccountInternal(beforeDelete) }.await()
 
-    private suspend fun deleteCurrentAccountInternal(): Result<AccountSessionState> = transitionMutex.withLock {
+    private suspend fun deleteCurrentAccountInternal(beforeDelete: suspend (AccountSigner) -> Unit): Result<AccountSessionState> = transitionMutex.withLock {
         _transitionError.value = null
         val previous = _state.value
+        val preparingSession = (previous as? AccountSessionState.Active)?.session
+        if (preparingSession != null) {
+            val prepared = runCatching { preparingSession.prepareTransition() }
+            if (prepared.isFailure) {
+                _transitionError.value = "保存できないため切り替えられません。再試行または編集を続けてください: ${prepared.exceptionOrNull()?.message}"
+                return@withLock Result.failure(prepared.exceptionOrNull()!!)
+            }
+        }
         _state.value = AccountSessionState.Switching(
             fromPubkey = (previous as? AccountSessionState.Active)?.session?.pubkey,
             toPubkey = null,
         )
         val previousSession = (previous as? AccountSessionState.Active)?.session
         runCatching {
+            previousSession?.let { beforeDelete(it.signer) }
             previousSession?.resources?.close()
             storage.deleteActiveAccount()
             activeOrAnonymous(storage.loadActiveCredentials()).also { _state.value = it }
         }.onFailure {
-            _state.value = restorePreviousSession(previousSession)
+            _state.value = if (previousSession?.resources?.lease?.isActive == true) {
+                previousSession.cancelTransitionPreparation()
+                AccountSessionState.Active(previousSession)
+            } else restorePreviousSession(previousSession)
             _transitionError.value = "アカウントを削除できませんでした"
         }
     }

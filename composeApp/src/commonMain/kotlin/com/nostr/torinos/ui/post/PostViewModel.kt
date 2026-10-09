@@ -8,6 +8,7 @@ import com.nostr.torinos.model.NoteContext
 import com.nostr.torinos.model.MediaMetadata
 import com.nostr.torinos.model.ReplyEventReference
 import com.nostr.torinos.model.ReplyTarget
+import com.nostr.torinos.model.extractNostrAddressReferences
 import com.nostr.torinos.model.extractNostrEventReferences
 import com.nostr.torinos.emoji.CustomEmoji
 import com.nostr.torinos.network.ImageUploader
@@ -32,7 +33,11 @@ data class ImageAttachment(
     val uploadedUrl: String?,
     val isUploading: Boolean,
     val mediaMetadata: MediaMetadata? = null,
-)
+    /** 投稿・破棄まで保持するアップロード用の圧縮済み画像。永続化はしない。 */
+    val uploadBytes: ByteArray? = null,
+) {
+    val fullSizePreviewData: Any? get() = uploadBytes ?: uploadedUrl ?: previewBytes
+}
 
 /**
  * 投稿の完了結果。送信時に `post()` が実際に受け取った返信先と [NoteContext] を確定値として持つので、
@@ -54,6 +59,11 @@ data class PostCompletion(
 
 data class PostState(
     val text: String = "",
+    val quotes: List<PostQuote> = emptyList(),
+    val isFrozen: Boolean = false,
+    val cursorStart: Int = -1,
+    val cursorEnd: Int = -1,
+    val selectedRelayUrls: Set<String>? = null,
     val customEmojis: List<CustomEmoji> = emptyList(),
     val hasContentWarning: Boolean = false,
     val isPosting: Boolean = false,
@@ -68,15 +78,16 @@ data class PostState(
     val staleFailure: String? = null,
 ) {
     val isUploadingAny: Boolean get() = images.any { it.isUploading }
+    val contentLength: Int get() = maxOf(text.length, composeQuotedText(text, quotes).length)
     val hasFailedUpload: Boolean get() = images.any { !it.isUploading && it.uploadedUrl == null }
     val hasDraftContent: Boolean get() =
-        text.isNotBlank() || images.any { it.uploadedUrl != null }
+        text.isNotBlank() || quotes.isNotEmpty() || images.any { it.uploadedUrl != null }
     val canPost: Boolean get() =
-        hasDraftContent &&
-            !isPosting && !isUploadingAny
+        hasDraftContent && contentLength <= MAX_POST_CHARS &&
+            !isFrozen && !isPosting && !isUploadingAny
     val canSaveMemo: Boolean get() =
         hasDraftContent &&
-            !isPosting && !isSavingMemo && !isUploadingAny
+            !isFrozen && !isPosting && !isSavingMemo && !isUploadingAny
 }
 
 private const val MAX_IMAGES = 4
@@ -91,6 +102,7 @@ internal val memoJson = Json {
 @Serializable
 internal data class PostMemoPayload(
     val text: String = "",
+    val quotes: List<PostQuote> = emptyList(),
     val customEmojis: List<CustomEmoji> = emptyList(),
     val hasContentWarning: Boolean = false,
     val imageUrls: List<String> = emptyList(),
@@ -112,6 +124,7 @@ internal data class PostMemoPayload(
     val updatedAt: Long,
 )
 
+@Serializable
 data class PostMemoData(
     val text: String,
     val imageUrls: List<String>,
@@ -136,6 +149,13 @@ data class PostMemoData(
     val replyRootAddress: String? = null,
     val replyParentAddress: String? = null,
     val hasContentWarning: Boolean = false,
+    val selectedRelayUrls: Set<String>? = null,
+    val cursorStart: Int = -1,
+    val cursorEnd: Int = -1,
+    val quoteEventId: String? = null,
+    val quotePubkey: String? = null,
+    val quotePreview: String? = null,
+    val quotes: List<PostQuote> = emptyList(),
 )
 
 internal fun PostMemoPayload.toPostMemoData(
@@ -145,6 +165,7 @@ internal fun PostMemoPayload.toPostMemoData(
 ): PostMemoData =
     PostMemoData(
         text = text,
+        quotes = quotes,
         customEmojis = customEmojis,
         hasContentWarning = hasContentWarning,
         imageUrls = imageUrls,
@@ -207,6 +228,10 @@ class PostViewModel(
 ) : SafeViewModel() {
     private val _state = MutableStateFlow(PostState())
     val state: StateFlow<PostState> = _state.asStateFlow()
+    init { launch { accountSession?.inputFrozen?.collect { frozen -> _state.update { it.copy(isFrozen = frozen) } } } }
+    private val inputFrozen get() = accountSession?.inputFrozen?.value == true
+    fun onCursorChange(start: Int, end: Int) { if (!inputFrozen) _state.update { it.copy(cursorStart = start, cursorEnd = end) } }
+    fun onComposerRelaysChanged(urls: Set<String>?) { if (!inputFrozen) _state.update { it.copy(selectedRelayUrls = urls) } }
     private var nextImageId = 0
     private var draftGeneration = 0
     private var editingMemoIdentifier: String? = null
@@ -215,6 +240,7 @@ class PostViewModel(
     private var editingMemoPubkey: String? = null
 
     fun reset() {
+        if (inputFrozen) return
         draftGeneration++
         editingMemoIdentifier = null
         editingMemoUpdatedAt = null
@@ -229,9 +255,14 @@ class PostViewModel(
 
     fun onTextChange(text: String) = updateText(text)
 
+    fun addQuote(quote: PostQuote) {
+        if (!inputFrozen) _state.update { it.copy(quotes = (it.quotes + quote).distinctBy { q -> q.eventId }) }
+    }
+
     fun onCustomEmojiInserted(text: String, emoji: CustomEmoji) = updateText(text, emoji)
 
     fun onContentWarningChange(enabled: Boolean) {
+        if (inputFrozen) return
         _state.update {
             it.copy(
                 hasContentWarning = enabled,
@@ -249,6 +280,7 @@ class PostViewModel(
         accountSession?.customEmojis?.preferences?.value?.setAddressOf(emoji)
 
     private fun updateText(text: String, selectedEmoji: CustomEmoji? = null) {
+        if (inputFrozen) return
         _state.value = _state.value.copy(
             text = text,
             customEmojis = resolveDraftEmojis(
@@ -266,6 +298,7 @@ class PostViewModel(
         mimeType: String,
         previewBytes: ByteArray = bytes,
     ) {
+        if (inputFrozen) return
         if (_state.value.images.size >= MAX_IMAGES) return
         val id = nextImageId++
         val generation = draftGeneration
@@ -274,6 +307,7 @@ class PostViewModel(
                 images = s.images + ImageAttachment(
                     id = id,
                     previewBytes = previewBytes,
+                    uploadBytes = bytes,
                     uploadedUrl = null,
                     isUploading = true,
                 ),
@@ -315,6 +349,7 @@ class PostViewModel(
     }
 
     fun removeImage(id: Int) {
+        if (inputFrozen) return
         _state.update { s -> s.copy(images = s.images.filter { it.id != id }, memoMessage = null) }
     }
 
@@ -328,6 +363,7 @@ class PostViewModel(
     }
 
     fun restoreMemo(memo: PostMemoData, message: String? = null) {
+        if (inputFrozen) return
         draftGeneration++
         val metadataByUrl = memo.imageMetadata.associateBy { it.url }
         val restoredImages = memo.imageUrls
@@ -348,8 +384,12 @@ class PostViewModel(
         editingMemoPubkey = memo.sourcePubkey
         _state.value = PostState(
             text = memo.text,
+            quotes = memo.quoteInputs(),
             customEmojis = resolveDraftEmojis(memo.text, memo.customEmojis, registeredEmojis()),
             hasContentWarning = memo.hasContentWarning,
+            cursorStart = memo.cursorStart,
+            cursorEnd = memo.cursorEnd,
+            selectedRelayUrls = memo.selectedRelayUrls,
             images = restoredImages,
             memoMessage = message,
             completion = _state.value.completion,
@@ -363,9 +403,10 @@ class PostViewModel(
     ): PostMemoData? {
         val current = _state.value
         val uploadedUrls = current.images.mapNotNull { it.uploadedUrl }
-        if (current.text.isBlank() && uploadedUrls.isEmpty()) return null
+        if (!current.hasDraftContent) return null
         return PostMemoData(
             text = current.text,
+            quotes = current.quotes,
             customEmojis = current.customEmojis,
             hasContentWarning = current.hasContentWarning,
             imageUrls = uploadedUrls,
@@ -390,6 +431,9 @@ class PostViewModel(
             replyRootAddress = (replyTarget as? ReplyTarget.Timeline)?.root?.address,
             replyParentAddress = replyTarget?.parent?.address,
             updatedAt = Clock.System.now().epochSeconds,
+            selectedRelayUrls = current.selectedRelayUrls,
+            cursorStart = current.cursorStart,
+            cursorEnd = current.cursorEnd,
             identifier = editingMemoIdentifier,
             sourceEventId = editingMemoEventId,
             sourcePubkey = editingMemoPubkey,
@@ -401,9 +445,10 @@ class PostViewModel(
         noteContext: NoteContext = NoteContext.Timeline,
         onSaved: (() -> Unit)? = null,
     ) {
+        if (inputFrozen) return
         val current = _state.value
         val uploadedUrls = current.images.mapNotNull { it.uploadedUrl }
-        if (current.text.isBlank() && uploadedUrls.isEmpty()) return
+        if (!current.hasDraftContent) return
 
         _state.value = current.copy(isSavingMemo = true, error = null, memoMessage = null)
         launch {
@@ -418,6 +463,7 @@ class PostViewModel(
             val identifier = editingMemoIdentifier ?: memoEventIdentifier(replyTarget?.parent?.id, updatedAt)
             val memo = PostMemoPayload(
                 text = current.text,
+                quotes = current.quotes,
                 customEmojis = current.customEmojis,
                 hasContentWarning = current.hasContentWarning,
                 imageUrls = uploadedUrls,
@@ -445,13 +491,14 @@ class PostViewModel(
             )
 
             runCatching {
-                val plaintext = memoJson.encodeToString(memo)
+                val plaintext = encodePostDraft(memo, signer.pubkey)
                 val content = signer.encryptToSelf(plaintext)
                 val event = signer.sign(
                     content = content,
                     kind = MEMO_EVENT_KIND,
                     tags = listOf(
                         listOf("d", identifier),
+                        listOf("k", memo.noteKind.toString()),
                         listOf("client", "ToriNos"),
                     ),
                     createdAt = updatedAt,
@@ -483,11 +530,13 @@ class PostViewModel(
         quoteReference: String? = null,
         relayUrls: Collection<String>? = null,
     ) {
+        if (inputFrozen) return
         val current = _state.value
         if (current.isPosting) return
         // 入力欄が上限を守るので通常は到達しない。導線ごとの差を残さないための最後の防御。
-        if (current.text.length > MAX_POST_CHARS) {
-            _state.value = current.copy(error = "本文は${MAX_POST_CHARS}文字以内にしてください")
+        if (current.contentLength > MAX_POST_CHARS) {
+            val label = if (current.quotes.isEmpty()) "本文" else "引用参照を含む本文"
+            _state.value = current.copy(error = "${label}は${MAX_POST_CHARS}文字以内にしてください")
             return
         }
         val composed = composeNoteContent(
@@ -495,6 +544,7 @@ class PostViewModel(
             images = current.images,
             customEmojis = current.customEmojis,
             quoteReference = quoteReference,
+            quotes = current.quotes,
             setAddressOf = ::setAddressOf,
         )
             ?: return
@@ -625,7 +675,7 @@ class PostViewModel(
  */
 internal fun reducePostSuccess(state: PostState, isCurrent: Boolean, completion: PostCompletion): PostState =
     if (isCurrent) {
-        PostState(completion = completion, staleFailure = state.staleFailure)
+        PostState(isFrozen = state.isFrozen, completion = completion, staleFailure = state.staleFailure)
     } else {
         state.copy(completion = completion)
     }
@@ -687,8 +737,9 @@ internal fun composeNoteContent(
     customEmojis: List<CustomEmoji>,
     quoteReference: String? = null,
     setAddressOf: (CustomEmoji) -> EmojiSetAddress? = { null },
+    quotes: List<PostQuote> = emptyList(),
 ): ComposedNote? {
-    val body = text.trim()
+    val body = composeQuotedText(text, quotes)
     val attachments = buildList {
         addAll(images.mapNotNull { it.uploadedUrl }.filter { it.isNotBlank() })
         quoteReference?.takeIf { it.isNotBlank() }?.let(::add)
@@ -710,6 +761,17 @@ internal fun composeNoteContent(
                 },
             )
             reference.authorPubkey?.let { add(listOf("p", it)) }
+        }
+        // 記事などを naddr で引用したときも、NIP-18 のとおりアドレスを q タグに入れる。
+        extractNostrAddressReferences(content).forEach { reference ->
+            add(
+                buildList {
+                    add("q")
+                    add(reference.address)
+                    reference.relayUrls.firstOrNull()?.let { add(it) }
+                },
+            )
+            add(listOf("p", reference.pubkey))
         }
         addAll(imetaTagsForAttachments(content, images))
     }

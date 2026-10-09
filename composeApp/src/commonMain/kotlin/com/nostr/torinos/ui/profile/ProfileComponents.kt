@@ -116,6 +116,15 @@ internal fun ProfileTimelineWithCollapsingHeader(
         }
     }
 
+    val selection = com.nostr.torinos.account.LocalAccountSession.current?.matometrSelection?.state?.collectAsState()?.value
+    if (selection?.active == true) {
+        Column(Modifier.fillMaxSize()) {
+            CompactProfileHeader(pubkey, profile, onBack, onOpenSettings, remember { mutableStateOf(1f) })
+            com.nostr.torinos.ui.article.MatometrSelectionBar()
+            Box(Modifier.weight(1f)) { content() }
+        }
+        return
+    }
     Box(modifier = Modifier.fillMaxSize()) {
         content()
         CompactProfileHeader(
@@ -205,6 +214,7 @@ private fun CompactProfileHeader(
                     )
                 }
             }
+            com.nostr.torinos.ui.article.MatometrStartButton()
             if (onOpenSettings != null) {
                 IconButton(
                     onClick = onOpenSettings,

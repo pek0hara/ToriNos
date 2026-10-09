@@ -270,6 +270,65 @@ class AccountSessionManagerTest {
         assertEquals(null, manager.currentPubkey)
     }
 
+    @Test
+    fun failedInputSaveKeepsActiveSessionLeaseAndSelection() = runBlocking {
+        val manager = newManager(FakeAccountStorage(activePubkey = PUBKEY_A))
+        val active = manager.initialize().getOrThrow() as AccountSessionState.Active
+        active.session.matometrSelection.start()
+        val unregister = active.session.registerInput("unsaved-article") {
+            assertTrue(active.session.inputFrozen.value)
+            assertEquals(active, manager.state.value)
+            error("disk full")
+        }
+        val result = manager.switchAccount(PUBKEY_B)
+        assertTrue(result.isFailure)
+        assertEquals(active, manager.state.value)
+        assertTrue(active.session.resources.lease.isActive)
+        assertTrue(!active.session.inputFrozen.value)
+        assertTrue(active.session.matometrSelection.state.value.active)
+        assertEquals("still active", active.session.signer.encryptToSelf("still active"))
+        unregister()
+        manager.switchAccount(PUBKEY_B).getOrThrow()
+        Unit
+    }
+
+    @Test
+    fun deleteAccountNeverPublishesProfileIfInputCannotBeSaved() = runBlocking {
+        val manager = newManager(FakeAccountStorage(activePubkey = PUBKEY_A))
+        val active = manager.initialize().getOrThrow() as AccountSessionState.Active
+        var published = false
+        active.session.registerInput("editor") { error("storage failure") }
+        assertTrue(manager.deleteCurrentAccount(beforeDelete = { published = true }).isFailure)
+        assertTrue(!published)
+        assertEquals(active, manager.state.value)
+        assertTrue(active.session.resources.lease.isActive)
+    }
+    @Test
+    fun failedProfileDeletionKeepsSessionAndUnfreezesInputs() = runBlocking {
+        val manager = newManager(FakeAccountStorage(activePubkey = PUBKEY_A))
+        val active = manager.initialize().getOrThrow() as AccountSessionState.Active
+        assertTrue(manager.deleteCurrentAccount(beforeDelete = { error("relay failure") }).isFailure)
+        assertEquals(active, manager.state.value)
+        assertTrue(!active.session.inputFrozen.value)
+        assertTrue(active.session.resources.lease.isActive)
+    }
+    @Test
+    fun logoutAndDeleteWaitForSaveBeforeInvalidatingTheSession() = runBlocking {
+        for (delete in listOf(false, true)) {
+            val manager = newManager(FakeAccountStorage(activePubkey = PUBKEY_A))
+            val active = manager.initialize().getOrThrow() as AccountSessionState.Active
+            var flushed = false
+            active.session.registerInput("editor") {
+                assertTrue(active.session.resources.lease.isActive)
+                assertEquals(active, manager.state.value)
+                flushed = true
+            }
+            if (delete) manager.deleteCurrentAccount().getOrThrow() else manager.logout().getOrThrow()
+            assertTrue(flushed)
+            assertTrue(!active.session.resources.lease.isActive)
+        }
+    }
+
     private class FakeAccountStorage(
         activePubkey: String? = null,
         private val failSwitch: Boolean = false,

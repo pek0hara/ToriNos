@@ -332,6 +332,7 @@ fun NoteTimeline(
                 )
             else -> state
         }
+        androidx.compose.runtime.CompositionLocalProvider(com.nostr.torinos.ui.article.LocalMatometrSelectionEnabled provides true) {
         LazyColumn(
             state = timelineListState,
             modifier = listModifier,
@@ -388,6 +389,8 @@ fun NoteTimeline(
                 }
             }
         }
+    }
+
     }
 
     // 重ねて描かれたバーのうち、いま見えている下端。インジケーターやボタンはその下に出す。

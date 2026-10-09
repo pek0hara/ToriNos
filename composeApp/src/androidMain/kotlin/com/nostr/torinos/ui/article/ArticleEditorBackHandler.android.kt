@@ -10,3 +10,5 @@ actual fun ArticleEditorBackHandler(
 ) {
     BackHandler(enabled = enabled, onBack = onBack)
 }
+
+internal actual fun releaseArticleEditorNavigationGuard() = Unit

@@ -340,6 +340,107 @@ class ComposerCoordinatorTest {
         }
     }
 
+    @Test
+    fun applyingPendingInputSuppressesOnlyThatOpeningAndNextPostPromptsAgain() {
+        val coordinator = ComposerCoordinator()
+        coordinator.openFullScreen(PostSheetInitialState.KeepCurrent, offerPendingInputs = false)
+        val appliedOpening = coordinator.openingGeneration
+        assertFalse(coordinator.shouldOfferPendingInputs(appliedOpening))
+        coordinator.dismissPost()
+        coordinator.openNewPost(useFooterComposer = false) { }
+        assertTrue(coordinator.shouldOfferPendingInputs(coordinator.openingGeneration))
+        assertFalse(coordinator.shouldOfferPendingInputs(appliedOpening))
+    }
+
+    @Test
+    fun latePendingInputLookupFromClosedOrReplacedSheetCannotReappear() {
+        val coordinator = ComposerCoordinator()
+        coordinator.openFullScreen()
+        val opening = coordinator.openingGeneration
+        assertTrue(coordinator.shouldOfferPendingInputs(opening))
+        coordinator.hide()
+        assertFalse(coordinator.shouldOfferPendingInputs(opening))
+        coordinator.openFullScreen()
+        assertFalse(coordinator.shouldOfferPendingInputs(opening))
+        assertTrue(coordinator.shouldOfferPendingInputs(coordinator.openingGeneration))
+    }
+
+    @Test
+    fun reopeningInlineComposerCreatesASeparatePendingInputPromptRequest() {
+        val coordinator = ComposerCoordinator()
+        coordinator.openNewPost { }
+        val opening = coordinator.openingGeneration
+        coordinator.switchInlineToMenu()
+        coordinator.openNewPost { error("must preserve the inline input") }
+        assertFalse(coordinator.shouldOfferPendingInputs(opening))
+        assertTrue(coordinator.shouldOfferPendingInputs(coordinator.openingGeneration))
+    }
+
+    @Test
+    fun clearedVisibleInputDoesNotResurrectTheOriginallyRestoredMemo() {
+        val coordinator = ComposerCoordinator()
+        val original = memo("復元した本文")
+        coordinator.localDraft = original
+        coordinator.openFullScreen(PostSheetInitialState.KeepCurrent)
+        assertNull(coordinator.currentInputSnapshot(null))
+        val edited = memo("編集した本文")
+        assertEquals(edited, coordinator.currentInputSnapshot(edited))
+        coordinator.hide()
+        assertEquals(original, coordinator.currentInputSnapshot(null))
+    }
+
+    @Test
+    fun closedSheetDoesNotParkStaleViewModelTextButExplicitInlineHoldDoes() {
+        val coordinator = ComposerCoordinator()
+        val stale = memo("閉じた投稿の古い本文")
+        coordinator.openFullScreen()
+        coordinator.dismissPost()
+        assertNull(coordinator.currentInputSnapshot(stale))
+
+        coordinator.openNewPost { }
+        coordinator.switchInlineToMenu()
+        val held = memo("明示的に保持した本文")
+        assertEquals(held, coordinator.currentInputSnapshot(held))
+
+        coordinator.closeInline(isPosting = false) { }
+        val saved = memo("絵文字設定へ移動中の入力")
+        coordinator.localDraft = saved
+        assertEquals(saved, coordinator.currentInputSnapshot(stale))
+    }
+
+    @Test
+    fun selectedDraftQuotesOverrideTheOpeningQuoteDuringSnapshot() {
+        val coordinator = ComposerCoordinator()
+        coordinator.prepareQuote(event())
+        coordinator.openFullScreen()
+        val id = "11".repeat(32)
+        val selected = memo("").copy(quotes = listOf(com.nostr.torinos.ui.post.PostQuote(
+            id, "nostr:${com.nostr.torinos.model.encodeNevent(id)}", "別の引用")))
+        assertEquals(selected, coordinator.currentInputSnapshot(selected))
+        assertNull(coordinator.currentInputSnapshot(selected)!!.quoteEventId)
+    }
+
+    @Test
+    fun selectingAnUnquotedDraftDoesNotResurrectTheOpeningQuote() {
+        val coordinator = ComposerCoordinator()
+        coordinator.prepareQuote(event())
+        coordinator.openFullScreen()
+        val selected = memo("引用なしの下書き")
+        assertEquals(selected, coordinator.currentInputSnapshot(selected))
+    }
+
+    @Test
+    fun clearingAnInitializedEditorDoesNotResurrectItsOpeningQuote() {
+        val coordinator = ComposerCoordinator()
+        coordinator.prepareQuote(event())
+        coordinator.openFullScreen()
+        assertEquals(event().id, coordinator.currentInputSnapshot(null)!!.quoteEventId)
+        coordinator.markInputInitialized()
+        assertNull(coordinator.currentInputSnapshot(null))
+        coordinator.openFullScreen()
+        assertEquals(event().id, coordinator.currentInputSnapshot(null)!!.quoteEventId)
+    }
+
     private fun memo(text: String) = PostMemoData(
         text = text,
         imageUrls = emptyList(),

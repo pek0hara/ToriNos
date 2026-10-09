@@ -58,10 +58,10 @@ internal fun parseArticleMarkdown(
             is MarkdownBlock.Code,
             is MarkdownBlock.Image,
             -> block
-            is MarkdownBlock.Heading -> stripNostrEventUris(block.text).takeIf { it.isNotBlank() }?.let { block.copy(text = it) }
-            is MarkdownBlock.Quote -> stripNostrEventUris(block.text).takeIf { it.isNotBlank() }?.let { block.copy(text = it) }
-            is MarkdownBlock.ListItem -> stripNostrEventUris(block.text).takeIf { it.isNotBlank() }?.let { block.copy(text = it) }
-            is MarkdownBlock.Paragraph -> stripNostrEventUris(block.text).takeIf { it.isNotBlank() }?.let { block.copy(text = it) }
+            is MarkdownBlock.Heading -> stripArticleEventUris(block.text).takeIf { it.isNotBlank() }?.let { block.copy(text = it) }
+            is MarkdownBlock.Quote -> stripArticleEventUris(block.text).takeIf { it.isNotBlank() }?.let { block.copy(text = it) }
+            is MarkdownBlock.ListItem -> stripArticleEventUris(block.text).takeIf { it.isNotBlank() }?.let { block.copy(text = it) }
+            is MarkdownBlock.Paragraph -> stripArticleEventUris(block.text).takeIf { it.isNotBlank() }?.let { block.copy(text = it) }
         }
         ArticleMarkdownSection(block = displayBlock, quoteIds = quoteIds)
     }
@@ -72,20 +72,21 @@ internal fun parseArticleMarkdown(
 }
 
 private fun eventReferenceIds(text: String): List<String> =
-    extractNostrEventReferences(text).map { it.eventId }
+    extractNostrEventReferences(articleReferenceText(text)).map { it.eventId }
 
 internal fun parseMarkdownBlocks(content: String): List<MarkdownBlock> {
     val blocks = mutableListOf<MarkdownBlock>()
     val codeLines = mutableListOf<String>()
-    var inCodeBlock = false
+    var fence: ArticleMarkdownBoundaryValidator.Fence? = null
 
     content.lines().forEach { rawLine ->
         val line = rawLine.trimEnd()
-        if (inCodeBlock) {
-            if (line.trimStart().startsWith("```")) {
+        val activeFence = fence
+        if (activeFence != null) {
+            if (ArticleMarkdownBoundaryValidator.closes(line, activeFence)) {
                 blocks += MarkdownBlock.Code(codeLines.joinToString("\n"))
                 codeLines.clear()
-                inCodeBlock = false
+                fence = null
             } else {
                 codeLines += rawLine
             }
@@ -94,7 +95,7 @@ internal fun parseMarkdownBlocks(content: String): List<MarkdownBlock> {
 
         val imageMatch = markdownImageRegex.matchEntire(line.trim())
         when {
-            line.trimStart().startsWith("```") -> inCodeBlock = true
+            ArticleMarkdownBoundaryValidator.opening(line) != null -> fence = ArticleMarkdownBoundaryValidator.opening(line)
             line.isBlank() -> blocks += MarkdownBlock.Blank
             imageMatch != null -> blocks += MarkdownBlock.Image(
                 alt = imageMatch.groupValues[1],
@@ -105,12 +106,12 @@ internal fun parseMarkdownBlocks(content: String): List<MarkdownBlock> {
             line.startsWith("# ") -> blocks += MarkdownBlock.Heading(1, line.removePrefix("# "))
             line.startsWith(">") -> blocks += MarkdownBlock.Quote(line.removePrefix(">").trim())
             line.startsWith("- ") || line.startsWith("* ") -> blocks += MarkdownBlock.ListItem(line.drop(2))
-            line.startsWith("    ") -> blocks += MarkdownBlock.Code(line.trimStart())
+            (line.startsWith("    ") || line.startsWith("\t")) -> blocks += MarkdownBlock.Code(line.trimStart())
             else -> blocks += MarkdownBlock.Paragraph(line)
         }
     }
 
-    if (inCodeBlock) {
+    if (fence != null) {
         blocks += MarkdownBlock.Code(codeLines.joinToString("\n"))
     }
     return blocks

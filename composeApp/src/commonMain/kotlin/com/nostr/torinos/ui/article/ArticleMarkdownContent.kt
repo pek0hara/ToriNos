@@ -17,6 +17,11 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.ui.platform.LocalClipboard
+import com.nostr.torinos.ui.settings.setPlainText
+import kotlinx.coroutines.launch
+import androidx.compose.material3.TextButton
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -145,7 +150,7 @@ private fun MarkdownBlockContent(block: MarkdownBlock) {
 
 
 @Composable
-private fun ArticleQuotePreviewSlot(
+internal fun ArticleQuotePreviewSlot(
     eventId: String,
     quotedEvents: Map<String, NostrEvent>,
     quotedProfiles: Map<String, NostrProfile>,
@@ -164,7 +169,15 @@ private fun ArticleQuotePreviewSlot(
     } else if (eventId in loadingQuoteIds) {
         ArticleQuoteStatusPreview("引用投稿を読み込んでいます")
     } else {
-        ArticleQuoteStatusPreview("引用投稿を読み込めませんでした")
+        val clipboard = LocalClipboard.current
+        val scope = rememberCoroutineScope()
+        Column {
+            ArticleQuoteStatusPreview("引用投稿を読み込めませんでした")
+            Row {
+                TextButton(onClick = { scope.launch { clipboard.setPlainText("nostr:" + com.nostr.torinos.model.encodeNevent(eventId)) } }) { Text("参照をコピー") }
+                TextButton(onClick = { onNoteClick(eventId) }) { Text("元投稿を再取得") }
+            }
+        }
     }
 }
 

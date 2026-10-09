@@ -30,6 +30,7 @@ import com.nostr.torinos.model.NostrProfile
 import com.nostr.torinos.model.stripNostrEventUris
 import com.nostr.torinos.model.toCustomReaction
 import com.nostr.torinos.model.toUnicodeReaction
+import com.nostr.torinos.ui.article.MatometrSelectionCheckbox
 import com.nostr.torinos.ui.components.LinkedText
 import com.nostr.torinos.ui.components.NetworkImage
 import com.nostr.torinos.ui.components.ProfileNameText
@@ -94,11 +95,14 @@ internal fun JournalActivityRow(
                         color = MaterialTheme.colorScheme.primary,
                     )
                 }
-                Text(
-                    text = formatTimestamp(event.createdAt),
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Text(
+                        text = formatTimestamp(event.createdAt),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    MatometrSelectionCheckbox(targetEvent)
+                }
             }
 
             LinkedText(

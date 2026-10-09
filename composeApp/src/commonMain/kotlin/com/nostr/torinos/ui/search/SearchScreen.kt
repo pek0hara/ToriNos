@@ -30,6 +30,7 @@ import androidx.compose.material3.Tab
 import androidx.compose.material3.Text
 import com.nostr.torinos.ui.components.AppTopBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -51,6 +52,9 @@ import com.nostr.torinos.ui.components.ProfileNameText
 import com.nostr.torinos.ui.components.DismissKeyboardOnLeave
 import com.nostr.torinos.ui.components.rememberDismissKeyboard
 import com.nostr.torinos.ui.profile.AvatarCircle
+import com.nostr.torinos.ui.article.LocalMatometrSelectionEnabled
+import com.nostr.torinos.ui.article.MatometrSelectionBar
+import com.nostr.torinos.ui.article.MatometrStartButton
 import com.nostr.torinos.ui.components.avoidStaleAccessibilityFocus
 
 @Composable
@@ -172,7 +176,9 @@ internal fun SearchContent(
                             )
                         }
                     },
+                    actions = { MatometrStartButton() },
                 )
+                MatometrSelectionBar()
             }
         },
     ) { padding ->
@@ -232,7 +238,7 @@ internal fun SearchContent(
                         text = "キーワードまたは #タグ を入力して検索",
                         modifier = Modifier.align(Alignment.Center),
                     )
-                    selectedTab == SearchTab.Posts -> {
+                    selectedTab == SearchTab.Posts -> CompositionLocalProvider(LocalMatometrSelectionEnabled provides true) {
                         PostSearchResults(
                             query = state.query,
                             state = posts,

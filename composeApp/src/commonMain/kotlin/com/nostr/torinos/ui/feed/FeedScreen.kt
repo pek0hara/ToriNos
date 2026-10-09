@@ -245,11 +245,13 @@ fun FeedScreen(
         }
     }
 
+    val selectionCoordinator = LocalAccountSession.current?.matometrSelection
     val chromeNestedScrollConnection = remember(authorPubkey, activeListState, chromeState) {
         object : NestedScrollConnection {
             override fun onPostScroll(consumed: Offset, available: Offset, source: NestedScrollSource): Offset {
                 val collapseDistancePx = currentTopBarHeightPx.value
                 if (
+                    selectionCoordinator?.state?.value?.active == true ||
                     !currentChromeCollapseEnabled.value ||
                     authorPubkey != null ||
                     activeListState == null ||
@@ -282,7 +284,7 @@ fun FeedScreen(
             }
 
             override suspend fun onPostFling(consumed: Velocity, available: Velocity): Velocity {
-                if (!currentChromeCollapseEnabled.value) return Velocity.Zero
+                if (!currentChromeCollapseEnabled.value || selectionCoordinator?.state?.value?.active == true) return Velocity.Zero
                 val decision = reduceFeedChromePostFling(
                     state = chromeBehaviorState,
                     currentFraction = chromeState.collapseFraction,
@@ -341,6 +343,9 @@ fun FeedScreen(
             }
     }
 
+    val matometr = com.nostr.torinos.account.LocalAccountSession.current?.matometrSelection?.state?.collectAsState()?.value
+    val selectionActive = matometr?.active == true
+    LaunchedEffect(selectionActive) { if (selectionActive) { chromeSettleJob.value?.cancel(); chromeState.collapseFraction = 0f } }
     val topBarHeight = with(density) { topBarHeightPx.toDp() }
     val timelineContentPadding = PaddingValues(top = topBarHeight, bottom = bottomContentPadding)
 
@@ -355,7 +360,7 @@ fun FeedScreen(
                         .fillMaxWidth()
                         .onSizeChanged { topBarHeightPx = it.height }
                         .graphicsLayer {
-                            val fraction = chromeState.collapseFraction
+                            val fraction = if (selectionActive) 0f else chromeState.collapseFraction
                             translationY = -size.height * fraction
                             alpha = 1f - fraction
                         }
@@ -466,6 +471,7 @@ fun FeedScreen(
                         }
                     },
                     actions = {
+                        com.nostr.torinos.ui.article.MatometrStartButton()
                         if (authorPubkey == null) {
                             IconButton(onClick = { onOpenSearch("") }) {
                                 Icon(
@@ -496,6 +502,7 @@ fun FeedScreen(
                         }
                     },
                 )
+                com.nostr.torinos.ui.article.MatometrSelectionBar()
                 if (authorPubkey == null) {
                     FeedTabRow(
                         tabs = visibleFeedTabs,

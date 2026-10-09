@@ -7,3 +7,5 @@ actual fun ArticleEditorBackHandler(
     enabled: Boolean,
     onBack: () -> Unit,
 ) = Unit
+
+internal actual fun releaseArticleEditorNavigationGuard() = Unit

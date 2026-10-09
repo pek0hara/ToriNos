@@ -14,6 +14,7 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.viewmodel.compose.LocalViewModelStoreOwner
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewmodel.compose.viewModel
+import kotlinx.coroutines.launch
 
 val LocalAccountSession = staticCompositionLocalOf<AccountSession?> { null }
 
@@ -43,6 +44,16 @@ fun AccountSessionHost(
         lifecycleOwner.lifecycle.currentStateFlow.collect { state ->
             val started = state.isAtLeast(Lifecycle.State.STARTED)
             if (started && !wasStarted) session.onAppForeground()
+            // 保存はアップロードや送信の完了を待つことがあるので、前面復帰の処理を止めないよう別に走らせる。
+            if (!started && wasStarted) launch {
+                try {
+                    session.flushInputs()
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    com.nostr.torinos.util.logException("AccountSession", e, "Background save failed")
+                }
+            }
             wasStarted = started
         }
     }

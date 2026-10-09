@@ -22,6 +22,8 @@ import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.windowInsetsPadding
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material3.Button
@@ -82,12 +84,14 @@ enum class PostSheetInitialState {
 @Composable
 fun PostSheet(
     onDismiss: () -> Unit,
+    onOpened: () -> Unit = {},
     onDraftSaved: () -> Unit,
     replyTarget: ReplyTarget? = null,
     replyToPreview: String? = null,
     quoteToId: String? = null,
     quoteToPubkey: String? = null,
     quoteToPreview: String? = null,
+    quoteArticle: PostQuote? = null,
     noteContext: NoteContext = NoteContext.Timeline,
     /** チャンネル返信の送信先の初期選択と推奨リレー(第16.14節)。 */
     relayContext: ComposerRelayContext? = null,
@@ -113,7 +117,8 @@ fun PostSheet(
     var showSaveDraftDialog by remember { mutableStateOf(false) }
     var isWaitingToShowSaveDraftDialog by remember { mutableStateOf(false) }
     var selectedDraft by remember { mutableStateOf<PostMemoData?>(null) }
-    var postRelayUrls by remember { mutableStateOf<Set<String>?>(relayContext?.initialRelayUrls) }
+    var postRelayUrls by remember { mutableStateOf<Set<String>?>(initialMemo?.selectedRelayUrls ?: postViewModel.state.value.selectedRelayUrls ?: relayContext?.initialRelayUrls) }
+    LaunchedEffect(postRelayUrls) { postViewModel.onComposerRelaysChanged(postRelayUrls) }
     val activeMemo = selectedDraft ?: initialMemo
     val activeNoteContext = selectedDraft?.let { memo ->
         memo.channelId?.takeIf { it.isNotBlank() }?.let(NoteContext::Channel)
@@ -124,12 +129,6 @@ fun PostSheet(
     } else {
         replyTarget ?: initialMemo?.restoreReplyTarget(noteContext)
     }
-    val quoteReference = remember(quoteToId, quoteToPubkey, selectedDraft) {
-        quoteToId?.takeIf { selectedDraft == null }?.let {
-            "nostr:${encodeNevent(eventId = it, authorPubkey = quoteToPubkey)}"
-        }
-    }
-
     val pickImage = rememberOptimizedImagePickerLauncher { image ->
         if (image != null) {
             postViewModel.uploadAndAppendImage(
@@ -199,19 +198,28 @@ fun PostSheet(
     // KeepCurrent は最初の一回だけ初期化を飛ばす。シート内で下書き一覧から選んだ場合は復元する。
     var initialStateApplied by remember { mutableStateOf(false) }
     LaunchedEffect(activeMemo, activeReplyTarget, activeNoteContext) {
+        val firstInitialization = !initialStateApplied
         val keepCurrent = initialState == PostSheetInitialState.KeepCurrent &&
             !initialStateApplied &&
             selectedDraft == null
         initialStateApplied = true
-        if (keepCurrent) return@LaunchedEffect
-        if (activeMemo != null) {
+        if (!keepCurrent && activeMemo != null) {
             postViewModel.restoreMemo(
                 activeMemo,
                 if (selectedDraft != null) "下書きを復元しました" else initialMemoRestoreMessage,
             )
-        } else {
+        } else if (!keepCurrent) {
             postViewModel.reset()
         }
+        if (selectedDraft == null && quoteToId != null) {
+            postViewModel.addQuote(PostQuote(
+                quoteToId,
+                "nostr:${encodeNevent(quoteToId, authorPubkey = quoteToPubkey)}",
+                quoteToPreview.orEmpty().take(MAX_QUOTE_PREVIEW_CHARS),
+            ))
+        }
+        if (selectedDraft == null && quoteArticle != null) postViewModel.addQuote(quoteArticle)
+        if (firstInitialization) onOpened()
     }
 
     LaunchedEffect(autoFocus) {
@@ -254,9 +262,8 @@ fun PostSheet(
                 PostSheetContent(
                     state = state,
                     replyToPreview = replyToPreview.takeIf { selectedDraft == null },
-                    quoteToPreview = quoteToPreview.takeIf { selectedDraft == null },
-                    hasQuote = quoteReference != null,
                     onDismiss = ::requestCancel,
+                    onCursorChange = postViewModel::onCursorChange,
                     onOpenDrafts = {
                         dismissKeyboard()
                         showDraftListSheet = true
@@ -275,7 +282,6 @@ fun PostSheet(
                         postViewModel.post(
                             replyTarget = activeReplyTarget,
                             noteContext = activeNoteContext,
-                            quoteReference = quoteReference,
                             relayUrls = postRelayUrls ?: RelayStore.writableRelayUrlsSnapshot(),
                         )
                     }
@@ -409,10 +415,9 @@ fun PostSheet(
 private fun PostSheetContent(
     state: PostState,
     replyToPreview: String?,
-    quoteToPreview: String?,
-    hasQuote: Boolean,
     onDismiss: () -> Unit,
     onOpenDrafts: () -> Unit,
+    onCursorChange: (Int, Int) -> Unit,
     onPickImage: () -> Unit,
     onPasteImage: () -> Unit,
     onOpenRelaySettings: () -> Unit,
@@ -470,8 +475,7 @@ private fun PostSheetContent(
             }
             Button(
                 onClick = onPost,
-                enabled = state.canPost ||
-                    (hasQuote && !state.isPosting && !state.isUploadingAny),
+                enabled = state.canPost,
             ) {
                 if (state.isPosting) {
                     CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
@@ -482,30 +486,37 @@ private fun PostSheetContent(
         }
         Spacer(modifier = Modifier.height(12.dp))
 
-        quoteToPreview?.takeIf { it.isNotBlank() }?.let { preview ->
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .border(
-                        width = 1.dp,
-                        color = MaterialTheme.colorScheme.outlineVariant,
-                        shape = MaterialTheme.shapes.small,
-                    )
-                    .padding(10.dp),
-                verticalArrangement = Arrangement.spacedBy(4.dp),
+        if (state.quotes.isNotEmpty()) {
+            LazyColumn(
+                modifier = Modifier.fillMaxWidth().heightIn(max = 200.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                Text(
-                    text = "引用",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                Text(
-                    text = preview,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurface,
-                    maxLines = 3,
-                    overflow = TextOverflow.Ellipsis,
-                )
+                items(state.quotes, key = { it.eventId }) { quote ->
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .border(
+                                width = 1.dp,
+                                color = MaterialTheme.colorScheme.outlineVariant,
+                                shape = MaterialTheme.shapes.small,
+                            )
+                            .padding(10.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp),
+                    ) {
+                        Text(
+                            text = "引用",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        Text(
+                            text = quote.displayPreview,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurface,
+                            maxLines = 3,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                }
             }
             Spacer(modifier = Modifier.height(12.dp))
         }
@@ -548,6 +559,7 @@ private fun PostSheetContent(
             onOpenCustomEmojiSettings = onOpenCustomEmojiSettings,
             onContentWarningChange = onContentWarningChange,
             onTextChange = onTextChange,
+            onCursorChange = onCursorChange,
             onCustomEmojiInserted = onCustomEmojiInserted,
             textFocusRequester = textFocusRequester,
             onTextFocusChanged = onTextFocusChanged,

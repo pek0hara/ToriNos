@@ -4,6 +4,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import com.nostr.torinos.crypto.isWebPlatform
 import com.nostr.torinos.account.accountSessionViewModel
 import com.nostr.torinos.ui.profile.EditProfileViewModel
@@ -24,6 +25,7 @@ internal fun ComposerHost(
     coordinator: ComposerCoordinator,
     postViewModel: PostViewModel,
     onDraftSaved: () -> Unit,
+    onPostSheetOpened: (Long) -> Unit,
     onOpenCustomEmojiSettings: () -> Unit,
     onPosted: (PostCompletion) -> Unit,
     /** 送信中に入力状態が破棄された後で失敗したときの通知。 */
@@ -46,36 +48,47 @@ internal fun ComposerHost(
     }
 
     if (coordinator.presentation == ComposerPresentation.FullScreen) {
-        PostSheet(
-            onDismiss = coordinator::dismissPost,
-            onDraftSaved = onDraftSaved,
-            replyTarget = coordinator.replyTarget,
-            replyToPreview = coordinator.replyToPreview,
-            quoteToId = coordinator.quoteToId,
-            quoteToPubkey = coordinator.quoteToPubkey,
-            quoteToPreview = coordinator.quoteToPreview,
-            noteContext = coordinator.replyNoteContext,
-            relayContext = coordinator.replyRelayContext,
-            initialMemo = coordinator.localDraft,
-            initialMemoRestoreMessage = if (coordinator.localDraft != null) {
-                "下書きを復元しました"
-            } else {
-                null
-            },
-            initialState = coordinator.sheetInitialState,
-            // iOS Safari はタップ中の focus でしかキーボードを出さないため、Web では自動フォーカスせずタップに任せる。
-            autoFocus = !isWebPlatform &&
-                coordinator.replyTarget == null &&
-                coordinator.quoteToId == null,
-            preserveLocalDraftOnNavigation = true,
-            onOpenCustomEmojiSettings = { draft ->
-                coordinator.localDraft = draft
-                coordinator.clearPostContext(clearDraft = false)
-                coordinator.hide()
-                onOpenCustomEmojiSettings()
-            },
-            viewModel = postViewModel,
-        )
+        val opening = coordinator.openingGeneration
+        // A restored input must also recreate sheet-local reply, relay, and draft selection state.
+        key(opening) {
+            PostSheet(
+                onDismiss = coordinator::dismissPost,
+                onOpened = {
+                    coordinator.markInputInitialized()
+                    onPostSheetOpened(opening)
+                },
+                onDraftSaved = onDraftSaved,
+                replyTarget = coordinator.replyTarget,
+                replyToPreview = coordinator.replyToPreview,
+                quoteToId = coordinator.quoteToId,
+                quoteToPubkey = coordinator.quoteToPubkey,
+                quoteToPreview = coordinator.quoteToPreview,
+                quoteArticle = coordinator.quoteToArticle,
+                noteContext = coordinator.replyNoteContext,
+                relayContext = coordinator.replyRelayContext,
+                initialMemo = coordinator.localDraft,
+                initialMemoRestoreMessage = if (coordinator.localDraft != null) {
+                    "下書きを復元しました"
+                } else {
+                    null
+                },
+                initialState = coordinator.sheetInitialState,
+                // iOS Safari はタップ中の focus でしかキーボードを出さないため、Web では自動フォーカスせずタップに任せる。
+                autoFocus = !isWebPlatform &&
+                    coordinator.replyTarget == null &&
+                    coordinator.quoteToId == null &&
+                    coordinator.quoteToArticle == null &&
+                    coordinator.localDraft?.quotes.isNullOrEmpty(),
+                preserveLocalDraftOnNavigation = true,
+                onOpenCustomEmojiSettings = { draft ->
+                    coordinator.localDraft = draft
+                    coordinator.clearPostContext(clearDraft = false)
+                    coordinator.hide()
+                    onOpenCustomEmojiSettings()
+                },
+                viewModel = postViewModel,
+            )
+        }
     }
 
     if (coordinator.showRegistrationProfile) {

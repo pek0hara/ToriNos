@@ -10,6 +10,7 @@ import com.nostr.torinos.model.toReplyTarget
 import com.nostr.torinos.ui.channel.ComposerRelayContext
 import com.nostr.torinos.ui.post.PostMemoData
 import com.nostr.torinos.ui.post.PostSheetInitialState
+import kotlin.time.Clock
 
 /** 投稿UIの表示形態。簡易とシートが同時に開く不正状態を作らないため排他的にする。 */
 internal enum class ComposerPresentation {
@@ -67,6 +68,20 @@ internal class ComposerCoordinator(
     /** `presentation == FullScreen` のとき、`PostSheet` を開く時点の初期化方法。 */
     var sheetInitialState by mutableStateOf(PostSheetInitialState.Reset)
         private set
+    var openingGeneration by mutableStateOf(0L)
+        private set
+    private var offerPendingInputsOnOpening = true
+    private var initializedOpening: Long? = null
+
+    fun markInputInitialized() { initializedOpening = openingGeneration }
+
+    private fun beginOpening(offerPendingInputs: Boolean = true) {
+        openingGeneration++
+        offerPendingInputsOnOpening = offerPendingInputs
+    }
+
+    fun shouldOfferPendingInputs(opening: Long): Boolean = opening == openingGeneration &&
+        presentation != ComposerPresentation.Hidden && offerPendingInputsOnOpening
     /**
      * 簡易コンポーザーを「…」でフッターメニューへ切り替えた後も、その入力を保持しているか。
      * true の間は現在の画面の＋で同じ入力を再表示する。
@@ -99,10 +114,25 @@ internal class ComposerCoordinator(
     var quoteToId by mutableStateOf<String?>(null)
     var quoteToPubkey by mutableStateOf<String?>(null)
     var quoteToPreview by mutableStateOf<String?>(null)
+    /** 記事一覧の「投稿フィードに共有」で引用する記事。投稿は naddr で記事を参照する。 */
+    var quoteToArticle by mutableStateOf<com.nostr.torinos.ui.post.PostQuote?>(null)
     var replyNoteContext by mutableStateOf<NoteContext>(NoteContext.Timeline)
     /** チャンネル返信の送信先と relay hint(第16.14節)。通常投稿・タイムライン返信では null。 */
     var replyRelayContext by mutableStateOf<ComposerRelayContext?>(null)
     var localDraft by mutableStateOf<PostMemoData?>(null)
+
+    /** A visible editor is authoritative, including a deliberately emptied body. */
+    fun currentInputSnapshot(current: PostMemoData?): PostMemoData? {
+        val held = if (presentation != ComposerPresentation.Hidden || hasHeldInlineDraft) current else localDraft
+        // The initialized editor owns its quotes, including a relay draft selected in the sheet.
+        // Applying the opening's single-quote context again would resurrect the previous quote.
+        if (held != null) return held
+        if (initializedOpening == openingGeneration) return null
+        val base = if (quoteToId != null || quoteToArticle != null)
+            PostMemoData("", emptyList(), null, null, 1, null, Clock.System.now().epochSeconds) else null
+        return base?.copy(quoteEventId = quoteToId ?: base.quoteEventId, quotePubkey = quoteToPubkey ?: base.quotePubkey,
+            quotePreview = quoteToPreview ?: base.quotePreview, quotes = listOfNotNull(quoteToArticle))
+    }
     var journalToggleCalendarRequest by mutableStateOf(0)
     var showKeySetup by mutableStateOf(false)
     var pendingKeyAction by mutableStateOf<PendingKeyAction?>(null)
@@ -112,6 +142,11 @@ internal class ComposerCoordinator(
         quoteToId = event.id
         quoteToPubkey = event.pubkey
         quoteToPreview = event.content.ifBlank { "投稿 ${event.id.take(8)}" }
+    }
+
+    fun prepareArticleQuote(quote: com.nostr.torinos.ui.post.PostQuote) {
+        clearPostContext(clearDraft = true)
+        quoteToArticle = quote
     }
 
     fun prepareReply(
@@ -134,15 +169,17 @@ internal class ComposerCoordinator(
         quoteToId = null
         quoteToPubkey = null
         quoteToPreview = null
+        quoteToArticle = null
         replyTarget = target
         replyToPreview = preview
         replyNoteContext = noteContext
     }
 
     /** 返信、引用、下書き復元など、既存導線から全画面の `PostSheet` を開く。 */
-    fun openFullScreen(initialState: PostSheetInitialState = PostSheetInitialState.Reset) {
+    fun openFullScreen(initialState: PostSheetInitialState = PostSheetInitialState.Reset, offerPendingInputs: Boolean = true) {
         // 展開（KeepCurrent）ならシートが入力を引き継ぎ、それ以外は新しい入力で始まるので、保持は終える。
         hasHeldInlineDraft = false
+        beginOpening(offerPendingInputs)
         sheetInitialState = initialState
         presentation = ComposerPresentation.FullScreen
     }
@@ -171,12 +208,14 @@ internal class ComposerCoordinator(
         }
         if (hasHeldInlineDraft) {
             hasHeldInlineDraft = false
+            beginOpening()
             presentation = ComposerPresentation.FeedInline
             return
         }
         clearPostContext(clearDraft = true)
         resetPost()
         sheetInitialState = PostSheetInitialState.Reset
+        beginOpening()
         presentation = ComposerPresentation.FeedInline
     }
 
@@ -234,6 +273,7 @@ internal class ComposerCoordinator(
         quoteToId = null
         quoteToPubkey = null
         quoteToPreview = null
+        quoteToArticle = null
         replyNoteContext = NoteContext.Timeline
         replyRelayContext = null
     }

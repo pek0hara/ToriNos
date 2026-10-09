@@ -1,5 +1,7 @@
 package com.nostr.torinos.ui.article
 
+import com.nostr.torinos.ui.post.PostQuote
+import com.nostr.torinos.ui.post.articleQuote
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -49,6 +51,7 @@ fun UserArticleListScreen(
     onBack: () -> Unit,
     onArticleClick: (pubkey: String, identifier: String) -> Unit,
     onUserClick: (pubkey: String) -> Unit,
+    onShareToFeed: ((PostQuote) -> Unit)? = null,
 ) {
     val relays by RelayStore.relays.collectAsState(initial = emptyList())
     val selectedRelayUrl by RelayStore.selectedArticleRelayUrl.collectAsState()
@@ -131,6 +134,9 @@ fun UserArticleListScreen(
                         top = articleFloatingFiltersHeight(hasAuthorFilter = false, hasTopic = topic != null),
                     ),
                     emptyText = if (topic == null) "記事がありません" else "条件に合う記事がありません",
+                    onShareToFeed = onShareToFeed?.let { share ->
+                        { article -> share(articleQuote(article.event.pubkey, article.meta.identifier, article.displayTitle, activeRelayUrl)) }
+                    },
                     modifier = Modifier.fillMaxSize(),
                 )
                 ArticleFloatingFilters(

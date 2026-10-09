@@ -39,7 +39,11 @@ class EventByIdFetcher(
     },
     private val timeoutMillis: Long = 5_000,
 ) : TargetEventFetcher {
-    override suspend fun fetch(ids: Set<String>, onEvent: (NostrEvent) -> Unit): EventByIdResult {
+    override suspend fun fetch(ids: Set<String>, onEvent: (NostrEvent) -> Unit): EventByIdResult =
+        fetch(ids, RelayTarget.AllEnabled, onEvent)
+
+    /** [target] lets a caller follow relay hints from a nevent when the user's relays do not have the post. */
+    suspend fun fetch(ids: Set<String>, target: RelayTarget, onEvent: (NostrEvent) -> Unit): EventByIdResult {
         require(ids.all(::isFullEventId))
         if (ids.isEmpty()) return EventByIdResult(TargetLoadState.Idle)
         val remaining = ids.toMutableSet()
@@ -49,6 +53,7 @@ class EventByIdFetcher(
             SubscriptionSpec(
                 id = "event-by-id-${Random.nextLong().toULong()}",
                 filters = listOf(NostrFilter(ids = ids.toList(), limit = ids.size)),
+                target = target,
                 behavior = SubscriptionBehavior.Fetch(timeoutMillis = timeoutMillis),
                 // An invalid first response must not suppress a valid copy from another relay.
                 deduplicateEvents = false,
