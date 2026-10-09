@@ -63,22 +63,27 @@ actual object KeyStorage {
         }
     }
 
-    private fun encryptPrivateKey(normalized: String): Pair<String, String> =
-        runCatching {
-            val cipher = Cipher.getInstance(TRANSFORMATION).also {
-                it.init(Cipher.ENCRYPT_MODE, getOrCreateKeystoreKey())
-            }
-            Base64.encodeToString(cipher.doFinal(normalized.toByteArray(Charsets.UTF_8)), Base64.NO_WRAP) to
-                Base64.encodeToString(cipher.iv, Base64.NO_WRAP)
-        }.recoverCatching {
+    /**
+     * Keystore の鍵は保存済みの全アカウントで共通。失敗したときに鍵を作り直すと他のアカウントの
+     * 秘密鍵が復号できなくなるため、作り直すのは他に保存済みのアカウントがない場合だけにする。
+     */
+    private fun encryptPrivateKey(normalized: String, canResetKeystoreKey: Boolean): Pair<String, String> =
+        try {
+            encryptWithKeystoreKey(normalized)
+        } catch (e: Exception) {
+            if (!canResetKeystoreKey) throw e
             // Keystore が失効している端末では古い alias を消して再生成する。
             deleteKeystoreKey()
-            val cipher = Cipher.getInstance(TRANSFORMATION).also {
-                it.init(Cipher.ENCRYPT_MODE, getOrCreateKeystoreKey())
-            }
-            Base64.encodeToString(cipher.doFinal(normalized.toByteArray(Charsets.UTF_8)), Base64.NO_WRAP) to
-                Base64.encodeToString(cipher.iv, Base64.NO_WRAP)
-        }.getOrThrow()
+            encryptWithKeystoreKey(normalized)
+        }
+
+    private fun encryptWithKeystoreKey(normalized: String): Pair<String, String> {
+        val cipher = Cipher.getInstance(TRANSFORMATION).also {
+            it.init(Cipher.ENCRYPT_MODE, getOrCreateKeystoreKey())
+        }
+        return Base64.encodeToString(cipher.doFinal(normalized.toByteArray(Charsets.UTF_8)), Base64.NO_WRAP) to
+            Base64.encodeToString(cipher.iv, Base64.NO_WRAP)
+    }
 
     private fun decryptPrivateKey(encryptedB64: String, ivB64: String): String? =
         try {
@@ -126,7 +131,8 @@ actual object KeyStorage {
         val ivB64 = prefs[PREF_IV] ?: return
         val normalized = decryptPrivateKey(encryptedB64, ivB64) ?: return
         val pubkeyHex = derivePublicKey(normalized.fromHex()).toHex()
-        val encryptedPayload = encryptPrivateKey(normalized)
+        // 旧形式の鍵は同じ Keystore の鍵で復号できたばかりなので、ここで鍵を作り直す理由はない。
+        val encryptedPayload = encryptPrivateKey(normalized, canResetKeystoreKey = false)
         context.dataStore.edit { editPrefs ->
             editPrefs[PREF_ACCOUNTS] = setOf(accountRecord(pubkeyHex, encryptedPayload.first, encryptedPayload.second))
             editPrefs[PREF_ACTIVE_PUBKEY] = pubkeyHex
@@ -139,7 +145,12 @@ actual object KeyStorage {
         val normalized = normalizePrivateKey(hexKey)
         val privateKeyBytes = normalized.fromHex()
         val pubkeyHex = derivePublicKey(privateKeyBytes).toHex()
-        val encryptedPayload = encryptPrivateKey(normalized)
+        val storedPrefs = runCatching { context.dataStore.data.first() }.getOrNull()
+        // 読み込めなかったときは保存済みのアカウントがあるものとして、鍵を作り直さない。
+        val hasOtherStoredKeys = storedPrefs == null ||
+            (accountPubkeys(storedPrefs) - pubkeyHex).isNotEmpty() ||
+            storedPrefs[PREF_ENCRYPTED] != null
+        val encryptedPayload = encryptPrivateKey(normalized, canResetKeystoreKey = !hasOtherStoredKeys)
 
         context.dataStore.edit { prefs ->
             val existing = prefs[PREF_ACCOUNTS].orEmpty()
