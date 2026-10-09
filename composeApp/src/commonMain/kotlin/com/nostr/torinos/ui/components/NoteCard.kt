@@ -1,5 +1,6 @@
 package com.nostr.torinos.ui.components
 
+import com.nostr.torinos.model.isLikeReaction
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -102,6 +103,7 @@ import com.nostr.torinos.model.MediaMetadata
 import com.nostr.torinos.model.CustomReaction
 import com.nostr.torinos.model.ReactionOption
 import com.nostr.torinos.model.UnicodeReaction
+import com.nostr.torinos.model.isUnicodeEmojiReactionContent
 import com.nostr.torinos.model.toCustomReaction
 import com.nostr.torinos.model.toReactionOption
 import com.nostr.torinos.model.stripNostrEventUris
@@ -1027,7 +1029,7 @@ private fun ReactionPreviewStrip(
     ) {
         groups.forEachIndexed { index, group ->
             if (index > 0) Spacer(modifier = Modifier.width(12.dp))
-            Box(modifier = Modifier.width(28.dp).heightIn(min = 30.dp), contentAlignment = Alignment.Center) {
+            Box(modifier = Modifier.widthIn(min = 28.dp, max = 160.dp).heightIn(min = 30.dp), contentAlignment = Alignment.Center) {
                 if (group.imageUrl != null && group.shortcode != null) {
                     CustomReactionLink(
                         reaction = CustomReaction(
@@ -1038,7 +1040,13 @@ private fun ReactionPreviewStrip(
                         imageSize = 20.dp,
                     )
                 } else {
-                    Text(group.emoji.orEmpty(), fontSize = 18.sp, maxLines = 1)
+                    val content = group.emoji.orEmpty()
+                    Text(
+                        text = content,
+                        fontSize = if (content.isUnicodeEmojiReactionContent()) 18.sp else 14.sp,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
                 }
             }
             Row(
@@ -1146,7 +1154,7 @@ private fun EngagementPlaceholder(text: String) {
 }
 
 private fun reactionGroupKey(event: NostrEvent): String = when {
-    event.content.trim() == "+" -> LikeReactionGroupKey
+    event.isLikeReaction() -> LikeReactionGroupKey
     else -> event.toReactionOption()?.key.orEmpty()
 }
 
@@ -1255,10 +1263,11 @@ internal fun ReactionSummaryRow(
                 emoji = {
                     Text(
                         text = reaction.content,
-                        modifier = Modifier.widthIn(min = 28.dp),
-                        fontSize = 18.sp,
+                        modifier = Modifier.widthIn(min = 28.dp, max = 160.dp),
+                        fontSize = if (reaction.content.isUnicodeEmojiReactionContent()) 18.sp else 14.sp,
                         textAlign = androidx.compose.ui.text.style.TextAlign.Center,
                         maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
                     )
                 },
                 count = reaction.count,

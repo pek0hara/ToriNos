@@ -34,7 +34,7 @@ fun resolveNotificationTarget(
         event.kind == COMMENT_EVENT_KIND && it.firstOrNull() == "E"
     }
     val id = if (event.kind == 1 || event.kind == COMMENT_EVENT_KIND) event.replyTargetId() else eTag?.getOrNull(1)
-    val embedded = if (event.kind == 6 && event.content.isNotBlank()) {
+    val embedded = if (event.kind in listOf(6, 16) && event.content.isNotBlank()) {
         runCatching { Json.decodeFromString<NostrEvent>(event.content) }.getOrNull()
             ?.takeIf { (id == null || it.id == id) && validateEmbedded(it) }
     } else null
@@ -42,7 +42,7 @@ fun resolveNotificationTarget(
         eventReferenceTag != null -> if (id != null && isFullEventId(id)) TargetReference.EventId(id) else TargetReference.Invalid
         embedded != null -> TargetReference.EventId(embedded.id)
         event.tags.any { it.firstOrNull() == "a" } -> TargetReference.AddressOnly
-        event.kind == 6 && event.content.isNotBlank() -> TargetReference.Invalid
+        event.kind in listOf(6, 16) && event.content.isNotBlank() -> TargetReference.Invalid
         else -> TargetReference.None
     }
     return ResolvedTargetReference(reference, embedded.takeIf { reference is TargetReference.EventId })

@@ -54,7 +54,7 @@ internal class NostrJournalEngagementSource(
             spec = SubscriptionSpec(
                 id = journalSubscriptionId("journal-engagement"),
                 filters = listOf(
-                    NostrFilter(kinds = listOf(1, 6, 7), eTags = ids, limit = ENGAGEMENT_LIMIT),
+                    NostrFilter(kinds = listOf(1, 6, 16, 7), eTags = ids, limit = ENGAGEMENT_LIMIT),
                     NostrFilter(
                         kinds = listOf(COMMENT_EVENT_KIND),
                         rootKindTags = listOf("1"),

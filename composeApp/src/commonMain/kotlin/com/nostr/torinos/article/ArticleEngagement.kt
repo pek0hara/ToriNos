@@ -1,5 +1,6 @@
 package com.nostr.torinos.article
 
+import com.nostr.torinos.model.isLikeReaction
 import com.nostr.torinos.engagement.NoteEngagementState
 import com.nostr.torinos.model.ArticleItem
 import com.nostr.torinos.model.COMMENT_EVENT_KIND
@@ -75,10 +76,9 @@ internal fun summarizeArticleReactions(
         .sortedBy { it.createdAt }
         .forEach { event ->
             val isOwn = ownPubkey != null && event.pubkey == ownPubkey
-            val content = event.content.trim()
             val option = event.toReactionOption()
             summary = when {
-                content == "+" || content.isEmpty() -> summary.copy(
+                event.isLikeReaction() -> summary.copy(
                     likeCount = summary.likeCount + 1,
                     ownLikeEventId = if (isOwn) event.id else summary.ownLikeEventId,
                 )

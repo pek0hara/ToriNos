@@ -88,6 +88,7 @@ object NostrRepository {
     private val bus = MutableSharedFlow<RelayEnvelope>(extraBufferCapacity = 512)
 
     internal val httpClient = createHttpClient()
+    private val eventRelayHints = EventRelayHintStore()
     private val stateMutex = Mutex()
     private val activeRelays = mutableMapOf<String, ActiveRelayHandle>()
     private var enabledRelayUrls: List<String> = readableRelayUrls(RelayStore.defaults)
@@ -386,8 +387,22 @@ object NostrRepository {
         handles.forEach { it.close() }
     }
 
+    fun observedEventRelay(eventId: String): String? = eventRelayHints.get(eventId)
+
+    fun observedEventRelays(eventId: String): Set<String> = eventRelayHints.getAll(eventId)
+    /** メモリに無ければ有限の実取得で所在を確認する。任意のリレーで代用しない。 */
+    suspend fun resolveEventRelay(eventId: String): String? {
+        observedEventRelay(eventId)?.let { return it }
+        if (!isFullEventId(eventId)) return null
+        EventByIdFetcher(timeoutMillis = 2_500).fetch(setOf(eventId)) { }
+        return observedEventRelay(eventId)
+    }
+
     private suspend fun handleActiveRelayMessage(relayUrl: String, message: RelayMessage) {
-        if (message is RelayMessage.Event) ReactionEventStore.observe(message.event, setOf(relayUrl))
+        if (message is RelayMessage.Event) {
+            eventRelayHints.observe(message.event.id, relayUrl)
+            ReactionEventStore.observe(message.event, setOf(relayUrl))
+        }
         val signals = mutableListOf<Pair<SubscriptionSessionImpl, SubscriptionSignal>>()
         var commands = emptyList<SubscriptionWireCommand>()
         var fetchToComplete: String? = null
@@ -563,7 +578,10 @@ object NostrRepository {
                         }
                         else -> networkTraceLog { "[Repo] message from ${relay.url}: $message" }
                     }
-                    if (message is RelayMessage.Event) ReactionEventStore.observe(message.event, setOf(relay.url))
+                    if (message is RelayMessage.Event) {
+                        eventRelayHints.observe(message.event.id, relay.url)
+                        ReactionEventStore.observe(message.event, setOf(relay.url))
+                    }
                     bus.emit(RelayEnvelope(relay.url, message))
                 }
             } catch (e: CancellationException) {

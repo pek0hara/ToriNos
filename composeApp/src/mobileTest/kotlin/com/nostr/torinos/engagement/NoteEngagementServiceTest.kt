@@ -118,7 +118,7 @@ class NoteEngagementServiceTest {
             sig = "target-sig",
         )
         var signedRepost: NostrEvent? = null
-        val successfulService = NoteEngagementService(RecordingSigner()) { event ->
+        val successfulService = NoteEngagementService(RecordingSigner(), relayHint = { "wss://source.example" }) { event ->
             signedRepost = event
             RelayPublishResult(setOf("relay"), emptyMap())
         }
@@ -126,7 +126,7 @@ class NoteEngagementServiceTest {
         successfulService.execute(NoteEngagementCommand.AddRepost(target)).getOrThrow()
 
         assertEquals(6, signedRepost?.kind)
-        assertEquals(listOf(listOf("e", "note-id"), listOf("p", "author-pubkey")), signedRepost?.tags)
+        assertEquals(listOf(listOf("e", "note-id", "wss://source.example"), listOf("p", "author-pubkey")), signedRepost?.tags)
         assertTrue(signedRepost?.content?.contains("\"id\":\"note-id\"") == true)
 
         val failingService = NoteEngagementService(RecordingSigner()) {
@@ -149,7 +149,7 @@ class NoteEngagementServiceTest {
     }
 
     @Test
-    fun repostRejectsNonKind1WithoutSigningOrPublishing() = runBlocking {
+    fun repostRejectsUnsupportedCommentWithoutSigningOrPublishing() = runBlocking {
         val signer = RecordingSigner()
         var publishCount = 0
         val service = NoteEngagementService(signer) {
@@ -168,6 +168,43 @@ class NoteEngagementServiceTest {
 
         assertTrue(service.execute(NoteEngagementCommand.AddRepost(comment)).isFailure)
         assertEquals(0, publishCount)
+    }
+
+    @Test
+    fun channelRepostUsesGenericKindAndKindTag() = runBlocking {
+        val target = NostrEvent("channel-post", "author", 10, 42, emptyList(), "message", "sig")
+        val service = NoteEngagementService(RecordingSigner(), relayHint = { "wss://source.example" }) {
+            RelayPublishResult(setOf("relay"), emptyMap())
+        }
+        val event = service.execute(NoteEngagementCommand.AddRepost(target)).getOrThrow()
+        assertEquals(16, event.kind)
+        assertTrue(listOf("k", "42") in event.tags)
+        assertTrue(listOf("e", target.id, "wss://source.example") in event.tags)
+    }
+
+    @Test
+    fun unknownSourceFailsBeforeSigningAndPublishing() = runBlocking {
+        var signed = false
+        var published = false
+        val service = NoteEngagementService(RecordingSigner(), relayHint = { null }) {
+            published = true
+            RelayPublishResult(setOf("relay"), emptyMap())
+        }
+        val target = NostrEvent("note", "author", 10, 1, emptyList(), "hello", "sig")
+        assertTrue(service.execute(NoteEngagementCommand.AddRepost(target)) { signed = true }.isFailure)
+        assertTrue(!signed && !published)
+    }
+
+    @Test
+    fun protectedAddressableRepostHasAddressAndNoContent() = runBlocking {
+        val target = NostrEvent("article", "author", 10, 30023, listOf(listOf("d", "post"), listOf("-")), "private", "sig")
+        val service = NoteEngagementService(RecordingSigner(), relayHint = { "wss://source.example" }) {
+            RelayPublishResult(setOf("relay"), emptyMap())
+        }
+        val event = service.execute(NoteEngagementCommand.AddRepost(target)).getOrThrow()
+        assertEquals(16, event.kind)
+        assertEquals("", event.content)
+        assertTrue(listOf("a", "30023:author:post", "wss://source.example") in event.tags)
     }
 
     private class RecordingSigner : AccountSigner {

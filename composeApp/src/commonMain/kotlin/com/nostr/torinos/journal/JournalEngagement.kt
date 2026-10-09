@@ -1,5 +1,6 @@
 package com.nostr.torinos.journal
 
+import com.nostr.torinos.model.isLikeReaction
 import com.nostr.torinos.engagement.EngagementReducer
 import com.nostr.torinos.engagement.NoteEngagementState
 import com.nostr.torinos.model.COMMENT_EVENT_KIND
@@ -49,7 +50,7 @@ internal class JournalEngagementAggregator(
             when (event.kind) {
                 7 -> update(targetId) { it.withReaction(event) }
                 1, COMMENT_EVENT_KIND -> update(targetId) { it.withReply(event) }
-                6 -> update(targetId) { it.withRepostBy(event.pubkey) }
+                6, 16 -> update(targetId) { it.withRepostBy(event.pubkey) }
                 else -> return emptySet()
             }
             changed += targetId
@@ -77,13 +78,13 @@ internal class JournalEngagementAggregator(
 
     private fun JournalNoteEngagement.withReaction(event: NostrEvent): JournalNoteEngagement {
         var next = summary.copy(reactionCount = summary.reactionCount + 1)
-        if (event.content.trim() == "+") next = next.copy(likeReactionCount = next.likeReactionCount + 1)
+        if (event.isLikeReaction()) next = next.copy(likeReactionCount = next.likeReactionCount + 1)
         event.toCustomReaction()?.let { next = next.copy(customReactions = next.customReactions.incrementedWith(it)) }
         event.toUnicodeReaction()?.let {
             next = next.copy(unicodeReactions = next.unicodeReactions.incrementedWithUnicodeReaction(it))
         }
         if (event.pubkey == ownPubkey) {
-            if (event.content.trim() == "+" && next.ownLikeEventId == null) {
+            if (event.isLikeReaction() && next.ownLikeEventId == null) {
                 next = next.copy(ownLikeEventId = event.id)
             }
             event.toReactionOption()?.let { option ->

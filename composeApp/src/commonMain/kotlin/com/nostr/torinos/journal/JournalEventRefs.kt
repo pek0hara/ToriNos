@@ -12,7 +12,7 @@ internal fun NostrEvent.activityTargetId(): String? =
         ?: embeddedRepostTarget()?.id
 
 internal fun NostrEvent.embeddedRepostTarget(): NostrEvent? {
-    if (kind != 6 || content.isBlank()) return null
+    if (kind !in listOf(6, 16) || content.isBlank()) return null
     return runCatching {
         Json.decodeFromString(NostrEvent.serializer(), content)
     }.getOrNull()

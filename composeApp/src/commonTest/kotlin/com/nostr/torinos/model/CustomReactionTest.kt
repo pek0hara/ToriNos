@@ -83,8 +83,21 @@ class CustomReactionTest {
     }
 
     @Test
-    fun plainTextReactionIsNotDisplayedAsUnicodeEmoji() {
-        assertNull(reactionEvent(content = "hello", tags = emptyList()).toUnicodeReaction())
+    fun parsesTextReactionAndPreservesContentInOption() {
+        for (content in listOf("草", "hello", "ありがとう", ":unknown:")) {
+            val event = reactionEvent(content = " $content ", tags = emptyList())
+            assertEquals(UnicodeReaction(content), event.toUnicodeReaction())
+            assertEquals(ReactionOption.Unicode(content), event.toReactionOption())
+            assertEquals(content, event.toReactionOption()?.eventContent)
+        }
+    }
+
+    @Test
+    fun standardLikesAndDislikesAreNotTextReactions() {
+        for (content in listOf("", "  ", "+", " - ")) {
+            assertNull(reactionEvent(content = content, tags = emptyList()).toUnicodeReaction())
+        }
+        assertNull(reactionEvent(content = "草", tags = emptyList()).copy(kind = 1).toUnicodeReaction())
     }
 
     @Test

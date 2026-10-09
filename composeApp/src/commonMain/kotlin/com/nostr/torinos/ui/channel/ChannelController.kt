@@ -1,5 +1,6 @@
 package com.nostr.torinos.ui.channel
 
+import com.nostr.torinos.model.isLikeReaction
 import com.nostr.torinos.ui.post.resolveDraftEmojis
 import com.nostr.torinos.ui.post.insertDraftEmoji
 import com.nostr.torinos.ui.post.DraftEmojiInsertion
@@ -893,7 +894,7 @@ internal class ChannelController(
                 val targetId = event.tags.lastOrNull { it.firstOrNull() == "e" }?.getOrNull(1) ?: return@collect
                 if (targetId !in watchedEventIds) return@collect
                 currentReactionCounts = currentReactionCounts + (targetId to (currentReactionCounts[targetId] ?: 0) + 1)
-                if (event.content.trim() == "+") {
+                if (event.isLikeReaction()) {
                     currentLikeReactionCounts = currentLikeReactionCounts + (
                         targetId to (currentLikeReactionCounts[targetId] ?: 0) + 1
                         )
@@ -918,7 +919,7 @@ internal class ChannelController(
                 if (
                     ownPubkey != null &&
                     event.pubkey == ownPubkey &&
-                    event.content.trim() == "+" &&
+                    event.isLikeReaction() &&
                     !currentLikedReactions.containsKey(targetId)
                 ) {
                     currentLikedReactions = currentLikedReactions + (targetId to event.id)
@@ -938,7 +939,7 @@ internal class ChannelController(
 
         jobs += launch {
             NostrRepository.events(repostSubId).collect { event ->
-                if (event.kind != 6 || !seenRepostIds.add(event.id)) return@collect
+                if (event.kind !in listOf(6, 16) || !seenRepostIds.add(event.id)) return@collect
                 rememberReceivedEvent(receivedRepostEvents, event)
                 val targetId = event.tags.lastOrNull { it.firstOrNull() == "e" }?.getOrNull(1) ?: return@collect
                 if (targetId !in watchedEventIds) return@collect
@@ -1208,7 +1209,7 @@ internal class ChannelController(
             // 返信・リアクション集計もメッセージと同じ read relay context を使う(FR-05)。
             subscribeLive(replyCountSubId, NostrFilter(kinds = listOf(noteContext.eventKind), eTags = ids, limit = 500))
             subscribeLive(reactionSubId, NostrFilter(kinds = listOf(7), eTags = ids, limit = 500))
-            subscribeLive(repostSubId, NostrFilter(kinds = listOf(6), eTags = ids, limit = 500))
+            subscribeLive(repostSubId, NostrFilter(kinds = listOf(6, 16), eTags = ids, limit = 500))
             subscribeLive(quoteRepostSubId, NostrFilter(kinds = listOf(noteContext.eventKind), qTags = ids, limit = 500))
         }
     }
@@ -1397,7 +1398,7 @@ internal class ChannelController(
         receivedReactionEvents.values.filter { it.pubkey == pubkey }.forEach { event ->
             val targetId = event.tags.lastOrNull { it.firstOrNull() == "e" }?.getOrNull(1)
                 ?: return@forEach
-            if (event.content.trim() == "+") {
+            if (event.isLikeReaction()) {
                 currentLikedReactions = currentLikedReactions + (targetId to event.id)
             }
             event.toReactionOption()?.let { option ->

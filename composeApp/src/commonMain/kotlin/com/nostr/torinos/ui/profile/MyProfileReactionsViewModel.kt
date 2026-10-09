@@ -107,7 +107,7 @@ class MyProfileReactionsViewModel(private val ownPubkey: String) : SafeViewModel
         launch {
             NostrRepository.subscribe(
                 reactionsSubId,
-                NostrFilter(kinds = listOf(1, 6, 7), pTags = listOf(ownPubkey), limit = 100),
+                NostrFilter(kinds = listOf(1, 6, 16, 7), pTags = listOf(ownPubkey), limit = 100),
             )
         }
     }
@@ -116,7 +116,7 @@ class MyProfileReactionsViewModel(private val ownPubkey: String) : SafeViewModel
         if (event.pubkey == ownPubkey) return
         val type = when (event.kind) {
             1 -> MyProfileReactionType.Reply
-            6 -> MyProfileReactionType.Repost
+            6, 16 -> MyProfileReactionType.Repost
             7 -> MyProfileReactionType.Like
             else -> return
         }

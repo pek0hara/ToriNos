@@ -12,6 +12,7 @@ import kotlinx.serialization.json.Json
 
 class NoteEngagementService(
     private val signer: AccountSigner?,
+    private val relayHint: suspend (NostrEvent) -> String? = { NostrRepository.resolveEventRelay(it.id) },
     private val publisher: suspend (NostrEvent) -> RelayPublishResult = NostrRepository::publish,
 ) {
     suspend fun execute(
@@ -47,13 +48,24 @@ class NoteEngagementService(
                     require(command.event.kind != COMMENT_EVENT_KIND) {
                         "kind 1111の汎用リポストには対応していません"
                     }
+                    val hint = relayHint(command.event)?.trim()?.takeIf {
+                        it.startsWith("wss://") || it.startsWith("ws://")
+                    } ?: error("元の投稿を取得したリレーが不明です。投稿を再取得してからリポストしてください")
                     activeSigner.sign(
-                        content = Json.encodeToString(NostrEvent.serializer(), command.event),
-                        kind = 6,
-                        tags = listOf(
-                            listOf("e", command.event.id.requireNotBlank("event.id")),
-                            listOf("p", command.event.pubkey.requireNotBlank("event.pubkey")),
-                        ),
+                        content = if (command.event.tags.any { it.firstOrNull() == "-" }) "" else
+                            Json.encodeToString(NostrEvent.serializer(), command.event),
+                        kind = if (command.event.kind == 1) 6 else 16,
+                        tags = buildList {
+                            add(listOf("e", command.event.id.requireNotBlank("event.id"), hint))
+                            add(listOf("p", command.event.pubkey.requireNotBlank("event.pubkey")))
+                            if (command.event.kind != 1) add(listOf("k", command.event.kind.toString()))
+                            if (command.event.kind == 0 || command.event.kind == 3 || command.event.kind in 10000..19999 ||
+                                command.event.kind in 30000..39999) {
+                                val identifier = if (command.event.kind in 30000..39999)
+                                    command.event.tags.firstOrNull { it.firstOrNull() == "d" }?.getOrNull(1).orEmpty() else ""
+                                add(listOf("a", "${command.event.kind}:${command.event.pubkey}:$identifier", hint))
+                            }
+                        },
                     )
                 }
                 is NoteEngagementCommand.RemoveRepost -> activeSigner.sign(

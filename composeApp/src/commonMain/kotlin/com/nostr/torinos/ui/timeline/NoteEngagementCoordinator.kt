@@ -17,7 +17,7 @@ internal class NoteEngagementCoordinator(
     signer: AccountSigner?,
     publisher: suspend (NostrEvent) -> RelayPublishResult = NostrRepository::publish,
 ) {
-    private val service = NoteEngagementService(signer, publisher)
+    private val service = NoteEngagementService(signer, publisher = publisher)
 
     fun begin(
         current: NoteEngagementState,

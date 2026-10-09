@@ -41,6 +41,17 @@ class JournalEngagementTest {
     }
 
     @Test
+    fun genericRepostAndEmptyLikeAreCounted() {
+        val aggregator = JournalEngagementAggregator(setOf(note), ownPubkey = OWNER)
+        aggregator.add(reaction("empty", targetId = note, pubkey = OWNER, content = ""))
+        aggregator.add(event("generic", kind = 16, pubkey = OTHER, tags = listOf(listOf("e", note))))
+        val result = aggregator.snapshot().getValue(note)
+        assertEquals(1, result.summary.likeReactionCount)
+        assertEquals("empty", result.summary.ownLikeEventId)
+        assertEquals(1, result.summary.repostCount)
+    }
+
+    @Test
     fun kindOneRepliesUseTheReplyMarkerLikeTheFeed() {
         val aggregator = JournalEngagementAggregator(setOf(note, "root"), ownPubkey = null)
         val markedReply = event(

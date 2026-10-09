@@ -15,6 +15,7 @@ data class CustomReaction(
     val setAddress: EmojiSetAddress? = null,
 )
 
+/** カスタム絵文字以外のリアクション。Unicode絵文字と通常の文字列を含む。 */
 data class UnicodeReaction(
     val content: String,
     val count: Int = 1,
@@ -99,7 +100,7 @@ fun NostrEvent.toUnicodeReaction(): UnicodeReaction? {
     if (kind != 7) return null
     val value = content.trim()
     if (toCustomReaction() != null) return null
-    if (!value.isUnicodeEmojiReactionContent()) return null
+    if (value.isBlank() || value == "+" || value == "-") return null
     return UnicodeReaction(value)
 }
 
@@ -160,3 +161,6 @@ private fun String.containsEmojiCodePoint(): Boolean {
     }
     return false
 }
+
+/** NIP-25: 空文字も「いいね」。絵文字や低評価は含めない。 */
+fun NostrEvent.isLikeReaction(): Boolean = kind == 7 && content.trim().let { it == "+" || it.isEmpty() }
