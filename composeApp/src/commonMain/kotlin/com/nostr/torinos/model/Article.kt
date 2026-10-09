@@ -19,10 +19,17 @@ data class ArticleItem(
     val authorProfile: NostrProfile? = null,
 ) {
     val address: String get() = articleAddress(event.pubkey, meta.identifier)
-    val displayTitle: String get() = meta.title?.takeIf { it.isNotBlank() }
-        ?: markdownPreview(event.content).ifBlank { "無題の記事" }
-    val displaySummary: String get() = meta.summary?.takeIf { it.isNotBlank() }
-        ?: markdownPreview(event.content)
+    // Computed once per item: the list reads these on every recomposition and the body can be 10,000 characters.
+    private val preview by lazy { markdownPreview(event.content) }
+    val displayTitle: String get() = meta.title?.takeIf { it.isNotBlank() } ?: preview.ifBlank { "無題の記事" }
+    val isMatometr: Boolean get() = meta.topics.any { it.equals(MATOMETR_TOPIC, ignoreCase = true) }
+    val displaySummary: String by lazy {
+        meta.summary?.takeIf { it.isNotBlank() } ?: preview.ifBlank {
+            // A matometr of quotes only has no prose to preview; say what it holds instead of leaving a gap.
+            val quoted = extractNostrEventReferences(event.content).size
+            if (isMatometr && quoted > 0) "${quoted}件の投稿をまとめた記事" else ""
+        }
+    }
     val sortTime: Long get() = meta.publishedAt ?: event.createdAt
 }
 
@@ -50,23 +57,35 @@ fun List<ArticleItem>.latestArticleVersions(): List<ArticleItem> =
 
 fun NostrEvent.articleIdentifier(): String? = toArticleMeta()?.identifier
 
-fun markdownPreview(content: String, maxLength: Int = ArticlePreviewMaxLength): String =
-    content
+/**
+ * 一覧用の本文プレビュー。記号やコード、投稿の参照(`nostr:nevent1…`)と、
+ * まとめ記事の末尾に付く `#matometr` 行は読み手に意味がないので除く。
+ */
+fun markdownPreview(content: String, maxLength: Int = ArticlePreviewMaxLength): String {
+    var inFence = false
+    return content
         .lineSequence()
-        .map { line ->
-            line.trim()
-                .removePrefix("#")
-                .removePrefix("#")
-                .removePrefix("#")
-                .removePrefix(">")
+        .mapNotNull { raw ->
+            val line = raw.trim()
+            if (line.startsWith("```") || line.startsWith("~~~")) { inFence = !inFence; return@mapNotNull null }
+            if (inFence || line.equals("#$MATOMETR_TOPIC", ignoreCase = true)) return@mapNotNull null
+            line.replace(previewBlockMarker, "")
+                .replace(previewImage, "$1")
+                .replace(previewLink, "$1")
+                .let(::stripNostrEventUris)
+                .replace(previewEmphasis, "")
                 .trim()
         }
         .filter { it.isNotBlank() }
-        .filterNot { it.startsWith("```") }
         .joinToString(" ")
-        .replace(Regex("""!\[([^]]*)]\([^)]+\)"""), "$1")
-        .replace(Regex("""\[([^]]+)]\([^)]+\)"""), "$1")
         .take(maxLength)
+}
+
+const val MATOMETR_TOPIC = "matometr"
+private val previewBlockMarker = Regex("""^(#{1,6}\s+|>\s?|[-*+]\s+)""")
+private val previewImage = Regex("""!\[([^]]*)]\([^)]+\)""")
+private val previewLink = Regex("""\[([^]]+)]\([^)]+\)""")
+private val previewEmphasis = Regex("""\*\*|__|~~|`""")
 
 private fun NostrEvent.tagValue(name: String): String? =
     tags.firstOrNull { it.firstOrNull() == name }?.getOrNull(1)
