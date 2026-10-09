@@ -459,7 +459,7 @@ object NostrRepository {
                         val wasLive = state.phase == RelaySubscriptionPhase.Live
                         record.relayStates[relayUrl] = SubscriptionStateMachine.onEvent(state, message.event)
                         val isFirstDelivery = !record.deduplicateEvents || record.seenEventIds.add(message.event.id)
-                        FetchTrace.event(subscriptionId, relayUrl, isFirstDelivery, wasLive)
+                        FetchTrace.event(subscriptionId, relayUrl, isFirstDelivery, wasLive, message.event.kind)
                         emitToLegacyBus = isFirstDelivery
                         if (record.session != null && isFirstDelivery) {
                             signals += record.session to SubscriptionSignal.Event(

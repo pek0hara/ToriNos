@@ -16,6 +16,7 @@ internal object FetchTrace {
     private class RelayStats(val requestedAt: TimeSource.Monotonic.ValueTimeMark) {
         var events = 0
         var duplicates = 0
+        val kinds = HashMap<Int, Int>()
         var liveEvents = 0
         var firstEventMs: Long? = null
         var eoseMs: Long? = null
@@ -46,11 +47,12 @@ internal object FetchTrace {
         fetchTraceLog { "CLOSE $subscriptionId → ${relayUrl.short()} ${removed?.describe() ?: "(REQ記録なし)"}" }
     }
 
-    fun event(subscriptionId: String, relayUrl: String, firstDelivery: Boolean, live: Boolean) {
+    fun event(subscriptionId: String, relayUrl: String, firstDelivery: Boolean, live: Boolean, kind: Int) {
         if (!isFetchTraceEnabled) return
         lock.withLock {
             val stat = stats[key(subscriptionId, relayUrl)] ?: return@withLock
             if (live) stat.liveEvents++ else stat.events++
+            stat.kinds[kind] = (stat.kinds[kind] ?: 0) + 1
             if (!firstDelivery) stat.duplicates++
             if (stat.firstEventMs == null) stat.firstEventMs = stat.requestedAt.elapsedNow().inWholeMilliseconds
         }
@@ -112,6 +114,7 @@ internal object FetchTrace {
         append("events=$events")
         if (liveEvents > 0) append(" live=$liveEvents")
         if (duplicates > 0) append(" dup=$duplicates")
+        if (kinds.size > 1) append(" kinds=${kinds.entries.sortedBy { it.key }.joinToString(",") { "${it.key}:${it.value}" }}")
         firstEventMs?.let { append(" first=${it}ms") }
         eoseMs?.let { append(" eose=${it}ms") }
         append(" open=${requestedAt.elapsedNow().inWholeMilliseconds}ms")
@@ -139,6 +142,10 @@ internal fun NostrFilter.summary(): String = buildList {
     aTags?.let { add("#a=${it.size}") }
     tTags?.let { add("#t=$it") }
     rootKindTags?.let { add("#K=$it") }
+    parentKindTags?.let { add("#k=$it") }
+    rootAddressTags?.let { add("#A=${it.size}") }
+    rootPubkeyTags?.let { add("#P=${it.size}") }
+    dTags?.let { add("#d=$it") }
     since?.let { add("since=$it") }
     until?.let { add("until=$it") }
     limit?.let { add("limit=$it") }
