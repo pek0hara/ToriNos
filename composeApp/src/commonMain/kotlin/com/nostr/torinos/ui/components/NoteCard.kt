@@ -172,6 +172,10 @@ fun NoteCard(
     precomputedContent: ParsedNoteContent? = null,
     /** true の間、X 投稿埋め込みなど重い WebView の新規生成を遅延させる（スナップショットキャッシュ命中時は除く）。 */
     deferWebViewLoad: Boolean = false,
+    /** false で件数・操作欄を出さない。リアクション欄も既定で非表示になる。 */
+    showEngagement: Boolean = true,
+    /** 件数・操作欄とは独立してリアクションの内訳を表示する。 */
+    showReactions: Boolean = showEngagement,
 ) {
     val onQuote = LocalQuotePostHandler.current
     // Read inside the name row only, so badge updates do not recompose the whole card.
@@ -553,7 +557,7 @@ fun NoteCard(
                     )
                 }
             }
-            if (reactionCount > 0) {
+            if (showReactions && reactionCount > 0) {
                 Spacer(modifier = Modifier.height(8.dp))
                 ReactionSummaryRow(
                     totalReactionCount = reactionCount,
@@ -568,143 +572,145 @@ fun NoteCard(
                     onOpenStandardEmojiPicker = { showStandardEmojiPicker = true },
                 )
             }
-            Spacer(modifier = Modifier.height(3.dp))
-            Row(
-                modifier = Modifier.offset(x = (-1).dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(12.dp),
-            ) {
-                EngagementCount(
-                    icon = Icons.Default.MailOutline,
-                    contentDescription = "返信",
-                    count = replyCount,
-                    countText = if (replyCount > 0) {
-                        "$replyCount${if (expandedEngagement == ExpandedEngagement.Replies) "⌃" else "⌄"}"
-                    } else {
-                        replyCount.toString()
-                    },
-                    tint = if (expandedEngagement == ExpandedEngagement.Replies) {
-                        MaterialTheme.colorScheme.primary
-                    } else {
-                        MaterialTheme.colorScheme.onSurfaceVariant
-                    },
-                    onClick = onReply,
-                    onCountClick = if (replyCount > 0) {
-                        {
-                            expandedEngagement = expandedEngagement.toggled(ExpandedEngagement.Replies)
-                        }
-                    } else {
-                        onOpenReplies
-                    },
-                )
-                EngagementCount(
-                    icon = Icons.Default.Repeat,
-                    contentDescription = "リポスト",
-                    count = repostCount,
-                    countText = if (repostCount > 0) {
-                        "$repostCount${if (expandedEngagement == ExpandedEngagement.Reposts) "⌃" else "⌄"}"
-                    } else {
-                        repostCount.toString()
-                    },
-                    tint = when {
-                        expandedEngagement == ExpandedEngagement.Reposts -> MaterialTheme.colorScheme.primary
-                        isReposted -> Color(0xFF2BAE66)
-                        else -> MaterialTheme.colorScheme.onSurfaceVariant
-                    },
-                    onClick = onRepost,
-                    onCountClick = if (repostCount > 0) {
-                        {
-                            expandedEngagement = expandedEngagement.toggled(ExpandedEngagement.Reposts)
-                        }
-                    } else {
-                        onOpenReposts
-                    },
-                )
-                Box {
+            if (showEngagement) {
+                Spacer(modifier = Modifier.height(3.dp))
+                Row(
+                    modifier = Modifier.offset(x = (-1).dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
                     EngagementCount(
-                        icon = Icons.Default.Favorite,
-                        reaction = ownEmojiReaction.takeUnless { isLiked },
-                        contentDescription = when {
-                            isLiked -> "いいねを解除"
-                            ownEmojiReaction != null -> "${ownEmojiReaction.eventContent}のリアクションを解除"
-                            hasOwnReaction -> "リアクションを解除"
-                            else -> "いいね"
-                        },
-                        count = reactionCount,
-                        countText = if (reactionCount > 0) {
-                            "$reactionCount${if (expandedEngagement == ExpandedEngagement.Reactions) "⌃" else "⌄"}"
+                        icon = Icons.Default.MailOutline,
+                        contentDescription = "返信",
+                        count = replyCount,
+                        countText = if (replyCount > 0) {
+                            "$replyCount${if (expandedEngagement == ExpandedEngagement.Replies) "⌃" else "⌄"}"
                         } else {
-                            reactionCount.toString()
+                            replyCount.toString()
+                        },
+                        tint = if (expandedEngagement == ExpandedEngagement.Replies) {
+                            MaterialTheme.colorScheme.primary
+                        } else {
+                            MaterialTheme.colorScheme.onSurfaceVariant
+                        },
+                        onClick = onReply,
+                        onCountClick = if (replyCount > 0) {
+                            {
+                                expandedEngagement = expandedEngagement.toggled(ExpandedEngagement.Replies)
+                            }
+                        } else {
+                            onOpenReplies
+                        },
+                    )
+                    EngagementCount(
+                        icon = Icons.Default.Repeat,
+                        contentDescription = "リポスト",
+                        count = repostCount,
+                        countText = if (repostCount > 0) {
+                            "$repostCount${if (expandedEngagement == ExpandedEngagement.Reposts) "⌃" else "⌄"}"
+                        } else {
+                            repostCount.toString()
                         },
                         tint = when {
-                            expandedEngagement == ExpandedEngagement.Reactions -> MaterialTheme.colorScheme.primary
-                            hasOwnReaction -> Color(0xFFE17055)
+                            expandedEngagement == ExpandedEngagement.Reposts -> MaterialTheme.colorScheme.primary
+                            isReposted -> Color(0xFF2BAE66)
                             else -> MaterialTheme.colorScheme.onSurfaceVariant
                         },
-                        onClick = onHeartClick,
-                        onLongClick = if (onEmojiReact != null && !hasOwnReaction) {
-                            { showHeartReactionMenu = true }
-                        } else {
-                            null
-                        },
-                        onCountClick = if (reactionCount > 0) {
+                        onClick = onRepost,
+                        onCountClick = if (repostCount > 0) {
                             {
-                                if (expandedEngagement != ExpandedEngagement.Reactions) {
-                                    onRefreshReactions?.invoke()
-                                }
-                                expandedEngagement = expandedEngagement.toggled(ExpandedEngagement.Reactions)
+                                expandedEngagement = expandedEngagement.toggled(ExpandedEngagement.Reposts)
                             }
                         } else {
-                            onOpenLikes
+                            onOpenReposts
                         },
                     )
-                    QuickReactionMenu(
-                        expanded = showHeartReactionMenu,
-                        selectedReactionKeys = ownEmojiReactionEventIds.keys,
-                        onDismiss = { showHeartReactionMenu = false },
-                        onSelect = { option ->
-                            showHeartReactionMenu = false
-                            if (ownEmojiReactionEventIds.containsKey(option.key)) {
-                                onEmojiUnreact?.invoke(option)
+                    Box {
+                        EngagementCount(
+                            icon = Icons.Default.Favorite,
+                            reaction = ownEmojiReaction.takeUnless { isLiked },
+                            contentDescription = when {
+                                isLiked -> "いいねを解除"
+                                ownEmojiReaction != null -> "${ownEmojiReaction.eventContent}のリアクションを解除"
+                                hasOwnReaction -> "リアクションを解除"
+                                else -> "いいね"
+                            },
+                            count = reactionCount,
+                            countText = if (reactionCount > 0) {
+                                "$reactionCount${if (expandedEngagement == ExpandedEngagement.Reactions) "⌃" else "⌄"}"
                             } else {
-                                onEmojiReact?.invoke(option)
-                            }
+                                reactionCount.toString()
+                            },
+                            tint = when {
+                                expandedEngagement == ExpandedEngagement.Reactions -> MaterialTheme.colorScheme.primary
+                                hasOwnReaction -> Color(0xFFE17055)
+                                else -> MaterialTheme.colorScheme.onSurfaceVariant
+                            },
+                            onClick = onHeartClick,
+                            onLongClick = if (onEmojiReact != null && !hasOwnReaction) {
+                                { showHeartReactionMenu = true }
+                            } else {
+                                null
+                            },
+                            onCountClick = if (reactionCount > 0) {
+                                {
+                                    if (expandedEngagement != ExpandedEngagement.Reactions) {
+                                        onRefreshReactions?.invoke()
+                                    }
+                                    expandedEngagement = expandedEngagement.toggled(ExpandedEngagement.Reactions)
+                                }
+                            } else {
+                                onOpenLikes
+                            },
+                        )
+                        QuickReactionMenu(
+                            expanded = showHeartReactionMenu,
+                            selectedReactionKeys = ownEmojiReactionEventIds.keys,
+                            onDismiss = { showHeartReactionMenu = false },
+                            onSelect = { option ->
+                                showHeartReactionMenu = false
+                                if (ownEmojiReactionEventIds.containsKey(option.key)) {
+                                    onEmojiUnreact?.invoke(option)
+                                } else {
+                                    onEmojiReact?.invoke(option)
+                                }
+                            },
+                            onOpenStandardEmojiPicker = {
+                                showHeartReactionMenu = false
+                                showStandardEmojiPicker = true
+                            },
+                        )
+                    }
+                }
+                AnimatedVisibility(
+                    visible = expandedEngagement != null,
+                    enter = expandVertically() + fadeIn(),
+                    exit = shrinkVertically() + fadeOut(),
+                ) {
+                    EngagementDetailsPanel(
+                        expanded = expandedEngagement,
+                        replyCount = replyCount,
+                        replies = replies,
+                        reactionCount = reactionCount,
+                        likeReactionCount = likeReactionCount,
+                        customReactions = customReactions,
+                        unicodeReactions = unicodeReactions,
+                        reactionEvents = reactionEvents,
+                        repostCount = repostCount,
+                        repostPubkeys = repostPubkeys,
+                        quoteRepostEvents = quoteRepostEvents,
+                        profiles = profiles,
+                        onUserClick = onUserClick,
+                        onOpenReplies = onOpenReplies,
+                        onOpenLikes = onOpenLikes,
+                        onOpenReposts = onOpenReposts,
+                        onOpenNote = onNoteClick,
+                        onImageClick = { urls, index ->
+                            expandedImageState = ExpandedImageState(urls, index)
                         },
-                        onOpenStandardEmojiPicker = {
-                            showHeartReactionMenu = false
-                            showStandardEmojiPicker = true
-                        },
+                        showImagePreview = showImagePreviews,
                     )
                 }
-            }
-            AnimatedVisibility(
-                visible = expandedEngagement != null,
-                enter = expandVertically() + fadeIn(),
-                exit = shrinkVertically() + fadeOut(),
-            ) {
-                EngagementDetailsPanel(
-                    expanded = expandedEngagement,
-                    replyCount = replyCount,
-                    replies = replies,
-                    reactionCount = reactionCount,
-                    likeReactionCount = likeReactionCount,
-                    customReactions = customReactions,
-                    unicodeReactions = unicodeReactions,
-                    reactionEvents = reactionEvents,
-                    repostCount = repostCount,
-                    repostPubkeys = repostPubkeys,
-                    quoteRepostEvents = quoteRepostEvents,
-                    profiles = profiles,
-                    onUserClick = onUserClick,
-                    onOpenReplies = onOpenReplies,
-                    onOpenLikes = onOpenLikes,
-                    onOpenReposts = onOpenReposts,
-                    onOpenNote = onNoteClick,
-                    onImageClick = { urls, index ->
-                        expandedImageState = ExpandedImageState(urls, index)
-                    },
-                    showImagePreview = showImagePreviews,
-                )
             }
         }
     }

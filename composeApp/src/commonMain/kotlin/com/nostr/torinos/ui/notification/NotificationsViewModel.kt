@@ -207,7 +207,7 @@ class NotificationsViewModel(
         NostrRepository.subscribe(
             activitySubId,
             listOf(
-                NostrFilter(kinds = listOf(1, 6, 7), pTags = listOf(ownPubkey), limit = limit),
+                NostrFilter(kinds = listOf(1, 6, 16, 7), pTags = listOf(ownPubkey), limit = limit),
                 NostrFilter(
                     kinds = listOf(COMMENT_EVENT_KIND),
                     rootKindTags = listOf("1"),
@@ -237,7 +237,7 @@ class NotificationsViewModel(
         }
         val type = when (event.kind) {
             1, COMMENT_EVENT_KIND -> NotificationType.Reply
-            6 -> NotificationType.Repost
+            6, 16 -> NotificationType.Repost
             7 -> NotificationType.Like
             else -> return
         }
