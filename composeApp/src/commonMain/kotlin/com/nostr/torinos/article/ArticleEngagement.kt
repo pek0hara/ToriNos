@@ -100,6 +100,34 @@ internal fun summarizeArticleReactions(
     return summary
 }
 
+/** 記事にリアクションした1件。[option]がnullならいいね。 */
+data class ArticleReactor(
+    val eventId: String,
+    val pubkey: String,
+    val option: ReactionOption?,
+    val createdAt: Long,
+)
+
+/** 誰がどのリアクションを付けたかの一覧。[summarizeArticleReactions]と同じ条件で、新しい順に並べる。 */
+internal fun articleReactors(
+    events: Collection<NostrEvent>,
+    address: String,
+    articleEventIds: Set<String>,
+    isMuted: (String) -> Boolean = { false },
+): List<ArticleReactor> = events
+    .asSequence()
+    .distinctBy { it.id }
+    .filter { it.isReactionToArticle(address, articleEventIds) }
+    .filterNot { isMuted(it.pubkey) }
+    .mapNotNull { event ->
+        when {
+            event.isLikeReaction() -> ArticleReactor(event.id, event.pubkey, null, event.createdAt)
+            else -> event.toReactionOption()?.let { ArticleReactor(event.id, event.pubkey, it, event.createdAt) }
+        }
+    }
+    .sortedWith(compareByDescending<ArticleReactor> { it.createdAt }.thenBy { it.eventId })
+    .toList()
+
 /** 投稿と同じ楽観更新（[com.nostr.torinos.engagement.EngagementReducer]）を使うための変換。 */
 internal fun ArticleReactionSummary.toEngagementState(): NoteEngagementState = NoteEngagementState(
     reactionCount = totalCount,

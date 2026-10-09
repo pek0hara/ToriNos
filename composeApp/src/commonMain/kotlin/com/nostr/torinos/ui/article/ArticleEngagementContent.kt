@@ -4,6 +4,9 @@ import com.nostr.torinos.ui.components.recordReactionUse
 import com.nostr.torinos.account.LocalAccountSession
 import androidx.compose.material3.Icon
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.Favorite
+import com.nostr.torinos.article.ArticleReactor
+import com.nostr.torinos.article.reactionOptionForKey
 import androidx.compose.material.icons.Icons
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.Spacer
@@ -89,6 +92,20 @@ internal fun LazyListScope.articleEngagementItems(
                     actions = reactionActions,
                 )
             }
+            item(key = "engagement-reactors", contentType = "reactors") {
+                val ownPubkey = LocalAccountSession.current?.pubkey
+                val reactors = remember(engagement.reactors, engagement.reactions, ownPubkey) {
+                    withOwnReactions(engagement.reactors, engagement.reactions, ownPubkey)
+                }
+                if (reactors.isNotEmpty()) {
+                    ArticleReactorList(
+                        reactors = reactors,
+                        profiles = engagement.profiles,
+                        onUserClick = onUserClick,
+                    )
+                    HorizontalDivider(modifier = Modifier.padding(horizontal = 20.dp))
+                }
+            }
             item(key = "engagement-comments-header", contentType = "section-header") {
                 Row(
                     modifier = Modifier.fillMaxWidth().padding(start = 20.dp, end = 8.dp),
@@ -123,7 +140,7 @@ internal fun LazyListScope.articleEngagementItems(
                 ) { comment ->
                     ArticleCommentItem(
                         event = comment,
-                        profile = engagement.commentProfiles[comment.pubkey],
+                        profile = engagement.profiles[comment.pubkey],
                         onUserClick = onUserClick,
                     )
                     HorizontalDivider(modifier = Modifier.padding(horizontal = 20.dp))
@@ -194,6 +211,94 @@ private fun ArticleReactions(
         )
     }
 }
+
+/**
+ * 取得した一覧の自分の分を、件数と同じ楽観表示（送信中・取り消し中）に合わせる。
+ * 一覧は取得時点の事実なので、送信直後の自分のリアクションはまだ入っておらず、取り消し後も残っている。
+ */
+internal fun withOwnReactions(
+    reactors: List<ArticleReactor>,
+    reactions: NoteEngagementState,
+    ownPubkey: String?,
+    nowSeconds: Long = kotlin.time.Clock.System.now().epochSeconds,
+): List<ArticleReactor> {
+    if (ownPubkey == null) return reactors
+    val fetchedOwn = reactors.filter { it.pubkey == ownPubkey }.associateBy { it.eventId }
+    val liked = reactions.ownLikeEventId
+        ?: reactions.pendingOperations[EngagementSlot.Reaction]?.takeIf { it.request == EngagementRequest.AddLike }?.id?.value
+    val own = buildList {
+        liked?.let { id -> add(fetchedOwn[id] ?: ArticleReactor(id, ownPubkey, null, nowSeconds)) }
+        reactions.displayOwnEmojiReactionEventIds.forEach { (key, id) ->
+            val option = reactionOptionForKey(key) ?: return@forEach
+            add(fetchedOwn[id] ?: ArticleReactor(id, ownPubkey, option, nowSeconds))
+        }
+    }
+    return (reactors.filterNot { it.pubkey == ownPubkey } + own)
+        .sortedWith(compareByDescending<ArticleReactor> { it.createdAt }.thenBy { it.eventId })
+}
+
+/** 誰がどのリアクションを付けたか。多いときは先頭だけ出し、残りは「すべて表示」で開く。 */
+@Composable
+private fun ArticleReactorList(
+    reactors: List<ArticleReactor>,
+    profiles: Map<String, NostrProfile>,
+    onUserClick: (pubkey: String) -> Unit,
+) {
+    var showAll by remember { mutableStateOf(false) }
+    val shown = if (showAll) reactors else reactors.take(REACTORS_COLLAPSED_COUNT)
+    Column(modifier = Modifier.fillMaxWidth().padding(bottom = 4.dp)) {
+        Text(
+            text = "リアクションした人 ${reactors.size}",
+            style = MaterialTheme.typography.titleSmall,
+            fontWeight = FontWeight.SemiBold,
+            modifier = Modifier.padding(start = 20.dp, end = 20.dp, top = 4.dp, bottom = 4.dp),
+        )
+        shown.forEach { reactor ->
+            val profile = profiles[reactor.pubkey]
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable { onUserClick(reactor.pubkey) }
+                    .padding(horizontal = 20.dp, vertical = 6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                Box(modifier = Modifier.size(22.dp), contentAlignment = Alignment.Center) {
+                    when (val option = reactor.option) {
+                        null -> Icon(Icons.Default.Favorite, contentDescription = "いいね",
+                            tint = LikeColor, modifier = Modifier.size(18.dp))
+                        is ReactionOption.Custom -> NetworkImage(url = option.imageUrl, contentDescription = ":${option.shortcode}:",
+                            contentScale = ContentScale.Fit, modifier = Modifier.size(20.dp))
+                        is ReactionOption.Unicode -> Text(option.value, style = MaterialTheme.typography.bodyLarge, maxLines = 1)
+                    }
+                }
+                AvatarCircle(pubkey = reactor.pubkey, name = profile?.bestName, pictureUrl = profile?.picture, size = 28)
+                ProfileNameText(
+                    profile = profile,
+                    fallback = reactor.pubkey.take(8) + "…",
+                    style = MaterialTheme.typography.labelLarge,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f),
+                )
+                Text(
+                    text = formatTimestamp(reactor.createdAt, todayTimeOnly = true),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                )
+            }
+        }
+        if (reactors.size > REACTORS_COLLAPSED_COUNT) {
+            TextButton(onClick = { showAll = !showAll }, modifier = Modifier.padding(start = 8.dp)) {
+                Text(if (showAll) "折りたたむ" else "すべて表示（${reactors.size}件）")
+            }
+        }
+    }
+}
+
+private const val REACTORS_COLLAPSED_COUNT = 5
+private val LikeColor = androidx.compose.ui.graphics.Color(0xFFE17055)
 
 @Composable
 private fun ArticleCommentItem(

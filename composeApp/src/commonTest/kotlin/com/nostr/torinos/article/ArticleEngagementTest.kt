@@ -53,6 +53,29 @@ class ArticleEngagementTest {
     }
 
     @Test
+    fun reactorsListWhoReactedWithWhatNewestFirstUsingSummaryRules() {
+        val events = listOf(
+            reaction("like", pubkey = "alice", content = "+").copy(createdAt = 100),
+            reaction("like", pubkey = "alice", content = "+").copy(createdAt = 100),
+            reaction("dislike", pubkey = "bob", content = "-").copy(createdAt = 101),
+            reaction("fire", pubkey = "carol", content = "🔥").copy(createdAt = 103),
+            reaction("party", pubkey = "dave", content = ":party:",
+                extraTags = listOf(listOf("emoji", "party", "https://example.com/party.png"))).copy(createdAt = 102),
+            reaction("muted", pubkey = "muted", content = "+").copy(createdAt = 104),
+            reaction("other", pubkey = "erin", content = "+", target = "unrelated").copy(createdAt = 105),
+        )
+
+        val reactors = articleReactors(events, address, versionIds, isMuted = { it == "muted" })
+
+        assertEquals(listOf("carol", "dave", "alice"), reactors.map { it.pubkey })
+        assertEquals(ReactionOption.Unicode("🔥"), reactors[0].option)
+        assertEquals(ReactionOption.Custom("party", "https://example.com/party.png"), reactors[1].option)
+        assertEquals(null, reactors[2].option)
+        // 件数の集計と同じ数になること。
+        assertEquals(summarizeArticleReactions(events, address, versionIds, null, isMuted = { it == "muted" }).totalCount, reactors.size)
+    }
+
+    @Test
     fun summarizeSkipsMutedAuthors() {
         val summary = summarizeArticleReactions(
             listOf(reaction("r", pubkey = "muted", content = "+")),

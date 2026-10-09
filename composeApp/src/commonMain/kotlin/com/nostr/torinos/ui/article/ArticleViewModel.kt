@@ -20,6 +20,8 @@ import com.nostr.torinos.article.selectArticleEngagementBatches
 import com.nostr.torinos.article.summarizeArticleEngagementBatch
 import com.nostr.torinos.article.articleTopLevelComments
 import com.nostr.torinos.article.summarizeArticleReactions
+import com.nostr.torinos.article.ArticleReactor
+import com.nostr.torinos.article.articleReactors
 import com.nostr.torinos.model.ArticleItem
 import com.nostr.torinos.model.NIP23_ARTICLE_KIND
 import com.nostr.torinos.model.NostrEvent
@@ -503,7 +505,9 @@ sealed interface ArticleEngagementState {
     data class Loaded(
         val reactions: NoteEngagementState,
         val comments: List<NostrEvent>,
-        val commentProfiles: Map<String, NostrProfile>,
+        /** コメントした人とリアクションした人のプロフィール。 */
+        val profiles: Map<String, NostrProfile>,
+        val reactors: List<ArticleReactor> = emptyList(),
         val reactionError: String? = null,
     ) : ArticleEngagementState
 
@@ -737,14 +741,16 @@ class ArticleDetailViewModel(
             fetchEventsProgressively(
                 articleEngagementFilters(article.address, articleEventIds, ARTICLE_ENGAGEMENT_LIMIT, ownPubkey),
             ) { received, isComplete ->
-                val (reactions, comments) = withContext(Dispatchers.Default) {
+                val (reactions, comments, reactors) = withContext(Dispatchers.Default) {
                     val events = withoutDeletedEvents(received, received)
-                    summarizeArticleReactions(events, article.address, articleEventIds, ownPubkey, isMuted)
-                        .toEngagementState() to
-                        articleTopLevelComments(events, article.address, articleEventIds, isMuted)
+                    Triple(
+                        summarizeArticleReactions(events, article.address, articleEventIds, ownPubkey, isMuted).toEngagementState(),
+                        articleTopLevelComments(events, article.address, articleEventIds, isMuted),
+                        articleReactors(events, article.address, articleEventIds, isMuted),
+                    )
                 }
-                applyEngagementSnapshot(reactions, comments)
-                if (isComplete) fetchCommentProfiles()
+                applyEngagementSnapshot(reactions, comments, reactors)
+                if (isComplete) fetchEngagementProfiles()
             }
         } catch (e: CancellationException) {
             throw e
@@ -761,37 +767,46 @@ class ArticleDetailViewModel(
      * 取得途中の集計を反映する。リアクションの送信中は楽観表示を上書きしないよう、
      * コメントだけを更新する。
      */
-    private fun applyEngagementSnapshot(reactions: NoteEngagementState, comments: List<NostrEvent>) {
+    private fun applyEngagementSnapshot(
+        reactions: NoteEngagementState,
+        comments: List<NostrEvent>,
+        reactors: List<ArticleReactor>,
+    ) {
         val current = loadedEngagement()
-        val commenters = comments.map { it.pubkey }.distinct()
-        val profiles = (current?.commentProfiles.orEmpty()) + ProfileRepository.getCached(commenters)
+        val people = (comments.map { it.pubkey } + reactors.map { it.pubkey }).distinct()
+        val profiles = (current?.profiles.orEmpty()) + ProfileRepository.getCached(people)
         _state.value = _state.value.copy(
             engagement = when {
                 current == null -> ArticleEngagementState.Loaded(
                     reactions = reactions,
                     comments = comments,
-                    commentProfiles = profiles,
+                    profiles = profiles,
+                    reactors = reactors,
                 )
+                // 送信中は件数の楽観表示を守る。一覧は取得した事実なのでそのまま更新する。
                 current.reactions.pendingOperations.isNotEmpty() -> current.copy(
                     comments = comments,
-                    commentProfiles = profiles,
+                    profiles = profiles,
+                    reactors = reactors,
                 )
                 else -> current.copy(
                     reactions = reactions,
                     comments = comments,
-                    commentProfiles = profiles,
+                    profiles = profiles,
+                    reactors = reactors,
                 )
             },
         )
         publishListSummary()
     }
 
-    private suspend fun fetchCommentProfiles() {
+    private suspend fun fetchEngagementProfiles() {
         val loaded = loadedEngagement() ?: return
-        val missing = loaded.comments.map { it.pubkey }.distinct().filterNot { it in loaded.commentProfiles }
+        val missing = (loaded.comments.map { it.pubkey } + loaded.reactors.map { it.pubkey })
+            .distinct().filterNot { it in loaded.profiles }
         if (missing.isEmpty()) return
         val fetched = fetchProfiles(missing, relayUrl)
-        updateLoadedEngagement { it.copy(commentProfiles = it.commentProfiles + fetched) }
+        updateLoadedEngagement { it.copy(profiles = it.profiles + fetched) }
     }
 
     private suspend fun fetchAuthorProfile() {
