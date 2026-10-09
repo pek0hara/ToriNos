@@ -1,5 +1,7 @@
 package com.nostr.torinos.ui.feed
 
+import com.nostr.torinos.model.REPORT_EVENT_KIND
+import com.nostr.torinos.model.reportNoteTags
 import com.nostr.torinos.ui.feed.FeedViewModel.UiState
 import com.nostr.torinos.util.appLog
 import com.nostr.torinos.ui.feed.FeedViewModel.InitialFeedState
@@ -513,8 +515,8 @@ internal class FeedController(
         launch {
             signedEventPublisher.publish(
                 detail,
-                1984,
-                listOf(listOf("e", event.id, "", reason), listOf("p", event.pubkey)),
+                REPORT_EVENT_KIND,
+                reportNoteTags(event, reason),
             )
         }
     }
