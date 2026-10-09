@@ -119,9 +119,9 @@ private fun loadImageBytesForUpload(
     val bounds = BitmapFactory.Options().apply {
         inJustDecodeBounds = true
     }
-    context.contentResolver.openInputStream(uri)?.use { input ->
-        BitmapFactory.decodeStream(input, null, bounds)
-    } ?: return null to null
+    // 寸法だけを読むときの decodeStream は常に null を返すので、ストリームを開けたかだけで判定する。
+    val boundsInput = context.contentResolver.openInputStream(uri) ?: return null to null
+    boundsInput.use { input -> BitmapFactory.decodeStream(input, null, bounds) }
 
     if (bounds.outWidth <= 0 || bounds.outHeight <= 0) {
         val raw = context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
