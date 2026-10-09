@@ -11,6 +11,8 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
 import kotlin.time.Clock
 
 /**
@@ -128,17 +130,26 @@ internal class AccountBadgeIssuer(
     suspend fun initialize() = mutex.withLock {
         if (initialized) return@withLock
         ensureActive()
+        var unreadable = false
         readStorage(key)?.let { text ->
-            val restored = json.decodeFromString<BadgeIssuerSavedState>(text)
+            val restored = decodeSavedState(text)
+            unreadable = restored.unreadable
             // A tampered outbox must not make this account sign or display someone else's events.
-            saved = restored.copy(outbox = restored.outbox.filter {
+            saved = BadgeIssuerSavedState(outbox = restored.outbox.filter {
                 it.event.pubkey == pubkey && it.event.kind in setOf(5, 8, 30009) && validate(it.event)
             })
+            // Rewrite without the unreadable parts so the warning is not shown again on every launch.
+            // If that fails the warning simply comes back next time; it must not block initialization.
+            if (unreadable) {
+                try { persist(saved) } catch (e: CancellationException) { throw e } catch (e: Exception) {
+                    com.nostr.torinos.util.logException("AccountBadgeIssuer", e, "Could not rewrite the cleaned badge outbox")
+                }
+            }
             mergeLocked(saved.outbox.map { it.event })
             repository.ingest(saved.outbox.map { it.event })
         }
         initialized = true
-        publishStateLocked()
+        publishStateLocked(if (unreadable) UNREADABLE_OUTBOX_MESSAGE else syncMessage())
     }
 
     fun start() {
@@ -358,6 +369,25 @@ internal class AccountBadgeIssuer(
         return true
     }
 
+    private class RestoredOutbox(val outbox: List<BadgeOutboxEntry>, val unreadable: Boolean)
+
+    /**
+     * Reads the saved outbox entry by entry. A damaged file or entry must not stop every later badge
+     * operation, so unreadable parts are dropped (the next save overwrites them) and reported once.
+     */
+    private fun decodeSavedState(text: String): RestoredOutbox {
+        val entries = try {
+            // An empty outbox is saved without the field (defaults are not encoded).
+            json.parseToJsonElement(text).jsonObject["outbox"]?.jsonArray ?: return RestoredOutbox(emptyList(), false)
+        } catch (e: Exception) {
+            return RestoredOutbox(emptyList(), true)
+        }
+        val outbox = entries.mapNotNull { entry ->
+            try { json.decodeFromJsonElement(BadgeOutboxEntry.serializer(), entry) } catch (e: Exception) { null }
+        }
+        return RestoredOutbox(outbox, unreadable = outbox.size != entries.size)
+    }
+
     private suspend fun persist(next: BadgeIssuerSavedState) {
         ensureActive()
         writeStorage(key, json.encodeToString(BadgeIssuerSavedState.serializer(), next))
@@ -407,5 +437,8 @@ internal class AccountBadgeIssuer(
 
     fun close() { job?.cancel() }
 
-    private companion object { const val MAX_PARTIAL_ATTEMPTS = 5 }
+    private companion object {
+        const val MAX_PARTIAL_ATTEMPTS = 5
+        const val UNREADABLE_OUTBOX_MESSAGE = "保存されていた未送信のバッジ操作の一部を読み込めなかったため破棄しました"
+    }
 }

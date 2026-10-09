@@ -59,6 +59,65 @@ class AccountBadgeIssuerTest {
         assertFalse(f.storage.values.single().contains("supporter"))
     }
 
+    @Test fun unreadableSavedOutboxDoesNotDisableIssuing() = runTest {
+        val f = Fixture(backgroundScope)
+        f.storage["badge_issuer_outbox_v1_$badgeOwner"] = "{broken"
+        val issuer = f.issuer(backgroundScope)
+        issuer.initialize()
+        assertTrue(issuer.state.value.ready)
+        assertNotNull(issuer.state.value.message)
+        assertTrue(issuer.saveDefinition(BadgeDefinitionDraft("supporter", "Supporter")), issuer.state.value.message)
+        runCurrent()
+        assertEquals(30009, f.sent.single().first.kind)
+    }
+
+    @Test fun emptiedOutboxIsNotReportedAsUnreadable() = runTest {
+        // すべて送り終えた送信箱は既定値を省いて保存される。読めない扱いにして毎回警告しない。
+        val f = Fixture(backgroundScope)
+        val first = f.issuer(backgroundScope)
+        assertTrue(first.saveDefinition(BadgeDefinitionDraft("supporter", "Supporter")), first.state.value.message)
+        runCurrent()
+        val next = f.issuer(backgroundScope)
+        next.initialize()
+        assertNull(next.state.value.message)
+    }
+
+    @Test fun failingToRewriteTheCleanedOutboxStillInitializes() = runTest {
+        val f = Fixture(backgroundScope)
+        f.storage["badge_issuer_outbox_v1_$badgeOwner"] = "{broken"
+        var failWrites = true
+        val issuer = AccountBadgeIssuer(badgeOwner, f.signer, backgroundScope, f.repo,
+            relays = { setOf("wss://one.example") }, writableRelays = { f.writable }, ensureActive = {},
+            readStorage = { f.storage[it] },
+            writeStorage = { key, value -> check(!failWrites) { "disk full" }; if (value == null) f.storage.remove(key) else f.storage[key] = value },
+            validate = { true }, now = { 100 }, sendInterval = 0)
+        issuer.initialize()
+        assertTrue(issuer.state.value.ready)
+        failWrites = false
+        assertTrue(issuer.saveDefinition(BadgeDefinitionDraft("supporter", "Supporter")), issuer.state.value.message)
+    }
+
+    @Test fun unreadableOutboxEntryDoesNotDropTheOthers() = runTest {
+        val f = Fixture(backgroundScope)
+        val first = f.issuer(backgroundScope)
+        f.send = { _, _ -> RelayPublishResult(emptySet(), mapOf("wss://one.example" to "offline")) }
+        assertTrue(first.saveDefinition(BadgeDefinitionDraft("supporter", "Supporter")), first.state.value.message)
+        runCurrent()
+        val key = "badge_issuer_outbox_v1_$badgeOwner"
+        val saved = f.storage.getValue(key)
+        f.storage[key] = saved.replace("\"outbox\":[", "\"outbox\":[{\"broken\":true},")
+        val restored = f.issuer(backgroundScope)
+        restored.initialize()
+        assertEquals(listOf(supporter), restored.state.value.issued.map { it.address })
+        assertNotNull(restored.state.value.message)
+        // 読めなかった部分を除いて保存し直すので、次の起動では警告を出さない。
+        assertFalse(f.storage.getValue(key).contains("broken"))
+        val next = f.issuer(backgroundScope)
+        next.initialize()
+        assertFalse(next.state.value.message.orEmpty().contains("読み込めなかった"))
+        assertEquals(listOf(supporter), next.state.value.issued.map { it.address })
+    }
+
     @Test fun newDefinitionCannotTakeAnExistingOrUnconfirmedIdentifier() = runTest {
         val f = Fixture(backgroundScope)
         f.events = listOf(definition())
