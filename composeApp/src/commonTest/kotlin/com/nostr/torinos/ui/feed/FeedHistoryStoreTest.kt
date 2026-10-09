@@ -3,6 +3,7 @@ package com.nostr.torinos.ui.feed
 import com.nostr.torinos.model.NostrEvent
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 class FeedHistoryStoreTest {
@@ -36,6 +37,20 @@ class FeedHistoryStoreTest {
         store.trimLive(setOf("1"))
         assertEquals(setOf("1", "4"), store.snapshot.map { it.event.id }.toSet())
         assertTrue(store.limitReached)
+    }
+
+    @Test
+    fun liveTrimWaitsForSlackThenTrimsBackToSoftLimit() {
+        // 上限に達した後もライブ受信1件ごとに全件を並べ替えないよう、余裕分を超えたときにまとめて削る。
+        val store = FeedHistoryStore(softLimit = 2, liveTrimSlack = 3)
+        store.commit(0, (1..5).map { StoredFeedEvent(event("$it", it.toLong()), setOf("a"), setOf(0)) })
+        assertTrue(store.limitReached)
+        assertFalse(store.needsLiveTrim)
+        store.commit(0, listOf(StoredFeedEvent(event("6", 6), setOf("a"), emptySet())))
+        assertTrue(store.needsLiveTrim)
+        store.trimLive(emptySet())
+        assertEquals(setOf("5", "6"), store.snapshot.map { it.event.id }.toSet())
+        assertFalse(store.needsLiveTrim)
     }
 
     private fun event(id: String, at: Long) = NostrEvent(id, "author", at, 1, emptyList(), "", "")

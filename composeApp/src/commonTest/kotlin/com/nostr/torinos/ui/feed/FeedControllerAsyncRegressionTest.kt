@@ -2195,6 +2195,39 @@ class FeedControllerAsyncRegressionTest {
     }
 
     @Test
+    fun liveEventsAfterLocalLimitAreTrimmedInBatches() = runTest {
+        val gateway = FakeGateway()
+        val store = object : FeedHistoryStore(softLimit = 1_000, liveTrimSlack = 5) {
+            var trims = 0
+            override fun trimLive(protectedIds: Set<String>): List<StoredFeedEvent> {
+                trims++
+                return super.trimLive(protectedIds)
+            }
+        }
+        val controller = FeedController(computeDispatcher = Dispatchers.Unconfined, scope = backgroundScope,
+            subscriptions = gateway, historyStore = store)
+        runCurrent()
+        val page = gateway.feedFetchSessions.single()
+        repeat(1_000) { page.event(event("stored-$it", 1_000L - it)) }
+        page.complete()
+        runCurrent()
+        assertTrue(store.limitReached)
+        val live = gateway.liveSessions.single { !it.id.startsWith("reac-") }
+        repeat(12) { live.event(event("live-$it", 2_000L + it)) }
+        runCurrent()
+        // 1件ごとではなく、余裕分（5件）を超えるたびに上限まで削る。削るのは表示外の古い投稿から。
+        assertEquals(2, store.trims)
+        assertEquals(1_000, store.snapshot.size)
+        assertFalse(store.snapshot.any { it.event.id == "stored-999" })
+        // 表示待ちだったライブの投稿は削られずに表示される。
+        advanceTimeBy(1_000)
+        runCurrent()
+        val shown = controller.state.value.events.map { it.id }
+        assertEquals((11 downTo 0).map { "live-$it" }, shown.take(12))
+        controller.close()
+    }
+
+    @Test
     fun pageReachingLocalLimitIsFullySavedAndStopsNewRequests() = runTest {
         val gateway = FakeGateway()
         val store = FeedHistoryStore(softLimit = 10)

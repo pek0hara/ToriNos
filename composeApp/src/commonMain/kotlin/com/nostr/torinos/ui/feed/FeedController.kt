@@ -999,10 +999,12 @@ internal class FeedController(
             return
         }
         appendFeedEvent(event)
-        if (historyStore.limitReached) {
+        if (historyStore.needsLiveTrim) {
             // 各表示投稿の代表sourceを保護する。多数の同一対象リポストでも保護集合を無制限にしない。
+            // まとめて削るので、届いたばかりで表示待ちの投稿も守る。
             val displayIds = currentFeedState().events.mapTo(mutableSetOf()) { it.id }
-            displayIds += event.id
+            pendingTimelineEvents.values.mapTo(displayIds) { sourceDisplayId(it) }
+            displayIds += sourceDisplayId(event)
             val sources = historyStore.snapshot
             val protected = sources.groupBy { source -> sourceDisplayId(source.event) }
                 .filterKeys { it in displayIds }.values.mapNotNull { group -> group.maxByOrNull { it.event.createdAt }?.event?.id }.toSet()

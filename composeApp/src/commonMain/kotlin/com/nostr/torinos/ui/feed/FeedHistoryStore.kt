@@ -14,14 +14,21 @@ internal sealed interface FeedStoreCommitResult {
     data object Failed : FeedStoreCommitResult
 }
 
-/** セッション内の生イベント。表示用キャッシュの追い出しで取得済みページを失わない。 */
-internal open class FeedHistoryStore(val softLimit: Int = 5_000) {
+/**
+ * セッション内の生イベント。表示用キャッシュの追い出しで取得済みページを失わない。
+ * 上限に達した後のライブ受信は、[liveTrimSlack] 件まで上限を超えて溜めてからまとめて削る。
+ * 1件ごとに削ると、受信のたびに全件の並べ替えと表示の組み直しがメインスレッドで走るため。
+ */
+internal open class FeedHistoryStore(val softLimit: Int = 5_000, val liveTrimSlack: Int = 200) {
     private var generation = 0
     private val events = linkedMapOf<String, StoredFeedEvent>()
     var limitReached = false
         private set
 
     val snapshot: List<StoredFeedEvent> get() = events.values.toList()
+
+    /** ライブ受信で上限を余裕分より多く超えたので、[trimLive] で上限まで削る。 */
+    val needsLiveTrim: Boolean get() = limitReached && events.size > softLimit + liveTrimSlack
 
     fun replaceScope(nextGeneration: Int) {
         generation = nextGeneration
@@ -45,7 +52,7 @@ internal open class FeedHistoryStore(val softLimit: Int = 5_000) {
         return FeedStoreCommitResult.Committed
     }
 
-    fun trimLive(protectedIds: Set<String>): List<StoredFeedEvent> {
+    open fun trimLive(protectedIds: Set<String>): List<StoredFeedEvent> {
         val removed = mutableListOf<StoredFeedEvent>()
         if (!limitReached) return removed
         events.values.sortedBy { it.event.createdAt }.forEach { source ->
