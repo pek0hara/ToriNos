@@ -2,6 +2,7 @@ package com.nostr.torinos.ui.channel
 
 import com.nostr.torinos.model.NostrEvent
 import com.nostr.torinos.network.RelayEntry
+import com.nostr.torinos.network.RelayTarget
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
@@ -45,5 +46,26 @@ class ChannelReplyContextTest {
     fun nonChannelMessagesAreNotReplyTargets() {
         val context = ChannelReplyContextBuilder.build(emptyList(), entries)
         assertNull(ChannelReplyContextBuilder.replyTarget(message.copy(kind = 1), "channel", null, context))
+    }
+
+    @Test
+    fun threadReadsIncludeUserRelaysEvenWhenAnotherChannelRelayIsSelected() {
+        assertEquals(
+            RelayTarget.Explicit(setOf("wss://rec", "wss://seen", "wss://selected", "wss://mine")),
+            channelThreadReadTarget(listOf("wss://rec/"), listOf("wss://Seen/"), "wss://selected", entries),
+        )
+    }
+
+    @Test
+    fun threadWithoutMetadataKeepsAllReadableRelaysAndExcludesDisabledAndWriteOnlyRelays() {
+        val relays = (1..12).map { RelayEntry("wss://read-$it", enabled = true) } + listOf(
+            RelayEntry("wss://disabled", enabled = false),
+            RelayEntry("wss://write-only", enabled = true, read = false),
+        )
+        assertEquals(
+            RelayTarget.Explicit((1..12).map { "wss://read-$it" }.toSet()),
+            channelThreadReadTarget(emptyList(), emptyList(), null, relays),
+        )
+        assertEquals(RelayTarget.AllEnabled, channelThreadReadTarget(emptyList(), emptyList(), null, emptyList()))
     }
 }

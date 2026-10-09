@@ -1,9 +1,14 @@
 package com.nostr.torinos.ui.feed
 
+import com.nostr.torinos.account.AccountSession
+import com.nostr.torinos.account.AccountSessionResources
+import com.nostr.torinos.account.AccountSigner
+import com.nostr.torinos.engagement.EngagementStore
 import com.nostr.torinos.model.COMMENT_EVENT_KIND
 import com.nostr.torinos.model.NostrEvent
 import com.nostr.torinos.model.NostrFilter
 import com.nostr.torinos.model.NostrProfile
+import com.nostr.torinos.network.RelayLimits
 import com.nostr.torinos.network.RelayOutcome
 import com.nostr.torinos.network.RelayTarget
 import com.nostr.torinos.network.RetryDisposition
@@ -13,6 +18,7 @@ import com.nostr.torinos.network.SubscriptionSignal
 import com.nostr.torinos.network.SubscriptionSpec
 import com.nostr.torinos.ui.timeline.NoteDeletion
 import com.nostr.torinos.ui.timeline.NoteDeletionSync
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Runnable
@@ -36,6 +42,9 @@ import kotlin.time.Clock
 
 @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
 class FeedControllerAsyncRegressionTest {
+    @kotlin.test.BeforeTest
+    fun clearSharedEngagementStore() = com.nostr.torinos.engagement.EngagementStore.shared.clearForTest()
+
     @Test
     fun timelineComputationDoesNotOverwriteStateChangedWhileOffMainThread() = runTest {
         val gateway = FakeGateway()
@@ -272,6 +281,11 @@ class FeedControllerAsyncRegressionTest {
         slow.event(event("from-slow-relay", 69), relay = "relay-down")
         slow.complete("relay-down")
         runCurrent()
+        // 応答リレーの短いページは未終端。次の空ページで69秒までの表示境界を確定する。
+        controller.loadMore()
+        runCurrent()
+        gateway.feedFetchSessions.last { it.target == RelayTarget.Single("relay-up") }.complete("relay-up")
+        runCurrent()
         assertTrue(controller.state.value.events.any { it.id == "from-slow-relay" })
         controller.close()
     }
@@ -442,10 +456,13 @@ class FeedControllerAsyncRegressionTest {
         firstPage.complete("relay-up")
         runCurrent()
 
-        assertFalse(controller.state.value.canLoadMore)
+        assertTrue(controller.state.value.canLoadMore)
         controller.loadMore()
         runCurrent()
-        assertEquals(2, gateway.feedFetchSessions.size)
+        gateway.feedFetchSessions.last().complete("relay-up")
+        runCurrent()
+        assertFalse(controller.state.value.canLoadMore)
+        assertEquals(3, gateway.feedFetchSessions.size)
         controller.close()
     }
 
@@ -516,9 +533,16 @@ class FeedControllerAsyncRegressionTest {
         controller.loadMore()
         runCurrent()
         val nextPage = gateway.fetchSessions.last()
-        assertEquals(1, nextPage.filters.size)
-        assertEquals(listOf(1), nextPage.filters.single().kinds)
-        assertEquals(71L, nextPage.filters.single().until)
+        // コメントの短い非空ページも継続する。投稿の境界をコメントに流用しない。
+        assertEquals(listOf(COMMENT_EVENT_KIND), nextPage.filters.single().kinds)
+        assertEquals(90L, nextPage.filters.single().until)
+        nextPage.complete("relay")
+        runCurrent()
+        controller.loadMore()
+        runCurrent()
+        val postPage = gateway.fetchSessions.last()
+        assertEquals(listOf(1), postPage.filters.single().kinds)
+        assertEquals(71L, postPage.filters.single().until)
         controller.close()
     }
 
@@ -762,6 +786,59 @@ class FeedControllerAsyncRegressionTest {
     }
 
     @Test
+    fun reactionReceivedBeforeHistoryPageCommitSurvivesTimelineRebuild() = runTest {
+        val gateway = FakeGateway(initialRelayUrls = setOf("relay-a", "relay-b"))
+        val controller = FeedController(computeDispatcher = Dispatchers.Unconfined, scope = backgroundScope, subscriptions = gateway)
+        runCurrent()
+        val relayAHistory = gateway.feedFetchSessions.single { it.target == RelayTarget.Single("relay-a") }
+        val relayBHistory = gateway.feedFetchSessions.single { it.target == RelayTarget.Single("relay-b") }
+
+        // relay-a はまだ EOSE 前。この時点で付随情報の取得が始まり、先にリアクションが届く。
+        relayAHistory.event(event("note", 10), relay = "relay-a")
+        runCurrent()
+        val reaction = event(id = "reaction", createdAt = 20, kind = 7, tags = listOf(listOf("e", "note")))
+        gateway.engagementFetchSessions.forEach { it.event(reaction) }
+        runCurrent()
+        advanceTimeBy(151)
+        runCurrent()
+
+        // 先に relay-b のページが確定し、一覧の組み直しが走る。
+        relayBHistory.complete("relay-b")
+        runCurrent()
+        advanceTimeBy(1_000)
+        runCurrent()
+
+        relayAHistory.complete("relay-a")
+        runCurrent()
+        advanceTimeBy(1_000)
+        runCurrent()
+
+        assertEquals(listOf("note"), controller.state.value.events.map { it.id })
+        assertEquals(1, controller.state.value.reactionCounts["note"])
+        controller.close()
+    }
+
+    @Test
+    fun hiddenReplyInHistoryPageFetchesOnlyItsParentEngagement() = runTest {
+        val gateway = FakeGateway()
+        val controller = FeedController(computeDispatcher = Dispatchers.Unconfined, scope = backgroundScope, subscriptions = gateway)
+        runCurrent()
+        val history = gateway.feedFetchSessions.single()
+
+        history.event(event("reply", 10, tags = listOf(listOf("e", "parent", "", "reply"))))
+        runCurrent()
+        assertTrue(gateway.engagementFetchSessions.isEmpty(), "表示しない返信の付随情報を取りに行っている")
+
+        history.complete()
+        runCurrent()
+        advanceTimeBy(1_000)
+        runCurrent()
+        val requested = gateway.engagementFetchSessions.flatMap { session -> session.filters.mapNotNull { it.targetIds() } }.flatten().toSet()
+        assertEquals(setOf("parent"), requested)
+        controller.close()
+    }
+
+    @Test
     fun parallelRelayHistoryDoesNotDoubleCountTheSameReaction() = runTest {
         val gateway = FakeGateway(initialRelayUrls = setOf("relay-a", "relay-b"))
         val controller = FeedController(computeDispatcher = Dispatchers.Unconfined, scope = backgroundScope, subscriptions = gateway)
@@ -847,6 +924,9 @@ class FeedControllerAsyncRegressionTest {
         assertTrue(secondHistory.filters.all { it.since == null && it.until != null })
         assertTrue(secondHistory.filters.all { it.targetIds() == listOf("second") })
 
+        // ライブ購読の対象の更新はまとめてから行う。since は重複期間を持つので、遅れても取りこぼさない。
+        advanceTimeBy(500)
+        runCurrent()
         val engagementLive = gateway.engagementLiveSessions.single()
         assertTrue(engagementLive.filters.all { it.since != null && it.until == null })
         assertTrue(engagementLive.filters.all { it.targetIds() == listOf("first", "second") })
@@ -1382,6 +1462,552 @@ class FeedControllerAsyncRegressionTest {
     }
 
     @Test
+    fun eventsReceivedByAnotherScreenAreNotCountedAgainWhenFetchedLater() = runTest {
+        val gateway = FakeGateway()
+        val store = EngagementStore()
+        val controller = controllerTrackingTarget(gateway, store = store)
+
+        // 詳細画面で数えた2件が先に届き、その後で同じ2件と新しい1件をリレーから受け取る。
+        observeElsewhere(store, reaction("r1", "🤙"), reaction("r2", "+"))
+        assertEquals(2, controller.state.value.reactionCounts["target"])
+        deliverEngagement(gateway, reaction("r1", "🤙"), reaction("r2", "+"), reaction("r3", "🤙"))
+
+        val state = controller.state.value
+        assertEquals(3, state.reactionCounts["target"])
+        assertEquals(1, state.likeReactionCounts["target"])
+        assertEquals(2, state.unicodeReactions["target"].orEmpty().single { it.content == "🤙" }.count)
+        controller.close()
+    }
+
+    @Test
+    fun eventsReceivedByAnotherScreenDoNotDropEventsOnlyTheFeedReceived() = runTest {
+        val gateway = FakeGateway()
+        val store = EngagementStore()
+        val controller = controllerTrackingTarget(gateway, store = store)
+        deliverEngagement(gateway, reaction("feed-only", "🤙"), reaction("r1", "🤙"))
+
+        observeElsewhere(store, reaction("r1", "🤙"), reaction("r2", "+"))
+
+        assertEquals(3, controller.state.value.reactionCounts["target"])
+        controller.close()
+    }
+
+    @Test
+    fun ownReactionArrivingLaterIsCountedOnce() = runTest {
+        val gateway = FakeGateway()
+        val store = EngagementStore()
+        val controller = controllerTrackingTarget(gateway, ownSession(), store)
+
+        // 自分のリアクションは、送信が終わってリレーから届いた時点で数える。
+        observeElsewhere(store, reaction("r1", "🤙"))
+        assertEquals(1, controller.state.value.reactionCounts["target"])
+        deliverEngagement(gateway, reaction("r1", "🤙"), reaction("mine", "+", pubkey = OWN_PUBKEY))
+
+        val state = controller.state.value
+        assertEquals(2, state.reactionCounts["target"])
+        assertEquals("mine", state.likedReactions["target"])
+        controller.close()
+    }
+
+    @Test
+    fun repliesRepostsAndQuotesFromAnotherScreenMergeById() = runTest {
+        val gateway = FakeGateway()
+        val store = EngagementStore()
+        val controller = controllerTrackingTarget(gateway, store = store)
+        val feedReply = event("feed-reply", 100, tags = listOf(listOf("e", "target", "", "root")))
+        val threadReply = event("thread-reply", 101, tags = listOf(listOf("e", "target", "", "root")))
+        val feedRepost = event("feed-repost", 102, kind = 6, tags = listOf(listOf("e", "target")))
+        val threadRepost = event("thread-repost", 103, kind = 6, tags = listOf(listOf("e", "target")))
+        val threadQuote = event("thread-quote", 104, tags = listOf(listOf("q", "target")))
+        deliverEngagement(gateway, feedReply, feedRepost)
+
+        observeElsewhere(store, threadReply, threadRepost, threadQuote)
+        assertEquals(2, controller.state.value.replyCounts["target"])
+        assertEquals(3, controller.state.value.repostCounts["target"])
+        deliverEngagement(gateway, threadReply, threadRepost, threadQuote)
+
+        val state = controller.state.value
+        assertEquals(2, state.replyCounts["target"])
+        assertEquals(setOf("feed-reply", "thread-reply"), state.replies["target"].orEmpty().map { it.id }.toSet())
+        assertEquals(3, state.repostCounts["target"])
+        controller.close()
+    }
+
+    @Test
+    fun ownRepostDeletionIsSubtractedFromFeed() = runTest {
+        val gateway = FakeGateway()
+        val store = EngagementStore()
+        val controller = controllerTrackingTarget(gateway, ownSession(), store)
+        val ownRepost = event("my-repost", 100, kind = 6, tags = listOf(listOf("e", "target")), pubkey = OWN_PUBKEY)
+        deliverEngagement(gateway, ownRepost, event("other-repost", 101, kind = 6, tags = listOf(listOf("e", "target"))))
+        assertEquals("my-repost", controller.state.value.repostedEvents["target"])
+
+        // 詳細画面などでの取り消しは kind 5 としてストアに届く。削除前のリレーから再送されても数えない。
+        store.observe(event("del", 300, kind = 5, tags = listOf(listOf("e", "my-repost")), pubkey = OWN_PUBKEY), "relay")
+        deliverEngagement(gateway, ownRepost)
+
+        val state = controller.state.value
+        assertEquals(1, state.repostCounts["target"])
+        assertEquals(null, state.repostedEvents["target"])
+        controller.close()
+    }
+
+    @Test
+    fun reactionRedeliveredAfterSeenIdsRollOverIsNotCountedAgain() = runTest {
+        val gateway = FakeGateway()
+        val controller = controllerTrackingTarget(gateway)
+        deliverEngagement(gateway, reaction("first", "🤙"))
+        gateway.engagementFetchSessions.single().complete("relay")
+        runCurrent()
+        val live = gateway.engagementLiveSessions.single()
+        // 重複排除用の既読IDは上限で古いものから捨てられる。上限を超える件数を受け取った後でも、
+        // 数え済みのイベントが再送されたら重ねて数えてはならない。
+        repeat(2_000) { live.event(reaction("other-$it", "+")) }
+        runCurrent()
+
+        live.event(reaction("first", "🤙"))
+        runCurrent()
+        advanceTimeBy(151)
+        runCurrent()
+
+        assertEquals(2_001, controller.state.value.reactionCounts["target"])
+        controller.close()
+    }
+
+    @Test
+    fun engagementHistoryFetchesOlderPageWhenAPartitionMayBeTruncated() = runTest {
+        val gateway = FakeGateway()
+        val controller = controllerTrackingTarget(gateway)
+        val firstPage = gateway.engagementFetchSessions.single()
+
+        // リレーが件数上限で打ち切った可能性がある件数が届いたら、最古の時刻から続きを取りにいく。
+        repeat(ENGAGEMENT_PAGE_THRESHOLD) { index ->
+            firstPage.event(reaction("r$index", "+", createdAt = 1_000L + index))
+        }
+        firstPage.complete("relay")
+        runCurrent()
+
+        val secondPage = gateway.engagementFetchSessions.last()
+        assertTrue(secondPage !== firstPage)
+        assertEquals(listOf(listOf(7)), secondPage.filters.map { it.kinds })
+        assertEquals(1_000L, secondPage.filters.single().until)
+        assertEquals(listOf("target"), secondPage.filters.single().eTags)
+
+        secondPage.event(reaction("r0", "+", createdAt = 1_000L))
+        secondPage.event(reaction("older", "+", createdAt = 900L))
+        secondPage.complete("relay")
+        runCurrent()
+        advanceTimeBy(151)
+        runCurrent()
+
+        assertEquals(ENGAGEMENT_PAGE_THRESHOLD + 1, controller.state.value.reactionCounts["target"])
+        assertEquals(2, gateway.engagementFetchSessions.size)
+        controller.close()
+    }
+
+    @Test
+    fun engagementHistoryPagingMovesPastASecondFilledWithEvents() = runTest {
+        val gateway = FakeGateway()
+        val controller = controllerTrackingTarget(gateway)
+        val firstPage = gateway.engagementFetchSessions.single()
+
+        repeat(ENGAGEMENT_PAGE_THRESHOLD) { index -> firstPage.event(reaction("r$index", "+", createdAt = 500L)) }
+        firstPage.complete("relay")
+        runCurrent()
+        val secondPage = gateway.engagementFetchSessions.last()
+        assertEquals(500L, secondPage.filters.single().until)
+
+        // 同じ秒の続きでまた上限まで埋まったら、同じ until を繰り返さず1秒前へ進める。
+        repeat(ENGAGEMENT_PAGE_THRESHOLD) { index -> secondPage.event(reaction("s$index", "+", createdAt = 500L)) }
+        secondPage.complete("relay")
+        runCurrent()
+
+        assertEquals(499L, gateway.engagementFetchSessions.last().filters.single().until)
+        controller.close()
+    }
+
+    @Test
+    fun engagementHistoryStopsPagingWhenRelayIgnoresUntil() = runTest {
+        val gateway = FakeGateway()
+        val controller = controllerTrackingTarget(gateway)
+        val firstPage = gateway.engagementFetchSessions.single()
+        val newest = List(ENGAGEMENT_PAGE_THRESHOLD) { index -> reaction("r$index", "+", createdAt = 1_000L + index) }
+        newest.forEach(firstPage::event)
+        firstPage.complete("relay")
+        runCurrent()
+
+        // until より新しいものが返るなら、そのリレーは until を無視している。続きを要求しても同じ結果になる。
+        val secondPage = gateway.engagementFetchSessions.last()
+        newest.forEach(secondPage::event)
+        secondPage.complete("relay")
+        runCurrent()
+        advanceTimeBy(151)
+        runCurrent()
+
+        assertEquals(2, gateway.engagementFetchSessions.size)
+        assertEquals(ENGAGEMENT_PAGE_THRESHOLD, controller.state.value.reactionCounts["target"])
+        controller.close()
+    }
+
+    @Test
+    fun engagementLiveSubscriptionIsNotReopenedWhilePostsArriveOneByOne() = runTest {
+        val gateway = FakeGateway()
+        val gate = CompletableDeferred<Unit>().also { gateway.engagementLiveOpenGate = it }
+        val controller = FeedController(computeDispatcher = Dispatchers.Unconfined, scope = backgroundScope, subscriptions = gateway)
+        runCurrent()
+        gateway.completeInitialFeedHistory()
+        runCurrent()
+        val feedLive = gateway.liveSessions.single()
+
+        // 起動直後に投稿が1件ずつ届く。開きかけの購読を取り消して開き直してはならない。
+        repeat(5) { index ->
+            feedLive.event(event("post-$index", index.toLong()))
+            runCurrent()
+            advanceTimeBy(10)
+            runCurrent()
+        }
+        gate.complete(Unit)
+        advanceTimeBy(2_000)
+        runCurrent()
+
+        val liveOpens = gateway.openAttempts.filter { it.id.startsWith("reac-") && it.behavior is SubscriptionBehavior.Live }
+        assertEquals(1, liveOpens.size)
+        val live = gateway.engagementLiveSessions.single()
+        assertFalse(live.closed)
+        assertEquals(
+            (0 until 5).map { "post-$it" }.toSet(),
+            (live.filterUpdates.lastOrNull() ?: live.filters).flatMap { it.targetIds().orEmpty() }.toSet(),
+        )
+        controller.close()
+    }
+
+    @Test
+    fun engagementLiveUpdatesAreCoalesced() = runTest {
+        val gateway = FakeGateway()
+        val controller = controllerTrackingTarget(gateway)
+        val live = gateway.engagementLiveSessions.single()
+        val feedLive = gateway.liveSessions.first { it.id.startsWith("feed-") }
+
+        // 投稿の到着と履歴取得の完了が交互に続いても、ライブ購読の更新はまとめて1回にする。
+        // 履歴取得の完了ごとに監視対象が変わり、そのたびに更新すると同じ購読へのREQが続く。
+        repeat(5) { index ->
+            feedLive.event(event("new-$index", 10L + index))
+            runCurrent()
+            gateway.engagementFetchSessions.lastOrNull { !it.closed }?.let { history ->
+                history.complete("relay")
+                history.closed = true
+            }
+            runCurrent()
+            advanceTimeBy(50)
+            runCurrent()
+        }
+        advanceTimeBy(2_000)
+        runCurrent()
+
+        assertEquals(1, live.filterUpdates.size)
+        assertEquals(
+            setOf("target") + (0 until 5).map { "new-$it" },
+            live.filterUpdates.single().flatMap { it.targetIds().orEmpty() }.toSet(),
+        )
+        controller.close()
+    }
+
+    @Test
+    fun countsComeFromTheSharedStoreIncludingEventsReceivedByOtherScreens() = runTest {
+        val gateway = FakeGateway()
+        val store = EngagementStore()
+        val controller = controllerTrackingTarget(gateway, store = store)
+
+        // 詳細画面や通知など、フィード以外の購読で受信したイベントもストアに入る。フィードはそれを表示する。
+        store.observe(reaction("from-thread", "🤙"), "relay")
+        runCurrent()
+        advanceTimeBy(151)
+        runCurrent()
+
+        assertEquals(1, controller.state.value.reactionCounts["target"])
+        assertEquals(listOf("from-thread"), controller.state.value.reactionEvents["target"].orEmpty().map { it.id })
+        controller.close()
+    }
+
+    @Test
+    fun countsOfTrackedPostOutsideTheVisibleListSurviveTimelineRebuild() = runTest {
+        val gateway = FakeGateway()
+        val store = EngagementStore()
+        val controller = FeedController(
+            computeDispatcher = Dispatchers.Unconfined,
+            scope = backgroundScope,
+            subscriptions = gateway,
+            engagementStore = store,
+        )
+        runCurrent()
+        gateway.completeInitialFeedHistory()
+        runCurrent()
+        val feedLive = gateway.liveSessions.single()
+        // 一覧に出さない返信が届くと、返信先（一覧外）の付随情報を追跡する。
+        feedLive.event(event("reply", 5, tags = listOf(listOf("e", "parent", "", "root"))))
+        runCurrent()
+        advanceTimeBy(500)
+        runCurrent()
+        deliverEngagement(gateway, event("r1", 6, kind = 7, tags = listOf(listOf("e", "parent"))))
+        assertEquals(1, controller.state.value.reactionCounts["parent"])
+
+        // 新しい投稿で一覧を組み直しても、追跡中の投稿の件数は捨てない。
+        feedLive.event(event("post", 10))
+        runCurrent()
+        advanceTimeBy(1_000)
+        runCurrent()
+        gateway.engagementFetchSessions.last().event(event("r1", 6, kind = 7, tags = listOf(listOf("e", "parent"))))
+        runCurrent()
+        advanceTimeBy(151)
+        runCurrent()
+
+        assertEquals(1, controller.state.value.reactionCounts["parent"])
+        controller.close()
+    }
+
+    @Test
+    fun deletionReceivedFromAnyScreenRemovesOwnLike() = runTest {
+        val gateway = FakeGateway()
+        val store = EngagementStore()
+        val controller = controllerTrackingTarget(gateway, ownSession(), store)
+        deliverEngagement(gateway, reaction("mine", "+", pubkey = OWN_PUBKEY), reaction("r1", "🤙"))
+        assertEquals("mine", controller.state.value.likedReactions["target"])
+
+        store.observe(event("del", 300, kind = 5, tags = listOf(listOf("e", "mine")), pubkey = OWN_PUBKEY), "relay")
+        runCurrent()
+        advanceTimeBy(151)
+        runCurrent()
+        deliverEngagement(gateway, reaction("mine", "+", pubkey = OWN_PUBKEY))
+
+        assertEquals(1, controller.state.value.reactionCounts["target"])
+        assertEquals(0, controller.state.value.likeReactionCounts["target"] ?: 0)
+        assertEquals(null, controller.state.value.likedReactions["target"])
+        controller.close()
+    }
+
+    @Test
+    fun engagementHistoryCountsOnlyEventsFromTheQueriedRelayWhenDecidingToPage() = runTest {
+        val gateway = FakeGateway()
+        val controller = controllerTrackingTarget(gateway)
+        val firstPage = gateway.engagementFetchSessions.single()
+
+        // キャッシュから再生されたものはリレーが返した件数ではない。打ち切りの判定に数えない。
+        repeat(ENGAGEMENT_PAGE_THRESHOLD) { index ->
+            firstPage.event(reaction("cached-$index", "+", createdAt = 1_000L + index), relay = "local://reaction-cache")
+        }
+        firstPage.event(reaction("fresh", "+", createdAt = 2_000L), relay = "relay")
+        firstPage.complete("relay")
+        runCurrent()
+
+        assertEquals(1, gateway.engagementFetchSessions.size)
+        controller.close()
+    }
+
+    @Test
+    fun engagementHistoryAsksRelayDirectlyWithoutCacheReplayOrDeduplication() = runTest {
+        val gateway = FakeGateway()
+        val controller = controllerTrackingTarget(gateway)
+
+        // リレーが返した件数で打ち切りを判定するため、同じイベントでもリレーからの分を受け取る。
+        val spec = gateway.openAttempts.last { "-history-" in it.id }
+        assertFalse(spec.deduplicateEvents)
+        assertFalse(spec.replayCachedEvents)
+        controller.close()
+    }
+
+    @Test
+    fun engagementHistoryPagingUsesTheRelaysAdvertisedMaxLimit() = runTest {
+        RelayLimits.clearForTest()
+        RelayLimits.recordMaxLimit("relay", 200)
+        val gateway = FakeGateway()
+        val controller = controllerTrackingTarget(gateway)
+        val firstPage = gateway.engagementFetchSessions.single()
+
+        // max_limit が 200 と分かっていれば、120 件は打ち切りではない。
+        repeat(120) { index -> firstPage.event(reaction("r$index", "+", createdAt = 1_000L + index)) }
+        firstPage.complete("relay")
+        runCurrent()
+        assertEquals(1, gateway.engagementFetchSessions.size)
+        assertEquals(listOf(200), firstPage.filters.map { it.limit }.distinct())
+
+        RelayLimits.clearForTest()
+        controller.close()
+    }
+
+    @Test
+    fun screensTrackingTheSamePostShareOneHistoryFetch() = runTest {
+        val gateway = FakeGateway()
+        val fetcher = sharedFetcher(gateway)
+        val feed = Any()
+        val thread = Any()
+        fetcher.register(feed, sortTimeOf = { null }, onEvent = {})
+        fetcher.register(thread, sortTimeOf = { Long.MAX_VALUE }, onEvent = {})
+        fetcher.activate(feed)
+        fetcher.activate(thread)
+
+        fetcher.track(feed, "target")
+        fetcher.track(thread, "target")
+        runCurrent()
+        advanceTimeBy(600)
+        runCurrent()
+
+        // フィードとポスト詳細が同じ投稿を表示しても、履歴は1回だけ取りにいく。
+        assertEquals(1, gateway.engagementFetchSessions.size)
+        assertEquals(1, gateway.engagementLiveSessions.size)
+        fetcher.release(feed)
+        fetcher.release(thread)
+    }
+
+    @Test
+    fun postStaysTrackedWhileAnotherScreenStillShowsIt() = runTest {
+        val gateway = FakeGateway()
+        val fetcher = sharedFetcher(gateway)
+        val feed = Any()
+        val thread = Any()
+        fetcher.register(feed, sortTimeOf = { null }, onEvent = {})
+        fetcher.register(thread, sortTimeOf = { null }, onEvent = {})
+        fetcher.track(feed, "target")
+        fetcher.track(thread, "target")
+
+        fetcher.forget(feed, "target")
+        assertTrue(fetcher.isTracked("target"))
+        assertFalse(fetcher.isTrackedBy(feed, "target"))
+
+        fetcher.forget(thread, "target")
+        assertFalse(fetcher.isTracked("target"))
+    }
+
+    @Test
+    fun liveSubscriptionStaysOpenUntilTheLastScreenStops() = runTest {
+        val gateway = FakeGateway()
+        val fetcher = sharedFetcher(gateway)
+        val feed = Any()
+        val thread = Any()
+        fetcher.register(feed, sortTimeOf = { null }, onEvent = {})
+        fetcher.register(thread, sortTimeOf = { null }, onEvent = {})
+        fetcher.activate(feed)
+        fetcher.activate(thread)
+        fetcher.track(feed, "target")
+        runCurrent()
+        advanceTimeBy(600)
+        runCurrent()
+        val live = gateway.engagementLiveSessions.single()
+
+        fetcher.deactivate(thread)
+        runCurrent()
+        assertFalse(live.closed)
+
+        fetcher.deactivate(feed)
+        runCurrent()
+        assertTrue(live.closed)
+    }
+
+    @Test
+    fun eventsFromSharedFetchGoToTheStoreAndEveryActiveScreen() = runTest {
+        val gateway = FakeGateway()
+        val store = EngagementStore()
+        val fetcher = sharedFetcher(gateway, store)
+        val received = mutableListOf<String>()
+        val feed = Any()
+        fetcher.register(feed, sortTimeOf = { null }, onEvent = { received += it.id })
+        fetcher.activate(feed)
+        store.retain(feed, setOf("target"))
+        fetcher.track(feed, "target")
+        runCurrent()
+        advanceTimeBy(600)
+        runCurrent()
+
+        gateway.engagementFetchSessions.single().event(reaction("r1", "+"))
+        runCurrent()
+
+        assertEquals(listOf("r1"), received)
+        assertEquals(setOf("r1"), store.snapshot("target")?.reactions?.keys)
+        fetcher.release(feed)
+    }
+
+    private fun kotlinx.coroutines.test.TestScope.sharedFetcher(
+        gateway: FakeGateway,
+        store: EngagementStore = EngagementStore(),
+    ): EngagementFetcher {
+        val fetcher = EngagementFetcher(
+            scope = backgroundScope,
+            subscriptions = gateway,
+            relayTarget = RelayTarget.AllEnabled,
+            store = store,
+            subscriptionIdPrefix = "reac-test",
+        )
+        runCurrent()
+        return fetcher
+    }
+
+    private fun kotlinx.coroutines.test.TestScope.controllerTrackingTarget(
+        gateway: FakeGateway,
+        session: AccountSession? = null,
+        store: EngagementStore = EngagementStore(),
+    ): FeedController {
+        val controller = FeedController(
+            accountSession = session,
+            computeDispatcher = Dispatchers.Unconfined,
+            scope = backgroundScope,
+            subscriptions = gateway,
+            engagementStore = store,
+        )
+        runCurrent()
+        gateway.completeInitialFeedHistory()
+        runCurrent()
+        gateway.liveSessions.single().event(event("target", 0))
+        runCurrent()
+        advanceTimeBy(500)
+        runCurrent()
+        return controller
+    }
+
+    private fun kotlinx.coroutines.test.TestScope.deliverEngagement(gateway: FakeGateway, vararg events: NostrEvent) {
+        events.forEach { gateway.engagementFetchSessions.single().event(it) }
+        runCurrent()
+        advanceTimeBy(151)
+        runCurrent()
+    }
+
+    /** フィード以外の画面（ポスト詳細など）が受信したイベント。共有ストアに入る。 */
+    private fun kotlinx.coroutines.test.TestScope.observeElsewhere(store: EngagementStore, vararg events: NostrEvent) {
+        events.forEach { store.observe(it, "relay") }
+        runCurrent()
+        advanceTimeBy(151)
+        runCurrent()
+    }
+
+    private fun reaction(
+        id: String,
+        content: String,
+        pubkey: String = "reactor-$id",
+        createdAt: Long = 200,
+    ) = NostrEvent(
+        id = id,
+        pubkey = pubkey,
+        createdAt = createdAt,
+        kind = 7,
+        tags = listOf(listOf("e", "target"), listOf("p", "author")),
+        content = content,
+        sig = "signature",
+    )
+
+    private fun ownSession() = AccountSession(
+        sessionId = OWN_SESSION_ID,
+        pubkey = OWN_PUBKEY,
+        signer = OwnSigner,
+        resources = AccountSessionResources(),
+    )
+
+    private object OwnSigner : AccountSigner {
+        override val pubkey: String = OWN_PUBKEY
+        override fun encryptToSelf(plaintext: String): String = plaintext
+        override fun decrypt(content: String, peerPubkey: String): String = content
+        override fun sign(content: String, kind: Int, tags: List<List<String>>, createdAt: Long?) =
+            NostrEvent(id = "signed", pubkey = OWN_PUBKEY, createdAt = 0, kind = kind, tags = tags, content = content, sig = "sig")
+    }
+
+    @Test
     fun deletedEventDiscardsEngagementHistoryState() = runTest {
         val gateway = FakeGateway()
         val controller = FeedController(computeDispatcher = Dispatchers.Unconfined, scope = backgroundScope, subscriptions = gateway)
@@ -1488,6 +2114,229 @@ class FeedControllerAsyncRegressionTest {
         controller.close()
     }
 
+    @Test
+    fun shortNonEmptyPageStillRequestsOlderHistory() = runTest {
+        val gateway = FakeGateway()
+        val controller = FeedController(computeDispatcher = Dispatchers.Unconfined, scope = backgroundScope, subscriptions = gateway)
+        runCurrent()
+        val first = gateway.fetchSessions.single()
+        repeat(20) { first.event(event("short-$it", 100L - it)) }
+        first.complete()
+        runCurrent()
+        assertTrue(controller.state.value.canLoadMore)
+        controller.loadMore()
+        runCurrent()
+        val second = gateway.feedFetchSessions.last()
+        assertEquals(81L, second.filters.single().until)
+        second.event(event("older-than-short-page", 70))
+        second.complete()
+        runCurrent()
+        assertTrue(controller.state.value.events.any { it.id == "older-than-short-page" })
+        controller.close()
+    }
+
+    @Test
+    fun failedPageStorageDoesNotAdvanceCursorAndCanBeRetried() = runTest {
+        val gateway = FakeGateway()
+        val store = object : FeedHistoryStore() {
+            var fail = true
+            override fun commit(scopeGeneration: Int, page: List<StoredFeedEvent>): FeedStoreCommitResult =
+                if (fail) FeedStoreCommitResult.Failed else super.commit(scopeGeneration, page)
+        }
+        val controller = FeedController(computeDispatcher = Dispatchers.Unconfined, scope = backgroundScope,
+            subscriptions = gateway, historyStore = store)
+        runCurrent()
+        val first = gateway.feedFetchSessions.single()
+        val floor = first.filters.single().until
+        first.event(event("saved-after-retry", 100))
+        first.complete()
+        runCurrent()
+        assertTrue(controller.state.value.storageFailure)
+        assertTrue(controller.state.value.events.isEmpty())
+        store.fail = false
+        controller.retryHistory()
+        runCurrent()
+        val retried = gateway.feedFetchSessions.last()
+        assertEquals(floor, retried.filters.single().until)
+        retried.event(event("saved-after-retry", 100))
+        retried.complete()
+        runCurrent()
+        assertFalse(controller.state.value.storageFailure)
+        assertEquals(listOf("saved-after-retry"), controller.state.value.events.map { it.id })
+        controller.close()
+    }
+
+    @Test
+    fun largeSameSecondPageCanBeBrowsedAcrossStoredWindows() = runTest {
+        val gateway = FakeGateway()
+        val store = FeedHistoryStore()
+        val controller = FeedController(computeDispatcher = Dispatchers.Unconfined, scope = backgroundScope,
+            subscriptions = gateway, historyStore = store)
+        runCurrent()
+        val page = gateway.feedFetchSessions.single()
+        repeat(3_840) { page.event(event("large-${it.toString().padStart(4, '0')}", 100)) }
+        page.complete()
+        runCurrent()
+        assertEquals(3_840, store.snapshot.size)
+        assertEquals(800, controller.state.value.events.size)
+        val seen = mutableSetOf<String>()
+        repeat(12) {
+            seen += controller.state.value.events.map { it.id }
+            if (controller.state.value.hasOlderStoredEvents) controller.loadMore()
+            runCurrent()
+        }
+        assertEquals(3_840, seen.size)
+        assertTrue(controller.state.value.hasNewerStoredEvents)
+        val fetchCount = gateway.feedFetchSessions.size
+        controller.loadNewerStored()
+        runCurrent()
+        assertEquals(fetchCount, gateway.feedFetchSessions.size)
+        controller.close()
+    }
+
+    @Test
+    fun pageReachingLocalLimitIsFullySavedAndStopsNewRequests() = runTest {
+        val gateway = FakeGateway()
+        val store = FeedHistoryStore(softLimit = 10)
+        val controller = FeedController(computeDispatcher = Dispatchers.Unconfined, scope = backgroundScope,
+            subscriptions = gateway, historyStore = store)
+        runCurrent()
+        val page = gateway.feedFetchSessions.single()
+        repeat(30) { page.event(event("limit-$it", 100L - it)) }
+        page.complete()
+        runCurrent()
+        assertEquals(30, store.snapshot.size)
+        assertTrue(controller.state.value.localHistoryLimitReached)
+        assertFalse(controller.state.value.canLoadMore)
+        controller.loadMore()
+        runCurrent()
+        assertEquals(1, gateway.feedFetchSessions.size)
+        controller.resetHistory()
+        runCurrent()
+        assertFalse(controller.state.value.localHistoryLimitReached)
+        assertTrue(store.snapshot.isEmpty())
+        controller.close()
+    }
+
+    @Test
+    fun returningToNewestStoredWindowShowsLaterLiveEvents() = runTest {
+        val gateway = FakeGateway()
+        val controller = FeedController(computeDispatcher = Dispatchers.Unconfined, scope = backgroundScope, subscriptions = gateway)
+        runCurrent()
+        val page = gateway.feedFetchSessions.single()
+        repeat(1_000) { page.event(event("stored-${it.toString().padStart(4, '0')}", 100)) }
+        page.complete()
+        runCurrent()
+        controller.loadMore()
+        runCurrent()
+        assertTrue(controller.state.value.hasNewerStoredEvents)
+        controller.loadNewerStored()
+        runCurrent()
+        assertFalse(controller.state.value.hasNewerStoredEvents)
+        val now = Clock.System.now().epochSeconds
+        gateway.liveSessions.first { it.id.startsWith("feed-") }.event(event("live-after-window", now))
+        advanceTimeBy(1_000)
+        runCurrent()
+        assertEquals("live-after-window", controller.state.value.events.first().id)
+        controller.close()
+    }
+
+    @Test
+    fun knownBoundarySecondAtHistoryEndStepsBackWithoutCoverageGap() = runTest {
+        val gateway = FakeGateway()
+        val controller = FeedController(computeDispatcher = Dispatchers.Unconfined, scope = backgroundScope, subscriptions = gateway)
+        runCurrent()
+        val first = gateway.feedFetchSessions.single()
+        repeat(30) { first.event(event("full-$it", 100L - it)) }
+        first.complete()
+        runCurrent()
+        controller.loadMore()
+        runCurrent()
+        // 履歴の末尾では既知の境界秒だけが返る。要求数を拡張せず、前の秒へ進む。
+        val boundary = gateway.feedFetchSessions.last()
+        assertEquals(71L, boundary.filters.single().until)
+        boundary.event(event("full-29", 71))
+        boundary.complete()
+        runCurrent()
+        val older = gateway.feedFetchSessions.last()
+        assertEquals(70L, older.filters.single().until)
+        assertEquals(30, older.filters.single().limit)
+        older.complete()
+        runCurrent()
+        assertFalse(controller.state.value.canLoadMore)
+        assertEquals(0, controller.state.value.coverageGapCount)
+        assertEquals(3, gateway.feedFetchSessions.size)
+        controller.close()
+    }
+
+    @Test
+    fun cappedRelayBoundaryIsRecordedWithoutFutileExpansion() = runTest {
+        val gateway = FakeGateway()
+        val controller = FeedController(computeDispatcher = Dispatchers.Unconfined, scope = backgroundScope, subscriptions = gateway)
+        runCurrent()
+        // 要求数30に対し、常に20件までしか返さないリレー。
+        val first = gateway.feedFetchSessions.single()
+        repeat(20) { first.event(event("capped-$it", 100L - it)) }
+        first.complete()
+        runCurrent()
+        controller.loadMore()
+        runCurrent()
+        val boundary = gateway.feedFetchSessions.last()
+        assertEquals(81L, boundary.filters.single().until)
+        repeat(20) { boundary.event(event("same-second-$it", 81)) }
+        boundary.complete()
+        runCurrent()
+        assertEquals(1, controller.state.value.coverageGapCount)
+        assertTrue(controller.state.value.canLoadMore)
+        controller.loadMore()
+        runCurrent()
+        assertEquals(80L, gateway.feedFetchSessions.last().filters.single().until)
+        controller.close()
+    }
+
+    @Test
+    fun hiddenOnlyPagesStopAutoContinueUntilExplicitLoadMore() = runTest {
+        val gateway = FakeGateway()
+        val controller = FeedController(computeDispatcher = Dispatchers.Unconfined, scope = backgroundScope, subscriptions = gateway)
+        runCurrent()
+        var at = 1_000L
+        // 返信だけのページは表示されない。自動継続は上限で止まる。
+        repeat(5) { page ->
+            val session = gateway.feedFetchSessions.last()
+            assertEquals(page + 1, gateway.feedFetchSessions.size)
+            repeat(30) { session.event(event("reply-$page-$it", at--, tags = listOf(listOf("e", "parent", "", "reply")))) }
+            session.complete()
+            runCurrent()
+        }
+        assertEquals(5, gateway.feedFetchSessions.size)
+        assertTrue(controller.state.value.requiresExplicitLoadMore)
+        controller.loadMore(explicit = false)
+        runCurrent()
+        assertEquals(5, gateway.feedFetchSessions.size)
+        controller.loadMore(explicit = true)
+        runCurrent()
+        assertEquals(6, gateway.feedFetchSessions.size)
+        assertFalse(controller.state.value.requiresExplicitLoadMore)
+        controller.close()
+    }
+
+    @Test
+    fun oldScopePageIsNotShownAfterAuthorsChange() = runTest {
+        val gateway = FakeGateway()
+        val controller = FeedController(computeDispatcher = Dispatchers.Unconfined, scope = backgroundScope, subscriptions = gateway)
+        controller.updateAuthors(listOf("old-author"))
+        controller.startSubscriptions()
+        runCurrent()
+        val oldPage = gateway.feedFetchSessions.last()
+        controller.updateAuthors(listOf("new-author"))
+        runCurrent()
+        oldPage.event(event("from-old-scope", 100, pubkey = "old-author"))
+        oldPage.complete()
+        runCurrent()
+        assertFalse(controller.state.value.events.any { it.id == "from-old-scope" })
+        controller.close()
+    }
+
     private class FakeGateway(initialRelayUrls: Set<String> = setOf("relay")) : FeedSubscriptionGateway {
         val relayUrls = MutableStateFlow(initialRelayUrls)
         var targetRelayUrlsOverride: Set<String>? = null
@@ -1526,14 +2375,23 @@ class FeedControllerAsyncRegressionTest {
             }
         }
 
-        override suspend fun open(spec: SubscriptionSpec): SubscriptionSession =
-            FakeSession(
+        /** null でなければ、付随情報のライブ購読の open をこれが完了するまで止める。 */
+        var engagementLiveOpenGate: CompletableDeferred<Unit>? = null
+        val openAttempts = mutableListOf<SubscriptionSpec>()
+
+        override suspend fun open(spec: SubscriptionSpec): SubscriptionSession {
+            openAttempts += spec
+            if (spec.id.startsWith("reac-") && spec.behavior is SubscriptionBehavior.Live) {
+                engagementLiveOpenGate?.await()
+            }
+            return FakeSession(
                 spec.id,
                 spec.behavior,
                 spec.filters,
                 spec.target,
                 spec.deduplicateEvents,
             ).also(sessions::add)
+        }
 
         override suspend fun subscribe(
             subscriptionId: String,
@@ -1653,4 +2511,11 @@ class FeedControllerAsyncRegressionTest {
     )
 
     private fun NostrFilter.targetIds(): List<String>? = eTags ?: rootEventTags ?: qTags
+
+    private companion object {
+        const val OWN_PUBKEY = "me"
+        const val OWN_SESSION_ID = "my-session"
+        /** FeedController.ENGAGEMENT_HISTORY_PAGE_THRESHOLD と同じ値。 */
+        const val ENGAGEMENT_PAGE_THRESHOLD = 100
+    }
 }

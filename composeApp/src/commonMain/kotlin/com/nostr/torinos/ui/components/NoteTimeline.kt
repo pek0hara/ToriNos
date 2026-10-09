@@ -24,6 +24,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.material3.pulltorefresh.PullToRefreshDefaults
 import androidx.compose.material3.pulltorefresh.rememberPullToRefreshState
@@ -70,6 +71,10 @@ fun NoteTimeline(
     ownPubkey: String?,
     onUserClick: (String) -> Unit,
     onLoadMore: () -> Unit,
+    onLoadMoreExplicitly: () -> Unit = onLoadMore,
+    onLoadNewerStored: () -> Unit = {},
+    onRetryHistory: () -> Unit = {},
+    onResetHistory: () -> Unit = {},
     onLike: (eventId: String, authorPubkey: String) -> Unit,
     onUnlike: (eventId: String) -> Unit,
     onEmojiReact: (eventId: String, authorPubkey: String, option: ReactionOption) -> Unit,
@@ -214,11 +219,14 @@ fun NoteTimeline(
     LaunchedEffect(
         timelineListState,
         state.canLoadMore,
+        state.hasOlderStoredEvents,
+        state.requiresExplicitLoadMore,
         state.isLoadingMore,
         state.historyRequestGeneration,
         state.events.size,
     ) {
-        if (!state.canLoadMore || state.isLoadingMore) return@LaunchedEffect
+        if ((!state.canLoadMore && !state.hasOlderStoredEvents) || state.isLoadingMore ||
+            state.requiresExplicitLoadMore) return@LaunchedEffect
 
         snapshotFlow {
             val layoutInfo = timelineListState.layoutInfo
@@ -330,6 +338,11 @@ fun NoteTimeline(
             contentPadding = contentPadding,
         ) {
             header()
+            if (state.hasNewerStoredEvents) {
+                item(key = "feed-newer-stored") {
+                    TextButton(onClick = onLoadNewerStored) { Text("新しい履歴を表示") }
+                }
+            }
 
             noteListItems(
                 state = presentedState,
@@ -349,6 +362,31 @@ fun NoteTimeline(
                 eventEnterFadeMillis = eventEnterFadeMillis,
                 deferWebViewLoad = !isScrollSettled,
             )
+            if (state.requiresExplicitLoadMore && (state.canLoadMore || state.hasOlderStoredEvents)) {
+                item(key = "feed-explicit-more") {
+                    TextButton(onClick = onLoadMoreExplicitly) { Text("さらに読み込む") }
+                }
+            }
+            if (state.storageFailure || state.localHistoryLimitReached || state.stalledRelayCount > 0 ||
+                state.pendingGapCount > 0 || state.coverageGapCount > 0) {
+                item(key = "feed-history-status") {
+                    androidx.compose.foundation.layout.Column(Modifier.padding(16.dp)) {
+                        if (state.storageFailure) Text("履歴を保存できませんでした")
+                        if (state.localHistoryLimitReached) Text("端末で保持できる履歴の上限に達しました")
+                        if (state.awaitingAuthRelayCount > 0) Text("認証待ちのリレーがあります")
+                        if (state.stalledRelayCount > state.awaitingAuthRelayCount || state.pendingGapCount > 0)
+                            Text("一部の履歴を取得できていません")
+                        if (state.coverageGapCount > 0) Text("同じ時刻の投稿に未取得の範囲があります")
+                        if (state.storageFailure || state.stalledRelayCount > state.awaitingAuthRelayCount ||
+                            state.pendingGapCount > 0) {
+                            TextButton(onClick = onRetryHistory, enabled = !state.localHistoryLimitReached) { Text("再試行") }
+                        }
+                        if (state.localHistoryLimitReached) {
+                            TextButton(onClick = onResetHistory) { Text("履歴をリセット") }
+                        }
+                    }
+                }
+            }
         }
     }
 

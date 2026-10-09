@@ -9,6 +9,7 @@ import com.nostr.torinos.model.buildEventMessage
 import com.nostr.torinos.model.buildReqMessage
 import com.nostr.torinos.util.appLog
 import com.nostr.torinos.util.loggingExceptionHandler
+import com.nostr.torinos.engagement.EngagementStore
 import com.nostr.torinos.util.fetchTraceLog
 import com.nostr.torinos.util.networkTraceLog
 import kotlin.time.Clock
@@ -402,6 +403,7 @@ object NostrRepository {
         if (message is RelayMessage.Event) {
             eventRelayHints.observe(message.event.id, relayUrl)
             ReactionEventStore.observe(message.event, setOf(relayUrl))
+            EngagementStore.shared.observe(message.event, relayUrl)
         }
         val signals = mutableListOf<Pair<SubscriptionSessionImpl, SubscriptionSignal>>()
         var commands = emptyList<SubscriptionWireCommand>()
@@ -581,6 +583,7 @@ object NostrRepository {
                     if (message is RelayMessage.Event) {
                         eventRelayHints.observe(message.event.id, relay.url)
                         ReactionEventStore.observe(message.event, setOf(relay.url))
+                        EngagementStore.shared.observe(message.event, relay.url)
                     }
                     bus.emit(RelayEnvelope(relay.url, message))
                 }
@@ -903,6 +906,7 @@ object NostrRepository {
             "すべてのリレーへの送信に失敗しました: ${result.failedRelays.keys.joinToString()}"
         }
         ReactionEventStore.observe(event, result.succeededRelays)
+        result.succeededRelays.forEach { EngagementStore.shared.observe(event, it) }
         return result
     }
 
@@ -920,6 +924,7 @@ object NostrRepository {
             onRelayResult = { relayResult ->
                 if (relayResult.succeededRelays.isNotEmpty()) {
                     ReactionEventStore.observe(event, relayResult.succeededRelays)
+                    relayResult.succeededRelays.forEach { EngagementStore.shared.observe(event, it) }
                 }
             },
         )

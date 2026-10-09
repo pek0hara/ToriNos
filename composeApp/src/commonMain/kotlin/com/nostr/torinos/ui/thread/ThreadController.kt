@@ -1,21 +1,29 @@
 package com.nostr.torinos.ui.thread
 
+import com.nostr.torinos.model.isLikeReaction
 import com.nostr.torinos.account.AccountSession
 import com.nostr.torinos.crypto.isWriteSupported
 import com.nostr.torinos.engagement.EngagementAction
 import com.nostr.torinos.engagement.EngagementOperationId
 import com.nostr.torinos.engagement.EngagementReducer
+import com.nostr.torinos.ui.feed.EngagementFetcher
+import com.nostr.torinos.ui.feed.SharedEngagementFetchers
 import com.nostr.torinos.engagement.EngagementRequest
 import com.nostr.torinos.engagement.EngagementSlot
+import com.nostr.torinos.engagement.EngagementStore
 import com.nostr.torinos.engagement.NoteEngagementCommand
+import com.nostr.torinos.engagement.PendingEngagementOperation
+import com.nostr.torinos.engagement.PendingEngagementRegistry
+import com.nostr.torinos.engagement.TargetEngagement
+import com.nostr.torinos.engagement.hasOwnReaction
+import com.nostr.torinos.engagement.isRepostedByMe
+import com.nostr.torinos.engagement.summarizeEngagement
+import com.nostr.torinos.engagement.toNoteEngagementState
 import com.nostr.torinos.engagement.NoteEngagementState
 import com.nostr.torinos.engagement.NoteTarget
-import com.nostr.torinos.engagement.PendingEngagementOperation
 import com.nostr.torinos.engagement.ReactionEventReducer
 import com.nostr.torinos.engagement.ReactionRefreshFetcher
 import com.nostr.torinos.engagement.displayOwnEmojiReactionEventIds
-import com.nostr.torinos.engagement.hasOwnReaction
-import com.nostr.torinos.engagement.isRepostedByMe
 import com.nostr.torinos.model.NostrEvent
 import com.nostr.torinos.model.NostrFilter
 import com.nostr.torinos.model.NostrProfile
@@ -31,14 +39,15 @@ import com.nostr.torinos.model.toCustomReaction
 import com.nostr.torinos.model.toUnicodeReaction
 import com.nostr.torinos.model.toReactionOption
 import com.nostr.torinos.network.NostrRepository
+import com.nostr.torinos.network.RelayTarget
+import com.nostr.torinos.ui.channel.channelThreadReadTarget
 import com.nostr.torinos.network.ProfileFetchPolicy
 import com.nostr.torinos.network.ProfileRepository
 import com.nostr.torinos.network.resolveReplyTarget
 import com.nostr.torinos.ui.SafeCoroutineLauncher
 import com.nostr.torinos.ui.timeline.ProfileHydrator
 import com.nostr.torinos.ui.timeline.NoteEngagementCoordinator
-import com.nostr.torinos.ui.timeline.NoteCardSnapshot
-import com.nostr.torinos.ui.timeline.NoteCardSync
+import com.nostr.torinos.util.engagementTraceLog
 import com.nostr.torinos.ui.timeline.NoteDeletionResult
 import com.nostr.torinos.ui.timeline.NoteDeletionService
 import com.nostr.torinos.ui.timeline.QuoteResolver
@@ -54,6 +63,8 @@ internal class ThreadController(
     private val accountSession: AccountSession? = null,
     private val scope: CoroutineScope,
     private val autoStart: Boolean = true,
+    /** 付随情報のイベント集合。フィードと共有する。 */
+    private val engagementStore: EngagementStore = EngagementStore.shared,
 ) {
     private val safeCoroutineLauncher = SafeCoroutineLauncher(scope, "ThreadController")
     private fun launch(block: suspend CoroutineScope.() -> Unit): Job =
@@ -77,11 +88,15 @@ internal class ThreadController(
     private val lifecycleJobs = mutableListOf<Job>()
     private val seenReplyIds = linkedSetOf<String>()
     private val seenReplyCountIds = linkedSetOf<String>()
-    private val seenReactionIds = linkedSetOf<String>()
-    private val seenRepostIds = linkedSetOf<String>()
     private val seenQuoteRepostIds = linkedSetOf<String>()
-    private val receivedReactionEvents = linkedMapOf<String, NostrEvent>()
-    private val receivedRepostEvents = linkedMapOf<String, NostrEvent>()
+    /** 付随情報を表示する投稿（表示中の投稿・直接の返信・表示中の投稿の引用）。 */
+    private val engagementTargets = linkedSetOf<String>()
+    private val requestedEngagementPubkeys = mutableSetOf<String>()
+    /** 送信中の操作。アカウントで共有し、フィードにも同じ表示が出る。 */
+    private val pendingOperations = PendingEngagementRegistry.forSession(accountSession?.sessionId)
+    /** 通常の投稿は、フィードと共有する取得を使う。同じ投稿をフィードが表示していても重ねて取りにいかない。 */
+    private val sharedFetcher: EngagementFetcher? =
+        if (noteContext == NoteContext.Timeline) SharedEngagementFetchers.forTarget(RelayTarget.AllEnabled) else null
     private val watchedEventIds = linkedSetOf<String>()
     private val watchedReactionEventIds = linkedSetOf<String>()
     private val watchedRepostEventIds = linkedSetOf<String>()
@@ -103,11 +118,23 @@ internal class ThreadController(
     private var nextReactionRefreshId = 0L
 
     init {
+        sharedFetcher?.register(
+            owner = this,
+            // 表示中の投稿と返信は、フィードの新着より優先してライブ購読に入れる。
+            sortTimeOf = { if (it in engagementTargets) Long.MAX_VALUE else null },
+            onEvent = { event -> scheduleProfileFetch(event.pubkey) },
+        )
         if (isWriteSupported) {
             launch {
                 ownPubkey = accountSession?.pubkey
-                reconcileOwnEngagement()
+                projectEngagement(engagementTargets.toList())
             }
+        }
+        lifecycleJobs += launch {
+            engagementStore.changes.collect { changed -> projectEngagement(changed.filter { it in engagementTargets }) }
+        }
+        lifecycleJobs += launch {
+            pendingOperations.changes.collect { changed -> projectEngagement(changed.filter { it in engagementTargets }) }
         }
         lifecycleJobs += launch {
             profileHydrator.updates.collect { patch ->
@@ -322,7 +349,7 @@ internal class ThreadController(
             ReactionRefreshFetcher.fetch(
                 subscriptionId = "thread-reaction-refresh-$shortId-${++nextReactionRefreshId}",
                 eventId = targetEventId,
-            ).forEach(::handleReactionEvent)
+            ).forEach { engagementStore.observe(it, null) }
         }
     }
 
@@ -333,74 +360,26 @@ internal class ThreadController(
         failureMessage: String,
     ) {
         ownPubkey?.let(::ensureProfileAvailable)
-        val operationId = EngagementOperationId("thread-${++nextEngagementOperationId}")
+        val operationId = EngagementOperationId("thread-$shortId-${++nextEngagementOperationId}")
         val before = _state.value.noteEngagement(targetEventId, eventId)
         val optimistic = engagementCoordinator.begin(before, operationId, request)
         if (optimistic == before) return
+        optimistic.pendingOperations[request.slot]?.let { pendingOperations.put(targetEventId, request.slot, it) }
         _state.value = _state.value.withEngagement(targetEventId, eventId, optimistic, ownPubkey)
             .copy(engagementError = null)
         launch {
-            var committed = false
             var failure: Throwable? = null
-            var signedEvent: NostrEvent? = null
             try {
-                val published = engagementCoordinator.execute(command) { signed ->
-                    signedEvent = signed
-                    when (command) {
-                        is NoteEngagementCommand.AddLike,
-                        is NoteEngagementCommand.AddEmoji,
-                        -> seenReactionIds.add(signed.id)
-                        is NoteEngagementCommand.AddRepost -> seenRepostIds.add(signed.id)
-                        is NoteEngagementCommand.RemoveReaction,
-                        is NoteEngagementCommand.RemoveRepost,
-                        -> Unit
-                    }
-                }.getOrThrow()
-                val current = _state.value.noteEngagement(targetEventId, eventId)
-                var next = _state.value.withEngagement(
-                    targetEventId,
-                    eventId,
-                    engagementCoordinator.commit(current, operationId, published.id),
-                    ownPubkey,
-                )
-                if (command is NoteEngagementCommand.AddLike || command is NoteEngagementCommand.AddEmoji) {
-                    signedEvent?.let { reaction ->
-                        next = next.copy(
-                            reactionEvents = next.reactionEvents + (
-                                targetEventId to ReactionEventReducer.add(
-                                    next.reactionEvents[targetEventId].orEmpty(),
-                                    reaction,
-                                )
-                            ),
-                        )
-                    }
-                }
-                if (command is NoteEngagementCommand.RemoveReaction) {
-                    next = next.copy(
-                        reactionEvents = next.reactionEvents + (
-                            targetEventId to ReactionEventReducer.remove(
-                                next.reactionEvents[targetEventId].orEmpty(),
-                                command.reactionEventId,
-                            )
-                        ),
-                    )
-                }
-                _state.value = next
-                committed = true
+                val published = engagementCoordinator.execute(command).getOrThrow()
+                // 送ったイベント（取り消しは kind 5）をストアへ入れてから送信中の操作を外す。
+                engagementStore.observe(published, null)
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (error: Throwable) {
                 failure = error
             } finally {
-                if (!committed) {
-                    val current = _state.value.noteEngagement(targetEventId, eventId)
-                    _state.value = _state.value.withEngagement(
-                        targetEventId,
-                        eventId,
-                        engagementCoordinator.rollback(current, operationId),
-                        ownPubkey,
-                    )
-                }
+                pendingOperations.remove(targetEventId, operationId)
+                projectEngagement(listOf(targetEventId))
             }
             if (failure != null) _state.value = _state.value.copy(engagementError = failureMessage)
         }
@@ -409,14 +388,15 @@ internal class ThreadController(
     fun startSubscriptions() {
         if (started) return
         started = true
+        sharedFetcher?.activate(this)
 
         scheduleReplyCountFetch(eventId)
         scheduleReactionFetch(eventId)
         scheduleRepostFetch(eventId)
 
         subscriptionJobs += launch {
-            NostrRepository.subscribe(rootSubId, NostrFilter(ids = listOf(eventId), kinds = noteContext.readableEventKinds, limit = 1))
-            NostrRepository.subscribe(repliesSubId, replyFilters(listOf(eventId), limit = 100))
+            subscribe(rootSubId, NostrFilter(ids = listOf(eventId), kinds = noteContext.readableEventKinds, limit = 1))
+            subscribe(repliesSubId, replyFilters(listOf(eventId), limit = 100))
         }
 
         subscriptionJobs += launch {
@@ -431,7 +411,7 @@ internal class ThreadController(
                 scheduleMentionedProfileFetch(event.content)
                 val replyParentId = noteContext.replyTargetId(event)
                 replyParentId?.let { parentId ->
-                    NostrRepository.subscribe(
+                    subscribe(
                         replyParentSubId,
                         NostrFilter(ids = listOf(parentId), kinds = noteContext.readableEventKinds, limit = 1),
                     )
@@ -490,37 +470,14 @@ internal class ThreadController(
 
         subscriptionJobs += launch {
             NostrRepository.events(reactionSubId).collect { event ->
-                handleReactionEvent(event)
+                // 件数はストアから導出する。リポジトリが受信時にストアへ入れている。
+                if (event.kind == 7) scheduleProfileFetch(event.pubkey)
             }
         }
 
         subscriptionJobs += launch {
             NostrRepository.events(repostSubId).collect { event ->
-                if (event.kind != 6 || !seenRepostIds.add(event.id)) return@collect
-                val targetId = event.tags.lastOrNull { it.firstOrNull() == "e" }?.getOrNull(1)
-                    ?.takeIf { it in watchedRepostEventIds }
-                    ?: return@collect
-                rememberReceivedEvent(receivedRepostEvents, event)
-                val cur = _state.value
-                val isRoot = targetId == eventId
-                val isOwn = ownPubkey != null && event.pubkey == ownPubkey
-                _state.value = cur.copy(
-                    repostPubkeys = if (!isRoot || event.pubkey in cur.repostPubkeys) {
-                        cur.repostPubkeys
-                    } else {
-                        cur.repostPubkeys + event.pubkey
-                    },
-                    repostCount = if (isRoot) cur.repostCount + 1 else cur.repostCount,
-                    repostCounts = if (isRoot) cur.repostCounts else cur.repostCounts +
-                        (targetId to (cur.repostCounts[targetId] ?: 0) + 1),
-                    ownRepostEventId = if (isRoot && isOwn) event.id else cur.ownRepostEventId,
-                    repostedEvents = if (!isRoot && isOwn) {
-                        cur.repostedEvents + (targetId to event.id)
-                    } else {
-                        cur.repostedEvents
-                    },
-                )
-                scheduleProfileFetch(event.pubkey)
+                if (event.kind in listOf(6, 16)) scheduleProfileFetch(event.pubkey)
             }
         }
 
@@ -534,21 +491,8 @@ internal class ThreadController(
                     .distinct()
                     .filter { seenQuoteRepostIds.add("${event.id}:$it") }
                 if (targetIds.isEmpty()) return@collect
-                val cur = _state.value
+                // 件数と引用の一覧はストアから導出する。ここでは引用自体の付随情報の取得を始める。
                 val quotesRoot = eventId in targetIds
-                val counts = cur.repostCounts.toMutableMap()
-                targetIds.filter { it != eventId }.forEach { targetId ->
-                    counts[targetId] = (counts[targetId] ?: 0) + 1
-                }
-                _state.value = cur.copy(
-                    quoteReposts = if (quotesRoot) {
-                        (cur.quoteReposts + event).distinctBy { it.id }.sortedByDescending { it.createdAt }
-                    } else {
-                        cur.quoteReposts
-                    },
-                    repostCount = if (quotesRoot) cur.repostCount + 1 else cur.repostCount,
-                    repostCounts = counts,
-                )
                 scheduleProfileFetch(event.pubkey)
                 scheduleMentionedProfileFetch(event.content)
                 if (quotesRoot) {
@@ -570,6 +514,7 @@ internal class ThreadController(
     fun stopSubscriptions() {
         if (!started) return
         started = false
+        sharedFetcher?.deactivate(this)
         subscriptionJobs.forEach { it.cancel() }
         subscriptionJobs.clear()
         replyCountBatchJob?.cancel()
@@ -617,133 +562,51 @@ internal class ThreadController(
         }
     }
 
-    private fun rememberReceivedEvent(events: LinkedHashMap<String, NostrEvent>, event: NostrEvent) {
-        events[event.id] = event
-        while (events.size > MAX_RECEIVED_ENGAGEMENT_EVENTS) events.remove(events.keys.first())
-    }
-
-    private fun reconcileOwnEngagement() {
-        val pubkey = ownPubkey ?: return
-        val current = _state.value
-        var likedReactions = current.likedReactions
-        var ownEmojiReactionEventIds = current.ownEmojiReactionEventIds
-        receivedReactionEvents.values.filter { it.pubkey == pubkey }.forEach { event ->
-            val targetId = event.tags.lastOrNull { it.firstOrNull() == "e" }?.getOrNull(1)
-                ?: return@forEach
-            if (event.content.trim() == "+") likedReactions = likedReactions + (targetId to event.id)
-            event.toReactionOption()?.let { option ->
-                ownEmojiReactionEventIds = ownEmojiReactionEventIds + (
-                    targetId to ownEmojiReactionEventIds[targetId].orEmpty().plus(option.key to event.id)
-                )
-            }
-        }
-        val ownRepostEventId = receivedRepostEvents.values
-            .lastOrNull { event ->
-                event.pubkey == pubkey &&
-                    event.tags.lastOrNull { it.firstOrNull() == "e" }?.getOrNull(1) == eventId
-            }
-            ?.id
-            ?: current.ownRepostEventId
-        val repostedEvents = current.repostedEvents.toMutableMap()
-        receivedRepostEvents.values.filter { it.pubkey == pubkey }.forEach { event ->
-            val targetId = event.tags.lastOrNull { it.firstOrNull() == "e" }?.getOrNull(1)
-                ?: return@forEach
-            if (targetId != eventId) repostedEvents[targetId] = event.id
-        }
-        _state.value = current.copy(
-            likedReactions = likedReactions,
-            ownEmojiReactionEventIds = ownEmojiReactionEventIds,
-            ownRepostEventId = ownRepostEventId,
-            repostedEvents = repostedEvents,
-        )
-    }
-
     fun close() {
-        publishRootCardSnapshot()
         stopSubscriptions()
+        sharedFetcher?.release(this)
+        engagementStore.release(this)
         lifecycleJobs.forEach { it.cancel() }
         lifecycleJobs.clear()
         profileHydrator.close()
     }
 
-    private fun handleReactionEvent(event: NostrEvent) {
-        if (event.kind != 7 || !seenReactionIds.add(event.id)) return
-        rememberReceivedEvent(receivedReactionEvents, event)
-        val targetId = event.tags.lastOrNull { it.firstOrNull() == "e" }?.getOrNull(1) ?: return
-        if (targetId !in watchedReactionEventIds) return
-        val cur = _state.value
-        val isOwn = ownPubkey != null && event.pubkey == ownPubkey
-        val customReaction = event.toCustomReaction()
-        val unicodeReaction = event.toUnicodeReaction()
-        val reactionOption = event.toReactionOption()
-        val rootReactionPubkeys = if (
-            targetId == eventId &&
-            event.pubkey !in cur.reactionPubkeys
-        ) {
-            cur.reactionPubkeys + event.pubkey
-        } else {
-            cur.reactionPubkeys
+    /**
+     * 表示する投稿の付随情報を、ストアの集合と送信中の操作から作り直す。
+     * 表示中の投稿は、リアクション・リポストした人の一覧と引用の一覧も作る。
+     */
+    private fun projectEngagement(targetIds: Collection<String>) {
+        if (targetIds.isEmpty()) return
+        val own = ownPubkey
+        var next = _state.value
+        val newQuotes = mutableListOf<String>()
+        val newPubkeys = linkedSetOf<String>()
+        targetIds.distinct().forEach { targetId ->
+            val engagement = engagementStore.snapshot(targetId) ?: TargetEngagement()
+            next = next.withProjectedEngagement(targetId, eventId, engagement, own, pendingOperations.operations(targetId))
+            if (targetId == eventId) newQuotes += engagement.quotes.keys.filter { it !in engagementTargets }
+            // 他の画面が先に受信したイベントは、この画面の購読には届かない。一覧に出す人のプロフィールをここで求める。
+            (engagement.reactions.values + engagement.reposts.values + engagement.quotes.values)
+                .mapNotNullTo(newPubkeys) { event -> event.pubkey.takeIf(requestedEngagementPubkeys::add) }
         }
-        _state.value = cur.copy(
-            reactionCounts = cur.reactionCounts + (targetId to (cur.reactionCounts[targetId] ?: 0) + 1),
-            likeReactionCounts = if (event.content.trim() == "+") {
-                cur.likeReactionCounts + (targetId to (cur.likeReactionCounts[targetId] ?: 0) + 1)
-            } else {
-                cur.likeReactionCounts
-            },
-            customReactions = if (customReaction != null) {
-                cur.customReactions + (
-                    targetId to cur.customReactions[targetId].orEmpty().incrementedWith(customReaction)
-                )
-            } else {
-                cur.customReactions
-            },
-            unicodeReactions = if (unicodeReaction != null) {
-                cur.unicodeReactions + (
-                    targetId to cur.unicodeReactions[targetId].orEmpty()
-                        .incrementedWithUnicodeReaction(unicodeReaction)
-                )
-            } else {
-                cur.unicodeReactions
-            },
-            reactionPubkeys = rootReactionPubkeys,
-            reactionEvents = cur.reactionEvents + (
-                targetId to ReactionEventReducer.add(cur.reactionEvents[targetId].orEmpty(), event)
-            ),
-            likedReactions = if (
-                isOwn &&
-                event.content.trim() == "+" &&
-                !cur.likedReactions.containsKey(targetId)
-            ) {
-                cur.likedReactions + (targetId to event.id)
-            } else {
-                cur.likedReactions
-            },
-            ownEmojiReactionEventIds = if (isOwn && reactionOption != null) {
-                cur.ownEmojiReactionEventIds + (
-                    targetId to cur.ownEmojiReactionEventIds[targetId].orEmpty()
-                        .plus(reactionOption.key to event.id)
-                    )
-            } else {
-                cur.ownEmojiReactionEventIds
-            },
-        )
-        scheduleProfileFetch(event.pubkey)
+        _state.value = next
+        // 他の画面が先に受信したイベントは、この画面の購読には届かない。一覧に出す人のプロフィールをここで求める。
+        // 画面を開いた直後はプロフィールの更新通知をまだ受け取れないため、キャッシュにあるものは直接入れる。
+        newPubkeys.forEach(::ensureProfileAvailable)
+        // 表示中の投稿を引用した投稿は、引用カードに出す付随情報も取る。
+        if (sharedFetcher != null) {
+            newQuotes.forEach { quoteId ->
+                scheduleReplyCountFetch(quoteId)
+                scheduleReactionFetch(quoteId)
+            }
+        }
     }
 
-    private fun publishRootCardSnapshot() {
-        val current = _state.value
-        if (current.root == null) return
-        val engagement = current.noteEngagement(eventId, eventId)
-            .takeIf { it.pendingOperations.isEmpty() }
-        NoteCardSync.publish(
-            NoteCardSnapshot(
-                sessionId = accountSession?.sessionId,
-                eventId = eventId,
-                replyCount = maxOf(current.replyCounts[eventId] ?: 0, current.replies.size),
-                engagement = engagement,
-            ),
-        )
+    private fun trackEngagement(targetId: String) {
+        if (!engagementTargets.add(targetId)) return
+        engagementStore.retain(this, engagementTargets.toSet())
+        sharedFetcher?.track(this, targetId)
+        projectEngagement(listOf(targetId))
     }
 
     private fun scheduleProfileFetch(pubkey: String) {
@@ -782,30 +645,36 @@ internal class ThreadController(
         replyCountBatchJob?.cancel()
         replyCountBatchJob = launch {
             delay(300)
-            NostrRepository.subscribe(
+            subscribe(
                 replyCountSubId,
                 replyFilters(watchedEventIds.toList()),
             )
         }
     }
 
-    private fun scheduleReactionFetch(eventId: String) {
-        if (!watchedReactionEventIds.add(eventId)) return
+    private fun scheduleReactionFetch(targetId: String) {
+        trackEngagement(targetId)
+        // 通常の投稿は共有の取得（フィードと同じ）で取る。チャンネルはチャンネルのリレーから個別に取る。
+        if (sharedFetcher != null) return
+        if (!watchedReactionEventIds.add(targetId)) return
         while (watchedReactionEventIds.size > MAX_WATCHED_EVENTS) {
             watchedReactionEventIds.remove(watchedReactionEventIds.first())
         }
         reactionBatchJob?.cancel()
         reactionBatchJob = launch {
             delay(300)
-            NostrRepository.subscribe(
+            subscribe(
                 reactionSubId,
-                NostrFilter(kinds = listOf(7), eTags = watchedReactionEventIds.toList(), limit = 500),
+                threadEngagementFilters(eventId, watchedReactionEventIds.toList()) { ids ->
+                    NostrFilter(kinds = listOf(7), eTags = ids, limit = 500)
+                },
             )
         }
     }
 
-    private fun scheduleRepostFetch(eventId: String) {
-        if (!watchedRepostEventIds.add(eventId)) return
+    private fun scheduleRepostFetch(targetId: String) {
+        if (sharedFetcher != null) return
+        if (!watchedRepostEventIds.add(targetId)) return
         while (watchedRepostEventIds.size > MAX_WATCHED_EVENTS) {
             watchedRepostEventIds.remove(watchedRepostEventIds.first())
         }
@@ -813,15 +682,29 @@ internal class ThreadController(
         repostBatchJob = launch {
             delay(300)
             val ids = watchedRepostEventIds.toList()
-            NostrRepository.subscribe(
+            subscribe(
                 repostSubId,
-                NostrFilter(kinds = listOf(6), eTags = ids, limit = 500),
+                threadEngagementFilters(eventId, ids) { targetIds ->
+                    NostrFilter(kinds = listOf(6, 16), eTags = targetIds, limit = 500)
+                },
             )
-            NostrRepository.subscribe(
+            subscribe(
                 quoteRepostSubId,
-                NostrFilter(kinds = noteContext.readableEventKinds, qTags = ids, limit = 500),
+                threadEngagementFilters(eventId, ids) { targetIds ->
+                    NostrFilter(kinds = noteContext.readableEventKinds, qTags = targetIds, limit = 500)
+                },
             )
         }
+    }
+
+    private suspend fun subscribe(subscriptionId: String, filter: NostrFilter): Set<String> =
+        subscribe(subscriptionId, listOf(filter))
+
+    private suspend fun subscribe(subscriptionId: String, filters: List<NostrFilter>): Set<String> {
+        val target = (noteContext as? NoteContext.Channel)?.let {
+            channelThreadReadTarget(it.channelId)
+        } ?: RelayTarget.AllEnabled
+        return NostrRepository.subscribe(subscriptionId, filters, target)
     }
 
     private fun replyFilters(ids: List<String>, limit: Int? = null): List<NostrFilter> =
@@ -846,7 +729,6 @@ internal class ThreadController(
         }
 
     companion object {
-        private const val MAX_RECEIVED_ENGAGEMENT_EVENTS = 2_000
         private const val MAX_WATCHED_EVENTS = 100
         private const val PROFILE_MAX_AGE_MS = 15 * 60 * 1_000L
     }
@@ -906,6 +788,40 @@ private fun ThreadViewModel.UiState.withEngagement(
     )
 }
 
+/**
+ * ストアの集合から導出した値に送信中の操作を重ねて反映する。表示中の投稿なら、
+ * リアクション・リポストした人の一覧（新しい順・1人1件）と引用の一覧も作る。
+ */
+internal fun ThreadViewModel.UiState.withProjectedEngagement(
+    eventId: String,
+    rootEventId: String,
+    engagement: TargetEngagement,
+    ownPubkey: String?,
+    pending: Map<EngagementSlot, PendingEngagementOperation>,
+): ThreadViewModel.UiState {
+    val summary = summarizeEngagement(engagement, ownPubkey)
+    val display = EngagementReducer.rebase(summary.toNoteEngagementState(), pending)
+    val reactions = engagement.reactions.values.sortedWith(compareBy<NostrEvent> { it.createdAt }.thenBy { it.id })
+    var next = withEngagement(eventId, rootEventId, display, ownPubkey = null).copy(
+        reactionEvents = reactionEvents.putListOrRemove(eventId, reactions),
+    )
+    if (eventId == rootEventId) {
+        fun List<String>.withOwn(include: Boolean) = when {
+            ownPubkey == null -> this
+            include && ownPubkey !in this -> listOf(ownPubkey) + this
+            !include -> this - ownPubkey
+            else -> this
+        }
+        next = next.copy(
+            reactionPubkeys = reactions.reversed().map { it.pubkey }.distinct().withOwn(display.hasOwnReaction),
+            repostPubkeys = engagement.reposts.values.sortedByDescending { it.createdAt }.map { it.pubkey }.distinct()
+                .withOwn(display.isRepostedByMe),
+            quoteReposts = engagement.quotes.values.sortedByDescending { it.createdAt },
+        )
+    }
+    return next
+}
+
 private fun <K, V> Map<K, V>.putOrRemove(key: K, value: V?): Map<K, V> =
     if (value == null) this - key else this + (key to value)
 
@@ -916,3 +832,16 @@ private fun <K, K2, V2> Map<K, Map<K2, V2>>.putMapOrRemove(
     key: K,
     value: Map<K2, V2>,
 ): Map<K, Map<K2, V2>> = if (value.isEmpty()) this - key else this + (key to value)
+
+/**
+ * 表示中の投稿と返信への付随情報を取るフィルター。limit はフィルターごとに効くので、
+ * 返信へのリアクションなどで上限が埋まって表示中の投稿の分が欠けないよう、表示中の投稿を分ける。
+ */
+internal fun threadEngagementFilters(
+    rootId: String,
+    ids: List<String>,
+    build: (List<String>) -> NostrFilter,
+): List<NostrFilter> {
+    val others = ids.filter { it != rootId }
+    return listOf(build(listOf(rootId))) + if (others.isEmpty()) emptyList() else listOf(build(others))
+}

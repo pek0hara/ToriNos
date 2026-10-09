@@ -6,7 +6,13 @@ import com.nostr.torinos.model.ReplyTarget
 import com.nostr.torinos.network.ChannelLocalStore
 import com.nostr.torinos.network.RelayEntry
 import com.nostr.torinos.network.RelayStore
+import com.nostr.torinos.network.RelayTarget
 import com.nostr.torinos.network.normalizeRelayUrl
+import com.nostr.torinos.network.normalizeRelayUrls
+import com.nostr.torinos.network.readableRelayUrls
+import com.nostr.torinos.util.logException
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.withTimeoutOrNull
 
 /**
  * 通常投稿画面でチャンネルへ返信するときの送信先と relay hint(第16.14節)。
@@ -59,3 +65,32 @@ internal suspend fun channelComposerRelayContext(channelId: String): ComposerRel
         recommendedRelays = ChannelLocalStore.get(channelId)?.meta?.relays.orEmpty(),
         relayEntries = RelayStore.entries.value,
     )
+
+/** スレッドを開いても、チャンネルの推奨リレーと閲覧先を引き継ぐ。 */
+internal suspend fun channelThreadReadTarget(channelId: String): RelayTarget {
+    val hint = RelayStore.selectedChannelRelayUrl.value
+    val entries = RelayStore.entries.value
+    val local = try {
+        withTimeoutOrNull(10_000) { ChannelLocalStore.get(channelId) }
+    } catch (cancelled: CancellationException) {
+        throw cancelled
+    } catch (error: Exception) {
+        logException("ChannelReplyContext", error, "Could not read channel thread relay metadata")
+        null
+    }
+    return channelThreadReadTarget(local?.meta?.relays.orEmpty(), local?.observedRelays.orEmpty(), hint, entries)
+}
+
+internal fun channelThreadReadTarget(
+    recommendedRelays: List<String>,
+    observedRelays: List<String>,
+    navigationRelayHint: String?,
+    relayEntries: List<RelayEntry>,
+): RelayTarget {
+    // 検索などからも開くため、選択中のチャンネルリレーだけに読み取り先を絞らない。
+    val reads = normalizeRelayUrls(
+        recommendedRelays + observedRelays + listOfNotNull(navigationRelayHint) + readableRelayUrls(relayEntries),
+        limit = Int.MAX_VALUE,
+    ).toSet()
+    return ChannelRelayPlanner.readTarget(reads, null)
+}

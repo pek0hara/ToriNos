@@ -33,6 +33,9 @@ import kotlin.time.Clock
  */
 @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
 class FeedRelayMergeGapTest {
+    @kotlin.test.BeforeTest
+    fun clearSharedEngagementStore() = com.nostr.torinos.engagement.EngagementStore.shared.clearForTest()
+
     private val newest = Clock.System.now().epochSeconds - 3_600
     private val sparseEvents = (0 until 40).map { event("a-$it", newest - it * 300L) }
     private val denseEvents = (0 until 100).map { event("b-$it", newest - 5 - it * 10L) }
@@ -154,7 +157,8 @@ class FeedRelayMergeGapTest {
 
     @Test
     fun relayAddedLaterDoesNotBlockLoadMore() = runTest {
-        val relays = SimulatedRelays(mapOf("relay-a" to sparseEvents, "relay-b" to denseEvents))
+        val manyDenseEvents = (0 until 300).map { event("b-$it", newest - 5 - it * 10L) }
+        val relays = SimulatedRelays(mapOf("relay-a" to sparseEvents, "relay-b" to manyDenseEvents))
         val controller = FeedController(computeDispatcher = Dispatchers.Unconfined, scope = backgroundScope, subscriptions = relays)
         settle(relays)
         repeat(3) {
@@ -517,8 +521,7 @@ class FeedRelayMergeGapTest {
         // 回復したら、続きを読める
         relays.failing.clear()
         repeat(5) { settle(relays) }
-        controller.loadMore()
-        settle(relays)
+        loadToTheEnd(controller, relays)
         assertTrue(controller.state.value.events.any { it.id == "a-35" })
         controller.close()
     }
@@ -612,6 +615,44 @@ class FeedRelayMergeGapTest {
         )
     }
 
+    @Test
+    fun relayReturningShortPagesDoesNotLoseOlderEvents() = runTest {
+        val relays = SimulatedRelays(mapOf("relay-a" to sparseEvents, "relay-b" to denseEvents))
+        relays.maxResponseSize = 20
+        val controller = FeedController(computeDispatcher = Dispatchers.Unconfined, scope = backgroundScope, subscriptions = relays)
+        settle(relays)
+        loadToTheEnd(controller, relays)
+        assertNoMissing(controller)
+        controller.close()
+    }
+
+    @Test
+    fun failedGapRemainsRecoverableAfterOtherRelayAdvances() = runTest {
+        val now = Clock.System.now().epochSeconds
+        val relays = SimulatedRelays(mapOf("relay-a" to listOf(event("initial", now - 100)), "relay-b" to emptyList()))
+        val controller = FeedController(computeDispatcher = Dispatchers.Unconfined, scope = backgroundScope, subscriptions = relays)
+        settle(relays)
+        controller.stopSubscriptions()
+        runCurrent()
+        val missing = event("only-on-b", now - 50)
+        relays.append("relay-b", listOf(missing))
+        relays.failing += "relay-b"
+        relays.append("relay-a", listOf(event("new-on-a", now - 10)))
+        controller.startSubscriptions()
+        repeat(10) { settle(relays) }
+        assertTrue(controller.state.value.pendingGapCount > 0)
+        assertFalse(controller.state.value.events.any { it.id == missing.id })
+        val attempts = relays.syncFetchCount("relay-b")
+        repeat(3) { settle(relays) }
+        assertEquals(attempts, relays.syncFetchCount("relay-b"))
+        relays.failing.clear()
+        controller.retryHistory()
+        repeat(10) { settle(relays) }
+        assertTrue(controller.state.value.events.any { it.id == missing.id })
+        assertEquals(0, controller.state.value.pendingGapCount)
+        controller.close()
+    }
+
     private fun TestScope.settle(relays: SimulatedRelays) {
         repeat(5) {
             runCurrent()
@@ -650,6 +691,7 @@ class FeedRelayMergeGapTest {
         val held = mutableSetOf<String>()
         /** 取得に失敗する（タイムアウトする）リレー。 */
         val failing = mutableSetOf<String>()
+        var maxResponseSize: Int? = null
 
         /** 応答する前に閉じられたフィード取得。無駄に送られた REQ の数。 */
         fun unansweredClosedFeedFetches(): Int = sessions.count { session ->
@@ -783,7 +825,7 @@ class FeedRelayMergeGapTest {
                             (filter.until?.let { event.createdAt <= it } ?: true)
                     }
                     .sortedByDescending { it.createdAt }
-                    .take(filter.limit ?: RELAY_DEFAULT_LIMIT)
+                    .take(minOf(filter.limit ?: RELAY_DEFAULT_LIMIT, maxResponseSize ?: Int.MAX_VALUE))
             }.distinctBy { it.id }
 
         private fun NostrFilter.isFeedFilter(): Boolean =

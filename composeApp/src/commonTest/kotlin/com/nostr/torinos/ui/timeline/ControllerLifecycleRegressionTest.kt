@@ -9,6 +9,9 @@ import kotlin.test.Test
 import kotlin.test.assertNotNull
 
 class ControllerLifecycleRegressionTest {
+    @kotlin.test.BeforeTest
+    fun clearSharedEngagementStore() = com.nostr.torinos.engagement.EngagementStore.shared.clearForTest()
+
     @Test
     fun everyScreenControllerCanCloseRepeatedlyWithoutOwningANewScope() {
         val parentJob = Job()

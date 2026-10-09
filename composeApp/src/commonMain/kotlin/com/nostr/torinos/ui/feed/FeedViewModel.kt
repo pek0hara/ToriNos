@@ -50,6 +50,8 @@ class FeedViewModel(
         val replies: Map<String, List<NostrEvent>> = emptyMap(),
         val repostCounts: Map<String, Int> = emptyMap(),
         val repostPubkeys: Map<String, List<String>> = emptyMap(),
+        /** 数え済みのリポスト。重複排除と取り消し時の差し引きに使う。 */
+        val repostEvents: Map<String, List<NostrEvent>> = emptyMap(),
         val quoteRepostEvents: Map<String, List<NostrEvent>> = emptyMap(),
         val quotedEvents: Map<String, NostrEvent> = emptyMap(),
         val repostedByPubkeys: Map<String, String> = emptyMap(),
@@ -58,6 +60,15 @@ class FeedViewModel(
         val repostedEvents: Map<String, String> = emptyMap(),
         val pendingEngagementOperations: Map<String, Map<EngagementSlot, PendingEngagementOperation>> = emptyMap(),
         val engagementError: String? = null,
+        val pendingGapCount: Int = 0,
+        val coverageGapCount: Int = 0,
+        val stalledRelayCount: Int = 0,
+        val awaitingAuthRelayCount: Int = 0,
+        val storageFailure: Boolean = false,
+        val localHistoryLimitReached: Boolean = false,
+        val requiresExplicitLoadMore: Boolean = false,
+        val hasOlderStoredEvents: Boolean = false,
+        val hasNewerStoredEvents: Boolean = false,
         val canLoadMore: Boolean = false,
         val isLoadingMore: Boolean = false,
         val isInitialLoad: Boolean = true,
@@ -101,7 +112,11 @@ class FeedViewModel(
     fun unrepost(eventId: String) = controller.unrepost(eventId)
     fun reportEvent(event: NostrEvent, reason: String, detail: String) =
         controller.reportEvent(event, reason, detail)
-    fun loadMore() = controller.loadMore()
+    fun loadMore() = controller.loadMore(explicit = false)
+    fun loadMoreExplicitly() = controller.loadMore(explicit = true)
+    fun loadNewerStored() = controller.loadNewerStored()
+    fun retryHistory() = controller.retryHistory()
+    fun resetHistory() = controller.resetHistory()
     fun refresh() = controller.refresh()
     fun refreshReactions(eventId: String) = controller.refreshReactions(eventId)
     fun resetToLatest(request: Int): Boolean = controller.resetToLatest(request)

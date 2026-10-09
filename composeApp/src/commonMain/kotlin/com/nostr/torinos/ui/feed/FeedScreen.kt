@@ -717,6 +717,14 @@ private fun FeedTimelinePane(
             ownPubkey = ownPubkey,
             onUserClick = onUserClick,
             onLoadMore = viewModel::loadMore,
+            onLoadMoreExplicitly = viewModel::loadMoreExplicitly,
+            onLoadNewerStored = viewModel::loadNewerStored,
+            onRetryHistory = viewModel::retryHistory,
+            onResetHistory = {
+                viewModel.resetHistory()
+                shouldStageInitialEvents = true
+                resetToTopRequest++
+            },
             onLike = viewModel::react,
             onUnlike = viewModel::unreact,
             onEmojiReact = viewModel::reactWithEmoji,
