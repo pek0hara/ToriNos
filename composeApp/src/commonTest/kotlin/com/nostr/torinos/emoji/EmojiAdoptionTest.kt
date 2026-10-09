@@ -56,6 +56,19 @@ class EmojiAdoptionTest {
         assertEquals(mapOf(cats to 1), state.counts)
     }
 
+    @Test
+    fun usersListEachPersonOnceAndMatchCounts() {
+        val state = EmojiAdoptionState(
+            latest = mapOf(
+                user to event(user, 1, cats, cats, dogs),
+                other to event(other, 1, cats),
+            ),
+        )
+        assertEquals(setOf(user, other), state.users.getValue(cats).toSet())
+        assertEquals(listOf(user), state.users.getValue(dogs))
+        assertEquals(state.counts, state.users.mapValues { it.value.size })
+    }
+
     private fun event(pubkey: String, time: Long, vararg addresses: EmojiSetAddress) =
         NostrEvent("event-$time", pubkey, time, 10030, addresses.map { listOf("a", it.value) }, "", "sig")
 }

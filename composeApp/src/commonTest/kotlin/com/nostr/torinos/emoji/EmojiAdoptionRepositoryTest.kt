@@ -12,6 +12,7 @@ import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.test.StandardTestDispatcher
+import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -93,6 +94,110 @@ class EmojiAdoptionRepositoryTest {
         assertFalse(repo.state.value.isLoading)
         assertTrue(repo.state.value.wasStopped)
         repo.close()
+    }
+
+    @Test
+    fun resumeAfterStopFetchesOnlyBatchesThatDidNotFinish() = runTest {
+        val users = (0 until 100).map { it.toString().padStart(64, '0') }
+        val requests = mutableListOf<SubscriptionSpec>()
+        var hangSecondBatch = true
+        val secondStarted = CompletableDeferred<Unit>()
+        val transport = EmojiDiscoveryTransport(open = { spec ->
+            requests += spec
+            if (hangSecondBatch && "50".padStart(64, '0') in spec.filters.single().authors!!) {
+                hanging(spec) { secondStarted.complete(Unit) }
+            } else response(spec, null)
+        }, validate = { true })
+        val repo = EmojiAdoptionRepository(own, "$own-3", this, transport, StandardTestDispatcher(testScheduler))
+        repo.start("wss://one.example", users.toSet())
+        secondStarted.await()
+        testScheduler.runCurrent()
+        repo.stop()
+
+        hangSecondBatch = false
+        repo.start("wss://one.example", users.toSet())
+        repo.state.first { !it.isLoading }
+
+        assertEquals(3, requests.size)
+        assertEquals(users.drop(50), requests.last().filters.single().authors)
+        repo.close()
+    }
+
+    @Test
+    fun addedFollowsAreFetchedWithoutRefetchingKnownOnes() = runTest {
+        val requests = mutableListOf<SubscriptionSpec>()
+        val repo = repository(requests, "$own-4")
+        repo.start("wss://one.example", setOf(user))
+        repo.state.first { !it.isLoading }
+
+        val added = "b".repeat(64)
+        repo.start("wss://one.example", setOf(user, added))
+        val state = repo.state.first { !it.isLoading }
+
+        assertEquals(listOf(listOf(user), listOf(added)), requests.map { it.filters.single().authors })
+        assertEquals(setOf(user, added), state.follows)
+        assertEquals(mapOf(address to 1), state.counts)
+        repo.close()
+    }
+
+    @Test
+    fun removedFollowsAreDroppedWithoutAnyRequest() = runTest {
+        val requests = mutableListOf<SubscriptionSpec>()
+        val other = "b".repeat(64)
+        val repo = repository(requests, "$own-5")
+        repo.start("wss://one.example", setOf(user, other))
+        repo.state.first { !it.isLoading }
+
+        repo.start("wss://one.example", setOf(other))
+
+        assertEquals(1, requests.size)
+        assertFalse(repo.state.value.isLoading)
+        assertEquals(setOf(other), repo.state.value.follows)
+        assertTrue(repo.state.value.counts.isEmpty())
+        repo.close()
+    }
+
+    @Test
+    fun refetchesEveryoneWhenStaleOrForced() = runTest {
+        val requests = mutableListOf<SubscriptionSpec>()
+        var now = 0L
+        val repo = repository(requests, "$own-6") { now }
+        repo.start("wss://one.example", setOf(user))
+        repo.state.first { !it.isLoading }
+
+        now = 299_000
+        repo.start("wss://one.example", setOf(user))
+        assertEquals(1, requests.size, "5分以内は取り直さない")
+
+        repo.start("wss://one.example", setOf(user), force = true)
+        repo.state.first { !it.isLoading }
+        assertEquals(2, requests.size)
+
+        now += 300_000
+        repo.start("wss://one.example", setOf(user))
+        val state = repo.state.first { !it.isLoading }
+        assertEquals(3, requests.size)
+        assertEquals(mapOf(address to 1), state.counts)
+        repo.close()
+    }
+
+    private fun TestScope.repository(
+        requests: MutableList<SubscriptionSpec>,
+        sessionId: String,
+        now: () -> Long = { 0L },
+    ): EmojiAdoptionRepository {
+        val transport = EmojiDiscoveryTransport(open = { spec ->
+            requests += spec
+            response(spec, event.takeIf { user in spec.filters.single().authors!! })
+        }, validate = { true })
+        return EmojiAdoptionRepository(own, sessionId, this, transport, StandardTestDispatcher(testScheduler), now)
+    }
+
+    private fun hanging(spec: SubscriptionSpec, onStart: () -> Unit) = object : SubscriptionSession {
+        override val id = spec.id
+        override val signals = flow<SubscriptionSignal> { onStart(); awaitCancellation() }
+        override suspend fun update(filters: List<NostrFilter>, target: RelayTarget) = Unit
+        override suspend fun close() = Unit
     }
 
     private fun response(spec: SubscriptionSpec, event: NostrEvent?) = object : SubscriptionSession {

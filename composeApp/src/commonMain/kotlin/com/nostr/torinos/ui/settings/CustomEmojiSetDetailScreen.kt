@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items as gridItems
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -24,6 +25,7 @@ import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.StarBorder
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -43,6 +45,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.nostr.torinos.emoji.CustomEmoji
 import com.nostr.torinos.network.ProfileFetchPolicy
@@ -52,6 +55,8 @@ import com.nostr.torinos.ui.components.NetworkImage
 import com.nostr.torinos.ui.components.ProfileNameText
 import com.nostr.torinos.ui.components.swipeBack
 import com.nostr.torinos.ui.profile.AvatarCircle
+import com.nostr.torinos.ui.profile.FollowedUsersSheet
+import com.nostr.torinos.ui.profile.FollowedUsersSummary
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -69,11 +74,16 @@ internal fun EmojiSetDetailScreen(
     onUnregister: () -> Unit,
     onBack: () -> Unit,
     onOpenProfile: (String) -> Unit = {},
+    /** このセットを kind 10030 に載せているフォロー先。 */
+    adopters: List<String> = emptyList(),
+    /** 登録者を取得中なら、人数が途中経過だと分かる見出しにする。 */
+    adoptersLoading: Boolean = false,
     serviceHeader: (@Composable () -> Unit)? = null,
 ) {
     val authorProfile by ProfileRepository.observe(authorPubkey).collectAsState(
         initial = ProfileRepository.getCached(authorPubkey),
     )
+    var showsAdopters by remember { mutableStateOf(false) }
     var selectedEmoji by remember(emojis, initialShortcode, initialImageUrl) {
         mutableStateOf(selectInitialEmoji(emojis, initialShortcode, initialImageUrl))
     }
@@ -141,83 +151,52 @@ internal fun EmojiSetDetailScreen(
                 .padding(padding)
                 .swipeBack(onBack),
         ) {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 12.dp),
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                Text(
-                    text = "${emojis.size}個の絵文字",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                selectedEmoji?.let { emoji ->
+            // 選んだ絵文字の見本は、一覧をスクロールしても見えるよう上に固定する。
+            // 縦に積むと一覧の表示域が狭くなりすぎるので、画像の横に名前とお気に入りを並べる。
+            selectedEmoji?.let { emoji ->
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 8.dp),
+                    horizontalArrangement = Arrangement.spacedBy(16.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
                     NetworkImage(
                         url = emoji.imageUrl,
                         contentDescription = ":${emoji.shortcode}:",
                         contentScale = ContentScale.Fit,
-                        modifier = Modifier.size(120.dp),
+                        modifier = Modifier.size(80.dp),
                     )
-                    Text(
-                        text = ":${emoji.shortcode}:",
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.Bold,
-                    )
-                    val favorite = isFavorite(emoji)
-                    FilterChip(
-                        selected = favorite,
-                        onClick = { onToggleFavorite(emoji) },
-                        enabled = canEdit,
-                        label = {
-                            Text(if (favorite) "お気に入り済み" else "お気に入りに追加")
-                        },
-                        leadingIcon = {
-                            Icon(
-                                imageVector = if (favorite) Icons.Default.Star else Icons.Default.StarBorder,
-                                contentDescription = null,
-                                modifier = Modifier.size(18.dp),
-                            )
-                        },
-                    )
-                }
-                if (authorPubkey.isNotBlank()) {
-                    Row(
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(8.dp))
-                            .clickable { onOpenProfile(authorPubkey) }
-                            .padding(horizontal = 8.dp, vertical = 4.dp),
-                        horizontalArrangement = Arrangement.spacedBy(10.dp),
-                        verticalAlignment = Alignment.CenterVertically,
+                    Column(
+                        modifier = Modifier.weight(1f),
+                        verticalArrangement = Arrangement.spacedBy(4.dp),
                     ) {
-                        AvatarCircle(
-                            pubkey = authorPubkey,
-                            name = authorProfile?.bestName,
-                            pictureUrl = authorProfile?.picture,
-                            size = 36,
+                        Text(
+                            text = ":${emoji.shortcode}:",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis,
                         )
-                        Column {
-                            Text(
-                                text = "作成者",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                            ProfileNameText(
-                                profile = authorProfile,
-                                fallback = "名前未設定",
-                                style = MaterialTheme.typography.bodyMedium,
-                                fontWeight = FontWeight.Medium,
-                            )
-                        }
+                        val favorite = isFavorite(emoji)
+                        FilterChip(
+                            selected = favorite,
+                            onClick = { onToggleFavorite(emoji) },
+                            enabled = canEdit,
+                            label = {
+                                Text(if (favorite) "お気に入り済み" else "お気に入りに追加")
+                            },
+                            leadingIcon = {
+                                Icon(
+                                    imageVector = if (favorite) Icons.Default.Star else Icons.Default.StarBorder,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(18.dp),
+                                )
+                            },
+                        )
                     }
-                } else {
-                    Text(
-                        text = "作成者不明",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
                 }
+                HorizontalDivider()
             }
             LazyVerticalGrid(
                 columns = GridCells.Adaptive(minSize = 68.dp),
@@ -226,6 +205,60 @@ internal fun EmojiSetDetailScreen(
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
+                // 作成者や登録者は一覧と一緒にスクロールさせ、絵文字の表示域を確保する。
+                item(span = { GridItemSpan(maxLineSpan) }, contentType = "header") {
+                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        if (authorPubkey.isNotBlank()) {
+                            Row(
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .clickable { onOpenProfile(authorPubkey) }
+                                    .padding(vertical = 4.dp),
+                                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                AvatarCircle(
+                                    pubkey = authorPubkey,
+                                    name = authorProfile?.bestName,
+                                    pictureUrl = authorProfile?.picture,
+                                    size = 36,
+                                )
+                                Column {
+                                    Text(
+                                        text = "作成者",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                    ProfileNameText(
+                                        profile = authorProfile,
+                                        fallback = "名前未設定",
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        fontWeight = FontWeight.Medium,
+                                    )
+                                }
+                            }
+                        } else {
+                            Text(
+                                text = "作成者不明",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        if (adopters.isNotEmpty()) {
+                            FollowedUsersSummary(
+                                title = emojiAdoptionLabel(adopters.size, hasData = true, loading = adoptersLoading),
+                                users = adopters,
+                                onClick = { showsAdopters = true },
+                            )
+                        }
+                        Text(
+                            text = "${emojis.size}個の絵文字",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(top = 4.dp),
+                        )
+                    }
+                }
                 gridItems(
                     items = emojis,
                     key = { emoji -> "${emoji.shortcode}-${emoji.imageUrl}" },
@@ -254,6 +287,15 @@ internal fun EmojiSetDetailScreen(
                 }
             }
         }
+    }
+
+    if (showsAdopters) {
+        FollowedUsersSheet(
+            title = "「$title」を登録している人 ${adopters.size}人",
+            users = adopters,
+            onDismiss = { showsAdopters = false },
+            onOpenProfile = onOpenProfile,
+        )
     }
 }
 

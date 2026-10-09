@@ -34,10 +34,14 @@ data class EmojiSetDiscoveryState(
 )
 
 /** 公開カタログは選択した1リレーから取得。自分の登録同期とは独立する。 */
-object EmojiSetDiscovery {
-    private const val STALE_AFTER_MS = 5 * 60 * 1_000L
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
-    private val transport = EmojiDiscoveryTransport()
+internal object EmojiSetDiscovery : EmojiSetCatalog()
+
+internal open class EmojiSetCatalog(
+    private val transport: EmojiDiscoveryTransport = EmojiDiscoveryTransport(),
+    private val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Main),
+    private val selectedRelay: () -> String? = { RelayStore.selectedEmojiRelayUrl.value },
+    private val now: () -> Long = { Clock.System.now().toEpochMilliseconds() },
+) {
     private val _state = MutableStateFlow(EmojiSetDiscoveryState())
     val state: StateFlow<EmojiSetDiscoveryState> = _state.asStateFlow()
     private val cache = linkedMapOf<String, Pair<Long, EmojiSetDiscoveryState>>()
@@ -66,7 +70,7 @@ object EmojiSetDiscovery {
         }
     }
 
-    fun ensureLoaded(relay: String? = RelayStore.selectedEmojiRelayUrl.value) {
+    fun ensureLoaded(relay: String? = selectedRelay()) {
         relay ?: return
         if (_state.value.relayUrl != relay) {
             listJob?.cancel()
@@ -75,16 +79,18 @@ object EmojiSetDiscovery {
         }
         if (listJob?.isActive == true) return
         val saved = cache[relay]
-        if (saved != null && !saved.second.failed && nowMillis() - saved.first < STALE_AFTER_MS) return
+        if (saved != null && !saved.second.failed && now() - saved.first < STALE_AFTER_MS) return
         refresh()
     }
 
     fun refresh() {
         val relay = _state.value.relayUrl
-            ?: RelayStore.selectedEmojiRelayUrl.value ?: return
+            ?: selectedRelay() ?: return
         if (listJob?.isActive == true && _state.value.relayUrl == relay) return
         val token = ++generation
-        _state.update { it.copy(relayUrl = relay, isLoading = true, isLoadingReferences = false, failed = false) }
+        // 取り直すときは、見つからなかった参照ももう一度探す。
+        _state.update { it.copy(relayUrl = relay, isLoading = true, isLoadingReferences = false, failed = false,
+            failedReferences = emptySet()) }
         listJob = scope.launch {
             val result = transport.fetch(nextSubId(), relay,
                 listOf(NostrFilter(kinds = listOf(EmojiSetAddress.KIND_EMOJI_SET), limit = 100)))
@@ -99,11 +105,15 @@ object EmojiSetDiscovery {
         }
     }
 
-    /** アドレスの正確な組み合わせで追加取得。別リレーへフォールバックしない。 */
+    /**
+     * アドレスの正確な組み合わせで追加取得。別リレーへフォールバックしない。
+     * リレーが最後まで応答したうえで見つからなかったセットは、[refresh] まで取りに行かない。
+     */
     suspend fun fetchReferences(addresses: List<EmojiSetAddress>) {
         val relay = _state.value.relayUrl ?: return
         val token = generation
-        val missing = addresses.distinct().filter { address -> _state.value.publishedSets.none { it.address == address } }
+        val known = _state.value.publishedSets.mapTo(HashSet()) { it.address } + _state.value.failedReferences
+        val missing = addresses.distinct().filter { it !in known }
         if (missing.isEmpty()) return
         _state.update { it.copy(isLoadingReferences = true) }
         try {
@@ -111,10 +121,12 @@ object EmojiSetDiscovery {
                 val result = transport.fetch(nextSubId(), relay, batch.map { it.toFilter() })
                 if (token != generation || _state.value.relayUrl != relay) return
                 val sets = result.events.mapNotNull { it.toPublishedEmojiSet() }.filter { it.address in batch }
+                val found = sets.mapTo(HashSet()) { it.address }
+                // 途中で切れた応答では「無い」と言い切れないので、次の機会に取り直す。
+                val notFound = if (result.complete) batch.toSet() - found else emptySet()
                 _state.update { current -> current.copy(
                     publishedSets = deduplicatePublishedEmojiSets(current.publishedSets + sets).take(3_000),
-                    failedReferences = (current.failedReferences - sets.map { it.address }.toSet()) +
-                        (batch.toSet() - sets.map { it.address }.toSet()),
+                    failedReferences = current.failedReferences - found + notFound,
                 ) }
             }
         } finally {
@@ -126,7 +138,7 @@ object EmojiSetDiscovery {
     }
 
     suspend fun fetch(address: EmojiSetAddress): PublishedEmojiSet? {
-        val relay = RelayStore.selectedEmojiRelayUrl.value ?: return null
+        val relay = selectedRelay() ?: return null
         ensureLoaded(relay)
         _state.value.publishedSets.firstOrNull { it.address == address }?.let { return it }
         val result = transport.fetch(nextSubId(), relay, listOf(address.toFilter()))
@@ -134,13 +146,16 @@ object EmojiSetDiscovery {
     }
 
     private fun saveCache(relay: String, freshList: Boolean = false) {
-        val fetchedAt = if (freshList) nowMillis() else cache[relay]?.first ?: 0L
+        val fetchedAt = if (freshList) now() else cache[relay]?.first ?: 0L
         cache.remove(relay)
         cache[relay] = fetchedAt to _state.value.copy(isLoading = false, isLoadingReferences = false)
         while (cache.size > 2) cache.remove(cache.keys.first())
     }
     private fun nextSubId() = "emoji-catalog-${++requestId}"
-    private fun nowMillis(): Long = Clock.System.now().toEpochMilliseconds()
+
+    private companion object {
+        const val STALE_AFTER_MS = 5 * 60 * 1_000L
+    }
 }
 
 /**

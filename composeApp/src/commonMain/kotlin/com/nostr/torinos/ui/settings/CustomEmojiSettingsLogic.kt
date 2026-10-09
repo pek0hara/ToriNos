@@ -124,3 +124,21 @@ internal fun List<PublishedEmojiSet>.sortForDiscovery(
         .thenBy { it.name.lowercase() }
         .thenBy { it.address.value },
 )
+
+/**
+ * フォロー先が登録しているが一覧に無いセットを、登録人数の多い順に [budget] 件まで選ぶ。
+ * リレーが無いと答えたセットは選ばず、取得枠も使わない。
+ */
+internal fun emojiReferencesToRequest(
+    counts: Map<EmojiSetAddress, Int>,
+    published: List<PublishedEmojiSet>,
+    failed: Set<EmojiSetAddress>,
+    budget: Int,
+): List<EmojiSetAddress> {
+    val known = published.mapTo(HashSet()) { it.address }
+    return counts.entries
+        .filter { it.key !in known && it.key !in failed }
+        .sortedWith(compareByDescending<Map.Entry<EmojiSetAddress, Int>> { it.value }.thenBy { it.key.value })
+        .take((budget - published.size).coerceAtLeast(0))
+        .map { it.key }
+}

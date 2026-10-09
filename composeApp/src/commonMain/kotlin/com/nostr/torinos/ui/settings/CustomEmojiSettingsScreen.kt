@@ -39,6 +39,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import com.nostr.torinos.account.LocalAccountSession
 import com.nostr.torinos.emoji.EmojiSetAddress
+import com.nostr.torinos.ui.profile.FollowedUsersSheet
+import com.nostr.torinos.emoji.PublishedEmojiSet
 import com.nostr.torinos.emoji.EmojiAdoptionState
 import com.nostr.torinos.emoji.EmojiSetDiscoveryState
 import com.nostr.torinos.ui.components.RelaySelector
@@ -81,6 +83,8 @@ fun CustomEmojiSettingsScreen(
     val adoption = adoptionSnapshot.takeIf { it.relayUrl == selectedRelay && it.follows == follows - setOfNotNull(account?.pubkey) }
         ?: EmojiAdoptionState()
     val counts = remember(adoption.latest) { adoption.counts }
+    val adopters = remember(adoption.latest) { adoption.users }
+    var adoptersSet by remember { mutableStateOf<PublishedEmojiSet?>(null) }
     var sort by rememberSaveable { mutableStateOf(EmojiSetSort.Adoption) }
     val effectiveSort = if (adoption.latest.isEmpty()) EmojiSetSort.Newest else sort
     var referenceBudget by remember(selectedRelay, account?.sessionId) { mutableStateOf(1_000) }
@@ -123,12 +127,8 @@ fun CustomEmojiSettingsScreen(
     }
     LaunchedEffect(selectedRelay, adoption.isLoading, adoption.latest, discovery.isLoading, referenceBudget) {
         if (selectedRelay != null && !adoption.isLoading && !discovery.isLoading && counts.isNotEmpty()) {
-            val addresses = counts.entries.sortedWith(
-                compareByDescending<Map.Entry<EmojiSetAddress, Int>> { it.value }.thenBy { it.key.value }
-            ).map { it.key }
-            val newAddresses = addresses.filter { address -> discovery.publishedSets.none { it.address == address } }
-                .take((referenceBudget - discovery.publishedSets.size).coerceAtLeast(0))
-            EmojiSetDiscovery.fetchReferences(newAddresses)
+            EmojiSetDiscovery.fetchReferences(emojiReferencesToRequest(
+                counts, discovery.publishedSets, discovery.failedReferences, referenceBudget))
         }
     }
     val desiredSets = remember(filteredPublishedSets, discoverQuery, effectiveSort, counts) {
@@ -216,6 +216,8 @@ fun CustomEmojiSettingsScreen(
             onUnregister = { repository?.unregisterSet(set.address) },
             onBack = onDetailBack,
             onOpenProfile = onOpenProfile,
+            adopters = adopters[set.address].orEmpty(),
+            adoptersLoading = adoption.isLoading,
             serviceHeader = serviceHeader,
         )
         return
@@ -346,6 +348,8 @@ fun CustomEmojiSettingsScreen(
                             onClick = { openedSet = set.toView() },
                             adoptionLabel = emojiAdoptionLabel(counts[set.address] ?: 0,
                                 adoption.latest.isNotEmpty(), adoption.isLoading),
+                            onShowAdopters = if (adopters[set.address].isNullOrEmpty()) null
+                                else ({ adoptersSet = set }),
                         )
                         HorizontalDivider()
                     }
@@ -359,5 +363,15 @@ fun CustomEmojiSettingsScreen(
                 }
             }
         }
+    }
+
+    adoptersSet?.let { set ->
+        val users = adopters[set.address].orEmpty()
+        FollowedUsersSheet(
+            title = "「${set.name}」を登録している人 ${users.size}人",
+            users = users,
+            onDismiss = { adoptersSet = null },
+            onOpenProfile = onOpenProfile,
+        )
     }
 }
