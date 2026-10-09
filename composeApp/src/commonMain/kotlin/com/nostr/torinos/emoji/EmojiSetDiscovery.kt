@@ -11,7 +11,10 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 
 /** リレーで公開されている kind 30030 絵文字セット。 */
 data class PublishedEmojiSet(
@@ -28,6 +31,8 @@ data class EmojiSetDiscoveryState(
     val relayUrl: String? = null,
     val publishedSets: List<PublishedEmojiSet> = emptyList(),
     val isLoading: Boolean = false,
+    /** このリレーの一覧取得が（成功・失敗を問わず）一度終わった。それまでは空でも「見つからない」と言わない。 */
+    val listLoaded: Boolean = false,
     val isLoadingReferences: Boolean = false,
     val failed: Boolean = false,
     val failedReferences: Set<EmojiSetAddress> = emptySet(),
@@ -99,6 +104,7 @@ internal open class EmojiSetCatalog(
                 publishedSets = deduplicatePublishedEmojiSets(
                     current.publishedSets + result.events.mapNotNull { it.toPublishedEmojiSet() }).take(3_000),
                 isLoading = false,
+                listLoaded = true,
                 failed = !result.complete,
             ) }
             saveCache(relay, freshList = result.complete)
@@ -117,17 +123,26 @@ internal open class EmojiSetCatalog(
         if (missing.isEmpty()) return
         _state.update { it.copy(isLoadingReferences = true) }
         try {
-            missing.chunked(20).forEach { batch ->
-                val result = transport.fetch(nextSubId(), relay, batch.map { it.toFilter() })
-                if (token != generation || _state.value.relayUrl != relay) return
-                val sets = result.events.mapNotNull { it.toPublishedEmojiSet() }.filter { it.address in batch }
-                val found = sets.mapTo(HashSet()) { it.address }
-                // 途中で切れた応答では「無い」と言い切れないので、次の機会に取り直す。
-                val notFound = if (result.complete) batch.toSet() - found else emptySet()
-                _state.update { current -> current.copy(
-                    publishedSets = deduplicatePublishedEmojiSets(current.publishedSets + sets).take(3_000),
-                    failedReferences = current.failedReferences - found + notFound,
-                ) }
+            // 20件ずつのバッチを同時に[REFERENCE_CONCURRENCY]本まで流す。反映はバッチごと。
+            val gate = Semaphore(REFERENCE_CONCURRENCY)
+            coroutineScope {
+                missing.chunked(REFERENCE_BATCH_SIZE).forEach { batch ->
+                    launch {
+                        gate.withPermit {
+                            if (token != generation || _state.value.relayUrl != relay) return@withPermit
+                            val result = transport.fetch(nextSubId(), relay, batch.map { it.toFilter() })
+                            if (token != generation || _state.value.relayUrl != relay) return@withPermit
+                            val sets = result.events.mapNotNull { it.toPublishedEmojiSet() }.filter { it.address in batch }
+                            val found = sets.mapTo(HashSet()) { it.address }
+                            // 途中で切れた応答では「無い」と言い切れないので、次の機会に取り直す。
+                            val notFound = if (result.complete) batch.toSet() - found else emptySet()
+                            _state.update { current -> current.copy(
+                                publishedSets = deduplicatePublishedEmojiSets(current.publishedSets + sets).take(3_000),
+                                failedReferences = current.failedReferences - found + notFound,
+                            ) }
+                        }
+                    }
+                }
             }
         } finally {
             if (token == generation && _state.value.relayUrl == relay) {
@@ -155,6 +170,8 @@ internal open class EmojiSetCatalog(
 
     private companion object {
         const val STALE_AFTER_MS = 5 * 60 * 1_000L
+        const val REFERENCE_BATCH_SIZE = 20
+        const val REFERENCE_CONCURRENCY = 3
     }
 }
 

@@ -2,41 +2,57 @@ package com.nostr.torinos.emoji
 
 import com.nostr.torinos.model.NostrEvent
 import com.nostr.torinos.model.NostrFilter
-import com.nostr.torinos.network.NostrRepository
-import kotlinx.coroutines.CoroutineStart
-import kotlinx.coroutines.async
-import kotlinx.coroutines.coroutineScope
+import com.nostr.torinos.network.RelayOutcome
+import com.nostr.torinos.network.SubscriptionBehavior
+import com.nostr.torinos.network.SubscriptionSession
+import com.nostr.torinos.network.SubscriptionSignal
+import com.nostr.torinos.network.SubscriptionSpec
+import com.nostr.torinos.util.fetchTraceLog
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.flow.first
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 
-/** 購読して EOSE（またはタイムアウト）まで待ち、受け取ったイベントを返して購読を閉じる。 */
-internal suspend fun fetchEventsUntilEose(
-    subscriptionId: String,
-    filter: NostrFilter,
-    timeoutMs: Long,
+internal data class RelayFetchResult(val events: List<NostrEvent>, val complete: Boolean)
+
+/**
+ * 有限購読で、全リレーの応答（EOSE・拒否・接続不可）か購読のタイムアウトまで受け取り、購読を閉じる。
+ * 置換可能イベントの最新を選ぶため、最初に応答したリレーだけで終えない（速いリレーが古い版を持つことがある）。
+ * [RelayFetchResult.complete]は全リレーが EOSE を返したとき true。タイムアウトでも受け取った分は返す。
+ */
+internal suspend fun fetchEventsFromRelays(
+    spec: SubscriptionSpec,
+    open: suspend (SubscriptionSpec) -> SubscriptionSession,
     accept: (NostrEvent) -> Boolean,
-): List<NostrEvent> = coroutineScope {
-    val mutex = Mutex()
-    val received = mutableListOf<NostrEvent>()
-    // 購読要求より先に受信を始め、最初のイベントを取りこぼさない。
-    val collector = launch(start = CoroutineStart.UNDISPATCHED) {
-        NostrRepository.events(subscriptionId).collect { event ->
-            if (accept(event)) mutex.withLock { received += event }
-        }
-    }
-    val eose = async(start = CoroutineStart.UNDISPATCHED) { NostrRepository.eose(subscriptionId).first() }
+): RelayFetchResult {
+    val timeout = (spec.behavior as SubscriptionBehavior.Fetch).timeoutMillis
+    val events = linkedMapOf<String, NostrEvent>()
+    var complete = false
+    val session = open(spec)
     try {
-        NostrRepository.subscribe(subscriptionId, filter)
-        withTimeoutOrNull(timeoutMs) { eose.await() }
-        mutex.withLock { received.toList() }
+        // FetchCompleted が来ない異常時にも止まるよう、購読のタイムアウトより少し長く待つ。
+        withTimeoutOrNull(timeout + 1_000) {
+            session.signals.first { signal ->
+                when (signal) {
+                    is SubscriptionSignal.Event -> if (accept(signal.event)) {
+                        events.getOrPut(signal.event.id) { signal.event }
+                        traceReceived(spec.id, signal)
+                    }
+                    is SubscriptionSignal.FetchCompleted -> complete = !signal.timedOut &&
+                        signal.outcomes.isNotEmpty() && signal.outcomes.values.all { it is RelayOutcome.Eose }
+                    else -> Unit
+                }
+                signal is SubscriptionSignal.FetchCompleted
+            }
+        }
     } finally {
-        collector.cancel()
-        eose.cancel()
-        NostrRepository.close(subscriptionId)
+        withContext(NonCancellable) { session.close() }
     }
+    return RelayFetchResult(events.values.toList(), complete)
+}
+
+private fun traceReceived(subscriptionId: String, signal: SubscriptionSignal.Event) {
+    fetchTraceLog { "EMOJI $subscriptionId ← ${signal.relayUrl} kind=${signal.event.kind} created_at=${signal.event.createdAt}" }
 }
 
 /** 置換可能イベントの新旧比較（NIP-01: created_at が同じなら id の小さい方）。 */

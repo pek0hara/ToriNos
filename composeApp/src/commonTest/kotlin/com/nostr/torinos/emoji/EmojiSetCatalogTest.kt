@@ -7,12 +7,14 @@ import com.nostr.torinos.network.RelayTarget
 import com.nostr.torinos.network.SubscriptionSession
 import com.nostr.torinos.network.SubscriptionSignal
 import com.nostr.torinos.network.SubscriptionSpec
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 class EmojiSetCatalogTest {
@@ -74,6 +76,36 @@ class EmojiSetCatalogTest {
         assertEquals(4, requests.size, "一覧2回と参照2回")
     }
 
+    @Test
+    fun listLoadedIsSetOnlyAfterTheListFetchEnds() = runTest {
+        val catalog = catalog { spec -> response(spec, emptyList(), delayMillis = 100) }
+        assertFalse(catalog.state.value.listLoaded)
+        catalog.acquire(relay)
+        testScheduler.runCurrent()
+        assertFalse(catalog.state.value.listLoaded)
+        advanceUntilIdle()
+        assertTrue(catalog.state.value.listLoaded)
+
+        val failing = catalog { spec -> response(spec, emptyList(), timedOut = true) }
+        failing.acquire(relay)
+        advanceUntilIdle()
+        assertTrue(failing.state.value.listLoaded)
+    }
+
+    @Test
+    fun referenceBatchesAreFetchedConcurrently() = runTest {
+        val catalog = catalog { spec -> response(spec, emptyList(), delayMillis = if (spec.filters.any { it.dTags != null }) 100 else 0) }
+        loadList(catalog)
+        val references = (1..61).map { EmojiSetAddress(author, "set$it") }
+
+        val startedAt = testScheduler.currentTime
+        catalog.fetchReferences(references)
+
+        // 20件ずつ4バッチを同時3本まで: 2往復分。
+        assertEquals(200, testScheduler.currentTime - startedAt)
+        assertEquals(references.toSet(), catalog.state.value.failedReferences)
+    }
+
     private fun TestScope.catalog(open: (SubscriptionSpec) -> SubscriptionSession) = EmojiSetCatalog(
         transport = EmojiDiscoveryTransport(open = { open(it) }, validate = { true }),
         scope = this,
@@ -86,10 +118,16 @@ class EmojiSetCatalogTest {
         advanceUntilIdle()
     }
 
-    private fun response(spec: SubscriptionSpec, events: List<NostrEvent>, timedOut: Boolean = false) =
+    private fun response(
+        spec: SubscriptionSpec,
+        events: List<NostrEvent>,
+        timedOut: Boolean = false,
+        delayMillis: Long = 0,
+    ) =
         object : SubscriptionSession {
             override val id = spec.id
             override val signals = flow {
+                delay(delayMillis)
                 val url = (spec.target as RelayTarget.Single).url
                 events.filter { event -> spec.filters.any { it.acceptsEmojiDiscoveryEvent(event) } }
                     .forEach { emit(SubscriptionSignal.Event(url, it, false)) }

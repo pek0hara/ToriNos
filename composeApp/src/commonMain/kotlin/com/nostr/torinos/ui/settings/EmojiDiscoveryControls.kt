@@ -5,6 +5,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.DropdownMenu
@@ -60,23 +61,29 @@ internal fun EmojiDiscoveryControls(
                     }
                 }
             }
-            Text("${count}セット", style = MaterialTheme.typography.bodySmall)
+            Text("${count}セット", style = MaterialTheme.typography.bodySmall, maxLines = 1, softWrap = false)
             Row(verticalAlignment = Alignment.CenterVertically) {
                 IconButton(onClick = onToggleSearch) {
                     Icon(Icons.Default.Search, contentDescription = if (searchOpen) "検索を閉じる" else "検索",
                         tint = if (searchOpen) MaterialTheme.colorScheme.primary else LocalContentColor.current)
                 }
-                TextButton(onClick = onRefresh, enabled = enabled && !loading) { Text(if (loading) "取得中" else "更新") }
+                // 登録人数の取得中は同じ位置で「停止」にする。行を出し入れして一覧がずれないようにする。
+                if (onStop != null) {
+                    TextButton(onClick = onStop, modifier = Modifier.widthIn(min = ACTION_MIN_WIDTH)) { Text("停止", maxLines = 1, softWrap = false) }
+                } else {
+                    TextButton(onClick = onRefresh, enabled = enabled && !loading, modifier = Modifier.widthIn(min = ACTION_MIN_WIDTH)) {
+                        Text(if (loading) "取得中" else "更新", maxLines = 1, softWrap = false)
+                    }
+                }
             }
         }
         notice?.let {
             Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
-        if (onStop != null || pendingOrder) {
-            Row {
-                onStop?.let { stop -> TextButton(onClick = stop) { Text("取得を停止") } }
-                if (pendingOrder) TextButton(onClick = onApplyOrder) { Text("並び順を更新") }
-            }
+        if (pendingOrder) {
+            TextButton(onClick = onApplyOrder) { Text("並び順を更新") }
         }
     }
 }
+
+private val ACTION_MIN_WIDTH = 72.dp

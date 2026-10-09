@@ -35,6 +35,9 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
+import androidx.compose.runtime.derivedStateOf
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.foundation.layout.Box
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import com.nostr.torinos.account.LocalAccountSession
@@ -88,7 +91,7 @@ fun CustomEmojiSettingsScreen(
     val adopters = remember(adoption.latest) { adoption.users }
     var adoptersSet by remember { mutableStateOf<PublishedEmojiSet?>(null) }
     var sort by rememberSaveable { mutableStateOf(EmojiSetSort.Adoption) }
-    val effectiveSort = if (adoption.latest.isEmpty()) EmojiSetSort.Newest else sort
+    val effectiveSort = displayedEmojiSort(sort, canCountAdoption = account != null)
     var referenceBudget by remember(selectedRelay, account?.sessionId) { mutableStateOf(1_000) }
     val discoverListState = rememberLazyListState()
     var orderedKeys by remember(selectedRelay, account?.sessionId) { mutableStateOf(emptyList<String>()) }
@@ -137,7 +140,11 @@ fun CustomEmojiSettingsScreen(
         filteredPublishedSets.sortForDiscovery(discoverQuery, effectiveSort, counts)
     }
     val desiredKeys = remember(desiredSets) { desiredSets.map { it.address.value } }
-    val pendingOrder = orderedKeys.isNotEmpty() && orderedKeys != desiredKeys &&
+    // 先頭にいるときは自動で並び替えるので、ボタンは先頭以外にいるときだけ出す（反映前の1コマで出さない）。
+    val isListAtTop by remember {
+        derivedStateOf { discoverListState.firstVisibleItemIndex == 0 && discoverListState.firstVisibleItemScrollOffset == 0 }
+    }
+    val pendingOrder = orderedKeys.isNotEmpty() && orderedKeys != desiredKeys && !isListAtTop &&
         !discovery.isLoading && !discovery.isLoadingReferences && !adoption.isLoading
     LaunchedEffect(desiredKeys, discovery.isLoading, discovery.isLoadingReferences, adoption.isLoading) {
         val isIdle = !discovery.isLoading && !discovery.isLoadingReferences && !adoption.isLoading
@@ -155,6 +162,9 @@ fun CustomEmojiSettingsScreen(
     val pendingReferences = remember(counts, discovery.publishedSets, discovery.failedReferences) {
         val published = discovery.publishedSets.mapTo(HashSet()) { it.address }
         counts.keys.count { address -> address !in published && address !in discovery.failedReferences }
+    }
+    val autoReferenceRequests = remember(counts, discovery.publishedSets, discovery.failedReferences, referenceBudget) {
+        emojiReferencesToRequest(counts, discovery.publishedSets, discovery.failedReferences, referenceBudget)
     }
     val visibleSets = remember(desiredSets, positions) { desiredSets.sortedBy { positions[it.address.value] ?: Int.MAX_VALUE } }
     fun refresh() {
@@ -329,8 +339,19 @@ fun CustomEmojiSettingsScreen(
                     }
                 }
 
-                // 「登録済みのみ」は端末内の登録内容だけで出せるので、取得中でも空表示を待たない。
-                if (filteredPublishedSets.isEmpty() && (showRegisteredOnly || !isListLoading)) {
+                val listContent = emojiDiscoveryListContent(
+                    listLoaded = discovery.listLoaded,
+                    isListLoading = isListLoading,
+                    showRegisteredOnly = showRegisteredOnly,
+                    isEmpty = filteredPublishedSets.isEmpty(),
+                )
+                if (listContent == EmojiDiscoveryListContent.Loading) {
+                    item {
+                        Box(Modifier.fillMaxWidth().padding(32.dp), contentAlignment = Alignment.Center) {
+                            CircularProgressIndicator()
+                        }
+                    }
+                } else if (listContent == EmojiDiscoveryListContent.Empty) {
                     item {
                         EmptyText(
                             when {
@@ -356,7 +377,8 @@ fun CustomEmojiSettingsScreen(
                         HorizontalDivider()
                     }
                 }
-                if (!showRegisteredOnly && pendingReferences > 0 && !discovery.isLoadingReferences && !adoption.isLoading) item {
+                if (!showRegisteredOnly && shouldOfferMoreEmojiReferences(pendingReferences, autoReferenceRequests,
+                        isLoading = discovery.isLoadingReferences || adoption.isLoading)) item {
                     TextButton(onClick = { referenceBudget = (referenceBudget + 100).coerceAtMost(3_000) },
                         enabled = referenceBudget < 3_000) {
                         Text(if (referenceBudget >= 3_000) "表示上限3,000セットに達しました"

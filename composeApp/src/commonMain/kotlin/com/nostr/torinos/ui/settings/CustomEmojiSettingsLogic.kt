@@ -142,3 +142,36 @@ internal fun emojiReferencesToRequest(
         .take((budget - published.size).coerceAtLeast(0))
         .map { it.key }
 }
+
+/** 公開セット一覧の欄に出すもの。 */
+internal enum class EmojiDiscoveryListContent { Loading, Empty, Sets }
+
+/**
+ * 一覧を一度取得し終えるまで（タブの切り替え中、取得の開始前を含む）は、空でも読み込み中として扱う。
+ * 「登録済みのみ」は端末内の登録内容だけで決まるので待たない。
+ */
+internal fun emojiDiscoveryListContent(
+    listLoaded: Boolean,
+    isListLoading: Boolean,
+    showRegisteredOnly: Boolean,
+    isEmpty: Boolean,
+): EmojiDiscoveryListContent = when {
+    !isEmpty -> EmojiDiscoveryListContent.Sets
+    showRegisteredOnly -> EmojiDiscoveryListContent.Empty
+    !listLoaded || isListLoading -> EmojiDiscoveryListContent.Loading
+    else -> EmojiDiscoveryListContent.Empty
+}
+
+/**
+ * 表示・並べ替えに使う並び順。登録人数を数えられない（未ログイン）ときだけ新着順にする。
+ * 人数の取得中も選んだ並び順のまま出す（人数0の間はどちらも作成日時順で同じ並びになる）。
+ */
+internal fun displayedEmojiSort(sort: EmojiSetSort, canCountAdoption: Boolean): EmojiSetSort =
+    if (canCountAdoption) sort else EmojiSetSort.Newest
+
+/** 「さらに読み込む」を出すか。自動で取りに行く参照が残っている間や取得中は出さない。 */
+internal fun shouldOfferMoreEmojiReferences(
+    pendingReferences: Int,
+    autoRequests: List<EmojiSetAddress>,
+    isLoading: Boolean,
+): Boolean = pendingReferences > 0 && autoRequests.isEmpty() && !isLoading

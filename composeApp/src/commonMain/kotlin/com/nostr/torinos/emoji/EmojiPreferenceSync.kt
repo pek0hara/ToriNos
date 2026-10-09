@@ -4,6 +4,9 @@ import com.nostr.torinos.account.AccountSigner
 import com.nostr.torinos.model.NostrEvent
 import com.nostr.torinos.model.NostrFilter
 import com.nostr.torinos.network.NostrRepository
+import com.nostr.torinos.network.SubscriptionBehavior
+import com.nostr.torinos.network.SubscriptionSession
+import com.nostr.torinos.network.SubscriptionSpec
 import com.nostr.torinos.network.normalizeRelayUrl
 import com.nostr.torinos.util.appLog
 import kotlin.time.Clock
@@ -200,36 +203,29 @@ internal class NostrEmojiPreferenceTransport(
     private val sessionId: String,
     private val relaysLoaded: suspend () -> Unit,
     private val writableRelayUrls: () -> List<String>,
+    private val open: suspend (SubscriptionSpec) -> SubscriptionSession = { NostrRepository.openSubscription(it) },
 ) : EmojiPreferenceTransport {
     private var generation = 0L
 
     override suspend fun awaitRelaysLoaded() = relaysLoaded()
 
     override suspend fun fetchLatestPreferences(pubkey: String): NostrEvent? =
-        fetchEventsUntilEose(
-            subscriptionId = nextSubId("emoji-preferences"),
-            filter = NostrFilter(
-                kinds = listOf(EmojiPreferenceSync.KIND_EMOJI_PREFERENCES),
-                authors = listOf(pubkey),
-                limit = 1,
+        fetchEventsFromRelays(
+            fetchSpec(
+                "emoji-preferences",
+                NostrFilter(kinds = listOf(EmojiPreferenceSync.KIND_EMOJI_PREFERENCES), authors = listOf(pubkey), limit = 1),
             ),
-            timeoutMs = EmojiPreferenceSync.FETCH_TIMEOUT_MS,
+            open,
         ) { it.kind == EmojiPreferenceSync.KIND_EMOJI_PREFERENCES && it.pubkey == pubkey }
+            .events
             .newestOrNull()
 
     override suspend fun fetchSets(addresses: List<EmojiSetAddress>): Map<EmojiSetAddress, RegisteredEmojiSet> {
         if (addresses.isEmpty()) return emptyMap()
         val expected = addresses.toSet()
-        val events = fetchEventsUntilEose(
-            subscriptionId = nextSubId("emoji-set-refs"),
-            filter = NostrFilter(
-                kinds = listOf(EmojiSetAddress.KIND_EMOJI_SET),
-                authors = addresses.map { it.author }.distinct(),
-                dTags = addresses.map { it.identifier }.distinct(),
-                limit = addresses.size.coerceAtMost(500),
-            ),
-            timeoutMs = EmojiPreferenceSync.FETCH_TIMEOUT_MS,
-        ) { it.kind == EmojiSetAddress.KIND_EMOJI_SET }
+        val events = fetchEventsFromRelays(fetchSpec("emoji-set-refs", emojiSetReferenceFilter(addresses)), open) {
+            it.kind == EmojiSetAddress.KIND_EMOJI_SET
+        }.events
         return events
             .groupBy { event -> event.dTag()?.let { EmojiSetAddress.of(event.pubkey, it) } }
             .filterKeys { it != null && it in expected }
@@ -242,8 +238,29 @@ internal class NostrEmojiPreferenceTransport(
     override suspend fun publish(event: NostrEvent, relayUrls: Collection<String>): Set<String> =
         NostrRepository.publishToRelaysWithResult(event, relayUrls).succeededRelays.toSet()
 
-    private fun nextSubId(prefix: String): String = "$prefix-${sessionId.takeLast(12)}-${generation++}"
+    private fun fetchSpec(prefix: String, filter: NostrFilter) = SubscriptionSpec(
+        id = "$prefix-${sessionId.takeLast(12)}-${generation++}",
+        filters = listOf(filter),
+        behavior = SubscriptionBehavior.Fetch(EmojiPreferenceSync.FETCH_TIMEOUT_MS),
+    )
 }
+
+/**
+ * 登録セットをまとめて引くフィルター。作者と識別子の組み合わせで当たるため、目的外のセット（同じ作者の別の識別子）も
+ * 返り得る。その分も受け取れるよう、上限は組み合わせの数にする。
+ */
+internal fun emojiSetReferenceFilter(addresses: List<EmojiSetAddress>): NostrFilter {
+    val authors = addresses.map { it.author }.distinct()
+    val identifiers = addresses.map { it.identifier }.distinct()
+    return NostrFilter(
+        kinds = listOf(EmojiSetAddress.KIND_EMOJI_SET),
+        authors = authors,
+        dTags = identifiers,
+        limit = (authors.size * identifiers.size).coerceAtMost(SET_REFERENCE_LIMIT),
+    )
+}
+
+private const val SET_REFERENCE_LIMIT = 500
 
 @Serializable
 internal data class PendingEmojiPreferencePublish(
