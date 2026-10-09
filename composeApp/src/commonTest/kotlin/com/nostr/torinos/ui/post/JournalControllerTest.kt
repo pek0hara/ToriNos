@@ -11,19 +11,19 @@ import com.nostr.torinos.journal.JournalFetchRequest
 import com.nostr.torinos.journal.JournalFetchResult
 import com.nostr.torinos.journal.JournalInteractionSource
 import com.nostr.torinos.journal.JournalMemberStorage
+import com.nostr.torinos.journal.JournalReferenceSource
 import com.nostr.torinos.journal.OTHER
 import com.nostr.torinos.journal.OWNER
+import com.nostr.torinos.journal.daysOfMonthUntil
 import com.nostr.torinos.journal.epochOf
 import com.nostr.torinos.journal.hexId
 import com.nostr.torinos.journal.post
 import com.nostr.torinos.journal.reaction
+import com.nostr.torinos.journal.reply
 import com.nostr.torinos.journal.utcClock
 import com.nostr.torinos.model.NostrEvent
 import com.nostr.torinos.model.NostrFilter
 import com.nostr.torinos.model.NostrProfile
-import com.nostr.torinos.network.EventByIdResult
-import com.nostr.torinos.network.TargetEventFetcher
-import com.nostr.torinos.network.TargetLoadState
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flowOf
@@ -40,6 +40,7 @@ class JournalControllerTest {
     private val sep15 = LocalDate(2026, 9, 15)
     private val sep3 = LocalDate(2026, 9, 3)
     private val sep1 = LocalDate(2026, 9, 1)
+    private val sep2 = LocalDate(2026, 9, 2)
 
     @Test
     fun calendarIsHiddenByDefault() = runTest {
@@ -49,7 +50,7 @@ class JournalControllerTest {
             clock = utcClock(),
             eventSource = FakeRelay(),
             engagementSource = FakeEngagement(emptyList()),
-            referenceFetcher = NoReferences,
+            referenceSource = NoReferences,
             profileSource = NoProfiles,
             cachedReceivedLikes = { _, _, _ -> emptyList() },
             memberStorage = FakeMemberStorage(),
@@ -244,13 +245,126 @@ class JournalControllerTest {
     }
 
     @Test
+    fun backfillFetchesReferencesOnceAfterTheWholeMonth() = runTest {
+        val relay = FakeRelay(
+            reply("today", parentId = hexId(20), createdAt = epochOf(sep15)),
+            reply("early", parentId = hexId(21), createdAt = epochOf(sep3)),
+            reply("first", parentId = hexId(22), createdAt = epochOf(sep1)),
+        )
+        val references = FakeReferences(
+            post(hexId(20), pubkey = OTHER),
+            post(hexId(21), pubkey = OTHER),
+            post(hexId(22), pubkey = OTHER),
+        )
+        val controller = controller(relay, references = references)
+        controller.setRelayUrl("wss://memo")
+        settle()
+
+        // 選択日の分は先に取り、残りの日の分は日ごとではなく月の取得を終えてから1回で取る。
+        assertEquals(listOf(setOf(hexId(20)), setOf(hexId(21), hexId(22))), references.requests.map { it.first })
+        assertTrue(references.requests.all { it.second == "wss://memo" })
+        assertEquals(setOf(hexId(20), hexId(21), hexId(22)), controller.state.value.referencedEvents.keys)
+    }
+
+    @Test
+    fun referencesAlreadyInTheJournalAreNotFetched() = runTest {
+        val parent = post(hexId(30), createdAt = epochOf(sep1))
+        val relay = FakeRelay(
+            parent,
+            reply("child", parentId = parent.id, createdAt = epochOf(sep3)),
+            reaction("got", targetId = parent.id, createdAt = epochOf(sep3)),
+        )
+        val references = FakeReferences()
+        val controller = controller(relay, references = references)
+        controller.setKinds(setOf(JournalActivityKind.Post, JournalActivityKind.Reply, JournalActivityKind.ReceivedLike))
+        controller.setRelayUrl("wss://memo")
+        settle()
+
+        assertEquals(emptyList(), references.requests)
+        assertEquals(parent, controller.state.value.referencedEvents[parent.id])
+    }
+
+    @Test
+    fun theRestOfTheMonthIsFetchedInOneRequest() = runTest {
+        val relay = FakeRelay(post("first", createdAt = epochOf(sep1)), post("early", createdAt = epochOf(sep3)))
+        val controller = controller(relay)
+        controller.setRelayUrl("wss://memo")
+        settle()
+
+        // 選択日（今日）を先に1回、残りの日をまとめて1回。
+        assertEquals(listOf(listOf(sep15), sep1.daysOfMonthUntil(LocalDate(2026, 9, 14))), relay.requests.map { it.dates })
+        assertTrue(controller.state.value.coverage.hasLoadedMonth(sep1, controller.state.value.kinds, sep15, setOf(OWNER)))
+        assertEquals(setOf("first", "early"), controller.state.value.timeline.eventIdsOn(listOf(sep1, sep3)))
+    }
+
+    @Test
+    fun aCutOffRangeFetchesOlderPagesUntilTheMonthIsComplete() = runTest {
+        val relay = FakeRelay(
+            post("sep3", createdAt = epochOf(sep3)),
+            post("sep2", createdAt = epochOf(sep2)),
+            post("sep1", createdAt = epochOf(sep1)),
+        )
+        relay.pageLimit = 2
+        val controller = controller(relay)
+        controller.setRelayUrl("wss://memo")
+        settle()
+
+        assertEquals(4, relay.requests.size)
+        val state = controller.state.value
+        assertTrue(state.coverage.hasLoadedMonth(sep1, state.kinds, sep15, setOf(OWNER)))
+        assertEquals(setOf("sep1", "sep2", "sep3"), state.timeline.eventIdsOn(listOf(sep1, sep2, sep3)))
+    }
+
+    @Test
+    fun refreshReplacesADaySplitAcrossPagesOnlyOnceItIsComplete() = runTest {
+        val deleted = post("deleted", createdAt = epochOf(sep2, hour = 8))
+        val relay = FakeRelay(
+            post("sep3", createdAt = epochOf(sep3)),
+            post("sep2-late", createdAt = epochOf(sep2, hour = 14)),
+            post("sep2-early", createdAt = epochOf(sep2, hour = 10)),
+            deleted,
+        )
+        relay.pageLimit = 2
+        val controller = controller(relay)
+        controller.setRelayUrl("wss://memo")
+        settle()
+        assertEquals(setOf("sep2-late", "sep2-early", "deleted"), controller.state.value.timeline.eventIdsOn(listOf(sep2)))
+
+        relay.events -= deleted
+        controller.toggleCalendar()
+        controller.refresh()
+        settle()
+
+        // 9/2 は2ページにまたがる。前のページで足した行を、その日を置き換えるときに消してはいけない。
+        assertEquals(setOf("sep2-late", "sep2-early"), controller.state.value.timeline.eventIdsOn(listOf(sep2)))
+    }
+
+    @Test
+    fun aCutOffDayIsNotRecordedAsLoadedAndIsCompletedByTheMonth() = runTest {
+        val relay = FakeRelay(
+            post("late", createdAt = epochOf(sep15, hour = 11)),
+            post("middle", createdAt = epochOf(sep15, hour = 10)),
+            post("early", createdAt = epochOf(sep15, hour = 9)),
+        )
+        relay.pageLimit = 2
+        val controller = controller(relay)
+        controller.setRelayUrl("wss://memo")
+        settle()
+
+        val state = controller.state.value
+        // 選択日の取得は打ち切られたので取得済みにせず、月の範囲の取得で続きを取る。
+        assertEquals(setOf("late", "middle", "early"), state.visibleEntries.map { it.event.id }.toSet())
+        assertTrue(state.coverage.hasLoadedMonth(sep1, state.kinds, sep15, setOf(OWNER)))
+    }
+
+    @Test
     fun ownJournalWithoutASignerShowsAnError() = runTest {
         val controller = JournalController(
             scope = backgroundScope,
             clock = utcClock(),
             eventSource = FakeRelay(),
             engagementSource = FakeEngagement(emptyList()),
-            referenceFetcher = NoReferences,
+            referenceSource = NoReferences,
             profileSource = NoProfiles,
             cachedReceivedLikes = { _, _, _ -> emptyList() },
         )
@@ -452,7 +566,7 @@ class JournalControllerTest {
             clock = utcClock(),
             eventSource = relay,
             engagementSource = FakeEngagement(emptyList()),
-            referenceFetcher = NoReferences,
+            referenceSource = NoReferences,
             profileSource = NoProfiles,
             cachedReceivedLikes = { _, _, _ -> emptyList() },
             memberStorage = storage,
@@ -520,13 +634,14 @@ class JournalControllerTest {
         clock: JournalClock = utcClock(),
         storage: JournalMemberStorage = FakeMemberStorage(),
         interactions: JournalInteractionSource = JournalInteractionSource { _, _ -> emptyList() },
+        references: JournalReferenceSource = NoReferences,
     ) = JournalController(
         accountSession = session(),
         scope = backgroundScope,
         clock = clock,
         eventSource = relay,
         engagementSource = engagement,
-        referenceFetcher = NoReferences,
+        referenceSource = references,
         profileSource = NoProfiles,
         cachedReceivedLikes = { _, _, _ -> emptyList() },
         memberStorage = storage,
@@ -551,25 +666,33 @@ class JournalControllerTest {
         resources = AccountSessionResources(),
     )
 
-    /** フィルターに合うイベントを返すリレー。[complete]がfalseならタイムアウト扱い。 */
+    /**
+     * フィルターに合うイベントを返すリレー。[complete]がfalseならタイムアウト扱い。
+     * [pageLimit]に届くと新しい順にその件数だけ返し、返した最古の時刻で打ち切ったことにする。
+     */
     private inner class FakeRelay(vararg initial: NostrEvent) : JournalEventSource {
         val events = initial.toMutableList()
         val requests = mutableListOf<JournalFetchRequest>()
         var complete = true
+        var pageLimit: Int? = null
         var gate: CompletableDeferred<Unit>? = null
 
         override suspend fun fetch(request: JournalFetchRequest): JournalFetchResult {
             requests += request
             gate?.await()
-            val clock = utcClock()
-            val matched = events.filter { event ->
-                clock.dateOf(event.createdAt) in request.dates && request.filters.any { it.matches(event) }
-            }
-            return JournalFetchResult(request, matched, complete)
+            val matched = events
+                .filter { event -> request.filters.any { it.matches(event) } }
+                .sortedByDescending { it.createdAt }
+            val limit = pageLimit
+            // 実際のリレーと同じく、上限ちょうどの件数が返ったら打ち切られたものとみなす。
+            if (limit == null || matched.size < limit) return JournalFetchResult(request, matched, complete)
+            val page = matched.take(limit)
+            return JournalFetchResult(request, page, complete, truncatedAt = page.last().createdAt)
         }
 
         private fun NostrFilter.matches(event: NostrEvent): Boolean =
-            (kinds == null || event.kind in kinds.orEmpty()) &&
+            event.createdAt >= (since ?: Long.MIN_VALUE) && event.createdAt <= (until ?: Long.MAX_VALUE) &&
+                (kinds == null || event.kind in kinds.orEmpty()) &&
                 (authors == null || event.pubkey in authors.orEmpty()) &&
                 (pTags == null || event.tags.any { it.firstOrNull() == "p" && it.getOrNull(1) in pTags.orEmpty() })
     }
@@ -584,9 +707,19 @@ class JournalControllerTest {
         }
     }
 
-    private object NoReferences : TargetEventFetcher {
-        override suspend fun fetch(ids: Set<String>, onEvent: (NostrEvent) -> Unit) =
-            EventByIdResult(TargetLoadState.NotFoundInQueriedRelays)
+    private object NoReferences : JournalReferenceSource {
+        override suspend fun fetch(ids: Set<String>, relayUrl: String?, onEvent: (NostrEvent) -> Unit) = Unit
+    }
+
+    /** [known]だけを返す参照先の取得元。呼ばれた ID と指定のリレーを記録する。 */
+    private class FakeReferences(vararg known: NostrEvent) : JournalReferenceSource {
+        private val byId = known.associateBy { it.id }
+        val requests = mutableListOf<Pair<Set<String>, String?>>()
+
+        override suspend fun fetch(ids: Set<String>, relayUrl: String?, onEvent: (NostrEvent) -> Unit) {
+            requests += ids to relayUrl
+            ids.mapNotNull(byId::get).forEach(onEvent)
+        }
     }
 
     private object NoProfiles : JournalProfileSource {

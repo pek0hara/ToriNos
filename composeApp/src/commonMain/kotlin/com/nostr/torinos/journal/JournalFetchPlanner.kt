@@ -22,16 +22,22 @@ internal data class JournalFetchRequest(
         roles.any { (member, kinds) -> member in members && kinds.any { it in this.kinds } }
 }
 
+/**
+ * [truncatedAt]が null でなければ、件数の上限に届いて打ち切られた。その時刻より新しいイベントは全部届いたが、
+ * その時刻以前には届いていないものがある。
+ */
 internal data class JournalFetchResult(
     val request: JournalFetchRequest,
     val events: List<NostrEvent>,
     val complete: Boolean,
+    val truncatedAt: Long? = null,
 )
 
 /** 日付・種類・取得済み範囲から、リレーへ送るフィルターを組み立てる純粋処理。 */
 internal object JournalFetchPlanner {
     const val DATE_LIMIT = 500
-    const val MONTH_RECEIVED_LIKE_LIMIT = 5_000
+    /** 範囲の取得の1ページの上限。打ち切られたら`until`を下げて続きを取る。 */
+    const val PAGE_LIMIT = 500
 
     /**
      * [date]で、メンバーごとに足りない種類[missingByMember]を取得する。
@@ -51,7 +57,9 @@ internal object JournalFetchPlanner {
             .filterValues { it.isNotEmpty() }
             .entries
             .groupBy({ it.value }, { it.key })
-            .mapNotNull { (kinds, members) -> authored(listOf(date), kinds, members.toSet(), relayUrl, since, until) }
+            .mapNotNull { (kinds, members) ->
+                authored(listOf(date), kinds, members.toSet(), relayUrl, since, until, DATE_LIMIT)
+            }
         val receivedLikeMembers = missingByMember
             .filterValues { JournalActivityKind.ReceivedLike in it }
             .keys
@@ -60,30 +68,56 @@ internal object JournalFetchPlanner {
         return authoredRequests + listOfNotNull(receivedLikeRequest)
     }
 
-    /** 月のもらったいいねを、まだ取っていないメンバーの分だけ1回で取る。全員取得済みなら取らない。 */
-    fun monthReceivedLikes(
-        month: LocalDate,
-        today: LocalDate,
-        kinds: Set<JournalActivityKind>,
+    /**
+     * [days]のうち足りない分を、日ごとではなく範囲で取る。足りない種類が同じメンバーを1つのリクエストにまとめ、
+     * 範囲はそのメンバーたちに足りない日がある最初の日から最後の日までにする。範囲内の取得済みの日も取り直すが、
+     * 結果はIDで重複を除くため害はなく、リクエストを分けるより安い。もらったいいねは取得先が違うため別にする。
+     */
+    fun forRange(
+        days: List<LocalDate>,
         coverage: JournalCoverage,
+        kinds: Set<JournalActivityKind>,
         members: Collection<String>,
+        relayUrl: String?,
         clock: JournalClock,
-    ): JournalFetchRequest? {
-        if (JournalActivityKind.ReceivedLike !in kinds) return null
-        val days = month.daysOfMonthUntil(today)
+    ): List<JournalFetchRequest> {
         val receivedLike = setOf(JournalActivityKind.ReceivedLike)
-        val missingDates = days.filter { date -> coverage.missingByMember(date, receivedLike, members).isNotEmpty() }
-        if (missingDates.isEmpty()) return null
-        val targets = members.filterTo(mutableSetOf()) { member ->
-            missingDates.any { date -> coverage.missing(date, receivedLike, member).isNotEmpty() }
+        val authoredKinds = kinds - JournalActivityKind.ReceivedLike
+        val authoredRequests = members
+            .associateWith { member -> days.flatMapTo(mutableSetOf()) { coverage.missing(it, authoredKinds, member) } }
+            .filterValues { it.isNotEmpty() }
+            .entries
+            .groupBy({ it.value }, { it.key })
+            .mapNotNull { (missingKinds, group) ->
+                val range = days.missingRange(coverage, missingKinds, group) ?: return@mapNotNull null
+                authored(
+                    range, missingKinds, group.toSet(), relayUrl,
+                    since = clock.startOfDay(range.first()), until = clock.endOfDay(range.last()), limit = PAGE_LIMIT,
+                )
+            }
+        val receivedLikeMembers = if (JournalActivityKind.ReceivedLike in kinds) {
+            members.filterTo(mutableSetOf()) { member -> days.any { coverage.missing(it, receivedLike, member).isNotEmpty() } }
+        } else {
+            emptySet()
         }
-        return receivedLikes(
-            dates = missingDates,
-            members = targets,
-            since = clock.startOfDay(days.first()),
-            until = clock.endOfDay(days.last()),
-            limit = MONTH_RECEIVED_LIKE_LIMIT,
-        )
+        val receivedLikeRequest = receivedLikeMembers.takeIf { it.isNotEmpty() }?.let { targets ->
+            days.missingRange(coverage, receivedLike, targets)?.let { range ->
+                receivedLikes(range, targets, clock.startOfDay(range.first()), clock.endOfDay(range.last()), PAGE_LIMIT)
+            }
+        }
+        return authoredRequests + listOfNotNull(receivedLikeRequest)
+    }
+
+    /** [members]の誰かに[kinds]が足りない最初の日から最後の日まで。足りない日がなければ null。 */
+    private fun List<LocalDate>.missingRange(
+        coverage: JournalCoverage,
+        kinds: Set<JournalActivityKind>,
+        members: Collection<String>,
+    ): List<LocalDate>? {
+        val first = indexOfFirst { coverage.missingByMember(it, kinds, members).isNotEmpty() }
+        if (first < 0) return null
+        val last = indexOfLast { coverage.missingByMember(it, kinds, members).isNotEmpty() }
+        return subList(first, last + 1).toList()
     }
 
     /** 月単位でもらったいいねを取るなら、選択日の初回取得からは外す。 */
@@ -103,6 +137,7 @@ internal object JournalFetchPlanner {
         relayUrl: String?,
         since: Long,
         until: Long,
+        limit: Int,
     ): JournalFetchRequest? {
         val eventKinds = buildList {
             if (JournalActivityKind.Post in kinds || JournalActivityKind.Reply in kinds) add(1)
@@ -117,7 +152,7 @@ internal object JournalFetchPlanner {
                         authors = members.sorted(),
                         since = since,
                         until = until,
-                        limit = DATE_LIMIT,
+                        limit = limit,
                     ),
                 )
             }
@@ -129,7 +164,7 @@ internal object JournalFetchPlanner {
                         rootKindTags = listOf("1"),
                         since = since,
                         until = until,
-                        limit = DATE_LIMIT,
+                        limit = limit,
                     ),
                 )
             }

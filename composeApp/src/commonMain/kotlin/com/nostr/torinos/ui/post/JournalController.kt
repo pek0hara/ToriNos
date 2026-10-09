@@ -21,10 +21,13 @@ import com.nostr.torinos.journal.JournalFetchResult
 import com.nostr.torinos.journal.JournalInteractionSource
 import com.nostr.torinos.journal.JournalMemberStorage
 import com.nostr.torinos.journal.JournalMembers
+import com.nostr.torinos.journal.JournalRangePager
+import com.nostr.torinos.journal.JournalReferenceSource
 import com.nostr.torinos.journal.JournalTimeline
 import com.nostr.torinos.journal.NostrJournalEngagementSource
 import com.nostr.torinos.journal.NostrJournalEventSource
 import com.nostr.torinos.journal.NostrJournalInteractionSource
+import com.nostr.torinos.journal.NostrJournalReferenceSource
 import com.nostr.torinos.journal.daysOfMonthUntil
 import com.nostr.torinos.journal.effectiveJournalKinds
 import com.nostr.torinos.journal.isSameMonth
@@ -39,11 +42,9 @@ import com.nostr.torinos.model.COMMENT_EVENT_KIND
 import com.nostr.torinos.model.NostrEvent
 import com.nostr.torinos.model.NostrProfile
 import com.nostr.torinos.model.ReactionOption
-import com.nostr.torinos.network.EventByIdFetcher
 import com.nostr.torinos.network.ProfileFetchPolicy
 import com.nostr.torinos.network.ProfileRepository
 import com.nostr.torinos.network.ReactionEventStore
-import com.nostr.torinos.network.TargetEventFetcher
 import com.nostr.torinos.ui.SafeCoroutineLauncher
 import com.nostr.torinos.ui.timeline.NoteDeletionResult
 import com.nostr.torinos.ui.timeline.NoteDeletionService
@@ -86,7 +87,7 @@ internal class JournalController(
     private val clock: JournalClock = JournalClock(),
     private val eventSource: JournalEventSource = NostrJournalEventSource(),
     private val engagementSource: JournalEngagementSource = NostrJournalEngagementSource(),
-    private val referenceFetcher: TargetEventFetcher = EventByIdFetcher(),
+    private val referenceSource: JournalReferenceSource = NostrJournalReferenceSource(),
     private val profileSource: JournalProfileSource = JournalProfileSource.Repository,
     private val cachedReceivedLikes: (pubkey: String, since: Long, until: Long) -> List<NostrEvent> =
         ReactionEventStore::receivedReactions,
@@ -507,6 +508,8 @@ internal class JournalController(
         if (store.value.coverage.hasLoadedMonth(monthStart, kinds, today, targets)) {
             log { "loadMonth cached: $monthStart already loaded for $kinds ${store.value.summary()}" }
             update { it.copy(isLoading = false) }
+            // 月の取得の最後にまとめて取る参照先は、取得中に月を離れると取れていないことがある。
+            loadJob = launcher.launch { fetchReferences(store.value.monthEvents(monthStart, kinds)) }
             return
         }
 
@@ -545,6 +548,10 @@ internal class JournalController(
         }
     }
 
+    /**
+     * 月の残りの日を、日ごとではなく範囲で取る。件数の上限に届いたら、取り切れた日だけを反映して続きを取る。
+     * 対象は始めた時点の表示中のメンバー。
+     */
     private suspend fun backfillMonth(
         token: LoadToken,
         kinds: Set<JournalActivityKind>,
@@ -553,26 +560,17 @@ internal class JournalController(
     ) {
         log { "backfill start month=${token.month}" }
         try {
-            // 対象は毎回いまの表示中のメンバーから決める。途中で隠した人の分は取らない
-            // （表示に戻した人は、その操作で月を開き直すため、ここで拾う必要はない）。
-            JournalFetchPlanner.monthReceivedLikes(
-                token.month, today, kinds, store.value.coverage, store.value.fetchMembers, clock,
+            val current = store.value
+            val requests = JournalFetchPlanner.forRange(
+                token.month.daysOfMonthUntil(today), current.coverage, kinds, current.fetchMembers, relayUrl, clock,
             )
-                ?.let { request ->
-                    val results = fetchAll(listOf(request))
-                    if (!isCurrent(token)) return logStale("backfill receivedLikes", token)
-                    fetchReferences(applyResults(results, replace))
-                }
-            for (date in token.month.daysOfMonthUntil(today)) {
-                if (!isCurrent(token)) return logStale("backfill $date", token)
-                val current = store.value
-                val missing = current.coverage.missingByMember(date, kinds, current.fetchMembers).withoutReceivedLikes()
-                if (missing.isEmpty()) continue
-                val results = fetchAll(JournalFetchPlanner.forDate(date, missing, relayUrl, clock))
-                if (!isCurrent(token)) return logStale("backfill $date", token)
-                fetchReferences(applyResults(results, replace))
+            for (request in requests) {
+                if (!fetchPages(token, request, replace)) return
             }
             log { "backfill done month=${token.month} ${store.value.summary()}" }
+            // 参照先は日ごとではなく、月の分がそろってから1回で取る。返信の親やいいねの対象が
+            // 同じ月の自分の投稿なら、取得済みの行から解決できる。
+            fetchReferences(store.value.monthEvents(token.month, kinds))
         } catch (e: CancellationException) {
             throw e
         } catch (e: Throwable) {
@@ -581,6 +579,35 @@ internal class JournalController(
                 update { it.copy(isLoading = false, error = e.message ?: "ジャーナルの月間データの読み込みに失敗しました") }
             }
         }
+    }
+
+    /**
+     * [request]の範囲を、打ち切られるたびに`until`を下げて取る。取り切れた日は取得済みにし（[replace]なら置き換え）、
+     * 取り切れなかった日のイベントは足すだけにする。月を離れたら false。
+     */
+    private suspend fun fetchPages(token: LoadToken, request: JournalFetchRequest, replace: Boolean): Boolean {
+        val pager = JournalRangePager(request, clock)
+        while (true) {
+            val page = pager.next() ?: break
+            val result = fetchAll(listOf(page)).single()
+            if (!isCurrent(token)) {
+                logStale("backfill ${request.kinds}", token)
+                return false
+            }
+            val outcome = pager.accept(result)
+            if (outcome.closedDates.isNotEmpty() || outcome.events.isNotEmpty()) {
+                applyResults(
+                    listOf(JournalFetchResult(request.copy(dates = outcome.closedDates), outcome.events, complete = true)),
+                    replace,
+                )
+            }
+        }
+        val leftovers = pager.leftovers()
+        if (leftovers.isNotEmpty()) {
+            log { "backfill left ${leftovers.size} events unrecorded" }
+            applyResults(listOf(JournalFetchResult(request.copy(dates = emptyList()), leftovers, complete = false)), replace)
+        }
+        return true
     }
 
     /** 選択中の月の1日を開く。[force]なら取得済みでも取り直し、完了した分だけ結果で置き換える。 */
@@ -638,7 +665,8 @@ internal class JournalController(
                         log {
                             val dates = request.dates.let { if (it.size == 1) "${it.single()}" else "${it.first()}..${it.last()}(${it.size}d)" }
                             "fetch dates=$dates kinds=${request.kinds} target=${request.target} " +
-                                "eventKinds=${request.filters.map { it.kinds }} events=${result.events.size} complete=${result.complete}"
+                                "eventKinds=${request.filters.map { it.kinds }} until=${request.filters.firstOrNull()?.until} " +
+                                "events=${result.events.size} complete=${result.complete} truncatedAt=${result.truncatedAt}"
                         }
                     }
                 }
@@ -652,7 +680,7 @@ internal class JournalController(
 
     /**
      * 取得結果を日付索引と取得済み範囲へ反映し、採用したイベントを返す。
-     * [replace]なら、全リレーが完了した取得の日付・種類だけを結果で置き換える。
+     * [replace]なら、全リレーが完了し、打ち切られなかった取得の日付・種類だけを結果で置き換える。
      */
     private fun applyResults(
         results: List<JournalFetchResult>,
@@ -668,13 +696,15 @@ internal class JournalController(
             var coverage = state.coverage
             accepted.forEach { (result, activities) ->
                 val request = result.request
-                if (replace && result.complete) {
+                // 件数の上限で打ち切られた結果は、取り切れていない日があるため未完了と同じに扱う。
+                val complete = result.complete && result.truncatedAt == null
+                if (replace && complete) {
                     request.dates.forEach { date ->
                         timeline = timeline.removeMatching(date, request.kinds, request.members)
                     }
                 }
                 timeline = timeline.upsert(activities)
-                if (result.complete) {
+                if (complete) {
                     coverage = coverage.markLoaded(request.dates, request.kinds, request.members intersect members.pubkeys)
                 }
             }
@@ -765,15 +795,23 @@ internal class JournalController(
         }
     }
 
-    /** 行の表示に必要な参照先を取得し、作者と参照先の作者のプロフィールを監視に加える。 */
+    /**
+     * 行の表示に必要な参照先を用意し、作者と参照先の作者のプロフィールを監視に加える。
+     * ジャーナルに取得済みの行はそのまま使い、残りだけを指定のリレー優先で取得する。
+     */
     private suspend fun fetchReferences(events: Collection<NostrEvent>) {
         if (events.isEmpty()) return
-        val known = store.value.referencedEvents
-        val ids = events.flatMapTo(mutableSetOf()) { it.journalReferencedEventIds() } - known.keys
+        val current = store.value
+        val ids = events.flatMapTo(mutableSetOf()) { it.journalReferencedEventIds() } - current.referencedEvents.keys
+        val inTimeline = ids.mapNotNull { id -> current.timeline[id]?.event }
+        if (inTimeline.isNotEmpty()) {
+            update { it.copy(referencedEvents = it.referencedEvents + inTimeline.associateBy(NostrEvent::id)) }
+        }
+        val missing = ids - inTimeline.mapTo(mutableSetOf(), NostrEvent::id)
         val fetched = mutableListOf<NostrEvent>()
-        if (ids.isNotEmpty()) {
+        if (missing.isNotEmpty()) {
             try {
-                referenceFetcher.fetch(ids) { event -> fetched += event }
+                referenceSource.fetch(missing, relayUrl) { event -> fetched += event }
             } catch (e: CancellationException) {
                 throw e
             } catch (_: Throwable) {
@@ -782,9 +820,14 @@ internal class JournalController(
             if (fetched.isNotEmpty()) {
                 update { it.copy(referencedEvents = it.referencedEvents + fetched.associateBy(NostrEvent::id)) }
             }
-            log { "references requested=${ids.size} fetched=${fetched.size} cached=${store.value.referencedEvents.size}" }
         }
-        watchProfiles(events.mapTo(mutableSetOf()) { it.pubkey } + fetched.map { it.pubkey })
+        if (ids.isNotEmpty()) {
+            log {
+                "references requested=${ids.size} inTimeline=${inTimeline.size} fetched=${fetched.size}/${missing.size} " +
+                    "cached=${store.value.referencedEvents.size}"
+            }
+        }
+        watchProfiles(events.mapTo(mutableSetOf()) { it.pubkey } + (inTimeline + fetched).map { it.pubkey })
     }
 
     private fun watchProfiles(pubkeys: Set<String>) {
@@ -865,6 +908,10 @@ private fun JournalState.hasLoadedMonthFor(members: Set<String>, today: LocalDat
 
 private fun Map<String, Set<JournalActivityKind>>.withoutReceivedLikes(): Map<String, Set<JournalActivityKind>> =
     mapValues { (_, kinds) -> kinds - JournalActivityKind.ReceivedLike }.filterValues { it.isNotEmpty() }
+
+/** 選択中の月の[kinds]に当たる行のイベント。メンバーは非表示の人も含める。 */
+private fun JournalState.monthEvents(month: LocalDate, kinds: Set<JournalActivityKind>): List<NostrEvent> =
+    timeline.monthEntries(month, kinds).map { it.event }
 
 private fun JournalState.datesWithEntries(month: LocalDate): List<LocalDate> =
     timeline.datesWithEntries(month, kinds, visibleMembers)

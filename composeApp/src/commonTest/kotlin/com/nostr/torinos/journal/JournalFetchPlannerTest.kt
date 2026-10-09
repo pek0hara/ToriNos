@@ -11,7 +11,6 @@ import kotlinx.datetime.LocalDate
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
-import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class JournalFetchPlannerTest {
@@ -104,39 +103,109 @@ class JournalFetchPlannerTest {
         assertTrue(JournalFetchPlanner.forDate(date, emptyMap(), null, clock).isEmpty())
     }
 
+    private val authoredKinds = setOf(Post, Reply, Repost)
+
     @Test
-    fun monthReceivedLikesCoverOnlyMissingDatesUpToToday() {
-        val coverage = JournalCoverage().markLoaded(listOf(LocalDate(2026, 9, 1)), setOf(ReceivedLike), me)
+    fun rangeCoversFromTheFirstToTheLastMissingDay() {
+        // 月初と選択日（今日）は取得済み。
+        val coverage = JournalCoverage().markLoaded(listOf(month, today), authoredKinds, me)
 
-        val request = JournalFetchPlanner.monthReceivedLikes(month, today, setOf(ReceivedLike), coverage, me, clock)!!
+        val request = JournalFetchPlanner.forRange(
+            month.daysOfMonthUntil(today), coverage, authoredKinds, me, "wss://memo", clock,
+        ).single()
 
-        assertEquals(14, request.dates.size)
+        assertEquals(RelayTarget.Single("wss://memo"), request.target)
         assertEquals(LocalDate(2026, 9, 2), request.dates.first())
-        assertEquals(today, request.dates.last())
-        assertEquals(me, request.members)
-        assertEquals(clock.startOfDay(month), request.filters.single().since)
-        assertEquals(clock.endOfDay(today), request.filters.single().until)
-        assertEquals(JournalFetchPlanner.MONTH_RECEIVED_LIKE_LIMIT, request.filters.single().limit)
+        assertEquals(LocalDate(2026, 9, 14), request.dates.last())
+        assertEquals(13, request.dates.size)
+        request.filters.forEach { filter ->
+            assertEquals(clock.startOfDay(LocalDate(2026, 9, 2)), filter.since)
+            assertEquals(clock.endOfDay(LocalDate(2026, 9, 14)), filter.until)
+            assertEquals(JournalFetchPlanner.PAGE_LIMIT, filter.limit)
+        }
     }
 
     @Test
-    fun monthReceivedLikesOnlyAskForMembersThatHaveNotLoadedThem() {
-        val coverage = JournalCoverage().markLoaded(month.daysOfMonthUntil(today), setOf(ReceivedLike), me)
+    fun rangeRefetchesLoadedDaysInsideIt() {
+        val coverage = JournalCoverage().markLoaded(listOf(LocalDate(2026, 9, 5)), authoredKinds, me)
 
-        val request = JournalFetchPlanner.monthReceivedLikes(
-            month, today, setOf(ReceivedLike), coverage, setOf(OWNER, OTHER), clock,
-        )!!
+        val request = JournalFetchPlanner.forRange(
+            month.daysOfMonthUntil(today), coverage, authoredKinds, me, "wss://memo", clock,
+        ).single()
 
-        assertEquals(setOf(OTHER), request.members)
-        assertEquals(listOf(OTHER), request.filters.single().pTags)
+        assertEquals(month.daysOfMonthUntil(today), request.dates)
     }
 
     @Test
-    fun monthReceivedLikesAreSkippedWhenLoadedOrNotSelected() {
+    fun rangeGroupsMembersByTheKindsTheyMissAnywhere() {
+        // 自分は投稿を取得済み、返信だけ9/3が足りない。OTHERは何も取っていない。
+        val days = month.daysOfMonthUntil(today)
+        val coverage = JournalCoverage()
+            .markLoaded(days, setOf(Post), me)
+            .markLoaded(days - LocalDate(2026, 9, 3), setOf(Reply), me)
+
+        val requests = JournalFetchPlanner.forRange(
+            days, coverage, setOf(Post, Reply), setOf(OWNER, OTHER), "wss://memo", clock,
+        )
+
+        assertEquals(2, requests.size)
+        val own = requests.single { it.members == me }
+        assertEquals(setOf(Reply), own.kinds)
+        assertEquals(listOf(LocalDate(2026, 9, 3)), own.dates)
+        val other = requests.single { it.members == setOf(OTHER) }
+        assertEquals(setOf(Post, Reply), other.kinds)
+        assertEquals(days, other.dates)
+    }
+
+    @Test
+    fun rangeFiltersOfOneRequestNeverShareAKind() {
+        val requests = JournalFetchPlanner.forRange(
+            month.daysOfMonthUntil(today),
+            JournalCoverage(),
+            setOf(Post, Reply, Repost, Like, ReceivedLike),
+            me,
+            "wss://memo",
+            clock,
+        )
+
+        // 打ち切りの判定は、イベントがどのフィルターに当たるかを種類で決める。
+        requests.forEach { request ->
+            val kinds = request.filters.map { it.kinds.orEmpty() }
+            assertEquals(kinds.flatten().size, kinds.flatten().toSet().size)
+        }
+    }
+
+    @Test
+    fun receivedLikesInARangeComeFromAllRelaysWithThePageLimit() {
+        val coverage = JournalCoverage().markLoaded(listOf(month), setOf(ReceivedLike), me)
+
+        val requests = JournalFetchPlanner.forRange(
+            month.daysOfMonthUntil(today), coverage, setOf(Post, ReceivedLike), me, "wss://memo", clock,
+        )
+
+        val received = requests.single { ReceivedLike in it.kinds }
+        assertEquals(setOf(ReceivedLike), received.kinds)
+        assertEquals(RelayTarget.AllEnabled, received.target)
+        assertEquals(LocalDate(2026, 9, 2), received.dates.first())
+        assertEquals(listOf(7), received.filters.single().kinds)
+        assertEquals(listOf(OWNER), received.filters.single().pTags)
+        assertEquals(JournalFetchPlanner.PAGE_LIMIT, received.filters.single().limit)
+        assertEquals(setOf(Post), requests.single { it !== received }.kinds)
+    }
+
+    @Test
+    fun nothingToFetchWhenTheRangeIsLoaded() {
+        val days = month.daysOfMonthUntil(today)
+        val coverage = JournalCoverage().markLoaded(days, setOf(Post, ReceivedLike), me)
+
+        assertTrue(JournalFetchPlanner.forRange(days, coverage, setOf(Post, ReceivedLike), me, null, clock).isEmpty())
+    }
+
+    @Test
+    fun monthReceivedLikesAreFetchedUnlessLoadedOrNotSelected() {
         val loaded = JournalCoverage().markLoaded(month.daysOfMonthUntil(today), setOf(ReceivedLike), me)
-        assertNull(JournalFetchPlanner.monthReceivedLikes(month, today, setOf(ReceivedLike), loaded, me, clock))
-        assertNull(JournalFetchPlanner.monthReceivedLikes(month, today, setOf(Post), JournalCoverage(), me, clock))
         assertFalse(JournalFetchPlanner.willFetchMonthReceivedLikes(month, today, setOf(ReceivedLike), loaded, me))
+        assertFalse(JournalFetchPlanner.willFetchMonthReceivedLikes(month, today, setOf(Post), JournalCoverage(), me))
         assertTrue(JournalFetchPlanner.willFetchMonthReceivedLikes(month, today, setOf(ReceivedLike), JournalCoverage(), me))
     }
 
