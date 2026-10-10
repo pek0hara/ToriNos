@@ -252,9 +252,11 @@ internal fun JournalMemberSheet(
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 12.dp, bottom = 4.dp),
             )
+            // 候補は取得の途中から出し、届くたびに並べ直す。行にキーを付けると、一覧は先頭に見えていた行
+            // （最初は読み込み中の行）を追いかけて位置を変え、先頭から見えなくなる。キーを付けず行の順番で位置を保つ。
             LazyColumn(modifier = Modifier.fillMaxWidth()) {
                 if (directPubkey != null && filtered.none { it.pubkey == directPubkey }) {
-                    item(key = "direct-$directPubkey") {
+                    item {
                         JournalMemberCandidateRow(
                             pubkey = directPubkey,
                             profile = profiles[directPubkey],
@@ -263,7 +265,7 @@ internal fun JournalMemberSheet(
                         )
                     }
                 }
-                items(filtered, key = { it.pubkey }) { candidate ->
+                items(filtered) { candidate ->
                     JournalMemberCandidateRow(
                         pubkey = candidate.pubkey,
                         profile = profiles[candidate.pubkey],
@@ -272,7 +274,7 @@ internal fun JournalMemberSheet(
                     )
                 }
                 when {
-                    candidates.isLoading -> item(key = "loading") {
+                    candidates.isLoading -> item {
                         Box(
                             modifier = Modifier.fillMaxWidth().padding(24.dp),
                             contentAlignment = Alignment.Center,
@@ -280,7 +282,7 @@ internal fun JournalMemberSheet(
                             CircularProgressIndicator(modifier = Modifier.size(24.dp), strokeWidth = 2.dp)
                         }
                     }
-                    filtered.isEmpty() && directPubkey == null -> item(key = "empty") {
+                    filtered.isEmpty() && directPubkey == null -> item {
                         Text(
                             text = if (trimmed.isEmpty()) "最近やりとりした人が見つかりませんでした" else "該当する人がいません",
                             style = MaterialTheme.typography.bodyMedium,

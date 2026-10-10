@@ -675,7 +675,7 @@ class JournalControllerTest {
             reaction("l3", targetId = "t3", pubkey = alice, targetAuthor = OWNER),
         )
         var fetches = 0
-        val controller = controller(FakeRelay(), interactions = { _, _ -> fetches += 1; interactions })
+        val controller = controller(FakeRelay(), interactions = { _, _, _ -> fetches += 1; interactions })
         controller.loadMemberCandidates()
         settle()
 
@@ -691,6 +691,44 @@ class JournalControllerTest {
         assertEquals(1, fetches)
     }
 
+    @Test
+    fun candidatesAreShownFromTheEventsReceivedSoFar() = runTest {
+        val alice = hexId(1)
+        val bob = hexId(2)
+        val gate = CompletableDeferred<Unit>()
+        val controller = controller(
+            FakeRelay(),
+            interactions = { _, _, onEvent ->
+                // 応答の早いリレーの分が届いたあと、応答しないリレーを待っている。
+                val early = reaction("l1", targetId = "t1", pubkey = alice, targetAuthor = OWNER)
+                onEvent(early)
+                gate.await()
+                val late = listOf(
+                    reaction("l2", targetId = "t2", pubkey = bob, targetAuthor = OWNER),
+                    reaction("l3", targetId = "t3", pubkey = bob, targetAuthor = OWNER),
+                )
+                late.forEach(onEvent)
+                listOf(early) + late
+            },
+        )
+        controller.loadMemberCandidates()
+        settle()
+        testScheduler.advanceTimeBy(1_000)
+        settle()
+
+        // 取得の途中でも、届いた分で並べて出す。
+        val partial = controller.state.value.memberCandidates
+        assertEquals(listOf(JournalMemberCandidate(alice, 1)), partial.candidates)
+        assertTrue(partial.isLoading)
+        assertNull(partial.fetchedAtMillis)
+
+        gate.complete(Unit)
+        settle()
+        val done = controller.state.value.memberCandidates
+        assertEquals(listOf(JournalMemberCandidate(bob, 2), JournalMemberCandidate(alice, 1)), done.candidates)
+        assertFalse(done.isLoading)
+    }
+
     /** `advanceUntilIdle`は前景の処理がなくなると止まり`backgroundScope`を進めないため、現在時刻の処理をすべて実行する。 */
     private fun TestScope.settle() = testScheduler.runCurrent()
 
@@ -699,7 +737,7 @@ class JournalControllerTest {
         engagement: FakeEngagement = FakeEngagement(emptyList()),
         clock: JournalClock = utcClock(),
         storage: JournalMemberStorage = FakeMemberStorage(),
-        interactions: JournalInteractionSource = JournalInteractionSource { _, _ -> emptyList() },
+        interactions: JournalInteractionSource = JournalInteractionSource { _, _, _ -> emptyList() },
         references: JournalReferenceSource = NoReferences,
         profiles: JournalProfileSource = NoProfiles,
         showCalendar: Boolean = true,

@@ -53,13 +53,20 @@ import com.nostr.torinos.ui.timeline.StateStore
 import com.nostr.torinos.util.journalTraceLog
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.flow.firstOrNull
+import kotlinx.coroutines.flow.sample
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.datetime.LocalDate
 
@@ -204,7 +211,10 @@ internal class JournalController(
         }
     }
 
-    /** メンバー候補を、先頭のメンバー（自分、または開いた人）と直近のやりとりが多い順に集める。 */
+    /**
+     * メンバー候補を、先頭のメンバー（自分、または開いた人）と直近のやりとりが多い順に集める。
+     * 取得は全リレーの応答（か時間切れ）を待つため、届いた分で並べて先に出し、終わったら全件で並べ直す。
+     */
     fun loadMemberCandidates() {
         val subject = primaryPubkey ?: return
         if (candidatesJob?.isActive == true) return
@@ -212,21 +222,38 @@ internal class JournalController(
         if (fetchedAt != null && clock.nowMillis() - fetchedAt < CANDIDATE_CACHE_MS) return
         update { it.copy(memberCandidates = it.memberCandidates.copy(isLoading = true)) }
         candidatesJob = launcher.launch {
+            val received = MutableStateFlow<List<NostrEvent>>(emptyList())
+            @OptIn(FlowPreview::class)
+            val partialJob = launch {
+                // 何も届いていないうちは出さない（前に取った候補を空にしない）。
+                received.filter { it.isNotEmpty() }.sample(CANDIDATE_PARTIAL_INTERVAL_MS).collect { events ->
+                    val partial = rankCandidates(events, subject)
+                    update { it.copy(memberCandidates = it.memberCandidates.copy(candidates = partial)) }
+                    watchProfiles(partial.mapTo(mutableSetOf()) { it.pubkey })
+                }
+            }
             try {
                 val since = clock.nowMillis() / 1_000 - CANDIDATE_LOOKBACK_SECONDS
-                val ranked = rankJournalInteractions(interactionSource.fetch(subject, since), subject)
-                    .take(CANDIDATE_LIMIT)
-                    .map { (pubkey, count) -> JournalMemberCandidate(pubkey, count) }
+                val events = interactionSource.fetch(subject, since) { event -> received.update { it + event } }
+                // 途中の並べ直しが、全件の結果を後から上書きしないよう止め終わるのを待つ。
+                partialJob.cancelAndJoin()
+                val ranked = rankCandidates(events, subject)
                 log { "candidates ranked=${ranked.size}" }
                 update {
                     it.copy(memberCandidates = JournalMemberCandidates(candidates = ranked, fetchedAtMillis = clock.nowMillis()))
                 }
                 watchProfiles(ranked.mapTo(mutableSetOf()) { it.pubkey })
             } finally {
+                partialJob.cancel()
                 update { it.copy(memberCandidates = it.memberCandidates.copy(isLoading = false)) }
             }
         }
     }
+
+    private fun rankCandidates(events: List<NostrEvent>, subject: String): List<JournalMemberCandidate> =
+        rankJournalInteractions(events, subject)
+            .take(CANDIDATE_LIMIT)
+            .map { (pubkey, count) -> JournalMemberCandidate(pubkey, count) }
 
     /** 今日より先の日は記録がないため選ばせない。 */
     fun selectDate(date: LocalDate) {
@@ -950,3 +977,5 @@ private const val REVEAL_PROFILE_WAIT_MS = 1_000L
 private const val CANDIDATE_LOOKBACK_SECONDS = 30 * 24 * 60 * 60L
 private const val CANDIDATE_LIMIT = 30
 private const val CANDIDATE_CACHE_MS = 5 * 60 * 1_000L
+/** 取得の途中で候補を並べ直す間隔。短すぎると並びが細かく動き、長すぎると最初の表示が遅れる。 */
+private const val CANDIDATE_PARTIAL_INTERVAL_MS = 200L

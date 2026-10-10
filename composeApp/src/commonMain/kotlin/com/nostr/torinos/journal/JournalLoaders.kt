@@ -133,16 +133,19 @@ internal class NostrJournalReferenceSource(
     }
 }
 
-/** [pubkey]が出した・受けたやりとりを[since]以降から集める。メンバー候補の並び替えに使う。 */
+/**
+ * [pubkey]が出した・受けたやりとりを[since]以降から集める。メンバー候補の並び替えに使う。
+ * 届いたイベントは[onEvent]で1件ずつ渡す（同じイベントは1回）。戻り値は取得し終えた全件。
+ */
 internal fun interface JournalInteractionSource {
-    suspend fun fetch(pubkey: String, since: Long): List<NostrEvent>
+    suspend fun fetch(pubkey: String, since: Long, onEvent: (NostrEvent) -> Unit): List<NostrEvent>
 }
 
 internal class NostrJournalInteractionSource(
     private val openSession: suspend (SubscriptionSpec) -> SubscriptionSession = NostrRepository::openSubscription,
     private val timeoutMillis: Long = JOURNAL_FETCH_TIMEOUT_MS,
 ) : JournalInteractionSource {
-    override suspend fun fetch(pubkey: String, since: Long): List<NostrEvent> =
+    override suspend fun fetch(pubkey: String, since: Long, onEvent: (NostrEvent) -> Unit): List<NostrEvent> =
         collectFetch(
             openSession = openSession,
             spec = SubscriptionSpec(
@@ -164,6 +167,7 @@ internal class NostrJournalInteractionSource(
                 target = RelayTarget.AllEnabled,
                 behavior = SubscriptionBehavior.Fetch(timeoutMillis),
             ),
+            onEvent = onEvent,
         ).events
 }
 
