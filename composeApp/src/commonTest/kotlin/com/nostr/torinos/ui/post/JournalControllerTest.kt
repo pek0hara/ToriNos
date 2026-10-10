@@ -507,7 +507,9 @@ class JournalControllerTest {
         settle()
 
         assertEquals(listOf(friend), storage.saved)
-        assertEquals(setOf("mine", "theirs"), controller.state.value.visibleEntries.map { it.event.id }.toSet())
+        // 誰も選んでいなければ、追加した人だけを選んで表示する。
+        assertEquals(setOf(friend), controller.state.value.selectedMembers)
+        assertEquals(listOf("theirs"), controller.state.value.visibleEntries.map { it.event.id })
         // 追加した人の分だけを取り、自分の分は取り直さない。
         assertTrue(relay.requests.drop(before).all { it.members == setOf(friend) })
 
@@ -518,6 +520,25 @@ class JournalControllerTest {
         assertEquals(afterAdd, relay.requests.size)
         assertEquals(emptyList(), storage.saved)
         assertEquals(listOf("mine"), controller.state.value.visibleEntries.map { it.event.id })
+    }
+
+    @Test
+    fun addingAMemberKeepsTheCurrentSelection() = runTest {
+        val friend = hexId(1)
+        val other = hexId(2)
+        val relay = FakeRelay(post("mine"), post("theirs", pubkey = friend), post("other", pubkey = other))
+        val controller = controller(relay, storage = FakeMemberStorage(friend))
+        controller.setRelayUrl("wss://memo")
+        settle()
+        controller.toggleMemberSelection(OWNER)
+        controller.toggleMemberSelection(friend)
+        settle()
+
+        // 選んでいる人がいれば、その選択に追加した人を足す。
+        controller.addMember(other)
+        settle()
+        assertEquals(setOf(OWNER, friend, other), controller.state.value.selectedMembers)
+        assertEquals(setOf("mine", "theirs", "other"), controller.state.value.visibleEntries.map { it.event.id }.toSet())
     }
 
     @Test
@@ -627,7 +648,7 @@ class JournalControllerTest {
         settle()
         assertEquals(listOf(OTHER, friend), controller.state.value.members)
         assertTrue(relay.requests.drop(before).all { it.members == setOf(friend) })
-        assertEquals(setOf("theirs", "friend"), controller.state.value.visibleEntries.map { it.event.id }.toSet())
+        assertEquals(listOf("friend"), controller.state.value.visibleEntries.map { it.event.id })
         assertEquals(listOf(hexId(1)), storage.saved)
 
         // 開いた人は外せない。

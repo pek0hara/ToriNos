@@ -170,13 +170,14 @@ internal class JournalController(
     }
 
     /**
-     * メンバーを追加して表示中のメンバーに加え、追加した人の分を取る。
+     * メンバーを追加して選び、追加した人の分を取る。
+     * 誰も選んでいなければ追加した人だけを、選んでいればその選択に足して表示する。
      * 保存したメンバーを読み終える前は、読み込みで上書きされるため受け付けない。
      */
     fun addMember(pubkey: String) {
         val current = store.value
         if (!hasLoadedMembers || !current.canAddMember || pubkey in current.members) return
-        saveAndApplyMembers(current.members + pubkey, selected = current.fetchMembers + pubkey)
+        saveAndApplyMembers(current.members + pubkey, selected = current.selectedMembers + pubkey)
     }
 
     /** メンバーを外す。先頭（自分、または開いた人）は外せない。 */
