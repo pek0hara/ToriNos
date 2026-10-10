@@ -146,12 +146,12 @@ private fun JournalState.loadedKindCounts(): Map<JournalActivityKind, Int> {
 
 /**
  * カレンダーなしで今月を見ているとき、最初に見せる行。
- * 今日の先頭の行、今日の記録がなければ一番新しい日の先頭の行。それ以外の月や日表示では null。
+ * 今日までで一番新しい行（一覧は古い順なので、ふつうは末尾）。それ以外の月や日表示では null。
+ * 今日の件数によって着地点が変わらないよう、日の先頭ではなく最新の行に合わせる。
  */
 internal fun JournalState.todayScrollIndex(): Int? {
     if (showCalendar || selectedMonth != today.monthStart()) return null
-    val latest = visibleEntries.lastOrNull { it.date <= today }?.date ?: return null
-    return visibleEntries.indexOfFirst { it.date == latest }
+    return visibleEntries.indexOfLast { it.date <= today }.takeIf { it >= 0 }
 }
 
 /**

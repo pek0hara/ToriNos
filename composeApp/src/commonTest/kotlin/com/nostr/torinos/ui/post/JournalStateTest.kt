@@ -55,12 +55,25 @@ class JournalStateTest {
     }
 
     @Test
-    fun monthModeScrollsToTheFirstEntryOfToday() {
+    fun monthModeScrollsToTheLatestEntryOfToday() {
         val timeline = JournalTimeline.Empty.upsert(
             listOf(
                 activity(post("old", createdAt = epochOf(LocalDate(2026, 9, 3)))),
                 activity(post("today1", createdAt = epochOf(sep15, hour = 8))),
                 activity(post("today2", createdAt = epochOf(sep15, hour = 9))),
+            ),
+        )
+        val state = base.copy(timeline = timeline, showCalendar = false).withDerived()
+        assertEquals(2, state.todayScrollIndex())
+    }
+
+    @Test
+    fun monthModeDoesNotScrollPastTodayToFutureEntries() {
+        val timeline = JournalTimeline.Empty.upsert(
+            listOf(
+                activity(post("today1", createdAt = epochOf(sep15, hour = 8))),
+                activity(post("today2", createdAt = epochOf(sep15, hour = 9))),
+                activity(post("future", createdAt = epochOf(LocalDate(2026, 9, 20)))),
             ),
         )
         val state = base.copy(timeline = timeline, showCalendar = false).withDerived()
@@ -77,7 +90,7 @@ class JournalStateTest {
             ),
         )
         val state = base.copy(timeline = timeline, showCalendar = false).withDerived()
-        assertEquals(1, state.todayScrollIndex())
+        assertEquals(2, state.todayScrollIndex())
     }
 
     @Test

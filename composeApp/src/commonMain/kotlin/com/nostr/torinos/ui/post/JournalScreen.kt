@@ -185,7 +185,7 @@ fun JournalScreen(
 
     // 月表示は次のどちらかから見せる。戻る操作で作り直したときは、どちらもせず位置を保つ。
     // - 日表示から切り替えたとき: 日表示で先頭に見えていた行（記録のない日なら、その日の位置）。
-    // - 今月を開いたとき: 今日（今日の記録がなければ一番新しい日）の先頭。
+    // - 今月を開いたとき: 今日までで一番新しい行（ふつうは一覧の一番下）。
     //   取得が進んで行が増えても追いかけ、利用者がほかの行へスクロールしたらやめる。
     LaunchedEffect(state.showCalendar, state.selectedMonth, journalListState) {
         if (state.showCalendar) return@LaunchedEffect
