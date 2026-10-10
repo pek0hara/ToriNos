@@ -128,7 +128,13 @@ fun JournalScreen(
     }
     val visibleEntries = state.visibleEntries
     val journalListState = rememberLazyListState()
-    val isPullRefreshing = state.isLoading && !state.timeline.isEmpty()
+    // 引っ張って更新したか。そのときは出している一覧を残し、スケルトンに替えない（引っ張りの表示だけにする）。
+    var pullRefreshRequested by remember(accountKey, targetPubkey) { mutableStateOf(false) }
+    val isListLoading = isJournalListLoading(state.isLoading, state.isBackfilling, state.showCalendar)
+    val isPullRefreshing = pullRefreshRequested && isListLoading
+    LaunchedEffect(isListLoading) {
+        if (!isListLoading) pullRefreshRequested = false
+    }
     var calendarCollapsed by rememberSaveable(accountKey, targetPubkey) { mutableStateOf(false) }
     // 今日へ合わせ済みの月。詳細から戻って画面を作り直したときに、読み返していた位置から飛ばさない。
     var todayScrolledMonth by rememberSaveable(accountKey, targetPubkey) { mutableStateOf<String?>(null) }
@@ -369,6 +375,7 @@ fun JournalScreen(
             val scope = rememberCoroutineScope()
             JournalSelectionHeading(
                 state = state,
+                isPullRefreshing = isPullRefreshing,
                 canScrollUp = journalListState.canScrollBackward,
                 canScrollDown = journalListState.canScrollForward,
                 onGoToToday = viewModel::goToToday,
@@ -385,6 +392,7 @@ fun JournalScreen(
                         showCalendar = state.showCalendar,
                         hasEntries = visibleEntries.isNotEmpty(),
                         hasError = state.error != null,
+                        isPullRefreshing = isPullRefreshing,
                     )
                 ) {
                     JournalListContent.Loading -> {
@@ -445,6 +453,7 @@ fun JournalScreen(
                     isRefreshing = isPullRefreshing,
                     onRefresh = {
                         if (!state.isLoading) {
+                            pullRefreshRequested = true
                             viewModel.refresh()
                         }
                     },
@@ -566,6 +575,7 @@ private fun JournalEntryRow(
 @Composable
 private fun JournalSelectionHeading(
     state: JournalState,
+    isPullRefreshing: Boolean,
     canScrollUp: Boolean,
     canScrollDown: Boolean,
     onGoToToday: () -> Unit,
@@ -576,7 +586,14 @@ private fun JournalSelectionHeading(
     val title = if (state.showCalendar) journalDayTitle(state.selectedDate) else "この月"
     val countText = state.visibleEntries.size
         .takeIf {
-            journalListContent(state.isLoading, state.isBackfilling, state.showCalendar, it > 0, state.error != null) in
+            journalListContent(
+                state.isLoading,
+                state.isBackfilling,
+                state.showCalendar,
+                it > 0,
+                state.error != null,
+                isPullRefreshing,
+            ) in
                 setOf(JournalListContent.Entries, JournalListContent.Empty)
         }
         ?.let { "・${it}件" }
@@ -741,9 +758,14 @@ private suspend fun LazyListState.scrollWhenLaidOut(index: Int, offset: Int = 0)
 /** 一覧の欄に出すもの。 */
 internal enum class JournalListContent { Loading, Error, Empty, Entries }
 
+/** 一覧の欄が読み込み中か。月一覧は月の残りの取得（参照先・名前を含む）も待つ。 */
+internal fun isJournalListLoading(isLoading: Boolean, isBackfilling: Boolean, showCalendar: Boolean): Boolean =
+    isLoading || (!showCalendar && isBackfilling)
+
 /**
  * 月一覧は月の残りの取得（参照先・名前を含む）が終わってから1回で出す。先に届いた今日の分だけを出すと、
  * 後から行が増えて一覧が跳ぶため。日表示はその日の取得が終われば出す。
+ * 引っ張って更新している間は、出している一覧をそのまま残す。
  */
 internal fun journalListContent(
     isLoading: Boolean,
@@ -751,8 +773,10 @@ internal fun journalListContent(
     showCalendar: Boolean,
     hasEntries: Boolean,
     hasError: Boolean,
+    isPullRefreshing: Boolean,
 ): JournalListContent = when {
-    isLoading || (!showCalendar && isBackfilling) -> JournalListContent.Loading
+    isPullRefreshing && hasEntries -> JournalListContent.Entries
+    isJournalListLoading(isLoading, isBackfilling, showCalendar) -> JournalListContent.Loading
     hasError -> JournalListContent.Error
     hasEntries -> JournalListContent.Entries
     else -> JournalListContent.Empty
