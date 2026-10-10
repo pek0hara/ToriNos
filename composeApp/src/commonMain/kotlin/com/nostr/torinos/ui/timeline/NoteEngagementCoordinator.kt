@@ -12,10 +12,14 @@ import com.nostr.torinos.model.NostrEvent
 import com.nostr.torinos.network.NostrRepository
 import com.nostr.torinos.network.RelayPublishResult
 
-/** 楽観更新と署名送信の共通境界。画面Stateそのものは所有しない。 */
+/**
+ * 楽観更新と署名送信の共通境界。画面Stateそのものは所有しない。
+ * 送信は最初の1リレーへ届いた時点で完了扱いにし、残りのリレーへはリポジトリ側で送り続ける。
+ * 全リレーを待つと、接続できないリレーの時間切れ（10秒）まで確定せず、その間は取り消しもできない。
+ */
 internal class NoteEngagementCoordinator(
     signer: AccountSigner?,
-    publisher: suspend (NostrEvent) -> RelayPublishResult = NostrRepository::publish,
+    publisher: suspend (NostrEvent) -> RelayPublishResult = NostrRepository::publishUntilFirstSuccess,
 ) {
     private val service = NoteEngagementService(signer, publisher = publisher)
 

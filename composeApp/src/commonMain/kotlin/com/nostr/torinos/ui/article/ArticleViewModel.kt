@@ -527,11 +527,7 @@ class ArticleDetailViewModel(
     private var loadJob: Job? = null
     private var quoteJob: Job? = null
     private var engagementJob: Job? = null
-    // 最初の1リレーへ届いた時点で完了扱いにし、遅いリレーが次の操作（取り消しなど）を塞がないようにする。
-    private val engagementCoordinator = NoteEngagementCoordinator(
-        signer = accountSession?.signer,
-        publisher = NostrRepository::publishUntilFirstSuccess,
-    )
+    private val engagementCoordinator = NoteEngagementCoordinator(accountSession?.signer)
     private var nextEngagementOperationId = 0L
 
     /** ログイン中（署名できる）ときだけリアクションを送れる。 */
