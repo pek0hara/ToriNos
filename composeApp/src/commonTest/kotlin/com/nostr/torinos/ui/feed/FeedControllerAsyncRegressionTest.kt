@@ -266,7 +266,7 @@ class FeedControllerAsyncRegressionTest {
         assertTrue(controller.state.value.isLoadingMore)
         assertEquals(30, controller.state.value.events.size)
 
-        advanceTimeBy(1_999)
+        advanceTimeBy(999)
         runCurrent()
         assertTrue(controller.state.value.isLoadingMore)
 

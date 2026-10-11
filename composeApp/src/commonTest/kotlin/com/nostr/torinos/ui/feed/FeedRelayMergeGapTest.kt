@@ -510,12 +510,12 @@ class FeedRelayMergeGapTest {
         relays.heldEngagementTargets += hidden.id
         val controller = FeedController(computeDispatcher = Dispatchers.Unconfined, scope = backgroundScope, subscriptions = relays)
         relays.held += "relay-b"
-        // リアクション取得の開始 (500ms) は待つが、遅延扱いの猶予 (2 秒) は過ぎないようにする
+        // リアクション取得の開始 (500ms) は待つが、遅延扱いの猶予 (1 秒) は過ぎないようにする
         repeat(3) {
             runCurrent()
             relays.serveFeedFetches()
             runCurrent()
-            advanceTimeBy(500)
+            advanceTimeBy(300)
         }
         runCurrent()
 

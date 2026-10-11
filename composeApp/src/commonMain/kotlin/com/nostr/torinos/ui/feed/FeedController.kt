@@ -1817,7 +1817,7 @@ internal class FeedController(
         private const val REFRESH_INDICATOR_TIMEOUT_MS = 2_500L
         private const val INITIAL_FEED_SLOW_DELAY_MS = 2_500L
         private const val HISTORY_FETCH_TIMEOUT_MS = 10_000L
-        private const val HISTORY_RELAY_SETTLE_DELAY_MS = 2_000L
+        private const val HISTORY_RELAY_SETTLE_DELAY_MS = 1_000L
         private const val TRACE_DUMP_INTERVAL_MS = 5_000L
         private var nextInstanceKeyValue = 0
 
