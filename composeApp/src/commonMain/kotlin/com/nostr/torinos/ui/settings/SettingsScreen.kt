@@ -299,7 +299,7 @@ private fun AccountSwitcherSection(
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
         Text(
-            text = "アカウント管理",
+            text = "アカウント",
             style = MaterialTheme.typography.titleSmall,
             fontWeight = FontWeight.Bold,
         )
@@ -548,7 +548,7 @@ private fun AccountSection(
         verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
         Text(
-            text = "アカウント",
+            text = "アカウントの操作",
             style = MaterialTheme.typography.titleSmall,
             fontWeight = FontWeight.Bold,
         )
@@ -677,10 +677,10 @@ private fun DisplaySection(
     showXPreviews: Boolean,
     onShowImagePreviewsChange: (Boolean) -> Unit,
     onShowXPreviewsChange: (Boolean) -> Unit,
-    useFooterComposer: Boolean,
-    onUseFooterComposerChange: (Boolean) -> Unit,
     fontScale: AppFontScale,
     onFontScaleChange: (AppFontScale) -> Unit,
+    useFooterComposer: Boolean,
+    onUseFooterComposerChange: (Boolean) -> Unit,
 ) {
     Column(
         modifier = Modifier
@@ -689,11 +689,13 @@ private fun DisplaySection(
         verticalArrangement = Arrangement.spacedBy(0.dp),
     ) {
         Text(
-            text = "表示・投稿",
+            text = "表示",
             style = MaterialTheme.typography.titleSmall,
             fontWeight = FontWeight.Bold,
             modifier = Modifier.padding(bottom = 4.dp),
         )
+        // よく触る文字サイズを先頭に置く。
+        FontScaleRow(selected = fontScale, onSelect = onFontScaleChange)
         DisplayToggleRow(
             label = "画像プレビュー",
             checked = showImagePreviews,
@@ -704,12 +706,13 @@ private fun DisplaySection(
             checked = showXPreviews,
             onCheckedChange = onShowXPreviewsChange,
         )
+        // スイッチの名前だけでは何が変わるか伝わりにくいので、＋を押したときの違いを添える。
         DisplayToggleRow(
-            label = "フッターから投稿",
+            label = "画面下の入力欄で投稿",
+            description = "＋を押したとき、全画面ではなく画面下に入力欄を開きます",
             checked = useFooterComposer,
             onCheckedChange = onUseFooterComposerChange,
         )
-        FontScaleRow(selected = fontScale, onSelect = onFontScaleChange)
     }
 }
 
@@ -758,18 +761,28 @@ private fun DisplayToggleRow(
     label: String,
     checked: Boolean,
     onCheckedChange: (Boolean) -> Unit,
+    description: String? = null,
 ) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
             .padding(vertical = 6.dp),
-        horizontalArrangement = Arrangement.SpaceBetween,
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Text(
-            text = label,
-            style = MaterialTheme.typography.bodyMedium,
-        )
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = label,
+                style = MaterialTheme.typography.bodyMedium,
+            )
+            if (description != null) {
+                Text(
+                    text = description,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
         Switch(checked = checked, onCheckedChange = onCheckedChange)
     }
 }
