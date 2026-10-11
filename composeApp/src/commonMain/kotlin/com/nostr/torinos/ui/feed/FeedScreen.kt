@@ -73,6 +73,7 @@ import com.nostr.torinos.network.RelayStore
 import com.nostr.torinos.ui.components.NoteTimeline
 import com.nostr.torinos.ui.components.RelaySelector
 import com.nostr.torinos.ui.profile.AvatarCircle
+import com.nostr.torinos.util.StartupTrace
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 
@@ -125,6 +126,12 @@ fun FeedScreen(
     val isFollowListLoaded = accountSession?.followRepository?.loaded?.collectAsState()?.value ?: true
     val mutedPubkeys = accountSession?.muteStore?.mutedPubkeys?.collectAsState()?.value.orEmpty()
     var showRelayMenu by remember { mutableStateOf(false) }
+    if (authorPubkey == null) {
+        LaunchedEffect(Unit) { StartupTrace.mark("feedScreen.composed") }
+        LaunchedEffect(ownPubkey) {
+            if (ownPubkey != null) StartupTrace.mark("feedScreen.accountReady")
+        }
+    }
     var feedTab by rememberSaveable(accountResetKey, authorPubkey) { mutableStateOf(FeedTab.Following) }
     var followingFeedMode by rememberSaveable(accountResetKey, authorPubkey) {
         mutableStateOf(FollowingFeedMode.Following)
@@ -549,6 +556,7 @@ fun FeedScreen(
                             FollowingFeedMode.Muted -> mutedPubkeys.sorted()
                         }
                         if (followingFeedMode == FollowingFeedMode.Following && !isFollowListLoaded) {
+                            LaunchedEffect(Unit) { StartupTrace.mark("Following.waitFollowList") }
                             Box(
                                 modifier = Modifier
                                     .fillMaxSize()
@@ -572,6 +580,7 @@ fun FeedScreen(
                                 includeRepostsInFeed = followingFeedMode == FollowingFeedMode.Following,
                                 hashtag = null,
                                 filterMutedUsers = followingFeedMode == FollowingFeedMode.Following,
+                                startupTraceName = if (followingFeedMode == FollowingFeedMode.Following) "Following" else null,
                                 ownPubkey = ownPubkey,
                                 onUserClick = onUserClick,
                                 modifier = Modifier.fillMaxSize(),
@@ -604,6 +613,7 @@ fun FeedScreen(
                             relayUrl = effectiveGlobalRelayUrl,
                             includeRepostsInFeed = false,
                             hashtag = null,
+                            startupTraceName = "Global",
                             ownPubkey = ownPubkey,
                             onUserClick = onUserClick,
                             modifier = Modifier.fillMaxSize(),
@@ -655,6 +665,8 @@ private fun FeedTimelinePane(
     includeRepostsInFeed: Boolean,
     hashtag: String?,
     filterMutedUsers: Boolean = true,
+    /** 起動からの表示時間を計るときの名前。ホームのフィードだけに付ける。 */
+    startupTraceName: String? = null,
     ownPubkey: String?,
     onUserClick: (String) -> Unit,
     modifier: Modifier,
@@ -683,7 +695,11 @@ private fun FeedTimelinePane(
             includeRepostsInFeed = includeRepostsInFeed,
             hashtag = hashtag,
             filterMutedUsers = filterMutedUsers,
+            startupTraceName = startupTraceName,
         )
+    }
+    if (startupTraceName != null) {
+        LaunchedEffect(Unit) { StartupTrace.mark("$startupTraceName.paneComposed") }
     }
     val state by viewModel.state.collectAsState()
     val snackbarHostState = remember { SnackbarHostState() }
@@ -758,6 +774,7 @@ private fun FeedTimelinePane(
             stageInitialEvents = shouldStageInitialEvents,
             onAtTopChanged = viewModel::setAtTop,
             atTopReportKey = viewModel,
+            startupTraceName = startupTraceName,
             onRefresh = {
                 onRefresh?.invoke()
                 viewModel.refresh()

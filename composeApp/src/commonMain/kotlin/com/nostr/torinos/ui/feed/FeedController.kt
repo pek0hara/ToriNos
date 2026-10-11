@@ -1,10 +1,12 @@
 package com.nostr.torinos.ui.feed
 
 import com.nostr.torinos.ui.feed.FeedViewModel.UiState
+import com.nostr.torinos.util.StartupTrace
 import com.nostr.torinos.util.appLog
 import com.nostr.torinos.util.engagementTraceLog
 import com.nostr.torinos.util.isEngagementTraceEnabled
 import com.nostr.torinos.util.isFeedTraceEnabled
+import com.nostr.torinos.util.isStartupTraceEnabled
 import com.nostr.torinos.ui.feed.FeedViewModel.InitialFeedState
 import com.nostr.torinos.account.AccountSession
 import com.nostr.torinos.crypto.isWriteSupported
@@ -142,6 +144,8 @@ internal class FeedController(
     private val historyStore: FeedHistoryStore = FeedHistoryStore(),
     /** 付随情報のイベント集合。画面間で共有する。テストでは個別のものを渡す。 */
     private val engagementStore: EngagementStore = EngagementStore.shared,
+    /** 起動からの表示時間を計るときの名前。ホームのフィードだけに付ける。 */
+    private val startupTraceName: String? = null,
 ) {
     private val safeCoroutineLauncher = SafeCoroutineLauncher(scope, "FeedController")
     /** フォロー一覧の更新で差し替わる。購読フィルタは都度ここから組み立てる。 */
@@ -349,6 +353,28 @@ internal class FeedController(
         feedStateEmitJob = null
         if (closed) return
         _state.value = pendingFeedState
+        if (isStartupTraceEnabled && startupTraceName != null) traceStartupState(pendingFeedState)
+    }
+
+    private var startupRevealCount = 0
+
+    /** 呼び出し側で [step] に値を埋め込むときは、[isStartupTraceEnabled] で囲んで文字列を作らないようにする。 */
+    private fun startupMark(step: String, detail: () -> String = { "" }) {
+        if (!isStartupTraceEnabled) return
+        val name = startupTraceName ?: return
+        StartupTrace.mark("$name.$step", detail)
+    }
+
+    /** 一覧に初めて投稿が載った時点と、先頭の投稿の名前がそろった時点を出す。 */
+    private fun traceStartupState(state: UiState) {
+        if (state.events.isEmpty()) return
+        startupMark("stateHasEvents") { "events=${state.events.size}" }
+        val name = startupTraceName ?: return
+        if (StartupTrace.isMarked("$name.topProfilesReady")) return
+        val top = state.events.take(STARTUP_TRACE_TOP_COUNT)
+        val authors = top.flatMap { listOfNotNull(it.pubkey, state.repostedByPubkeys[it.id]) }.toSet()
+        val missing = authors.count { it !in state.profiles }
+        if (missing == 0) startupMark("topProfilesReady") { "top=${top.size} authors=${authors.size}" }
     }
 
     fun injectProfile(pubkey: String, profile: com.nostr.torinos.model.NostrProfile) {
@@ -670,6 +696,7 @@ internal class FeedController(
     fun startSubscriptions() {
         if (closed || subscriptionsStarted) return
         subscriptionsStarted = true
+        startupMark("startSubscriptions") { "authors=${authorPubkeys?.size ?: "all"}" }
         if (pendingTimelineEvents.isNotEmpty()) {
             timelineBatchJob?.cancel()
             timelineBatchJob = null
@@ -862,6 +889,7 @@ internal class FeedController(
         initialHistoryRequested = true
         subscribeLiveFeed(since = historyFloor)
         val targetRelays = subscriptions.targetRelayUrls(relayTarget)
+        startupMark("historyStart") { "relays=${targetRelays.size} authors=${authorPubkeys?.size ?: "all"}" }
         // 初回は表示境界が決まるまで過去分を出さない。先に返ったリレーの深い投稿を
         // 一度表示してから引っ込める、ちらつきを避けるため。
         if (historyRevealOldestAt == null) historyRevealOldestAt = historyFloor
@@ -882,6 +910,12 @@ internal class FeedController(
             arbiter = fetchArbiter,
             canRequest = { !historyStore.limitReached },
             onReveal = { floor ->
+                if (isStartupTraceEnabled) {
+                    startupRevealCount++
+                    startupMark("reveal#$startupRevealCount") {
+                        "floorAgo=${Clock.System.now().epochSeconds - floor}s held=${rawEvents.values.size}"
+                    }
+                }
                 revealHistoryThrough(floor)
                 flushPendingTimelineEvents()
             },
@@ -900,6 +934,13 @@ internal class FeedController(
                         InitialFeedState.Failed
                     current.initialFeedState == InitialFeedState.Slow -> InitialFeedState.Slow
                     else -> InitialFeedState.Loading
+                }
+                if (isStartupTraceEnabled &&
+                    (initialFeedState == InitialFeedState.Empty || initialFeedState == InitialFeedState.Failed)
+                ) {
+                    startupMark("initial$initialFeedState") {
+                        "relays=${history.successfulInitialRelayCount}/${history.relayCount}"
+                    }
                 }
                 updateFeedState {
                     it.copy(
@@ -958,6 +999,7 @@ internal class FeedController(
     }
 
     private fun prepareHistoryEvent(event: NostrEvent) {
+        startupMark("firstHistoryEvent")
         // 履歴ページの表示はcommit後。付随情報の取得は遅いリレーの完了を待たない。
         if (event.kind != 1 && event.kind != COMMENT_EVENT_KIND) return
         if (event.kind == COMMENT_EVENT_KIND && !event.isSupportedTimelineComment()) return
@@ -984,6 +1026,10 @@ internal class FeedController(
             // 保存に失敗したページは再試行で同じ投稿を確定し直すので、受信済みの付随情報は残しておく。
             FeedStoreCommitResult.Failed -> FeedPageCommitResult.Failed
             FeedStoreCommitResult.Committed -> {
+                if (isStartupTraceEnabled && !liveGap) {
+                    startupMark("firstPageCommit") { "url=$url events=${stored.size}" }
+                    startupMark("pageCommit $url") { "events=${stored.size}" }
+                }
                 var added = 0
                 var visibleAdded = 0
                 if (isFeedTraceEnabled) traceReceived(if (liveGap) "gap" else "page", stored.map { it.event })
@@ -1846,6 +1892,8 @@ internal fun resumeSyncStrategy(gapSince: Long?, nowSec: Long): ResumeSyncStrate
 }
 
 private const val RESUME_SYNC_GRACE_PERIOD_SECONDS = 5L
+/** 起動時間の計測で、名前がそろうのを待つ先頭の投稿数（1画面ぶん）。 */
+private const val STARTUP_TRACE_TOP_COUNT = 8
 private const val MAX_GAP_FILL_DURATION_SECONDS = 24L * 60L * 60L
 
 internal fun FeedViewModel.UiState.noteEngagement(eventId: String): NoteEngagementState = NoteEngagementState(

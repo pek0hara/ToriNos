@@ -3,6 +3,7 @@ package com.nostr.torinos.network
 import com.nostr.torinos.account.AccountSession
 import com.nostr.torinos.model.NostrFilter
 import com.nostr.torinos.model.NostrEvent
+import com.nostr.torinos.util.StartupTrace
 import com.nostr.torinos.util.logException
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
@@ -111,6 +112,7 @@ class FollowRepository internal constructor(
 
         if (cached != null && generation == loadGeneration) {
             latestFollowEvent = latestEvent
+            StartupTrace.mark("follow.cache") { "follows=${latestFollows.size}" }
             _followedPubkeys.value = latestFollows
             _loaded.value = true
         }
@@ -126,6 +128,7 @@ class FollowRepository internal constructor(
                             latestCreatedAt = event.createdAt
                             latestFollows = event.followedPubkeys()
                             receivedFollowEvent = true
+                            StartupTrace.mark("follow.relayEvent") { "follows=${latestFollows.size}" }
                             publishLoadedFollows(
                                 follows = latestFollows,
                                 event = event,
@@ -157,6 +160,9 @@ class FollowRepository internal constructor(
                 )
                 withTimeoutOrNull(FOLLOW_LIST_EOSE_TIMEOUT_MS) { eoseComplete.await() }
                 eoseJob.cancel()
+                StartupTrace.mark("follow.settled") {
+                    "eose=${completedRelayUrls.size}/${targetRelayUrls.size} follows=${latestFollows.size}"
+                }
                 // タイムアウトを含め、初回取得の試行が終わったら表示上のロードは完了させる。
                 // 表示用の空状態だけでは latestFollowEvent が設定されないため、
                 // kind:3 未取得のままフォロー更新を公開することはない。

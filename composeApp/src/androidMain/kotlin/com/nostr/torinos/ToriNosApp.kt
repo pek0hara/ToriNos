@@ -3,12 +3,17 @@ package com.nostr.torinos
 import android.app.Application
 import android.content.ComponentCallbacks2
 import android.content.res.Configuration
+import android.os.Process
+import android.os.SystemClock
 import com.nostr.torinos.ui.components.XPostSnapshotCache
 import com.nostr.torinos.ui.components.registerAppImageLoader
+import com.nostr.torinos.util.StartupTrace
 
 class ToriNosApp : Application() {
     override fun onCreate() {
         super.onCreate()
+        StartupTrace.processOffsetMillis = SystemClock.elapsedRealtime() - Process.getStartElapsedRealtime()
+        StartupTrace.mark("app.onCreate")
         appContext = this
         registerAppImageLoader()
         registerComponentCallbacks(object : ComponentCallbacks2 {

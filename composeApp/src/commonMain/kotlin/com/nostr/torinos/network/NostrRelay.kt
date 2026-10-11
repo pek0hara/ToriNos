@@ -27,6 +27,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import com.nostr.torinos.util.SynchronousLock
+import com.nostr.torinos.util.StartupTrace
 import com.nostr.torinos.util.withLock
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -80,6 +81,8 @@ class NostrRelay(
                     runCatching {
                         client.webSocket(urlString = url) {
                             networkTraceLog { "[Relay] connected: $url" }
+                            StartupTrace.mark("relay.firstConnected") { url }
+                            StartupTrace.mark("relay.connected $url")
                             retryDelay = 2_000L
                             val session = outboxLock.withLock { outbox.openSession() }
                             connectedThisAttempt = true

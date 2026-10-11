@@ -28,6 +28,8 @@ class FeedViewModel(
     hashtag: String? = null,
     filterMutedUsers: Boolean = true,
     feedEventKinds: Set<Int> = setOf(1),
+    /** 起動からの表示時間を計るときの名前。ホームのフィードだけに付ける。 */
+    startupTraceName: String? = null,
 ) : SafeViewModel() {
     enum class InitialFeedState {
         Loading,
@@ -96,6 +98,7 @@ class FeedViewModel(
         filterMutedUsers = filterMutedUsers,
         scope = viewModelScope,
         feedEventKinds = feedEventKinds,
+        startupTraceName = startupTraceName,
     )
     val state: StateFlow<UiState> = controller.state
 

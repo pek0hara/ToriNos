@@ -5,6 +5,9 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.withFrameNanos
+import com.nostr.torinos.util.StartupTrace
 
 /**
  * 回転やダークモードの切り替えでは Activity を作り直さない(マニフェストの configChanges)。
@@ -14,8 +17,13 @@ import androidx.activity.enableEdgeToEdge
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        StartupTrace.mark("activity.onCreate")
         enableEdgeToEdge()
         setContent {
+            LaunchedEffect(Unit) {
+                withFrameNanos { }
+                StartupTrace.mark("ui.firstFrame")
+            }
             App()
         }
     }

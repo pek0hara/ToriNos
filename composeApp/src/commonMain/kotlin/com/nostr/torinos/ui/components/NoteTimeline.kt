@@ -58,6 +58,7 @@ import com.nostr.torinos.account.LocalAccountSession
 import com.nostr.torinos.network.DisplayPreferencesStore
 import com.nostr.torinos.ui.feed.FeedViewModel
 import androidx.compose.runtime.collectAsState
+import com.nostr.torinos.util.StartupTrace
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.distinctUntilChanged
@@ -112,6 +113,8 @@ fun NoteTimeline(
     topOverlayVisibility: () -> Float = { 1f },
     /** リストに重ねて描かれるバーの分の余白。上側は[topOverlayVisibility]の割合だけ見えている。 */
     contentPadding: PaddingValues = PaddingValues(),
+    /** 起動からの表示時間を計るときの名前。ホームのフィードだけに付ける。 */
+    startupTraceName: String? = null,
 ) {
     val muteStore = LocalAccountSession.current?.muteStore
     val mutedPubkeys = muteStore?.mutedPubkeys?.collectAsState()?.value.orEmpty()
@@ -192,6 +195,7 @@ fun NoteTimeline(
         }
         hasInitialEventBatchStarted = true
         delay(initialEventQuietMillis)
+        startupTraceName?.let { StartupTrace.mark("$it.revealRequest") { "quiet events=${state.events.size}" } }
         initialEventRevealRequest++
     }
 
@@ -204,7 +208,10 @@ fun NoteTimeline(
             return@LaunchedEffect
         }
         delay(initialEventMaxWaitMillis)
-        if (!initialReveal.isContentComposed) initialEventRevealRequest++
+        if (!initialReveal.isContentComposed) {
+            startupTraceName?.let { StartupTrace.mark("$it.revealRequest") { "maxWait events=${state.events.size}" } }
+            initialEventRevealRequest++
+        }
     }
 
     LaunchedEffect(initialEventRevealRequest, resetToTopRequest, stageInitialEvents) {
@@ -212,7 +219,20 @@ fun NoteTimeline(
         // 合図の重複や、スクロールがユーザー操作で打ち切られても、表示は必ず完了させる。
         initialReveal.reveal {
             withFrameNanos { }
+            startupTraceName?.let { StartupTrace.mark("$it.composedFrame") }
             timelineListState.scrollToItem(0)
+            startupTraceName?.let { StartupTrace.mark("$it.scrolledToTop") }
+        }
+    }
+
+    if (startupTraceName != null) {
+        // 投稿が画面に描かれた最初のフレーム。段階表示の待ちを含む、利用者から見た表示時刻。
+        LaunchedEffect(initialReveal.isContentVisible, state.events.isEmpty()) {
+            if (!initialReveal.isContentVisible || state.events.isEmpty()) return@LaunchedEffect
+            withFrameNanos { }
+            StartupTrace.mark("$startupTraceName.firstFrameWithEvents") {
+                "events=${state.events.size} visibleItems=${timelineListState.layoutInfo.visibleItemsInfo.size}"
+            }
         }
     }
 

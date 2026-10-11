@@ -62,3 +62,9 @@ internal inline fun feedTraceLog(message: () -> String) {
         platformLog("[Feed] ${message()}")
     }
 }
+
+/**
+ * trueにすると起動からフィード表示までの節目（アカウント・フォロー一覧・リレー接続・REQ・初受信・
+ * 一覧への反映・画面への表示）を、起動からの経過ミリ秒つきでログ出力する。表示までの時間の調査用。
+ */
+internal const val isStartupTraceEnabled = false
