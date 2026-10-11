@@ -42,6 +42,16 @@ internal sealed interface ProfileDrawerDestination {
     }
 }
 
+/** ドロワーを開いているときに、システムの戻るで閉じる・戻る対象。 */
+internal enum class DrawerBackTarget { Notifications, Profile }
+
+/** 両方開いている場合は、手前に重なる通知を先に閉じる。どちらも開いていなければ戻るは画面側に任せる。 */
+internal fun drawerBackTarget(notificationsOpen: Boolean, profileOpen: Boolean): DrawerBackTarget? = when {
+    notificationsOpen -> DrawerBackTarget.Notifications
+    profileOpen -> DrawerBackTarget.Profile
+    else -> null
+}
+
 /** プロフィール／通知ドロワー間の排他的な遷移を管理する。 */
 internal class DrawerCoordinator(
     val notificationsState: DrawerState,
@@ -187,6 +197,22 @@ internal class DrawerCoordinator(
         }
     }
 
+    /** 開いている（開きかけを含む）ドロワーがシステムの戻るを受けるか。左パネルに固定したプロフィールは受けない。 */
+    val systemBackTarget: DrawerBackTarget?
+        get() = drawerBackTarget(
+            notificationsOpen = notificationsState.isOpenOrOpening,
+            profileOpen = !isProfileDocked && profileState.isOpenOrOpening,
+        )
+
+    /** システムの戻る。プロフィールは中の履歴を1つ戻り、履歴がなければ閉じる。 */
+    fun handleSystemBack() {
+        when (systemBackTarget) {
+            DrawerBackTarget.Notifications -> scope.launch { notificationsState.close() }
+            DrawerBackTarget.Profile -> navigateBackOrCloseProfile()
+            null -> Unit
+        }
+    }
+
     fun openNotifications() {
         scope.launch {
             transitionMutex.withLock {
@@ -262,3 +288,6 @@ internal fun rememberDrawerCoordinator(scope: CoroutineScope): DrawerCoordinator
         DrawerCoordinator(notificationsState, profileState, scope)
     }
 }
+
+private val DrawerState.isOpenOrOpening: Boolean
+    get() = currentValue == DrawerValue.Open || targetValue == DrawerValue.Open

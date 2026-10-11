@@ -102,6 +102,7 @@ import com.nostr.torinos.ui.channel.ChannelReplyContextBuilder
 import com.nostr.torinos.ui.channel.channelComposerRelayContext
 import com.nostr.torinos.emoji.EmojiSetAddress
 import com.nostr.torinos.ui.components.CustomEmojiOpenRequest
+import com.nostr.torinos.ui.components.DrawerBackHandler
 import com.nostr.torinos.ui.components.LocalCustomEmojiNavigator
 import com.nostr.torinos.network.RelayPublishResult
 import com.nostr.torinos.network.DisplayPreferencesStore
@@ -872,6 +873,12 @@ internal fun AppSessionCoordinator(
             enabled = composer.presentation == ComposerPresentation.FeedInline,
             onBack = composer::switchInlineToMenu,
         )
+
+        // ドロワーを開いている間のBackは、裏の画面を戻さずにドロワーを戻す・閉じる。
+        // 開いたときに合成して最後に登録し、上の2つや画面のBackより優先させる。
+        if (drawerCoordinator.systemBackTarget != null) {
+            DrawerBackHandler(onBack = drawerCoordinator::handleSystemBack)
+        }
 
         if (showAccountSwitcher) {
             AccountSwitcherSheet(

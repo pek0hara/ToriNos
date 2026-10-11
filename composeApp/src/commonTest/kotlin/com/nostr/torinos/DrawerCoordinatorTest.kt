@@ -9,6 +9,7 @@ import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 @OptIn(ExperimentalCoroutinesApi::class)
@@ -55,5 +56,36 @@ class DrawerCoordinatorTest {
         coordinator.navigateBackOrCloseProfile()
         runCurrent()
         assertEquals(profile, coordinator.profileDestination)
+    }
+
+    @Test
+    fun systemBackClosesNotificationsBeforeProfile() {
+        assertEquals(DrawerBackTarget.Notifications, drawerBackTarget(notificationsOpen = true, profileOpen = true))
+        assertEquals(DrawerBackTarget.Notifications, drawerBackTarget(notificationsOpen = true, profileOpen = false))
+        assertEquals(DrawerBackTarget.Profile, drawerBackTarget(notificationsOpen = false, profileOpen = true))
+        assertNull(drawerBackTarget(notificationsOpen = false, profileOpen = false))
+    }
+
+    @Test
+    fun systemBackTargetFollowsOpenDrawers() = runTest {
+        val closed = DrawerCoordinator(DrawerState(DrawerValue.Closed), DrawerState(DrawerValue.Closed), this)
+        assertNull(closed.systemBackTarget)
+
+        val profileOpen = DrawerCoordinator(DrawerState(DrawerValue.Closed), DrawerState(DrawerValue.Open), this)
+        assertEquals(DrawerBackTarget.Profile, profileOpen.systemBackTarget)
+
+        val notificationsOpen = DrawerCoordinator(DrawerState(DrawerValue.Open), DrawerState(DrawerValue.Closed), this)
+        assertEquals(DrawerBackTarget.Notifications, notificationsOpen.systemBackTarget)
+    }
+
+    @Test
+    fun systemBackIgnoresDockedProfile() = runTest {
+        // 左パネルに固定したプロフィールは画面の一部なので、システムの戻るは画面側に任せる。
+        val coordinator = DrawerCoordinator(DrawerState(DrawerValue.Closed), DrawerState(DrawerValue.Closed), this)
+        coordinator.updateProfileDocking(true)
+        coordinator.openProfile("author")
+        runCurrent()
+
+        assertNull(coordinator.systemBackTarget)
     }
 }
