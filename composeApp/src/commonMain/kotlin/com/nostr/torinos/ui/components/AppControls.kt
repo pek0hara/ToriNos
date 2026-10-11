@@ -241,6 +241,8 @@ fun AppMessageComposer(
                 }
             },
             onOpenCustomEmojiSettings = onOpenCustomEmojiSettings,
+            // 下書きを守って開けない入力欄（フィードの簡易投稿、スレッドの返信）では出さない。
+            showEmojiSetsButton = onOpenCustomEmojiSettings != null,
         )
     }
 }

@@ -405,6 +405,8 @@ internal fun ColumnScope.ComposerBodyEditor(
             onDismiss = { showCustomEmojiPicker = false },
             onSelect = ::insertEmoji,
             onOpenCustomEmojiSettings = onOpenCustomEmojiSettings,
+            // 下書きを守って開けない入力欄（チャンネル作成など）では出さない。
+            showEmojiSetsButton = onOpenCustomEmojiSettings != null,
         )
     }
 

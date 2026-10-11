@@ -1438,6 +1438,7 @@ internal fun QuickReactionMenu(
     onOpenStandardEmojiPicker: () -> Unit,
 ) {
     val accountSession = LocalAccountSession.current
+    val openCustomEmoji = LocalCustomEmojiNavigator.current
     val emojiPreferences = rememberEmojiPreferences()
     val recentOptions = remember(emojiPreferences) {
         emojiPreferences.recent
@@ -1456,11 +1457,23 @@ internal fun QuickReactionMenu(
                 .padding(horizontal = 12.dp, vertical = 8.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            Text(
-                text = "最近使ったリアクション",
-                style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                // 右上の「絵文字セット」と1行に並べる。文字サイズを大きくしても折り返さないよう短くし、1行に収める。
+                Text(
+                    text = "最近使った",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f),
+                )
+                EmojiSetsButton(
+                    onClick = {
+                        onDismiss()
+                        openCustomEmoji(CustomEmojiOpenRequest.of(""))
+                    },
+                )
+            }
             if (recentOptions.isEmpty()) {
                 Text(
                     text = "まだありません",

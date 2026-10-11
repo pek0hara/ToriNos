@@ -9,6 +9,7 @@ import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
@@ -25,8 +26,8 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.EmojiEmotions
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Star
@@ -120,9 +121,20 @@ private fun StandardEmojiCategory.toSection() = EmojiPickerSection(label, emojis
 internal fun StandardEmojiPickerSheet(
     onDismiss: () -> Unit,
     onSelect: (ReactionOption) -> Unit,
+    /** 絵文字セット画面を開く。投稿欄のように下書きを守ってから開く場合に渡す。省略するとシートを閉じて開く。 */
     onOpenCustomEmojiSettings: (() -> Unit)? = null,
+    /**
+     * 「絵文字セット」ボタンを出すか。入力欄から開くときは、下書きを守る [onOpenCustomEmojiSettings] を
+     * 渡せる場合だけ出す。画面を移ると下書きが消える入力欄があるため。
+     */
+    showEmojiSetsButton: Boolean = true,
 ) {
     DismissKeyboardOnLeave()
+    val openCustomEmoji = LocalCustomEmojiNavigator.current
+    val openEmojiSets = onOpenCustomEmojiSettings ?: {
+        onDismiss()
+        openCustomEmoji(CustomEmojiOpenRequest.of(""))
+    }
     val emojiPreferences = rememberEmojiPreferences()
     val savedCustomEmojis = remember(emojiPreferences.available) {
         emojiPreferences.available.sortedBy { it.shortcode.lowercase() }
@@ -187,6 +199,12 @@ internal fun StandardEmojiPickerSheet(
                 .fillMaxHeight(0.78f)
                 .padding(horizontal = 16.dp),
         ) {
+            if (showEmojiSetsButton) {
+                EmojiSetsButton(
+                    onClick = openEmojiSets,
+                    modifier = Modifier.align(Alignment.End),
+                )
+            }
             OutlinedTextField(
                 value = query,
                 onValueChange = { query = it },
@@ -305,23 +323,27 @@ internal fun StandardEmojiPickerSheet(
                 }
             }
 
-            onOpenCustomEmojiSettings?.let { onOpenSettings ->
-                TextButton(
-                    onClick = onOpenSettings,
-                    modifier = Modifier
-                        .align(Alignment.End)
-                        .padding(bottom = 4.dp),
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.Add,
-                        contentDescription = null,
-                        modifier = Modifier.size(18.dp),
-                    )
-                    Spacer(modifier = Modifier.size(6.dp))
-                    Text("絵文字を追加")
-                }
-            } ?: Spacer(modifier = Modifier.height(8.dp))
+            Spacer(modifier = Modifier.height(8.dp))
         }
+    }
+}
+
+/** 絵文字セット画面を開くボタン。リアクションのプルダウンと絵文字シートの右上に置く。 */
+@Composable
+internal fun EmojiSetsButton(onClick: () -> Unit, modifier: Modifier = Modifier) {
+    // プルダウンの見出し「最近使ったリアクション」と1行に並ぶよう、余白と文字を小さめにする。
+    TextButton(
+        onClick = onClick,
+        modifier = modifier,
+        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
+    ) {
+        Icon(
+            imageVector = Icons.Default.EmojiEmotions,
+            contentDescription = null,
+            modifier = Modifier.size(16.dp),
+        )
+        Spacer(modifier = Modifier.size(4.dp))
+        Text("絵文字セット", style = MaterialTheme.typography.labelMedium)
     }
 }
 
