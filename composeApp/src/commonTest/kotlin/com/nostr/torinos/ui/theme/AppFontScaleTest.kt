@@ -19,10 +19,10 @@ class AppFontScaleTest {
     }
 
     @Test
-    fun fallsBackToDefaultForMissingOrUnknownStoredValue() {
-        assertEquals(AppFontScale.Default, AppFontScale.fromStorage(null))
-        assertEquals(AppFontScale.Default, AppFontScale.fromStorage(""))
-        assertEquals(AppFontScale.Default, AppFontScale.fromStorage("1.3"))
+    fun fallsBackToStandardForMissingOrUnknownStoredValue() {
+        assertEquals(AppFontScale.Large, AppFontScale.fromStorage(null))
+        assertEquals(AppFontScale.Large, AppFontScale.fromStorage(""))
+        assertEquals(AppFontScale.Large, AppFontScale.fromStorage("1.3"))
     }
 
     @Test

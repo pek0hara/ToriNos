@@ -40,7 +40,7 @@ object DisplayPreferencesStore {
     private val _useFooterComposer = MutableStateFlow(defaultUseFooterComposer)
     val useFooterComposer: StateFlow<Boolean> = _useFooterComposer.asStateFlow()
 
-    private val _fontScale = MutableStateFlow(AppFontScale.Default)
+    private val _fontScale = MutableStateFlow(AppFontScale.Large)
     val fontScale: StateFlow<AppFontScale> = _fontScale.asStateFlow()
 
     /** フッターの並び順と表示する項目。 */

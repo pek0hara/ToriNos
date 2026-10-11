@@ -18,7 +18,7 @@ enum class AppFontScale(val storageValue: String, val label: String, val factor:
 
     companion object {
         fun fromStorage(value: String?): AppFontScale =
-            entries.firstOrNull { it.storageValue == value } ?: Default
+            entries.firstOrNull { it.storageValue == value } ?: Large
     }
 }
 

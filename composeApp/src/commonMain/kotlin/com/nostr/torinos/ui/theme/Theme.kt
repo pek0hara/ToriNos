@@ -52,7 +52,7 @@ private val DarkColors = darkColorScheme(
 
 @Composable
 fun NostrTheme(
-    fontScale: AppFontScale = AppFontScale.Default,
+    fontScale: AppFontScale = AppFontScale.Large,
     content: @Composable () -> Unit,
 ) {
     val notoSansJP = FontFamily(
