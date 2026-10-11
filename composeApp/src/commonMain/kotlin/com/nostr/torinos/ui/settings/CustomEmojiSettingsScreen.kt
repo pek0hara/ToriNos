@@ -287,9 +287,6 @@ fun CustomEmojiSettingsScreen(
                         sort = effectiveSort,
                         onSort = { sort = it; orderedKeys = emptyList() },
                         count = filteredPublishedSets.size,
-                        loading = isListLoading,
-                        enabled = relaysLoaded && selectedRelay != null,
-                        onRefresh = ::refresh,
                         notice = when {
                             !relaysLoaded -> "リレー設定を読み込み中…"
                             selectedRelay == null -> "閲覧リレーを選択してください"

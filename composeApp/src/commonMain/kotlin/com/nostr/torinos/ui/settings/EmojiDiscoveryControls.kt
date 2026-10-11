@@ -37,9 +37,6 @@ internal fun EmojiDiscoveryControls(
     sort: EmojiSetSort,
     onSort: (EmojiSetSort) -> Unit,
     count: Int,
-    loading: Boolean,
-    enabled: Boolean,
-    onRefresh: () -> Unit,
     notice: String?,
     searchOpen: Boolean,
     onToggleSearch: () -> Unit,
@@ -67,13 +64,9 @@ internal fun EmojiDiscoveryControls(
                     Icon(Icons.Default.Search, contentDescription = if (searchOpen) "検索を閉じる" else "検索",
                         tint = if (searchOpen) MaterialTheme.colorScheme.primary else LocalContentColor.current)
                 }
-                // 登録人数の取得中は同じ位置で「停止」にする。行を出し入れして一覧がずれないようにする。
+                // 登録人数の取得中だけ「停止」を出す。
                 if (onStop != null) {
                     TextButton(onClick = onStop, modifier = Modifier.widthIn(min = ACTION_MIN_WIDTH)) { Text("停止", maxLines = 1, softWrap = false) }
-                } else {
-                    TextButton(onClick = onRefresh, enabled = enabled && !loading, modifier = Modifier.widthIn(min = ACTION_MIN_WIDTH)) {
-                        Text(if (loading) "取得中" else "更新", maxLines = 1, softWrap = false)
-                    }
                 }
             }
         }
