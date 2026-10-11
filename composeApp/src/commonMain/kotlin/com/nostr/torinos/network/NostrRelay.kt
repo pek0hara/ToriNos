@@ -63,7 +63,7 @@ class NostrRelay(
     fun connect(scope: CoroutineScope) {
         if (job?.isActive == true) return
         _connectionState.value = RelayConnectionState.Connecting
-        job = scope.launch {
+        job = scope.launch(relayConnectionDispatcher) {
             try {
                 var retryDelay = 2_000L
                 val maxDelay = 30_000L
