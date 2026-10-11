@@ -1,5 +1,6 @@
 package com.nostr.torinos.network
 
+import com.nostr.torinos.FooterConfig
 import com.nostr.torinos.ui.theme.AppFontScale
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -10,13 +11,14 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 
 /**
- * 画像・X投稿の自動プレビュー表示可否、フィードの投稿方法と文字サイズ。Nostrアカウントには紐付かない端末単位の表示設定。
+ * 画像・X投稿の自動プレビュー表示可否、フィードの投稿方法と文字サイズ、フッターの並び。Nostrアカウントには紐付かない端末単位の表示設定。
  */
 object DisplayPreferencesStore {
     private const val ImagePreviewKey = "display_pref_image_preview_v1"
     private const val XPreviewKey = "display_pref_x_preview_v1"
     private const val FooterComposerKey = "display_pref_footer_composer_v1"
     private const val FontScaleKey = "display_pref_font_scale_v1"
+    private const val FooterItemsKey = "display_pref_footer_items_v1"
 
     /** フッター投稿を一度も切り替えていないときの既定。全プラットフォームで投稿シートを使う。 */
     private const val defaultUseFooterComposer = false
@@ -41,6 +43,10 @@ object DisplayPreferencesStore {
     private val _fontScale = MutableStateFlow(AppFontScale.Default)
     val fontScale: StateFlow<AppFontScale> = _fontScale.asStateFlow()
 
+    /** フッターの並び順と表示する項目。 */
+    private val _footerConfig = MutableStateFlow(FooterConfig.Default)
+    internal val footerConfig: StateFlow<FooterConfig> = _footerConfig.asStateFlow()
+
     init {
         scope.launch {
             _showImagePreviews.value = LocalSettingsStorage.getString(ImagePreviewKey)
@@ -50,6 +56,7 @@ object DisplayPreferencesStore {
             _useFooterComposer.value = LocalSettingsStorage.getString(FooterComposerKey)
                 ?.toBoolean() ?: defaultUseFooterComposer
             _fontScale.value = AppFontScale.fromStorage(LocalSettingsStorage.getString(FontScaleKey))
+            _footerConfig.value = FooterConfig.parse(LocalSettingsStorage.getString(FooterItemsKey))
         }
     }
 
@@ -66,6 +73,11 @@ object DisplayPreferencesStore {
     fun setFontScale(value: AppFontScale) {
         _fontScale.value = value
         scope.launch { LocalSettingsStorage.putString(FontScaleKey, value.storageValue) }
+    }
+
+    internal fun setFooterConfig(value: FooterConfig) {
+        _footerConfig.value = value
+        scope.launch { LocalSettingsStorage.putString(FooterItemsKey, value.serialize()) }
     }
 
     fun setShowXPreviews(value: Boolean) {

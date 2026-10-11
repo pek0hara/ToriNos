@@ -42,6 +42,7 @@ fun MyProfileScreen(
     onOpenFollowers: () -> Unit = {},
     onOpenSettings: () -> Unit = {},
     onOpenAccountSwitcher: () -> Unit = {},
+    onOpenStatus: () -> Unit = {},
     onUserClick: (String) -> Unit = {},
     onReply: ((event: NostrEvent, preview: String) -> Unit)? = null,
     onOpenReplies: (eventId: String) -> Unit = {},
@@ -123,9 +124,10 @@ fun MyProfileScreen(
         contentWindowInsets = WindowInsets(0),
         floatingActionButton = {
             AppFloatingActionButton(
-                onClick = { showStatusEdit = true },
+                // 自分のステータスの編集はヘッダーのステータス表示から行う。
+                onClick = onOpenStatus,
                 icon = Icons.Default.Sms,
-                contentDescription = "ステータスを編集",
+                contentDescription = "ステータスを見る",
                 modifier = Modifier
                     .navigationBarsPadding()
                     .padding(bottom = 8.dp),

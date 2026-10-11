@@ -16,6 +16,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.AccessTime
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Edit
@@ -81,6 +82,8 @@ fun StatusScreen(
     modifier: Modifier = Modifier,
     /** false の間は描画だけして、購読しない。 */
     isActive: Boolean = true,
+    /** 単独の画面として開いたときの戻る操作。指定するとヘッダー左端をアバターから戻るに替える。 */
+    onBack: (() -> Unit)? = null,
 ) {
     val relays by RelayStore.relays.collectAsState(initial = emptyList())
     val selectedRelayUrl by RelayStore.selectedStatusRelayUrl.collectAsState()
@@ -139,7 +142,15 @@ fun StatusScreen(
             Column(modifier = Modifier.background(headerBackgroundColor)) {
                 AppTopBar(
                     navigationIcon = {
-                        if (ownPubkey != null) {
+                        if (onBack != null) {
+                            IconButton(onClick = onBack) {
+                                Icon(
+                                    Icons.AutoMirrored.Filled.ArrowBack,
+                                    contentDescription = "戻る",
+                                    tint = headerContentColor,
+                                )
+                            }
+                        } else if (ownPubkey != null) {
                             IconButton(onClick = onOpenProfile) {
                                 AvatarCircle(
                                     pubkey = ownPubkey,

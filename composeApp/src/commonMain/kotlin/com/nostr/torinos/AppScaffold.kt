@@ -1,5 +1,10 @@
 package com.nostr.torinos
 
+import androidx.compose.animation.EnterTransition
+import androidx.compose.animation.ExitTransition
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.PaddingValues
@@ -74,6 +79,15 @@ internal fun AppScaffold(
 /** 横長画面の本文の最大幅。 */
 private val WideContentMaxWidth = 760.dp
 
+/**
+ * 画面の切り替えのフェード。Navigation の既定（700ms のフェード）と同じで、コンテンツのタブ切り替えもこれに揃える。
+ */
+private const val AppScreenFadeMillis = 700
+
+internal fun appScreenEnterTransition(): EnterTransition = fadeIn(tween(AppScreenFadeMillis))
+
+internal fun appScreenExitTransition(): ExitTransition = fadeOut(tween(AppScreenFadeMillis))
+
 /** ルート登録を画面シェルから分離するための NavHost 境界。 */
 @Composable
 internal fun AppNavigationGraph(
@@ -85,6 +99,8 @@ internal fun AppNavigationGraph(
         navController = navController,
         startDestination = "feed",
         modifier = modifier,
+        enterTransition = { appScreenEnterTransition() },
+        exitTransition = { appScreenExitTransition() },
         builder = builder,
     )
     BindBrowserNavigation(navController)

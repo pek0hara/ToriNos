@@ -1,6 +1,7 @@
 package com.nostr.torinos
 
 import com.nostr.torinos.ui.theme.appSp
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
@@ -17,6 +18,8 @@ import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.systemBars
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.material3.Icon
@@ -24,6 +27,7 @@ import androidx.compose.material3.LocalTextStyle
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -37,6 +41,7 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import kotlin.math.roundToInt
 
 /**
  * フッターの項目を並べる部分の高さ。端末下端の余白（iPhoneのホームインジケーターなど）はこの下に足す。
@@ -57,6 +62,9 @@ internal class MainDestination(
     val onClick: () -> Unit,
 )
 
+/**
+ * フッターの項目を1段に並べる。幅に入りきらないときは横にスライドでき、選択中の項目が見える位置まで自動で動かす。
+ */
 @Composable
 internal fun AppBottomBarRow(
     destinations: List<MainDestination>,
@@ -67,24 +75,43 @@ internal fun AppBottomBarRow(
             .fillMaxWidth()
             .height(AppNavigationBarContentHeight),
     ) {
+        val layout = footerItemLayout(maxWidth, destinations.size)
         val labelFontSize = bottomBarLabelFontSize(
             labels = destinations.map { it.label },
-            itemWidth = maxWidth / destinations.size.coerceAtLeast(1) - BottomBarLabelHorizontalPadding * 2,
+            itemWidth = layout.itemWidth - BottomBarLabelHorizontalPadding * 2,
         )
+        val scrollState = rememberScrollState()
+        val density = LocalDensity.current
+        val selectedIndex = destinations.indexOfFirst { it.selected }
+        val viewportPx = with(density) { maxWidth.roundToPx() }
+        val itemWidthPx = with(density) { layout.itemWidth.toPx() }
+        // 本文のスワイプや通知から選択が変わったときも、選択中の項目を隠したままにしない。
+        LaunchedEffect(selectedIndex, layout.scrollable, itemWidthPx, viewportPx) {
+            if (!layout.scrollable || selectedIndex < 0) return@LaunchedEffect
+            val start = (itemWidthPx * selectedIndex).roundToInt()
+            val end = (itemWidthPx * (selectedIndex + 1)).roundToInt()
+            val target = when {
+                start < scrollState.value -> start
+                end > scrollState.value + viewportPx -> end - viewportPx
+                else -> return@LaunchedEffect
+            }
+            scrollState.animateScrollTo(target)
+        }
         Row(
             modifier = Modifier
                 .fillMaxSize()
+                .then(if (layout.scrollable) Modifier.horizontalScroll(scrollState) else Modifier)
                 .selectableGroup(),
         ) {
             destinations.forEach { destination ->
-                AppBottomBarItem(destination, labelFontSize, Modifier.weight(1f))
+                AppBottomBarItem(destination, labelFontSize, Modifier.width(layout.itemWidth))
             }
         }
     }
 }
 
 /**
- * ラベルの文字サイズ。文字サイズ設定どおりに大きくすると、5項目並ぶコンテンツのバーでは「チャンネル」などが入りきらない。
+ * ラベルの文字サイズ。文字サイズ設定どおりに大きくすると、「ジャーナル」「チャンネル」などが項目幅に入りきらない。
  * 全ラベルが1行に入る範囲でだけ大きくし、項目ごとに大きさがばらつかないようバー全体で揃える。
  * 標準の11spより小さくはしない（それでも入らなければ従来どおり省略）。「小」は設定どおりの大きさにする。
  */

@@ -97,6 +97,7 @@ fun SettingsScreen(
     val showXPreviews by DisplayPreferencesStore.showXPreviews.collectAsState()
     val useFooterComposer by DisplayPreferencesStore.useFooterComposer.collectAsState()
     val fontScale by DisplayPreferencesStore.fontScale.collectAsState()
+    val footerConfig by DisplayPreferencesStore.footerConfig.collectAsState()
 
     LaunchedEffect(accountViewModel) {
         accountViewModel?.secretKeyEvent?.collect { nsec = it }
@@ -146,15 +147,22 @@ fun SettingsScreen(
                 .padding(padding),
         ) {
             item {
+                FooterSettingsSection(
+                    config = footerConfig,
+                    onConfigChange = DisplayPreferencesStore::setFooterConfig,
+                )
+                HorizontalDivider()
+            }
+            item {
                 DisplaySection(
                     showImagePreviews = showImagePreviews,
                     showXPreviews = showXPreviews,
                     onShowImagePreviewsChange = DisplayPreferencesStore::setShowImagePreviews,
                     onShowXPreviewsChange = DisplayPreferencesStore::setShowXPreviews,
-                    useFooterComposer = useFooterComposer,
-                    onUseFooterComposerChange = DisplayPreferencesStore::setUseFooterComposer,
                     fontScale = fontScale,
                     onFontScaleChange = DisplayPreferencesStore::setFontScale,
+                    useFooterComposer = useFooterComposer,
+                    onUseFooterComposerChange = DisplayPreferencesStore::setUseFooterComposer,
                 )
                 HorizontalDivider()
             }
