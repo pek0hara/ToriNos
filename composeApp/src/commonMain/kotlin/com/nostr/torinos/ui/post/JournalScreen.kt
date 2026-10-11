@@ -5,6 +5,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
@@ -23,7 +24,6 @@ import androidx.compose.material.icons.filled.ArrowDownward
 import androidx.compose.material.icons.filled.ArrowUpward
 import androidx.compose.material.icons.filled.CalendarMonth
 import androidx.compose.material.icons.filled.FilterList
-import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -79,6 +79,7 @@ import com.nostr.torinos.ui.components.AppFloatingActionButton
 import com.nostr.torinos.ui.components.AppTopBar
 import com.nostr.torinos.ui.components.DeleteNoteDialog
 import com.nostr.torinos.ui.components.NoteCard
+import com.nostr.torinos.ui.components.NoteSkeletonList
 import com.nostr.torinos.ui.components.QuotedEvent
 import com.nostr.torinos.ui.components.RelaySelector
 import com.nostr.torinos.ui.profile.AvatarCircle
@@ -395,9 +396,11 @@ fun JournalScreen(
                         isPullRefreshing = isPullRefreshing,
                     )
                 ) {
-                    JournalListContent.Loading -> {
-                        CircularProgressIndicator(modifier = Modifier.align(Alignment.Center))
-                    }
+                    // 行は投稿カードと同じなので、フィードと同じスケルトンにする。
+                    JournalListContent.Loading -> NoteSkeletonList(
+                        contentPadding = PaddingValues(0.dp),
+                        modifier = Modifier.fillMaxSize(),
+                    )
                     JournalListContent.Error -> JournalMessage(
                         text = state.error.orEmpty(),
                         color = MaterialTheme.colorScheme.error,

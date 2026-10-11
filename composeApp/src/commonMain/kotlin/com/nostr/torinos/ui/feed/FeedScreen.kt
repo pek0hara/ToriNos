@@ -70,6 +70,7 @@ import com.nostr.torinos.model.NostrProfile
 import com.nostr.torinos.account.LocalAccountSession
 import com.nostr.torinos.network.RelayInformationRepository
 import com.nostr.torinos.network.RelayStore
+import com.nostr.torinos.ui.components.NoteSkeletonList
 import com.nostr.torinos.ui.components.NoteTimeline
 import com.nostr.torinos.ui.components.RelaySelector
 import com.nostr.torinos.ui.profile.AvatarCircle
@@ -557,18 +558,11 @@ fun FeedScreen(
                         }
                         if (followingFeedMode == FollowingFeedMode.Following && !isFollowListLoaded) {
                             LaunchedEffect(Unit) { StartupTrace.mark("Following.waitFollowList") }
-                            Box(
-                                modifier = Modifier
-                                    .fillMaxSize()
-                                    .padding(timelineContentPadding),
-                                contentAlignment = Alignment.Center,
-                            ) {
-                                Text(
-                                    text = "読み込み中...",
-                                    style = MaterialTheme.typography.bodyMedium,
-                                    color = MaterialTheme.colorScheme.onBackground,
-                                )
-                            }
+                            // 一覧の読み込み中と同じスケルトンにし、一覧へ切り替わっても見た目を変えない。
+                            NoteSkeletonList(
+                                contentPadding = timelineContentPadding,
+                                modifier = Modifier.fillMaxSize(),
+                            )
                         } else {
                             val ownerKey = ownPubkey ?: "anonymous"
                             FeedTimelinePane(

@@ -352,6 +352,12 @@ fun NoteTimeline(
                 )
             else -> state
         }
+        // 点滅は読み込み中の間だけ、一覧に1つだけ動かす。
+        val showsSkeleton = timelinePlaceholder(
+            hasEvents = presentedState.events.isNotEmpty(),
+            initialFeedState = presentedState.initialFeedState,
+        ) == TimelinePlaceholder.Skeleton
+        val skeletonPulse = if (showsSkeleton) rememberSkeletonPulse() else null
         androidx.compose.runtime.CompositionLocalProvider(com.nostr.torinos.ui.article.LocalMatometrSelectionEnabled provides true) {
         LazyColumn(
             state = timelineListState,
@@ -367,6 +373,7 @@ fun NoteTimeline(
 
             noteListItems(
                 state = presentedState,
+                skeletonPulse = skeletonPulse,
                 ownPubkey = ownPubkey,
                 actions = actions,
                 mutedPubkeys = mutedPubkeys,

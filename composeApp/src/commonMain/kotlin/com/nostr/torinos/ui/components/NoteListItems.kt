@@ -85,6 +85,8 @@ internal fun LazyListScope.noteListItems(
     eventContentVisible: Boolean = true,
     eventEnterFadeMillis: Int = 0,
     deferWebViewLoad: Boolean = false,
+    /** スケルトンの点滅。読み込み中だけ渡す（[rememberSkeletonPulse]）。 */
+    skeletonPulse: State<Float>? = null,
 ) {
     // Which actions exist decides which buttons are shown; read once here, not inside items.
     val available = actions.value
@@ -98,44 +100,17 @@ internal fun LazyListScope.noteListItems(
     val canMute = available.onMuteUser != null
     val canUnmute = available.onUnmuteUser != null
     val canReport = ownPubkey != null && available.onReport != null
-    when {
-        state.events.isEmpty() &&
-            state.initialFeedState == FeedViewModel.InitialFeedState.Loading ->
-            item(contentType = "loading") {
-                Box(
-                    modifier = Modifier.fillMaxWidth().padding(48.dp),
-                    contentAlignment = Alignment.Center,
-                ) { CircularProgressIndicator() }
+    when (timelinePlaceholder(hasEvents = state.events.isNotEmpty(), state.initialFeedState)) {
+        TimelinePlaceholder.Skeleton -> noteSkeletonItems(skeletonPulse ?: FullSkeletonAlpha)
+        TimelinePlaceholder.Failed -> item(contentType = "failed") {
+            Box(
+                modifier = Modifier.fillMaxWidth().padding(48.dp),
+                contentAlignment = Alignment.Center,
+            ) {
+                EmptyTimelineMessage("ポストを取得できませんでした")
             }
-        state.events.isEmpty() &&
-            state.initialFeedState == FeedViewModel.InitialFeedState.Slow ->
-            item(contentType = "slow") {
-                Box(
-                    modifier = Modifier.fillMaxWidth().padding(48.dp),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        CircularProgressIndicator()
-                        Text(
-                            text = "リレーから取得中…",
-                            modifier = Modifier.padding(top = 12.dp),
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-                }
-            }
-        state.events.isEmpty() &&
-            state.initialFeedState == FeedViewModel.InitialFeedState.Failed ->
-            item(contentType = "failed") {
-                Box(
-                    modifier = Modifier.fillMaxWidth().padding(48.dp),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    EmptyTimelineMessage("ポストを取得できませんでした")
-                }
-            }
-        state.events.isEmpty() -> item(contentType = "empty") {
+        }
+        TimelinePlaceholder.Empty -> item(contentType = "empty") {
             Box(
                 modifier = Modifier.fillMaxWidth().padding(48.dp),
                 contentAlignment = Alignment.Center,
@@ -143,7 +118,7 @@ internal fun LazyListScope.noteListItems(
                 emptyContent?.invoke() ?: EmptyTimelineMessage(emptyText)
             }
         }
-        else -> {
+        TimelinePlaceholder.None -> {
             items(
                 items = state.events,
                 key = { it.id },
@@ -329,3 +304,7 @@ private fun String.replyPreviewText(): String =
         .filter { it.isNotEmpty() }
         .joinToString(" ")
         .take(160)
+
+private object FullSkeletonAlpha : State<Float> {
+    override val value: Float = 1f
+}
