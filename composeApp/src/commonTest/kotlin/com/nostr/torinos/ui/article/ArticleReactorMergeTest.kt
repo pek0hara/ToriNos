@@ -27,4 +27,18 @@ class ArticleReactorMergeTest {
         assertEquals(listOf("fire", "a"), withOwnReactions(fetched, state, "me", nowSeconds = 999).map { it.eventId })
         assertEquals(fetched, withOwnReactions(fetched, state, null))
     }
+
+    @Test fun ownProfileIsLoadedEvenBeforeOwnReactionIsFetched() {
+        // いいね直後の自分の行は取得一覧に無いため、名前を引く対象に自分を必ず入れる。
+        val reactors = listOf(ArticleReactor("a", "alice", null, 100))
+        assertEquals(listOf("bob", "alice", "me"), engagementProfilePubkeys(listOf("bob", "alice"), reactors, "me"))
+        assertEquals(listOf("alice"), engagementProfilePubkeys(emptyList(), reactors, null))
+    }
+
+    @Test fun ownProfileIsFetchedOnlyWhileOwnReactionIsShown() {
+        // 記事を開くたびに自分のプロフィールを取りにいかない。自分の行が出るときだけ名前を引く。
+        assertEquals(false, NoteEngagementState().showsOwnReactor())
+        assertEquals(true, NoteEngagementState(ownLikeEventId = "mine").showsOwnReactor())
+        assertEquals(true, NoteEngagementState(ownEmojiReactionEventIds = mapOf(fire.key to "f")).showsOwnReactor())
+    }
 }

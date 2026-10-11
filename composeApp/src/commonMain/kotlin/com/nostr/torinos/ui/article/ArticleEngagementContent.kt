@@ -212,6 +212,12 @@ private fun ArticleReactions(
     }
 }
 
+/** [withOwnReactions] が自分の行を出すか。出すときだけ自分の名前を引く。 */
+internal fun NoteEngagementState.showsOwnReactor(): Boolean =
+    ownLikeEventId != null ||
+        pendingOperations[EngagementSlot.Reaction]?.request == EngagementRequest.AddLike ||
+        displayOwnEmojiReactionEventIds.isNotEmpty()
+
 /**
  * 取得した一覧の自分の分を、件数と同じ楽観表示（送信中・取り消し中）に合わせる。
  * 一覧は取得時点の事実なので、送信直後の自分のリアクションはまだ入っておらず、取り消し後も残っている。

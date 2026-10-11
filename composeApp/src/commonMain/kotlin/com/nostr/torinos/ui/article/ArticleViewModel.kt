@@ -699,6 +699,8 @@ class ArticleDetailViewModel(
         val optimistic = engagementCoordinator.begin(loaded.reactions, operationId, request)
         if (optimistic == loaded.reactions) return
         updateLoadedEngagement { it.copy(reactions = optimistic, reactionError = null) }
+        // 送信直後に出る自分の行の名前を、手元になければ取りにいく。
+        if (optimistic.showsOwnReactor()) launch { fetchEngagementProfiles() }
         launch {
             engagementCoordinator.execute(command)
                 .onSuccess { published ->
@@ -773,7 +775,7 @@ class ArticleDetailViewModel(
         reactors: List<ArticleReactor>,
     ) {
         val current = loadedEngagement()
-        val people = (comments.map { it.pubkey } + reactors.map { it.pubkey }).distinct()
+        val people = engagementProfilePubkeys(comments.map { it.pubkey }, reactors, accountSession?.pubkey)
         val profiles = (current?.profiles.orEmpty()) + ProfileRepository.getCached(people)
         _state.value = _state.value.copy(
             engagement = when {
@@ -802,8 +804,10 @@ class ArticleDetailViewModel(
 
     private suspend fun fetchEngagementProfiles() {
         val loaded = loadedEngagement() ?: return
-        val missing = (loaded.comments.map { it.pubkey } + loaded.reactors.map { it.pubkey })
-            .distinct().filterNot { it in loaded.profiles }
+        // 自分の行が出るときだけ自分の名前を取りにいく。記事を開くたびに取りにいかない。
+        val ownPubkey = accountSession?.pubkey?.takeIf { loaded.reactions.showsOwnReactor() }
+        val missing = engagementProfilePubkeys(loaded.comments.map { it.pubkey }, loaded.reactors, ownPubkey)
+            .filterNot { it in loaded.profiles }
         if (missing.isEmpty()) return
         val fetched = fetchProfiles(missing, relayUrl)
         updateLoadedEngagement { it.copy(profiles = it.profiles + fetched) }
@@ -948,3 +952,13 @@ private const val PROFILE_FETCH_TIMEOUT_MS = 5_000L
 private const val PROFILE_FETCH_LIMIT = 200
 private const val PROFILE_MAX_AGE_MS = 15 * 60 * 1_000L
 private const val NIP09_DELETION_KIND = 5
+
+/**
+ * リアクション・コメント欄で名前を引く相手。いいね直後は自分の行を画面側で足す（[withOwnReactions]）が、
+ * 取得一覧にはまだ無いため、自分を常に含める。
+ */
+internal fun engagementProfilePubkeys(
+    commentAuthors: List<String>,
+    reactors: List<ArticleReactor>,
+    ownPubkey: String?,
+): List<String> = (commentAuthors + reactors.map { it.pubkey } + listOfNotNull(ownPubkey)).distinct()
