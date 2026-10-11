@@ -158,6 +158,23 @@ class EmojiAdoptionRepositoryTest {
     }
 
     @Test
+    fun followRemovedAndAddedBackIsFetchedAgain() = runTest {
+        val requests = mutableListOf<SubscriptionSpec>()
+        val other = "b".repeat(64)
+        val repo = repository(requests, "$own-7")
+        repo.start("wss://one.example", setOf(user, other))
+        repo.state.first { !it.isLoading }
+        repo.start("wss://one.example", setOf(other))
+
+        repo.start("wss://one.example", setOf(user, other))
+        val state = repo.state.first { !it.isLoading }
+
+        assertEquals(listOf(user), requests.last().filters.single().authors)
+        assertEquals(mapOf(address to 1), state.counts)
+        repo.close()
+    }
+
+    @Test
     fun refetchesEveryoneWhenStaleOrForced() = runTest {
         val requests = mutableListOf<SubscriptionSpec>()
         var now = 0L

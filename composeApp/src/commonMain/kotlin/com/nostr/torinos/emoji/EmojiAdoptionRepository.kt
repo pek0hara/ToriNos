@@ -99,6 +99,9 @@ internal class EmojiAdoptionRepository(
         if (!fresh) {
             roundStartedAt = now()
             fetchedAuthors = emptySet()
+        } else {
+            // 外した人の集計は消すので、付け直したときに取り直せるよう応答済みからも外す。
+            fetchedAuthors = fetchedAuthors intersect targets
         }
         // 取り直す間も、応答が無かった人は前回の内容を残す。
         _state.value = if (sameRelay) current.copy(
