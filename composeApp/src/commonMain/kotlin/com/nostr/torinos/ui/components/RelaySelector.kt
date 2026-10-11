@@ -1,6 +1,5 @@
 package com.nostr.torinos.ui.components
 
-import com.nostr.torinos.ui.theme.appSp
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -43,7 +42,8 @@ fun RelaySelector(
     onOpenRelaySettings: () -> Unit,
     modifier: Modifier = Modifier,
     selectedRelayName: String? = null,
-    selectedRelayNameFontSize: TextUnit = 16.appSp,
+    // 通常の投稿の本文と同じ大きさ。
+    selectedRelayNameFontSize: TextUnit = MaterialTheme.typography.bodyMedium.fontSize,
     showSelectedRelayUrl: Boolean = true,
     menuDescription: String? = null,
 ) {

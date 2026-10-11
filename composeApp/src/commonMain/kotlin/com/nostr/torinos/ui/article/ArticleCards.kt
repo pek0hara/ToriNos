@@ -101,7 +101,8 @@ internal fun ArticleCard(
                 Text(
                     text = article.displayTitle,
                     color = Color.White,
-                    style = MaterialTheme.typography.titleMedium,
+                    // 通常の投稿の本文と同じ大きさにし、太字で見出しと分かるようにする。
+                    style = MaterialTheme.typography.bodyMedium,
                     fontWeight = FontWeight.Bold,
                     maxLines = 2,
                     overflow = TextOverflow.Ellipsis,
@@ -114,7 +115,7 @@ internal fun ArticleCard(
         if (imageUrl == null) {
             Text(
                 text = article.displayTitle,
-                style = MaterialTheme.typography.titleMedium,
+                style = MaterialTheme.typography.bodyMedium,
                 fontWeight = FontWeight.SemiBold,
                 maxLines = 2,
                 overflow = TextOverflow.Ellipsis,

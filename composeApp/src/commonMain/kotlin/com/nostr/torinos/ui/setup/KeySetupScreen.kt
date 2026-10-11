@@ -427,10 +427,15 @@ private fun UsageConsentDialog(
                     text = "ToriNos を利用する前に、以下を確認してください。",
                     style = MaterialTheme.typography.bodyMedium,
                 )
+                // 文字サイズを大きくすると本文がダイアログに収まらず、下の同意チェックに重なる。
+                // 本文だけをスクロールさせ、同意チェックは常に見える位置に残す。
                 Text(
                     text = consentItems,
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier
+                        .weight(1f, fill = false)
+                        .verticalScroll(rememberScrollState()),
                 )
                 if (isIosPlatform) {
                     TextButton(

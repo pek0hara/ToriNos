@@ -1,6 +1,5 @@
 package com.nostr.torinos.ui.feed
 
-import com.nostr.torinos.ui.theme.appSp
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
@@ -384,9 +383,10 @@ fun FeedScreen(
                                 Column(modifier = Modifier.weight(1f, fill = false)) {
                                     Text(
                                         text = topBarTitle,
-                                        fontSize = 16.appSp,
+                                        // 他の画面のリレー名と同じく、通常の投稿の本文と同じ大きさにする。
+                                        fontSize = MaterialTheme.typography.bodyMedium.fontSize,
                                         // 下にリレー数を重ねても60dpのバーに収まるよう、タイトル用の高い行間を引き継がない。
-                                        lineHeight = 20.appSp,
+                                        lineHeight = MaterialTheme.typography.bodyMedium.fontSize * 1.25f,
                                         color = feedContentColor,
                                         maxLines = 1,
                                         overflow = TextOverflow.Ellipsis,

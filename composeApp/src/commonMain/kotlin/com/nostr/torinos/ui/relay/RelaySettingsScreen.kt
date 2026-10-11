@@ -185,7 +185,8 @@ fun RelaySettingsScreen(
                     .fillMaxWidth()
                     .padding(horizontal = 16.dp, vertical = 8.dp)
                     .avoidStaleAccessibilityFocus(),
-                placeholder = { Text("検索、または wss:// を入力して追加") },
+                // 文字サイズを大きくしても欄の高さが変わらないよう、1行に収めて超えた分は省略する。
+                placeholder = { Text("検索または wss:// で追加", maxLines = 1, overflow = TextOverflow.Ellipsis) },
                 leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
                 trailingIcon = {
                     if (input.isNotEmpty()) {
