@@ -464,6 +464,13 @@ internal fun AppSessionCoordinator(
             drawerCoordinator.openProfile(pubkey)
         }
 
+        // 作者の記事一覧がすでにスタックにあれば、積み増さずにそこへ戻る。
+        fun openUserArticles(pubkey: String) {
+            if (!nav.popBackStack(UserArticlesRoute(pubkey), inclusive = false)) {
+                nav.navigate(UserArticlesRoute(pubkey))
+            }
+        }
+
         fun openNotificationsDrawer() {
             drawerCoordinator.openNotifications()
         }
@@ -1631,6 +1638,7 @@ internal fun AppSessionCoordinator(
                                 nav.navigate(ArticleEditorRoute(pubkey, identifier))
                             },
                             onUserClick = ::openProfileDrawer,
+                            onAuthorArticlesClick = ::openUserArticles,
                             onNoteClick = { eventId -> nav.navigate(ThreadRoute(eventId)) },
                             onTopicClick = { topic ->
                                 articleTopic = topic

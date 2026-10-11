@@ -73,6 +73,7 @@ fun ArticleDetailScreen(
     onBack: () -> Unit,
     onEditArticle: (pubkey: String, identifier: String) -> Unit,
     onUserClick: (pubkey: String) -> Unit,
+    onAuthorArticlesClick: (pubkey: String) -> Unit,
     onNoteClick: (eventId: String) -> Unit,
     onTopicClick: (String) -> Unit,
     onComment: (target: ReplyTarget, preview: String) -> Unit,
@@ -218,6 +219,7 @@ fun ArticleDetailScreen(
                                 quotedProfiles = state.quotedProfiles,
                                 loadingQuoteIds = state.loadingQuoteIds,
                                 onUserClick = onUserClick,
+                                onAuthorArticlesClick = onAuthorArticlesClick,
                                 onNoteClick = onNoteClick,
                                 onTopicClick = onTopicClick,
                             )
@@ -322,6 +324,7 @@ private fun ArticleDetailContent(
     quotedProfiles: Map<String, NostrProfile>,
     loadingQuoteIds: Set<String>,
     onUserClick: (pubkey: String) -> Unit,
+    onAuthorArticlesClick: (pubkey: String) -> Unit,
     onNoteClick: (eventId: String) -> Unit,
     onTopicClick: (String) -> Unit,
 ) {
@@ -336,7 +339,8 @@ private fun ArticleDetailContent(
             style = MaterialTheme.typography.headlineSmall,
             fontWeight = FontWeight.Bold,
         )
-        ArticleAuthorLine(article = article, onUserClick = { onUserClick(article.event.pubkey) })
+        // タイトル下の作者行は、プロフィールではなく作者の記事一覧を開く。
+        ArticleAuthorLine(article = article, onUserClick = { onAuthorArticlesClick(article.event.pubkey) })
         article.meta.imageUrl?.takeIf { it.isNotBlank() }?.let { imageUrl ->
             NetworkImage(
                 url = imageUrl,
