@@ -30,6 +30,7 @@ import com.nostr.torinos.util.SynchronousLock
 import com.nostr.torinos.util.withLock
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlin.time.Clock
 
 enum class RelayConnectionState {
     Connecting,
@@ -52,6 +53,10 @@ class NostrRelay(
     private val _connectionState = MutableStateFlow(RelayConnectionState.Disconnected)
     val connectionState: StateFlow<RelayConnectionState> = _connectionState.asStateFlow()
 
+    private val healthTracker = RelayConnectionHealth(nowMillis = { Clock.System.now().toEpochMilliseconds() })
+    /** 接続できない（つながる前に失敗し、次の再試行を待っている）か。 */
+    internal val health: StateFlow<RelayHealth> = healthTracker.state
+
     // 送信待ち。EVENT は切断中も保持して再接続後に送る。REQ/CLOSE は接続中の世代のものだけを持つ（[RelayOutbox]）。
     private val outbox = RelayOutbox()
     private val outboxLock = SynchronousLock()
@@ -70,11 +75,15 @@ class NostrRelay(
                 while (isActive) {
                     _connectionState.value = RelayConnectionState.Connecting
                     networkTraceLog { "[Relay] connecting to $url" }
+                    var connectedThisAttempt = false
+                    healthTracker.onAttemptStarted()
                     runCatching {
                         client.webSocket(urlString = url) {
                             networkTraceLog { "[Relay] connected: $url" }
                             retryDelay = 2_000L
                             val session = outboxLock.withLock { outbox.openSession() }
+                            connectedThisAttempt = true
+                            healthTracker.onConnected()
                             _connectionState.value = RelayConnectionState.Connected
                             _connected.emit(session)
                             val sender = launch {
@@ -122,6 +131,7 @@ class NostrRelay(
                         }
                     }.onFailure { e ->
                         if (e !is CancellationException) logException("Relay", e, "WebSocket loop failed for $url")
+                        if (!connectedThisAttempt) healthTracker.onFailedBeforeConnecting(e)
                     }
                     // 接続が切れたら、この接続で送るはずだった REQ/CLOSE は捨てる。購読側が次の接続で送り直す。
                     outboxLock.withLock { outbox.closeSession() }
@@ -138,6 +148,7 @@ class NostrRelay(
                 logException("Relay", e, "connect loop crashed for $url")
             } finally {
                 outboxLock.withLock { outbox.closeSession() }
+                healthTracker.reset()
                 _connectionState.value = RelayConnectionState.Disconnected
             }
         }
@@ -210,6 +221,7 @@ class NostrRelay(
     fun disconnect() {
         job?.cancel()
         job = null
+        healthTracker.reset()
         _connectionState.value = RelayConnectionState.Disconnected
     }
 }

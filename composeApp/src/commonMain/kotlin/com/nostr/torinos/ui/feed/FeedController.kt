@@ -41,6 +41,7 @@ import com.nostr.torinos.model.quotedEventIds
 import com.nostr.torinos.model.replyTargetId
 import com.nostr.torinos.model.reportNoteTags
 import com.nostr.torinos.network.NostrRepository
+import com.nostr.torinos.network.RelayConnectionState
 import com.nostr.torinos.network.ProfileFetchPolicy
 import com.nostr.torinos.network.ProfileRepository
 import com.nostr.torinos.network.RelayTarget
@@ -88,6 +89,12 @@ internal interface FeedSubscriptionGateway {
     ): Set<String>
 
     fun close(subscriptionId: String)
+
+    /**
+     * リレーへの接続に失敗し、再試行を待っているか。そのリレーの応答は、表示の境界を決めるときに待たない。
+     * 接続の途中（まだ失敗していない）は含めない。数ミリ秒の差で外すと、後から投稿が表示範囲に挟まるため。
+     */
+    fun isRelayConnectionFailing(url: String): Boolean = false
 }
 
 internal object RepositoryFeedSubscriptionGateway : FeedSubscriptionGateway {
@@ -102,6 +109,10 @@ internal object RepositoryFeedSubscriptionGateway : FeedSubscriptionGateway {
 
     override suspend fun open(spec: SubscriptionSpec): SubscriptionSession =
         NostrRepository.openSubscription(spec)
+
+    // 接続を始める前と、失敗して再試行を待つ間が Disconnected。接続を始めるとすぐ Connecting になる。
+    override fun isRelayConnectionFailing(url: String): Boolean =
+        NostrRepository.relayConnectionStates.value[url] == RelayConnectionState.Disconnected
 
     override suspend fun subscribe(
         subscriptionId: String,

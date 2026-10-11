@@ -130,6 +130,66 @@ class FeedRelayMergeGapTest {
     }
 
     @Test
+    fun relayWhoseConnectionFailedDoesNotDelayTheFirstPage() = runTest {
+        val relays = SimulatedRelays(mapOf("relay-a" to sparseEvents, "relay-b" to denseEvents))
+        relays.held += "relay-b"
+        relays.connectionFailed += "relay-b"
+        val controller = FeedController(computeDispatcher = Dispatchers.Unconfined, scope = backgroundScope, subscriptions = relays)
+        runCurrent()
+        relays.serveFeedFetches()
+        runCurrent()
+        // 応答待ちの猶予（2秒）より前
+        advanceTimeBy(500)
+        runCurrent()
+
+        assertTrue(
+            controller.state.value.events.isNotEmpty(),
+            "接続に失敗したリレーを待って、最初の表示が遅れている",
+        )
+        controller.close()
+    }
+
+    @Test
+    fun stillConnectingOrSlowRelayHoldsTheFirstPageWithinTheGrace() = runTest {
+        val relays = SimulatedRelays(mapOf("relay-a" to sparseEvents, "relay-b" to denseEvents))
+        relays.held += "relay-b"
+        val controller = FeedController(computeDispatcher = Dispatchers.Unconfined, scope = backgroundScope, subscriptions = relays)
+        runCurrent()
+        relays.serveFeedFetches()
+        runCurrent()
+        advanceTimeBy(500)
+        runCurrent()
+
+        // 接続中・接続済みのリレーは今まで通り猶予の間は待つ（先に深い投稿を出して引っ込めない）。
+        // 接続の途中を「つながっていない」と扱うと、数ミリ秒の差で外れて後から投稿が挟まる。
+        assertTrue(controller.state.value.events.isEmpty(), "応答待ちのリレーを待たずに表示している")
+        controller.close()
+    }
+
+    @Test
+    fun relayRecoveredAfterTheFirstPageCatchesUpWithoutHoles() = runTest {
+        val relays = SimulatedRelays(mapOf("relay-a" to sparseEvents, "relay-b" to denseEvents))
+        relays.held += "relay-b"
+        relays.connectionFailed += "relay-b"
+        val controller = FeedController(computeDispatcher = Dispatchers.Unconfined, scope = backgroundScope, subscriptions = relays)
+        runCurrent()
+        relays.serveFeedFetches()
+        runCurrent()
+        advanceTimeBy(500)
+        runCurrent()
+        val oldestShown = controller.state.value.events.minOf { it.createdAt }
+
+        relays.connectionFailed.clear()
+        relays.held.clear()
+        settle(relays)
+
+        val shownIds = controller.state.value.events.map { it.id }.toSet()
+        val missing = truth.filter { it.createdAt >= oldestShown && it.id !in shownIds }
+        assertEquals(emptyList(), missing.map { it.id }, "後からつながったリレーが表示済みの範囲を埋めていない")
+        controller.close()
+    }
+
+    @Test
     fun unresponsiveRelayAfterResumeDoesNotStallLoadMore() = runTest {
         val relays = SimulatedRelays(mapOf("relay-a" to sparseEvents, "relay-b" to denseEvents))
         val controller = FeedController(computeDispatcher = Dispatchers.Unconfined, scope = backgroundScope, subscriptions = relays)
@@ -691,6 +751,10 @@ class FeedRelayMergeGapTest {
         val held = mutableSetOf<String>()
         /** 取得に失敗する（タイムアウトする）リレー。 */
         val failing = mutableSetOf<String>()
+        /** 接続に失敗して再試行を待っているリレー。 */
+        val connectionFailed = mutableSetOf<String>()
+
+        override fun isRelayConnectionFailing(url: String): Boolean = url in connectionFailed
         var maxResponseSize: Int? = null
 
         /** 応答する前に閉じられたフィード取得。無駄に送られた REQ の数。 */

@@ -197,6 +197,8 @@ object NostrRepository {
                     networkTraceLog { "[Repo] relay connected: ${relay.url} syncing ${commands.size} subscriptions" }
                     FetchTrace.connected(relay.url, commands.size)
                     sendSubscriptionCommands(commands)
+                    // どのリレーにもつながっていなかった間は、接続できないリレーも待っていた。つながったので見直す。
+                    sweepUnavailableFetches()
                 }
             } catch (e: CancellationException) {
                 throw e
@@ -215,7 +217,22 @@ object NostrRepository {
                 }
             }
         }
-        return ActiveRelayHandle(relay, listOf(messageJob, connectedJob, connectionStateJob))
+        val healthJob = scope.launch {
+            try {
+                var previousFailure: RelayConnectionFailure? = null
+                relay.health.collect { health ->
+                    val failureStarted = previousFailure == null && health.failure != null
+                    previousFailure = health.failure
+                    if (failureStarted) notifyLiveRelayUnavailable(relay, health.failure)
+                    if (health.isUnavailable) sweepUnavailableFetches()
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                appLog("[NostrRepository] health collector error for ${relay.url}: ${e::class.simpleName}: ${e.message}")
+            }
+        }
+        return ActiveRelayHandle(relay, listOf(messageJob, connectedJob, connectionStateJob, healthJob))
     }
 
     private fun desiredActiveRelayUrlsLocked(): Set<String> =
@@ -357,6 +374,62 @@ object NostrRepository {
         fetchTraceLog {
             "LIMIT $relayUrl 同時購読数を ${subscriptionLimitLocked(relayUrl)} に下げる（開いている数 $stillOpen）。$subId を待ちに戻す"
         }
+    }
+
+    /**
+     * 接続できないリレー（[RelayHealth.isUnavailable]）を待っている有限取得を、時間切れを待たずに
+     * [RelayOutcome.Unavailable] で終える。どのリレーにもつながっていないときは何もしない（[fetchFailureUpdate]）。
+     */
+    private suspend fun sweepUnavailableFetches() {
+        val sweep = stateMutex.withLock { sweepUnavailableFetchesLocked() }
+        sendSubscriptionCommands(sweep.commands)
+        sweep.completions.forEach { completeFetch(it, timedOut = false) }
+    }
+
+    private fun sweepUnavailableFetchesLocked(): UnavailableSweep {
+        // 写しを持たず、その時点の判定を読む。つながった直後に古い「接続できない」を見ないため。
+        val unavailable = activeRelays.mapNotNull { (url, handle) ->
+            val health = handle.relay.health.value
+            health.failure?.takeIf { health.isUnavailable }?.let { url to it }
+        }.toMap()
+        if (unavailable.isEmpty()) return UnavailableSweep(emptyList(), emptyList())
+        val anyRelayConnected = activeRelays.values.any {
+            it.relay.connectionState.value == RelayConnectionState.Connected
+        }
+        val commands = mutableListOf<SubscriptionWireCommand>()
+        val completions = mutableListOf<String>()
+        activeSubscriptions.forEach { (subscriptionId, record) ->
+            val expected = record.fetchExpectedRelays ?: return@forEach
+            if (record.fetchCompleted || !record.unavailableSweepEnabled) return@forEach
+            val update = fetchFailureUpdate(expected, record.fetchOutcomes, unavailable, anyRelayConnected)
+            if (update.unavailable.isEmpty()) return@forEach
+            update.unavailable.forEach { (relayUrl, outcome) ->
+                fetchTraceLog { "UNAVAILABLE $subscriptionId → $relayUrl 接続できないため待たない（${outcome.reason}）" }
+                record.fetchOutcomes[relayUrl] = outcome
+                record.relayStates[relayUrl]?.let { state ->
+                    finishFetchOnRelayLocked(subscriptionId, record, relayUrl, state)?.let(commands::add)
+                }
+            }
+            if (record.shouldCompleteFetchLocked()) {
+                record.fetchCompletionScheduled = true
+                completions += subscriptionId
+            }
+        }
+        return UnavailableSweep(commands + drainFreedSlotsLocked(), completions)
+    }
+
+    /** リレーが失敗し始めたとき、そのリレーを対象に含む配信中の購読へ知らせる。失敗が続く間は1回だけ。 */
+    private suspend fun notifyLiveRelayUnavailable(relay: NostrRelay, failure: RelayConnectionFailure) {
+        val sessions = stateMutex.withLock {
+            if (activeRelays[relay.url]?.relay !== relay) return@withLock emptyList()
+            activeSubscriptions.values.mapNotNull { record ->
+                record.session?.takeIf {
+                    record.behavior is SubscriptionBehavior.Live && relay.url in record.target.urls(enabledRelayUrls)
+                }
+            }
+        }
+        val signal = SubscriptionSignal.RelayUnavailable(relayUrl = relay.url, reason = failure.reason)
+        sessions.forEach { it.emit(signal) }
     }
 
     /** 有限取得がこのリレーで終わった。開いていれば CLOSE を送り、他のリレーを待つ間も枠を空けておく。 */
@@ -731,6 +804,15 @@ object NostrRepository {
             closeRemovedRelayHandles(removedHandles)
             if (spec.replayCachedEvents) replayCachedToSession(session, spec.filters, targetRelayUrls)
             if (completeImmediately) completeFetch(spec.id, timedOut = false)
+            if (spec.behavior is SubscriptionBehavior.Fetch) {
+                // キャッシュを流した後で見直す。先に完了を出すと、キャッシュの分が完了の後に届くか捨てられる。
+                stateMutex.withLock {
+                    activeSubscriptions[spec.id]?.takeIf { it.session === session }?.unavailableSweepEnabled = true
+                }
+                sweepUnavailableFetches()
+            } else {
+                notifyFailingRelaysOnOpen(session, targetRelayUrls)
+            }
         } catch (e: Throwable) {
             // 登録後に呼び出し元がキャンセルされると、session を受け取れないまま登録だけが残り、
             // 同じIDでの再オープンが「使用済み」で失敗し続ける。登録を巻き戻してから再送出する。
@@ -743,6 +825,15 @@ object NostrRepository {
             throw e
         }
         return session
+    }
+
+    private suspend fun notifyFailingRelaysOnOpen(session: SubscriptionSessionImpl, targetRelayUrls: Set<String>) {
+        val failures = stateMutex.withLock {
+            targetRelayUrls.mapNotNull { url -> activeRelays[url]?.relay?.health?.value?.failure?.let { url to it } }
+        }
+        failures.forEach { (url, failure) ->
+            session.emit(SubscriptionSignal.RelayUnavailable(relayUrl = url, reason = failure.reason))
+        }
     }
 
     internal suspend fun updateSubscriptionSession(
@@ -1219,6 +1310,8 @@ private data class ActiveSubscriptionRecord(
     val fetchOutcomes: MutableMap<String, RelayOutcome> = mutableMapOf(),
     var fetchCompletionScheduled: Boolean = false,
     var fetchCompleted: Boolean = false,
+    /** キャッシュを流し終えるまでは、接続できないリレーで取得を終えない（[NostrRepository.openSubscription]）。 */
+    var unavailableSweepEnabled: Boolean = false,
 ) {
     fun shouldCompleteFetchLocked(): Boolean {
         val expected = fetchExpectedRelays ?: return false
@@ -1255,6 +1348,11 @@ private data class SubscriptionUpdateWork(
     val commands: List<SubscriptionWireCommand>,
     val removedHandles: List<ActiveRelayHandle>,
     val newHandles: List<ActiveRelayHandle>,
+)
+
+private class UnavailableSweep(
+    val commands: List<SubscriptionWireCommand>,
+    val completions: List<String>,
 )
 
 private data class SessionOpenWork(

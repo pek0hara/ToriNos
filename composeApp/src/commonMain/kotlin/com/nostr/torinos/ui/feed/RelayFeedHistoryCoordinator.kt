@@ -28,8 +28,8 @@ import kotlinx.coroutines.launch
  *
  * 表示境界は、続きのあるリレーのうち最も浅いカーソルに合わせる。投稿のまばらな
  * リレーが深く遡っても、密なリレーが未取得の区間を表示範囲に含めないためである。
- * 猶予を過ぎても応答しないリレーや再試行待ちのリレーは境界の決定から外し、
- * 応答後に表示済みの範囲まで自動で追いつかせる。
+ * 猶予を過ぎても応答しないリレー、他のリレーが応答した時点で接続に失敗しているリレー、
+ * 再試行待ちのリレーは境界の決定から外し、応答後に表示済みの範囲まで自動で追いつかせる。
  *
  * [revealsHistory] が false のときは表示境界を扱わず、[autoContinue] が true なら
  * 各リレーを続きがなくなるまで自動で取得する。復帰時の差分取得に使う。
@@ -319,6 +319,7 @@ internal class RelayFeedHistoryCoordinator(
                         relay.page?.let { advancePage(relay, it) }
                     }
                     scheduleSettle()
+                    stopWaitingForFailedRelays()
                     publishReveal()
                     publishState()
                 }
@@ -413,6 +414,7 @@ internal class RelayFeedHistoryCoordinator(
             settleJob = null
             foregroundLoading = false
         }
+        stopWaitingForFailedRelays()
         publishReveal()
         // 差分取得は最後まで、遅れて応答したリレーは既に表示した範囲を埋め終わるまで続けて取得する。
         val floor = revealedThrough
@@ -536,6 +538,20 @@ internal class RelayFeedHistoryCoordinator(
             }
             publishReveal()
             publishState()
+        }
+    }
+
+    /**
+     * 他のリレーが応答した時点で接続に失敗しているリレーは、猶予を待たずに境界の決定から外す。
+     * 失敗したリレーは取得の期限まで応答しないので、待っても表示が遅れるだけになる。
+     * 接続の途中のリレーは外さない（猶予の間は待つ）。
+     */
+    private fun stopWaitingForFailedRelays() {
+        relays.forEach { (url, relay) ->
+            if (relay.lagging || (relay.session == null && !relay.opening)) return@forEach
+            if (!subscriptions.isRelayConnectionFailing(url)) return@forEach
+            relay.lagging = true
+            feedTraceLog { "$idPrefix ${url.shortRelay()} は接続に失敗しているため境界の決定から外す" }
         }
     }
 
