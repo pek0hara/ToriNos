@@ -38,10 +38,15 @@
 ## 将来計画
 
 - [`push-notification-durable-object-design.md`](./push-notification-durable-object-design.md) — Yabume共有購読とDurable Objectを使うプッシュ通知基盤の現行設計
+- [`zap-feature-design.md`](./zap-feature-design.md) — ポストカードの⚡ボタンからのZap送信（NIP-57）、請求書の検証、レシートの検証と合計表示、NWC（NIP-47）の段階計画（未着手）
 
 ## 開発フロー
 
 - [`pr-preview-design.md`](./pr-preview-design.md) — Issue から Claude が PR を作り、別オリジンに Web 版プレビューを公開・PR を閉じたら削除する GitHub Actions
+
+## テスト
+
+- [`regression-test.md`](./regression-test.md) — リリース前に実機で通す全体の回帰テスト手順（画面別の操作・表示、文字サイズ別の確認）
 
 ## 公開サイト
 
