@@ -334,9 +334,10 @@ private fun ArticleDetailContent(
             .padding(horizontal = 20.dp, vertical = 16.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp),
     ) {
+        // ヘッダーにもタイトルが出るので、本文と同じ大きさの太字にとどめる。
         Text(
             text = article.displayTitle,
-            style = MaterialTheme.typography.headlineSmall,
+            style = MaterialTheme.typography.bodyLarge,
             fontWeight = FontWeight.Bold,
         )
         // タイトル下の作者行は、プロフィールではなく作者の記事一覧を開く。
