@@ -4,7 +4,9 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -12,6 +14,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -25,6 +28,11 @@ import androidx.compose.material3.TextButton
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.layout.Layout
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.AnnotatedString
@@ -40,6 +48,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.nostr.torinos.article.MarkdownBlock
 import com.nostr.torinos.article.MarkdownInline
+import com.nostr.torinos.article.MarkdownTableAlignment
 import com.nostr.torinos.article.parseArticleMarkdown
 import com.nostr.torinos.article.parseMarkdownInline
 import com.nostr.torinos.emoji.customEmojiMap
@@ -145,6 +154,83 @@ private fun MarkdownBlockContent(block: MarkdownBlock) {
             text = block.text,
             style = MaterialTheme.typography.bodyLarge,
         )
+        is MarkdownBlock.Table -> MarkdownTable(block)
+    }
+}
+
+/**
+ * 表は画面幅に収めず横にスクロールする。列幅はセルの中身に合わせ、
+ * 長いセルは画面幅の7割で折り返す。同じ行のセルは高さをそろえる。
+ */
+@Composable
+private fun MarkdownTable(table: MarkdownBlock.Table) {
+    val lineColor = MaterialTheme.colorScheme.outlineVariant
+    val headerColor = MaterialTheme.colorScheme.surfaceVariant
+    val columnCount = table.header.size
+    val rows = listOf(table.header) + table.rows
+    BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
+        val maxColumnWidth = maxWidth * 0.7f
+        Box(modifier = Modifier.horizontalScroll(rememberScrollState())) {
+            Layout(
+                modifier = Modifier.border(1.dp, lineColor, RoundedCornerShape(4.dp)).clip(RoundedCornerShape(4.dp)),
+                content = {
+                    rows.forEachIndexed { rowIndex, row ->
+                        row.forEachIndexed { columnIndex, cell ->
+                            val isHeader = rowIndex == 0
+                            MarkdownInlineText(
+                                text = cell,
+                                modifier = Modifier
+                                    .then(if (isHeader) Modifier.background(headerColor) else Modifier)
+                                    .drawBehind {
+                                        val stroke = 1.dp.toPx()
+                                        if (columnIndex < columnCount - 1) {
+                                            drawLine(lineColor, Offset(size.width, 0f), Offset(size.width, size.height), stroke)
+                                        }
+                                        if (rowIndex < rows.size - 1) {
+                                            drawLine(lineColor, Offset(0f, size.height), Offset(size.width, size.height), stroke)
+                                        }
+                                    }
+                                    .padding(horizontal = 10.dp, vertical = 6.dp),
+                                style = MaterialTheme.typography.bodyMedium,
+                                fontWeight = if (isHeader) FontWeight.Bold else null,
+                                textAlign = when (table.alignments[columnIndex]) {
+                                    MarkdownTableAlignment.Center -> TextAlign.Center
+                                    MarkdownTableAlignment.Right -> TextAlign.End
+                                    MarkdownTableAlignment.Left,
+                                    MarkdownTableAlignment.None,
+                                    -> TextAlign.Start
+                                },
+                            )
+                        }
+                    }
+                },
+            ) { measurables, _ ->
+                val maxColumnPx = maxColumnWidth.roundToPx()
+                val cells = measurables.chunked(columnCount)
+                val columnWidths = IntArray(columnCount) { column ->
+                    cells.maxOf { it[column].maxIntrinsicWidth(Constraints.Infinity) }.coerceAtMost(maxColumnPx)
+                }
+                val rowHeights = cells.map { row ->
+                    row.indices.maxOf { column -> row[column].minIntrinsicHeight(columnWidths[column]) }
+                }
+                val placeables = cells.mapIndexed { rowIndex, row ->
+                    row.mapIndexed { column, cell ->
+                        cell.measure(Constraints.fixed(columnWidths[column], rowHeights[rowIndex]))
+                    }
+                }
+                layout(columnWidths.sum(), rowHeights.sum()) {
+                    var y = 0
+                    placeables.forEachIndexed { rowIndex, row ->
+                        var x = 0
+                        row.forEachIndexed { column, placeable ->
+                            placeable.place(x, y)
+                            x += columnWidths[column]
+                        }
+                        y += rowHeights[rowIndex]
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -286,6 +372,7 @@ private fun MarkdownInlineText(
     color: androidx.compose.ui.graphics.Color = androidx.compose.ui.graphics.Color.Unspecified,
     fontWeight: FontWeight? = null,
     headingLevel: Int? = null,
+    textAlign: TextAlign? = null,
 ) {
     val linkStyle = TextLinkStyles(
         style = SpanStyle(
@@ -309,6 +396,7 @@ private fun MarkdownInlineText(
         modifier = modifier,
         style = textStyle,
         color = color,
+        textAlign = textAlign ?: TextAlign.Unspecified,
     )
 }
 

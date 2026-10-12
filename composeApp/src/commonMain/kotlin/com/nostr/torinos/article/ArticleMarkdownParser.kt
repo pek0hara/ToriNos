@@ -11,7 +11,16 @@ internal sealed interface MarkdownBlock {
     data class ListItem(val text: String) : MarkdownBlock
     data class Code(val text: String) : MarkdownBlock
     data class Image(val alt: String, val url: String) : MarkdownBlock
+
+    /** GFMの表。[rows]の各行は見出しと同じ列数にそろえてある。セルはインライン記法を含む生の文字列。 */
+    data class Table(
+        val alignments: List<MarkdownTableAlignment>,
+        val header: List<String>,
+        val rows: List<List<String>>,
+    ) : MarkdownBlock
 }
+
+internal enum class MarkdownTableAlignment { None, Left, Center, Right }
 
 internal sealed interface MarkdownInline {
     data class Text(val text: String) : MarkdownInline
@@ -51,6 +60,7 @@ internal fun parseArticleMarkdown(
             is MarkdownBlock.Quote -> eventReferenceIds(block.text)
             is MarkdownBlock.ListItem -> eventReferenceIds(block.text)
             is MarkdownBlock.Paragraph -> eventReferenceIds(block.text)
+            is MarkdownBlock.Table -> block.cells().flatMap(::eventReferenceIds)
         }
         inlineQuoteIds += quoteIds
         val displayBlock = when (block) {
@@ -62,6 +72,11 @@ internal fun parseArticleMarkdown(
             is MarkdownBlock.Quote -> stripArticleEventUris(block.text).takeIf { it.isNotBlank() }?.let { block.copy(text = it) }
             is MarkdownBlock.ListItem -> stripArticleEventUris(block.text).takeIf { it.isNotBlank() }?.let { block.copy(text = it) }
             is MarkdownBlock.Paragraph -> stripArticleEventUris(block.text).takeIf { it.isNotBlank() }?.let { block.copy(text = it) }
+            // 表は参照を除いて空のセルが出ても形を保つ。
+            is MarkdownBlock.Table -> block.copy(
+                header = block.header.map(::stripArticleEventUris),
+                rows = block.rows.map { row -> row.map(::stripArticleEventUris) },
+            )
         }
         ArticleMarkdownSection(block = displayBlock, quoteIds = quoteIds)
     }
@@ -71,6 +86,8 @@ internal fun parseArticleMarkdown(
     )
 }
 
+private fun MarkdownBlock.Table.cells(): List<String> = header + rows.flatten()
+
 private fun eventReferenceIds(text: String): List<String> =
     extractNostrEventReferences(articleReferenceText(text)).map { it.eventId }
 
@@ -79,8 +96,12 @@ internal fun parseMarkdownBlocks(content: String): List<MarkdownBlock> {
     val codeLines = mutableListOf<String>()
     var fence: ArticleMarkdownBoundaryValidator.Fence? = null
 
-    content.lines().forEach { rawLine ->
+    val lines = content.lines()
+    var index = 0
+    while (index < lines.size) {
+        val rawLine = lines[index]
         val line = rawLine.trimEnd()
+        index += 1
         val activeFence = fence
         if (activeFence != null) {
             if (ArticleMarkdownBoundaryValidator.closes(line, activeFence)) {
@@ -90,25 +111,35 @@ internal fun parseMarkdownBlocks(content: String): List<MarkdownBlock> {
             } else {
                 codeLines += rawLine
             }
-            return@forEach
+            continue
         }
 
-        val imageMatch = markdownImageRegex.matchEntire(line.trim())
-        when {
-            ArticleMarkdownBoundaryValidator.opening(line) != null -> fence = ArticleMarkdownBoundaryValidator.opening(line)
-            line.isBlank() -> blocks += MarkdownBlock.Blank
-            imageMatch != null -> blocks += MarkdownBlock.Image(
-                alt = imageMatch.groupValues[1],
-                url = imageMatch.groupValues[2],
-            )
-            line.startsWith("### ") -> blocks += MarkdownBlock.Heading(3, line.removePrefix("### "))
-            line.startsWith("## ") -> blocks += MarkdownBlock.Heading(2, line.removePrefix("## "))
-            line.startsWith("# ") -> blocks += MarkdownBlock.Heading(1, line.removePrefix("# "))
-            line.startsWith(">") -> blocks += MarkdownBlock.Quote(line.removePrefix(">").trim())
-            line.startsWith("- ") || line.startsWith("* ") -> blocks += MarkdownBlock.ListItem(line.drop(2))
-            (line.startsWith("    ") || line.startsWith("\t")) -> blocks += MarkdownBlock.Code(line.trimStart())
-            else -> blocks += MarkdownBlock.Paragraph(line)
+        val opening = ArticleMarkdownBoundaryValidator.opening(line)
+        if (opening != null) {
+            fence = opening
+            continue
         }
+        val block = lineBlock(line)
+        // 段落になる行の次が区切り行なら、表の見出し行として扱う。
+        val table = if (block is MarkdownBlock.Paragraph) {
+            lines.getOrNull(index)?.let { tableStart(line, it.trimEnd()) }
+        } else {
+            null
+        }
+        if (table == null) {
+            blocks += block
+            continue
+        }
+        index += 1
+        val rows = mutableListOf<List<String>>()
+        // 本文行は、空行かほかのブロックが始まるまで続く。縦棒のない行も1列目だけの行になる。
+        while (index < lines.size) {
+            val rowLine = lines[index].trimEnd()
+            if (ArticleMarkdownBoundaryValidator.opening(rowLine) != null || lineBlock(rowLine) !is MarkdownBlock.Paragraph) break
+            rows += splitTableRow(rowLine).fitTo(table.header.size)
+            index += 1
+        }
+        blocks += table.copy(rows = rows)
     }
 
     if (fence != null) {
@@ -116,6 +147,85 @@ internal fun parseMarkdownBlocks(content: String): List<MarkdownBlock> {
     }
     return blocks
 }
+
+/** フェンス以外の1行を分類する。 */
+private fun lineBlock(line: String): MarkdownBlock {
+    val imageMatch = markdownImageRegex.matchEntire(line.trim())
+    return when {
+        line.isBlank() -> MarkdownBlock.Blank
+        imageMatch != null -> MarkdownBlock.Image(
+            alt = imageMatch.groupValues[1],
+            url = imageMatch.groupValues[2],
+        )
+        line.startsWith("### ") -> MarkdownBlock.Heading(3, line.removePrefix("### "))
+        line.startsWith("## ") -> MarkdownBlock.Heading(2, line.removePrefix("## "))
+        line.startsWith("# ") -> MarkdownBlock.Heading(1, line.removePrefix("# "))
+        line.startsWith(">") -> MarkdownBlock.Quote(line.removePrefix(">").trim())
+        line.startsWith("- ") || line.startsWith("* ") -> MarkdownBlock.ListItem(line.drop(2))
+        (line.startsWith("    ") || line.startsWith("\t")) -> MarkdownBlock.Code(line.trimStart())
+        else -> MarkdownBlock.Paragraph(line)
+    }
+}
+
+/**
+ * GFMの表の開始を判定し、本文行が空の表を返す。見出し行と区切り行の両方に縦棒があり、
+ * 区切り行のセルがすべて`:?-+:?`で、列数が見出し行と同じときだけ表とする。
+ * 縦棒を必須にするのは、見出しの下の`---`（水平線）を1列の表と誤認しないため。
+ */
+private fun tableStart(headerLine: String, delimiterLine: String): MarkdownBlock.Table? {
+    if (!headerLine.hasUnescapedPipe() || !delimiterLine.hasUnescapedPipe()) return null
+    val header = splitTableRow(headerLine)
+    val delimiters = splitTableRow(delimiterLine)
+    if (header.size != delimiters.size || delimiters.any { !tableDelimiterRegex.matches(it) }) return null
+    return MarkdownBlock.Table(
+        alignments = delimiters.map { cell ->
+            val left = cell.startsWith(':')
+            val right = cell.endsWith(':')
+            when {
+                left && right -> MarkdownTableAlignment.Center
+                left -> MarkdownTableAlignment.Left
+                right -> MarkdownTableAlignment.Right
+                else -> MarkdownTableAlignment.None
+            }
+        },
+        header = header,
+        rows = emptyList(),
+    )
+}
+
+private val tableDelimiterRegex = Regex(":?-+:?")
+
+private fun String.hasUnescapedPipe(): Boolean =
+    indices.any { this[it] == '|' && (it == 0 || this[it - 1] != '\\') }
+
+/** 表の1行をセルに分ける。先頭と末尾の縦棒は省略でき、`\|`はセル内の縦棒になる。 */
+private fun splitTableRow(line: String): List<String> {
+    val cells = mutableListOf<String>()
+    val cell = StringBuilder()
+    val trimmed = line.trim()
+    var index = if (trimmed.startsWith('|')) 1 else 0
+    while (index < trimmed.length) {
+        val char = trimmed[index]
+        when {
+            char == '\\' && trimmed.getOrNull(index + 1) == '|' -> {
+                cell.append('|')
+                index += 1
+            }
+            char == '|' -> {
+                cells += cell.toString().trim()
+                cell.clear()
+            }
+            else -> cell.append(char)
+        }
+        index += 1
+    }
+    // 末尾の縦棒で閉じた行は、その後ろに空のセルを足さない。
+    if (cell.isNotBlank() || !trimmed.endsWith('|') || trimmed.endsWith("\\|")) cells += cell.toString().trim()
+    return cells
+}
+
+private fun List<String>.fitTo(size: Int): List<String> =
+    take(size) + List((size - this.size).coerceAtLeast(0)) { "" }
 
 private val markdownImageRegex = Regex("""!\[([^]]*)]\((https://[^)\s]+)\)""")
 
