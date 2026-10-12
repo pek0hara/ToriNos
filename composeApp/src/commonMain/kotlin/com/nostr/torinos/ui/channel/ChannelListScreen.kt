@@ -64,6 +64,13 @@ import com.nostr.torinos.ui.profile.AvatarCircle
 import com.nostr.torinos.ui.service.ServiceHeaderDivider
 import kotlin.time.Clock
 import kotlinx.coroutines.flow.distinctUntilChanged
+import com.nostr.torinos.ui.components.NetworkImage
+import androidx.compose.material.icons.filled.Forum
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.draw.clip
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.Spacer
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -404,6 +411,34 @@ private fun ChannelRelayPendingContent(
     }
 }
 
+/** 一覧の左端のチャンネルアイコン。画像がない・読み込めないときは同じ大きさの既定アイコンを出し、行の位置をそろえる。 */
+@Composable
+private fun ChannelListIcon(picture: String) {
+    Box(
+        modifier = Modifier
+            .size(40.dp)
+            .clip(CircleShape)
+            .background(MaterialTheme.colorScheme.surfaceVariant),
+        contentAlignment = Alignment.Center,
+    ) {
+        Icon(
+            imageVector = Icons.Default.Forum,
+            contentDescription = null,
+            modifier = Modifier.size(20.dp),
+            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        if (picture.isNotBlank()) {
+            NetworkImage(
+                url = picture,
+                contentDescription = null,
+                modifier = Modifier.fillMaxSize(),
+                contentScale = ContentScale.Crop,
+                maxDecodeSizePx = 160,
+            )
+        }
+    }
+}
+
 @Composable
 private fun ChannelRow(
     item: ChannelItem,
@@ -425,6 +460,8 @@ private fun ChannelRow(
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.Top,
     ) {
+        ChannelListIcon(picture = item.meta.picture)
+        Spacer(modifier = Modifier.width(12.dp))
         Column(
             modifier = Modifier.weight(1f),
             verticalArrangement = Arrangement.spacedBy(4.dp),

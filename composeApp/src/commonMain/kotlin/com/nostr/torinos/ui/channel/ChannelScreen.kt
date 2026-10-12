@@ -650,7 +650,8 @@ private fun EditThreadDialog(
                 OutlinedTextField(
                     value = state.picture,
                     onValueChange = onPictureUrlChange,
-                    label = { Text("画像URL（任意）") },
+                    // 上のアイコンと同じ値。アップロードせずにURLを直接入れるための欄。
+                    label = { Text("アイコンのURL") },
                     singleLine = true,
                     enabled = !state.isSaving && !state.isUploadingPicture,
                     isError = !state.pictureIsValid,
@@ -665,7 +666,8 @@ private fun EditThreadDialog(
                 }
                 if (state.recommendedRelays.isEmpty()) {
                     Text(
-                        "推奨リレーが未選択です。他のクライアントから見えにくくなります。",
+                        // 文の切れ目で改行し、文の途中で折り返さないようにする。
+                        "推奨リレーが未選択です。\n他のアプリから見えにくくなります。",
                         color = MaterialTheme.colorScheme.error,
                         style = MaterialTheme.typography.bodySmall,
                     )

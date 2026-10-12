@@ -329,12 +329,12 @@ internal fun ChannelIconPicker(
             }
         }
         Column {
-            Text("アイコン", style = MaterialTheme.typography.labelLarge)
+            Text("アイコン（任意）", style = MaterialTheme.typography.labelLarge)
             if (picture.isNotBlank() && enabled) {
                 TextButton(onClick = onRemove) { Text("削除") }
             } else {
                 Text(
-                    text = if (isUploading) "アップロード中…" else "タップして画像を選択（任意）",
+                    text = if (isUploading) "アップロード中…" else "タップして選択",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -392,7 +392,8 @@ private fun ExpandableRelaySelector(
         if (recommendedRelays.isEmpty()) {
             // 空でも作成できる(第19章 未決6)。他クライアントから見つけにくくなることだけ伝える。
             Text(
-                text = "推奨リレーが未選択です。他のクライアントからメッセージが見えにくくなります。",
+                // 文の切れ目で改行し、文の途中で折り返さないようにする。
+                text = "推奨リレーが未選択です。\n他のアプリからメッセージが見えにくくなります。",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.error,
             )
