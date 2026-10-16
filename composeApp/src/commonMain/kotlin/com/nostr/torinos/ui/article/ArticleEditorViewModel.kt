@@ -202,7 +202,8 @@ class ArticleEditorViewModel(
     private fun scheduleSave() {
         saveJob?.cancel()
         val since = unsavedSince ?: TimeSource.Monotonic.markNow().also { unsavedSince = it }
-        val wait = nextArticleSaveDelay(since.elapsedNow().inWholeMilliseconds, saveIdleMillis, saveMaxIntervalMillis)
+        val (idleMillis, maxIntervalMillis) = articleSaveIntervals(accountSession?.signer?.method, saveIdleMillis, saveMaxIntervalMillis)
+        val wait = nextArticleSaveDelay(since.elapsedNow().inWholeMilliseconds, idleMillis, maxIntervalMillis)
         // Only the wait is cancellable by further typing; a save already sending to relays runs to completion.
         saveJob = launch { delay(wait); startSave() }
     }
@@ -652,6 +653,23 @@ private val HTML_TAG_REGEX = Regex(
 private const val MAX_HINT_RELAYS = 4
 internal const val ARTICLE_SAVE_IDLE_MILLIS = 10_000L
 internal const val ARTICLE_SAVE_MAX_INTERVAL_MILLIS = 60_000L
+internal const val EXTERNAL_SIGNER_ARTICLE_SAVE_IDLE_MILLIS = 60_000L
+internal const val EXTERNAL_SIGNER_ARTICLE_SAVE_MAX_INTERVAL_MILLIS = 300_000L
+
+/**
+ * 自動保存の間隔。拡張機能・リモート署名では1回の保存が暗号化と署名の2往復になり、
+ * 署名器の承認画面も出しうるので、間隔を広げる。離脱時の保存はこれとは別に必ず行う。
+ */
+internal fun articleSaveIntervals(
+    method: com.nostr.torinos.account.SignerMethod?,
+    idleMillis: Long,
+    maxIntervalMillis: Long,
+): Pair<Long, Long> = when (method) {
+    com.nostr.torinos.account.SignerMethod.Nip07, com.nostr.torinos.account.SignerMethod.Nip46 ->
+        maxOf(idleMillis, EXTERNAL_SIGNER_ARTICLE_SAVE_IDLE_MILLIS) to
+            maxOf(maxIntervalMillis, EXTERNAL_SIGNER_ARTICLE_SAVE_MAX_INTERVAL_MILLIS)
+    else -> idleMillis to maxIntervalMillis
+}
 internal const val ARTICLE_TITLE_MAX_LENGTH = 200
 internal const val ARTICLE_SUMMARY_MAX_LENGTH = 500
 internal const val ARTICLE_TOPICS_INPUT_MAX_LENGTH = 500

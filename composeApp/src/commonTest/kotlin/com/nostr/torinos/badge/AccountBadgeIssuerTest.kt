@@ -23,9 +23,9 @@ class AccountBadgeIssuerTest {
         var counter = 0
         val signer = object : AccountSigner {
             override val pubkey = badgeOwner
-            override fun encryptToSelf(plaintext: String) = plaintext
-            override fun decrypt(content: String, peerPubkey: String) = content
-            override fun sign(content: String, kind: Int, tags: List<List<String>>, createdAt: Long?): NostrEvent =
+            override suspend fun nip44Encrypt(plaintext: String, peerPubkey: String) = plaintext
+            override suspend fun nip44Decrypt(content: String, peerPubkey: String) = content
+            override suspend fun sign(content: String, kind: Int, tags: List<List<String>>, createdAt: Long?): NostrEvent =
                 badgeEvent(kind, tags = tags, time = createdAt!!, id = (++counter).toString(16).padStart(64, '0'), content = content)
         }
         val transport = BadgeTransport(open = { badgeResponse(it, events, complete) }, validate = { true },

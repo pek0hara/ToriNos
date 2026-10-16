@@ -25,6 +25,7 @@ import androidx.compose.ui.unit.dp
 import com.nostr.torinos.account.AccountSessionHost
 import com.nostr.torinos.account.AccountSessionState
 import com.nostr.torinos.account.AccountSessions
+import com.nostr.torinos.ui.components.SignerStatusBanner
 import com.nostr.torinos.network.DisplayPreferencesStore
 import com.nostr.torinos.network.LocalSettingsStorage
 import com.nostr.torinos.ui.theme.NostrTheme
@@ -147,13 +148,17 @@ private fun AppSessionHost(
             sessionId = state.session.sessionId,
             session = state.session,
         ) {
-            AppSessionCoordinator(
-                accountSession = state.session,
-                ageVerificationStatus = ageVerificationStatus,
-                isAgeVerificationLoaded = isAgeVerificationLoaded,
-                onAgeVerificationChanged = onAgeVerificationChanged,
-                pendingComposerRequests = pendingComposerRequests,
-            )
+            Box(Modifier.fillMaxSize()) {
+                AppSessionCoordinator(
+                    accountSession = state.session,
+                    ageVerificationStatus = ageVerificationStatus,
+                    isAgeVerificationLoaded = isAgeVerificationLoaded,
+                    onAgeVerificationChanged = onAgeVerificationChanged,
+                    pendingComposerRequests = pendingComposerRequests,
+                )
+                // 解錠や署名器での承認を待っているときだけ、本文の上に重ねて出す。
+                SignerStatusBanner(state.session, Modifier.align(Alignment.TopCenter))
+            }
         }
 
         is AccountSessionState.Anonymous -> AccountSessionHost(

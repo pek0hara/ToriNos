@@ -82,9 +82,9 @@ class BadgeFetchReviewTest {
         }, { setOf(one) })
         val signer = object : AccountSigner {
             override val pubkey = badgeOwner
-            override fun encryptToSelf(plaintext: String) = plaintext
-            override fun decrypt(content: String, peerPubkey: String) = content
-            override fun sign(content: String, kind: Int, tags: List<List<String>>, createdAt: Long?): NostrEvent = error("unused")
+            override suspend fun nip44Encrypt(plaintext: String, peerPubkey: String) = plaintext
+            override suspend fun nip44Decrypt(content: String, peerPubkey: String) = content
+            override suspend fun sign(content: String, kind: Int, tags: List<List<String>>, createdAt: Long?): NostrEvent = error("unused")
         }
         val store = AccountBadgeStore(badgeOwner, "session", signer, backgroundScope, repo,
             relays = { setOf(one, "wss://two.example") }, writableRelays = { emptySet() }, ensureActive = {},
@@ -112,9 +112,9 @@ class BadgeFetchReviewTest {
         }, { setOf(one) })
         val signer = object : AccountSigner {
             override val pubkey = badgeOwner
-            override fun encryptToSelf(plaintext: String) = plaintext
-            override fun decrypt(content: String, peerPubkey: String) = content
-            override fun sign(content: String, kind: Int, tags: List<List<String>>, createdAt: Long?): NostrEvent = error("unused")
+            override suspend fun nip44Encrypt(plaintext: String, peerPubkey: String) = plaintext
+            override suspend fun nip44Decrypt(content: String, peerPubkey: String) = content
+            override suspend fun sign(content: String, kind: Int, tags: List<List<String>>, createdAt: Long?): NostrEvent = error("unused")
         }
         val store = AccountBadgeStore(badgeOwner, "session", signer, backgroundScope, repo,
             relays = { setOf(one) }, writableRelays = { emptySet() }, ensureActive = {},

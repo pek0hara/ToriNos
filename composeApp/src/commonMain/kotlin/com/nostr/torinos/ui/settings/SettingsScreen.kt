@@ -198,6 +198,8 @@ fun SettingsScreen(
                 }
                 item {
                     KeySection(
+                        signerMethod = com.nostr.torinos.account.LocalAccountSession.current?.signer?.method
+                            ?: com.nostr.torinos.account.SignerMethod.PrivateKey,
                         npub = npub,
                         nsec = nsec,
                         isSecretVisible = state.isSecretKeyVisible,
@@ -386,6 +388,7 @@ private fun AccountSwitcherSection(
 
 @Composable
 private fun KeySection(
+    signerMethod: com.nostr.torinos.account.SignerMethod,
     npub: String,
     nsec: String?,
     isSecretVisible: Boolean,
@@ -460,67 +463,79 @@ private fun KeySection(
             }
         }
 
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
+        signerMethodDescription(signerMethod)?.let { description ->
             Text(
-                text = "秘密鍵",
-                style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.error,
+                text = description,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
-            TextButton(
-                onClick = if (isSecretVisible) onHideSecret else onShowSecret,
-            ) {
-                Text(if (isSecretVisible) "隠す" else "表示")
-            }
         }
-
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        // 拡張機能・リモート署名のアカウントは、このアプリに秘密鍵がない。
+        if (signerMethod == com.nostr.torinos.account.SignerMethod.PrivateKey ||
+            signerMethod == com.nostr.torinos.account.SignerMethod.Passkey
         ) {
-            if (isSecretVisible && nsec != null) {
-                SelectionContainer(modifier = Modifier.weight(1f)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    text = "秘密鍵",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.error,
+                )
+                TextButton(
+                    onClick = if (isSecretVisible) onHideSecret else onShowSecret,
+                ) {
+                    Text(if (isSecretVisible) "隠す" else "表示")
+                }
+            }
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                if (isSecretVisible && nsec != null) {
+                    SelectionContainer(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = nsec,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.error,
+                        )
+                    }
+                } else {
                     Text(
-                        text = nsec,
+                        text = "●".repeat(24),
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.error,
+                        // 伏せ字は文字数に意味がないので、文字を大きくしても折り返さず1行で切る。
+                        maxLines = 1,
+                        overflow = androidx.compose.ui.text.style.TextOverflow.Clip,
+                        softWrap = false,
+                        modifier = Modifier.weight(1f),
                     )
                 }
-            } else {
-                Text(
-                    text = "●".repeat(24),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.error,
-                    // 伏せ字は文字数に意味がないので、文字を大きくしても折り返さず1行で切る。
-                    maxLines = 1,
-                    overflow = androidx.compose.ui.text.style.TextOverflow.Clip,
-                    softWrap = false,
-                    modifier = Modifier.weight(1f),
-                )
-            }
-            IconButton(
-                onClick = {
-                    if (isSecretVisible && nsec != null) {
-                        coroutineScope.launch {
-                            clipboard.setSensitiveText(nsec)
-                            nsecDirectCopied = true
+                IconButton(
+                    onClick = {
+                        if (isSecretVisible && nsec != null) {
+                            coroutineScope.launch {
+                                clipboard.setSensitiveText(nsec)
+                                nsecDirectCopied = true
+                            }
+                        } else {
+                            onCopySecret()
                         }
-                    } else {
-                        onCopySecret()
-                    }
-                },
-                modifier = Modifier.size(32.dp),
-            ) {
-                Icon(
-                    imageVector = if (nsecCopied) Icons.Default.Check else Icons.Default.ContentCopy,
-                    contentDescription = "コピー",
-                    modifier = Modifier.size(18.dp),
-                    tint = if (nsecCopied) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error,
-                )
+                    },
+                    modifier = Modifier.size(32.dp),
+                ) {
+                    Icon(
+                        imageVector = if (nsecCopied) Icons.Default.Check else Icons.Default.ContentCopy,
+                        contentDescription = "コピー",
+                        modifier = Modifier.size(18.dp),
+                        tint = if (nsecCopied) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error,
+                    )
+                }
             }
         }
 
@@ -843,4 +858,14 @@ private fun SettingsLinkSection(title: String, label: String, onClick: () -> Uni
         )
         FilterNavRow(label = label, onClick = onClick)
     }
+}
+
+private fun signerMethodDescription(method: com.nostr.torinos.account.SignerMethod): String? = when (method) {
+    com.nostr.torinos.account.SignerMethod.PrivateKey -> null
+    com.nostr.torinos.account.SignerMethod.Passkey ->
+        "秘密鍵はパスキーで暗号化して、このブラウザに保存しています。表示するには解錠してください。"
+    com.nostr.torinos.account.SignerMethod.Nip07 ->
+        "ブラウザ拡張（NIP-07）でログインしています。秘密鍵はこのアプリに保存していません。"
+    com.nostr.torinos.account.SignerMethod.Nip46 ->
+        "リモート署名（NIP-46）でログインしています。秘密鍵はこのアプリに保存していません。"
 }

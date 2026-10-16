@@ -13,9 +13,9 @@ import kotlin.test.*
 class ArticleEditorPersistenceTest {
     private fun session() = AccountSession("test", "aa".repeat(32), object : AccountSigner {
         override val pubkey = "aa".repeat(32)
-        override fun encryptToSelf(plaintext: String) = error("unused")
-        override fun decrypt(content: String, peerPubkey: String) = error("unused")
-        override fun sign(content: String, kind: Int, tags: List<List<String>>, createdAt: Long?): NostrEvent = error("must not publish")
+        override suspend fun nip44Encrypt(plaintext: String, peerPubkey: String) = error("unused")
+        override suspend fun nip44Decrypt(content: String, peerPubkey: String) = error("unused")
+        override suspend fun sign(content: String, kind: Int, tags: List<List<String>>, createdAt: Long?): NostrEvent = error("must not publish")
     }, AccountSessionResources())
     @Test fun savesAfterDebounceAndClearedNewDraftDoesNotRemainInList() = runTest {
         Dispatchers.setMain(StandardTestDispatcher(testScheduler))

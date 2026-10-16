@@ -339,14 +339,12 @@ class PrivateMuteListStore internal constructor(
         }
     }
 
-    private fun decodeEventContent(event: NostrEvent, signer: com.nostr.torinos.account.AccountSigner): ParsedMuteList? {
+    private suspend fun decodeEventContent(event: NostrEvent, signer: com.nostr.torinos.account.AccountSigner): ParsedMuteList? {
         if (event.content.isBlank()) return ParsedMuteList()
-        return runCatching {
-            val plaintext = signer.decrypt(event.content, event.pubkey)
-            parsePrivateTags(plaintext)
-        }.onFailure {
-            appLog("[PrivateMuteListStore] decrypt/parse failed: ${it::class.simpleName}: ${it.message}")
-        }.getOrNull()
+        val plaintext = com.nostr.torinos.account.decodeUnlessSignerFails { signer.decrypt(event.content, event.pubkey) }
+        return runCatching { plaintext?.let(::parsePrivateTags) }
+            .getOrNull()
+            .also { if (it == null) appLog("[PrivateMuteListStore] decrypt/parse failed") }
     }
 
     private fun parsePrivateTags(plaintext: String): ParsedMuteList {

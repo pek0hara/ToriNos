@@ -171,9 +171,9 @@ class PrivateMuteListStoreTest {
     }
 
     private class FakeSigner(override val pubkey: String) : AccountSigner {
-        override fun encryptToSelf(plaintext: String) = plaintext
-        override fun decrypt(content: String, peerPubkey: String) = content
-        override fun sign(content: String, kind: Int, tags: List<List<String>>, createdAt: Long?) =
+        override suspend fun nip44Encrypt(plaintext: String, peerPubkey: String) = plaintext
+        override suspend fun nip44Decrypt(content: String, peerPubkey: String) = content
+        override suspend fun sign(content: String, kind: Int, tags: List<List<String>>, createdAt: Long?) =
             NostrEvent(id = "signed-$createdAt-$content", pubkey = pubkey, createdAt = createdAt ?: 0,
                 kind = kind, tags = tags, content = content, sig = "sig")
     }

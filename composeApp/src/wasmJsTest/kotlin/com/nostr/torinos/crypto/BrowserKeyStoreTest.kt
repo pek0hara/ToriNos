@@ -1,5 +1,8 @@
 package com.nostr.torinos.crypto
 
+import com.nostr.torinos.account.AccountSecretCodec
+import com.nostr.torinos.account.SignerCredential
+import com.nostr.torinos.account.SignerMethod
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -156,5 +159,34 @@ class BrowserKeyStoreTest {
 
         assertEquals(listOf(pubA), store.listAccounts().map { it.pubkeyHex })
         assertEquals(keyA, store.loadPrivateKey())
+    }
+
+    @Test
+    fun externalSignerAccountIsListedWithItsMethodAndHasNoPrivateKey() {
+        store.savePrivateKey(keyA)
+        val nip07 = AccountSecretCodec.encode(SignerCredential.Nip07)
+        store.saveAccountSecret(pubB, nip07)
+
+        assertEquals(StoredAccountSecret(pubB, nip07), store.loadActiveAccountSecret())
+        assertNull(store.loadPrivateKey())
+        val methods = store.listAccounts().associate { it.pubkeyHex to it.method }
+        assertEquals(mapOf(pubB to SignerMethod.Nip07, pubA to SignerMethod.PrivateKey), methods)
+
+        store.switchAccount(pubA)
+        assertEquals(keyA, store.loadPrivateKey())
+    }
+
+    @Test
+    fun privateKeyThatDoesNotMatchTheAccountIsRejected() {
+        assertFailsWith<IllegalStateException> { store.saveAccountSecret(pubB, keyA) }
+        assertTrue(store.listAccounts().isEmpty())
+    }
+
+    @Test
+    fun brokenExternalSecretHidesTheAccount() {
+        store.saveAccountSecret(pubB, AccountSecretCodec.encode(SignerCredential.Nip07))
+        memory.values["torinos_web_private_key_$pubB"] = "torinos-signer:v1:{broken"
+        assertNull(store.loadActiveAccountSecret())
+        assertTrue(store.listAccounts().isEmpty())
     }
 }

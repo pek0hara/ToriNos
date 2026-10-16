@@ -48,6 +48,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.nostr.torinos.crypto.KeyStorage
 import com.nostr.torinos.crypto.StoredAccount
+import com.nostr.torinos.account.AccountLogin
 import com.nostr.torinos.account.AccountSessions
 import com.nostr.torinos.crypto.derivePublicKey
 import com.nostr.torinos.crypto.fromHex
@@ -94,6 +95,30 @@ fun KeySetupScreen(
     val scope = rememberCoroutineScope()
     val uiExceptionHandler = remember {
         loggingExceptionHandler("KeySetupScreen", "Uncaught UI coroutine exception")
+    }
+    var externalLoginBusy by remember { mutableStateOf(false) }
+    var externalLoginError by remember { mutableStateOf<String?>(null) }
+    var showNip46Login by remember { mutableStateOf(false) }
+
+    /** 拡張機能・リモート署名のアカウントを保存し、セッションを始める。同意は呼び出し元で済ませる。 */
+    fun startExternalLogin(save: suspend () -> String) {
+        run {
+            externalLoginBusy = true
+            externalLoginError = null
+            scope.launch(uiExceptionHandler) {
+                val result = runCatching {
+                    val pubkey = save()
+                    AccountSessions.manager.activateCurrentAccount(pubkey).getOrThrow()
+                    pubkey
+                }
+                externalLoginBusy = false
+                result.onSuccess(onSetupComplete).onFailure {
+                    if (it is CancellationException) throw it
+                    logException("KeySetupScreen", it, "Failed to log in with external signer")
+                    externalLoginError = "ログインできませんでした: ${it.message}"
+                }
+            }
+        }
     }
     val focusManager = LocalFocusManager.current
     val keyboardController = LocalSoftwareKeyboardController.current
@@ -214,7 +239,7 @@ fun KeySetupScreen(
                         onClick = {
                             scope.launch(uiExceptionHandler) {
                                 val err = runCatching {
-                                    savePrivateKeyAndVerify(priv)
+                                    AccountLogin.savePrivateKeyAccount(priv)
                                     onRegisteringAccount(pub)
                                     val session = AccountSessions.manager.activateCurrentAccount(pub).getOrThrow()
                                     session.resources.scope.launch {
@@ -276,6 +301,17 @@ fun KeySetupScreen(
                     Spacer(modifier = Modifier.height(24.dp))
                 }
 
+                if (!showImportForm) {
+                    ExternalSignerLoginSection(
+                        busy = externalLoginBusy,
+                        error = externalLoginError,
+                        onLogin = { save -> runAfterUsageConsent { startExternalLogin(save) } },
+                        // 接続した後に同意を断られると、署名器に接続だけが残るので、開く前に同意を求める。
+                        onOpenNip46 = { runAfterUsageConsent { showNip46Login = true } },
+                    )
+                    Spacer(modifier = Modifier.height(16.dp))
+                }
+
                 // ---- 既存鍵インポート ----
                 Surface(
                     modifier = Modifier.fillMaxWidth(),
@@ -289,6 +325,13 @@ fun KeySetupScreen(
                             style = MaterialTheme.typography.titleSmall,
                             color = MaterialTheme.colorScheme.onSurface,
                         )
+                        if (AccountLogin.protectsPrivateKeyWithPasskey) {
+                            Text(
+                                text = "秘密鍵はパスキーで暗号化してこのブラウザに保存します。開くたびにパスキーで解錠します。",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
                         Spacer(modifier = Modifier.height(8.dp))
                         if (!showImportForm) {
                             Button(
@@ -338,6 +381,16 @@ fun KeySetupScreen(
             onAgree = {
                 pendingUsageConsentAction = null
                 consentAction()
+            },
+        )
+    }
+
+    if (showNip46Login) {
+        Nip46LoginDialog(
+            onDismiss = { showNip46Login = false },
+            onConnected = { save ->
+                showNip46Login = false
+                startExternalLogin(save)
             },
         )
     }
@@ -678,7 +731,7 @@ private suspend fun validateAndSave(
         val nsec = hexToNsec(hexKey)
         val npub = hexToNpub(pubkeyHex)
         try {
-            savePrivateKeyAndVerify(hexKey)
+            AccountLogin.savePrivateKeyAccount(hexKey)
             val session = AccountSessions.manager.activateCurrentAccount(pubkeyHex).getOrThrow()
             session.resources.scope.launch {
                 runCatching { saveToPasswordManager(nsec, npub) }
@@ -698,15 +751,5 @@ private suspend fun validateAndSave(
     } catch (e: Exception) {
         logException("KeySetupScreen", e, "Invalid private key input")
         Pair("無効な秘密鍵です: ${e.message}", null)
-    }
-}
-
-private suspend fun savePrivateKeyAndVerify(hexKey: String) {
-    val normalized = normalizePrivateKey(hexKey)
-    KeyStorage.savePrivateKey(normalized)
-    val saved = KeyStorage.loadPrivateKey()
-        ?: error("保存した秘密鍵を読み戻せませんでした")
-    check(normalizePrivateKey(saved) == normalized) {
-        "保存した秘密鍵が一致しません"
     }
 }

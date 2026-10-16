@@ -1105,9 +1105,9 @@ class JournalControllerTest {
 
     private object OwnerSigner : AccountSigner {
         override val pubkey: String = OWNER
-        override fun encryptToSelf(plaintext: String): String = plaintext
-        override fun decrypt(content: String, peerPubkey: String): String = content
-        override fun sign(content: String, kind: Int, tags: List<List<String>>, createdAt: Long?) =
+        override suspend fun nip44Encrypt(plaintext: String, peerPubkey: String): String = plaintext
+        override suspend fun nip44Decrypt(content: String, peerPubkey: String): String = content
+        override suspend fun sign(content: String, kind: Int, tags: List<List<String>>, createdAt: Long?) =
             NostrEvent(id = "signed", pubkey = OWNER, createdAt = 0, kind = kind, tags = tags, content = content, sig = "sig")
     }
 }

@@ -391,11 +391,11 @@ class AccountSessionManagerTest {
         override val pubkey: String,
         private val lease: AccountSessionLease,
     ) : AccountSigner {
-        override fun encryptToSelf(plaintext: String): String = plaintext.also { lease.ensureActive() }
+        override suspend fun nip44Encrypt(plaintext: String, peerPubkey: String): String = plaintext.also { lease.ensureActive() }
 
-        override fun decrypt(content: String, peerPubkey: String): String = content.also { lease.ensureActive() }
+        override suspend fun nip44Decrypt(content: String, peerPubkey: String): String = content.also { lease.ensureActive() }
 
-        override fun sign(
+        override suspend fun sign(
             content: String,
             kind: Int,
             tags: List<List<String>>,

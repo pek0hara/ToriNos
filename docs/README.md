@@ -38,6 +38,7 @@
 - [`notification-target-resolution-design.md`](./notification-target-resolution-design.md) — 通知対象のKind非依存取得、取得状態とKind別表示・遷移の境界
 - [`post-auto-translation-design.md`](./post-auto-translation-design.md) — OS機能を使う投稿言語判定、自動翻訳、言語モデル準備と安全なフォールバック
 - [`web-private-key-login-design.md`](./web-private-key-login-design.md) — Web版(Kotlin/Wasm)の署名実装、ブラウザでの秘密鍵保存、未対応機能とテスト方針
+- [`signer-abstraction-design.md`](./signer-abstraction-design.md) — `AccountSigner`のsuspend化と署名方式の保存、Web版のNIP-07とパスキーによる秘密鍵の保護、NIP-46（段階1〜3は実装済み、NIP-55は未着手）
 
 ## 将来計画
 

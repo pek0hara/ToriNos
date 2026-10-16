@@ -78,9 +78,9 @@ class SignedEventPublisherTest {
 
     private class FakeSigner : AccountSigner {
         override val pubkey = "pubkey"
-        override fun encryptToSelf(plaintext: String) = plaintext
-        override fun decrypt(content: String, peerPubkey: String) = content
-        override fun sign(content: String, kind: Int, tags: List<List<String>>, createdAt: Long?) =
+        override suspend fun nip44Encrypt(plaintext: String, peerPubkey: String) = plaintext
+        override suspend fun nip44Decrypt(content: String, peerPubkey: String) = content
+        override suspend fun sign(content: String, kind: Int, tags: List<List<String>>, createdAt: Long?) =
             NostrEvent("id", pubkey, createdAt ?: 1, kind, tags, content, "sig")
     }
 }

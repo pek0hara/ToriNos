@@ -16,7 +16,9 @@ actual object KeyStorage {
 
     actual suspend fun savePrivateKey(hexKey: String) = store.savePrivateKey(hexKey)
     actual suspend fun loadPrivateKey(): String? = store.loadPrivateKey()
-    actual suspend fun hasKey(): Boolean = store.loadPrivateKey() != null
+    actual suspend fun hasKey(): Boolean = store.loadActiveAccountSecret() != null
+    actual suspend fun saveAccountSecret(pubkeyHex: String, secret: String) = store.saveAccountSecret(pubkeyHex, secret)
+    actual suspend fun loadActiveAccountSecret(): StoredAccountSecret? = store.loadActiveAccountSecret()
     actual suspend fun listAccounts(): List<StoredAccount> = store.listAccounts()
     actual suspend fun switchAccount(pubkeyHex: String) = store.switchAccount(pubkeyHex)
     actual suspend fun logout() = store.logout()

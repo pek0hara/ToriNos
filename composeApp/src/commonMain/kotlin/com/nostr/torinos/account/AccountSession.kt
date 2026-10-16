@@ -1,16 +1,10 @@
 package com.nostr.torinos.account
 
 import com.nostr.torinos.crypto.KeyStorage
-import com.nostr.torinos.crypto.Nip44
 import com.nostr.torinos.crypto.StoredAccount
-import com.nostr.torinos.crypto.derivePublicKey
-import com.nostr.torinos.crypto.fromHex
 import com.nostr.torinos.crypto.hexToNsec
-import com.nostr.torinos.crypto.normalizePrivateKey
-import com.nostr.torinos.crypto.signEvent
-import com.nostr.torinos.crypto.toHex
-import com.nostr.torinos.model.NostrEvent
 import com.nostr.torinos.util.logException
+import com.nostr.torinos.util.signerTraceLog
 import com.nostr.torinos.network.FollowRepository
 import com.nostr.torinos.emoji.CustomEmojiRepository
 import com.nostr.torinos.emoji.EmojiPreferenceSync
@@ -33,6 +27,7 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.launch
 import com.nostr.torinos.util.SynchronousLock
 import com.nostr.torinos.util.withLock
 import kotlinx.coroutines.sync.Mutex
@@ -143,6 +138,17 @@ class AccountSession internal constructor(
     private var repositoriesStarted = false
 
     init {
+        // 解錠・再接続で署名器が使えるようになったら、起動時に読めなかった暗号化データを読み直す。
+        (signer as? InteractiveSigner)?.let { interactive ->
+            resources.scope.launch {
+                var previous = interactive.attention.value
+                interactive.attention.collect { current ->
+                    signerTraceLog { "attention ${previous?.let { it::class.simpleName }} -> ${current?.let { it::class.simpleName }}" }
+                    if (previous != null && current == null) privateMuteListStore.refresh()
+                    previous = current
+                }
+            }
+        }
         resources.onClose(followRepository::close)
         resources.onBeforeClose(privateMuteListStore::closeAndFlush)
         resources.onClose { com.nostr.torinos.engagement.EngagementStore.shared.releaseLocalSession(sessionId) }
@@ -192,13 +198,16 @@ class AccountSession internal constructor(
     }
 }
 
+/** セッション終了後の署名・暗号化。従来どおり IllegalStateException として扱える。 */
+class AccountSessionEndedException : IllegalStateException("アカウントが切り替わったため操作を中止しました")
+
 /** セッション終了後の署名・暗号化を、グローバル状態に依存せず拒否する。 */
 internal class AccountSessionLease {
     private val _active = MutableStateFlow(true)
     val isActive: Boolean get() = _active.value
 
     fun ensureActive() {
-        check(isActive) { "アカウントが切り替わったため操作を中止しました" }
+        if (!isActive) throw AccountSessionEndedException()
     }
 
     fun invalidate() {
@@ -241,72 +250,14 @@ internal class AccountSessionResources(
 
 private const val SESSION_CLOSE_TIMEOUT_MS = 2_000L
 
-/** 秘密鍵を画面や ViewModel に公開せず、セッションに固定した鍵で署名する。 */
-interface AccountSigner {
-    val pubkey: String
-
-    fun encryptToSelf(plaintext: String): String
-
-    fun decrypt(content: String, peerPubkey: String): String
-
-    fun sign(
-        content: String,
-        kind: Int = 1,
-        tags: List<List<String>> = emptyList(),
-        createdAt: Long? = null,
-    ): NostrEvent
-}
-
-private class PrivateKeyAccountSigner(
-    private val privateKeyHex: String,
-    private val lease: AccountSessionLease,
-) : AccountSigner {
-    override val pubkey: String = derivePublicKey(privateKeyHex.fromHex()).toHex()
-
-    override fun encryptToSelf(plaintext: String): String {
-        ensureActive()
-        return Nip44.encrypt(plaintext, privateKeyHex, pubkey)
-    }
-
-    override fun decrypt(content: String, peerPubkey: String): String {
-        ensureActive()
-        return Nip44.decrypt(content, privateKeyHex, peerPubkey)
-    }
-
-    override fun sign(
-        content: String,
-        kind: Int,
-        tags: List<List<String>>,
-        createdAt: Long?,
-    ): NostrEvent {
-        ensureActive()
-        return if (createdAt == null) {
-            signEvent(
-                privateKeyHex = privateKeyHex,
-                content = content,
-                kind = kind,
-                tags = tags,
-            )
-        } else {
-            signEvent(
-                privateKeyHex = privateKeyHex,
-                content = content,
-                kind = kind,
-                tags = tags,
-                createdAt = createdAt,
-            )
-        }
-    }
-
-    private fun ensureActive() {
-        lease.ensureActive()
-    }
-}
-
 internal data class AccountCredentials(
     val pubkey: String,
-    val privateKeyHex: String,
-)
+    val secret: AccountSecret,
+) {
+    constructor(pubkey: String, privateKeyHex: String) : this(pubkey, AccountSecret.PrivateKey(privateKeyHex))
+
+    override fun toString(): String = "AccountCredentials(pubkey=$pubkey, method=${secret.method})"
+}
 
 internal interface AccountStorage {
     suspend fun loadActiveCredentials(): AccountCredentials?
@@ -318,11 +269,11 @@ internal interface AccountStorage {
 
 internal object KeyStorageAccountStorage : AccountStorage {
     override suspend fun loadActiveCredentials(): AccountCredentials? {
-        val privateKey = KeyStorage.loadPrivateKey()
-            ?.let(::normalizePrivateKey)
-            ?: return null
-        val pubkey = derivePublicKey(privateKey.fromHex()).toHex()
-        return AccountCredentials(pubkey = pubkey, privateKeyHex = privateKey)
+        val stored = KeyStorage.loadActiveAccountSecret() ?: return null
+        val secret = checkNotNull(AccountSecretCodec.decode(stored.pubkeyHex, stored.secret)) {
+            "保存されたアカウントの情報を読み込めませんでした"
+        }
+        return AccountCredentials(pubkey = stored.pubkeyHex, secret = secret)
     }
 
     override suspend fun listAccounts(): List<StoredAccount> = KeyStorage.listAccounts()
@@ -342,9 +293,7 @@ internal object KeyStorageAccountStorage : AccountStorage {
 
 class AccountSessionManager internal constructor(
     private val storage: AccountStorage,
-    private val signerFactory: (AccountCredentials, AccountSessionLease) -> AccountSigner = { credentials, lease ->
-        PrivateKeyAccountSigner(credentials.privateKeyHex, lease)
-    },
+    private val signerFactory: (AccountCredentials, AccountSessionLease) -> AccountSigner = ::createAccountSigner,
     private val prepareAccount: suspend (AccountSession?) -> Unit = { session ->
         RelayStore.activateAccount(session?.pubkey)
         withTimeout(10_000L) {
@@ -490,6 +439,7 @@ class AccountSessionManager internal constructor(
         runCatching {
             previousSession?.resources?.close()
             storage.logout()
+            previousSession?.let { PlatformSigners.forgetUnlockedKey(it.pubkey) }
             activeOrAnonymous(storage.loadActiveCredentials()).also { _state.value = it }
         }.onFailure {
             _state.value = restorePreviousSession(previousSession)
@@ -520,6 +470,7 @@ class AccountSessionManager internal constructor(
             previousSession?.let { beforeDelete(it.signer) }
             previousSession?.resources?.close()
             storage.deleteActiveAccount()
+            previousSession?.let { PlatformSigners.forgetUnlockedKey(it.pubkey) }
             activeOrAnonymous(storage.loadActiveCredentials()).also { _state.value = it }
         }.onFailure {
             _state.value = if (previousSession?.resources?.lease?.isActive == true) {
@@ -536,10 +487,21 @@ class AccountSessionManager internal constructor(
         _transitionError.value = null
     }
 
+    /**
+     * 秘密鍵でログインしているアカウントの nsec。パスキーで保護した鍵は解錠後だけ返す。
+     * 秘密鍵を持たない署名方式（拡張機能・リモート署名）では null。
+     */
     suspend fun exportActiveNsec(): String? {
         val credentials = storage.loadActiveCredentials() ?: return null
         if (credentials.pubkey != currentPubkey) return null
-        return hexToNsec(credentials.privateKeyHex)
+        return when (val secret = credentials.secret) {
+            is AccountSecret.PrivateKey -> hexToNsec(secret.hex)
+            is AccountSecret.External -> when (secret.credential) {
+                is SignerCredential.Passkey -> PlatformSigners.unlockedPrivateKey(credentials.pubkey)?.let(::hexToNsec)
+                    ?: throw SignerException.Locked()
+                else -> null
+            }
+        }
     }
 
     private suspend fun activeOrAnonymous(credentials: AccountCredentials?): AccountSessionState =
@@ -550,7 +512,10 @@ class AccountSessionManager internal constructor(
         val resources = AccountSessionResources()
         return try {
             val signer = signerFactory(credentials, resources.lease)
-            check(signer.pubkey == credentials.pubkey) { "秘密鍵と公開鍵が一致しません" }
+            (signer as? SessionBoundSigner)?.let { resources.onClose(it::close) }
+            signerTraceLog { "session start pubkey=${credentials.pubkey.take(8)} method=${signer.method} interactive=${signer is InteractiveSigner}" }
+            resources.onClose { signerTraceLog { "session closed pubkey=${credentials.pubkey.take(8)} method=${signer.method}" } }
+            check(signer.pubkey == credentials.pubkey) { "署名器と公開鍵が一致しません" }
             AccountSession(
                 sessionId = nextSessionId(credentials.pubkey),
                 pubkey = credentials.pubkey,

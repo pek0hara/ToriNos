@@ -221,9 +221,9 @@ class EmojiPreferenceSyncTest {
 
     private class FakeSigner(override val pubkey: String, private val clock: () -> Long) : AccountSigner {
         private var counter = 0
-        override fun encryptToSelf(plaintext: String) = plaintext
-        override fun decrypt(content: String, peerPubkey: String) = content
-        override fun sign(content: String, kind: Int, tags: List<List<String>>, createdAt: Long?) =
+        override suspend fun nip44Encrypt(plaintext: String, peerPubkey: String) = plaintext
+        override suspend fun nip44Decrypt(content: String, peerPubkey: String) = content
+        override suspend fun sign(content: String, kind: Int, tags: List<List<String>>, createdAt: Long?) =
             NostrEvent("signed-${counter++}", pubkey, createdAt ?: clock(), kind, tags, content, "sig")
     }
 

@@ -1,6 +1,7 @@
 package com.nostr.torinos.ui.post
 
 import com.nostr.torinos.account.AccountSigner
+import com.nostr.torinos.account.decodeUnlessSignerFails
 import com.nostr.torinos.model.NostrEvent
 import com.nostr.torinos.model.NostrFilter
 import com.nostr.torinos.network.NostrRepository
@@ -76,12 +77,11 @@ internal class DraftMemoRepository(
     suspend fun delete(draft: DraftMemo): SignedPublishResult =
         publisher.publish("", 5, draftDeletionTags(draft))
 
-    private fun decode(event: NostrEvent, signer: AccountSigner): DraftMemo? {
+    private suspend fun decode(event: NostrEvent, signer: AccountSigner): DraftMemo? {
         if (event.kind != MEMO_EVENT_KIND || event.pubkey != signer.pubkey) return null
         if (event.tags.any { it == listOf("k", "30023") }) return null
-        val payload = runCatching {
-            decodePostDraft(signer.decrypt(event.content, signer.pubkey), event)
-        }.getOrNull() ?: return null
+        val plaintext = decodeUnlessSignerFails { signer.decrypt(event.content, signer.pubkey) } ?: return null
+        val payload = runCatching { decodePostDraft(plaintext, event) }.getOrNull() ?: return null
         return DraftMemo(
             eventId = event.id,
             pubkey = event.pubkey,

@@ -1,5 +1,8 @@
 package com.nostr.torinos.crypto
 
+import com.nostr.torinos.account.AccountSecretCodec
+import com.nostr.torinos.account.SignerMethod
+
 import android.content.Context
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
@@ -87,17 +90,28 @@ actual object KeyStorage {
 
     private fun decryptPrivateKey(encryptedB64: String, ivB64: String): String? =
         try {
-            val iv = Base64.decode(ivB64, Base64.NO_WRAP)
-            val cipher = Cipher.getInstance(TRANSFORMATION).also {
-                it.init(Cipher.DECRYPT_MODE, getOrCreateKeystoreKey(), GCMParameterSpec(GCM_TAG_LENGTH, iv))
-            }
-            val decrypted = String(cipher.doFinal(Base64.decode(encryptedB64, Base64.NO_WRAP)), Charsets.UTF_8)
-            val normalized = normalizePrivateKey(decrypted)
+            val normalized = normalizePrivateKey(decryptString(encryptedB64, ivB64))
             derivePublicKey(normalized.fromHex())
             normalized
         } catch (_: Exception) {
             null
         }
+
+    /** アカウントの保存値を復号し、そのアカウントの値として有効なら正規化して返す。 */
+    private fun decryptAccountSecret(record: Triple<String, String, String>): String? =
+        try {
+            AccountSecretCodec.normalizeStored(record.first, decryptString(record.second, record.third))
+        } catch (_: Exception) {
+            null
+        }
+
+    private fun decryptString(encryptedB64: String, ivB64: String): String {
+        val iv = Base64.decode(ivB64, Base64.NO_WRAP)
+        val cipher = Cipher.getInstance(TRANSFORMATION).also {
+            it.init(Cipher.DECRYPT_MODE, getOrCreateKeystoreKey(), GCMParameterSpec(GCM_TAG_LENGTH, iv))
+        }
+        return String(cipher.doFinal(Base64.decode(encryptedB64, Base64.NO_WRAP)), Charsets.UTF_8)
+    }
 
     private fun accountRecord(pubkeyHex: String, encryptedB64: String, ivB64: String): String =
         listOf(pubkeyHex, encryptedB64, ivB64).joinToString("|")
@@ -143,8 +157,13 @@ actual object KeyStorage {
 
     actual suspend fun savePrivateKey(hexKey: String) {
         val normalized = normalizePrivateKey(hexKey)
-        val privateKeyBytes = normalized.fromHex()
-        val pubkeyHex = derivePublicKey(privateKeyBytes).toHex()
+        saveAccountSecret(derivePublicKey(normalized.fromHex()).toHex(), normalized)
+    }
+
+    actual suspend fun saveAccountSecret(pubkeyHex: String, secret: String) {
+        val normalized = checkNotNull(AccountSecretCodec.normalizeStored(pubkeyHex, secret)) {
+            "保存する値がアカウントと一致しません"
+        }
         val storedPrefs = runCatching { context.dataStore.data.first() }.getOrNull()
         // 読み込めなかったときは保存済みのアカウントがあるものとして、鍵を作り直さない。
         val hasOtherStoredKeys = storedPrefs == null ||
@@ -164,25 +183,22 @@ actual object KeyStorage {
         }
     }
 
-    actual suspend fun loadPrivateKey(): String? {
+    actual suspend fun loadPrivateKey(): String? = privateKeyOrNull(loadActiveAccountSecret())
+
+    actual suspend fun loadActiveAccountSecret(): StoredAccountSecret? {
         migrateLegacyKeyIfNeeded()
         val prefs = runCatching { context.dataStore.data.first() }.getOrElse { emptyPreferences() }
-        val records = prefs[PREF_ACCOUNTS].orEmpty()
-        val parsedRecords = records.mapNotNull(::parseAccountRecord)
+        val parsedRecords = prefs[PREF_ACCOUNTS].orEmpty().mapNotNull(::parseAccountRecord)
         val loggedOut = loggedOutPubkeys(prefs)
         val preferredPubkey = prefs[PREF_ACTIVE_PUBKEY]
         val activePubkey = preferredPubkey?.takeIf { it !in loggedOut }
             ?: parsedRecords.firstOrNull { it.first !in loggedOut }?.first
-        val activeRecord = records
-            .mapNotNull(::parseAccountRecord)
-            .firstOrNull { it.first == activePubkey }
-            ?: return null
-
-        val normalized = decryptPrivateKey(activeRecord.second, activeRecord.third)
-        return normalized
+        val activeRecord = parsedRecords.firstOrNull { it.first == activePubkey } ?: return null
+        val secret = decryptAccountSecret(activeRecord) ?: return null
+        return StoredAccountSecret(activeRecord.first, secret)
     }
 
-    actual suspend fun hasKey(): Boolean = loadPrivateKey() != null
+    actual suspend fun hasKey(): Boolean = loadActiveAccountSecret() != null
 
     actual suspend fun listAccounts(): List<StoredAccount> {
         migrateLegacyKeyIfNeeded()
@@ -191,11 +207,14 @@ actual object KeyStorage {
         val loggedOut = loggedOutPubkeys(prefs)
         val accounts = prefs[PREF_ACCOUNTS].orEmpty()
             .mapNotNull { record ->
-                val pubkeyHex = parseAccountRecord(record)?.first ?: return@mapNotNull null
+                val parsed = parseAccountRecord(record) ?: return@mapNotNull null
+                val pubkeyHex = parsed.first
                 StoredAccount(
                     pubkeyHex = pubkeyHex,
                     npub = hexToNpub(pubkeyHex),
                     isLoggedOut = pubkeyHex in loggedOut,
+                    method = decryptAccountSecret(parsed)?.let { storedSecretMethod(pubkeyHex, it) }
+                        ?: SignerMethod.PrivateKey,
                 )
             }
             .distinctBy { it.pubkeyHex }

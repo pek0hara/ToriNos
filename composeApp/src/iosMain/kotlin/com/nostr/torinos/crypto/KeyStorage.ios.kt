@@ -1,5 +1,7 @@
 package com.nostr.torinos.crypto
 
+import com.nostr.torinos.account.AccountSecretCodec
+import com.nostr.torinos.account.SignerMethod
 import com.nostr.torinos.crypto.interop.KeychainDeleteData
 import com.nostr.torinos.crypto.interop.KeychainLoadData
 import com.nostr.torinos.crypto.interop.KeychainSaveSynchronizableData
@@ -90,21 +92,14 @@ actual object KeyStorage {
 
     actual suspend fun savePrivateKey(hexKey: String) {
         val normalized = normalizePrivateKey(hexKey)
-        val pubkeyHex = derivePublicKey(normalized.fromHex()).toHex()
+        saveAccountSecret(derivePublicKey(normalized.fromHex()).toHex(), normalized)
+    }
 
-        val bytes = normalized.encodeToByteArray()
-        bytes.usePinned { pinned ->
-            val data = NSData.create(
-                bytes = pinned.addressOf(0),
-                length = bytes.size.toULong(),
-            )
-            val status = KeychainSaveSynchronizableData(
-                KEYCHAIN_SERVICE,
-                keychainAccount(pubkeyHex),
-                data,
-            )
-            check(status == 0) { "Keychain add failed (OSStatus=$status)" }
+    actual suspend fun saveAccountSecret(pubkeyHex: String, secret: String) {
+        val normalized = checkNotNull(AccountSecretCodec.normalizeStored(pubkeyHex, secret)) {
+            "保存する値がアカウントと一致しません"
         }
+        saveSynchronizableString(keychainAccount(pubkeyHex), normalized)
         val defaults = NSUserDefaults.standardUserDefaults
         val accounts = readAllAccountPubkeys(defaults).filterNot { it == pubkeyHex } + pubkeyHex
         writeAccountPubkeys(defaults, accounts)
@@ -114,7 +109,9 @@ actual object KeyStorage {
         defaults.synchronize()
     }
 
-    actual suspend fun loadPrivateKey(): String? {
+    actual suspend fun loadPrivateKey(): String? = privateKeyOrNull(loadActiveAccountSecret())
+
+    actual suspend fun loadActiveAccountSecret(): StoredAccountSecret? {
         migrateLegacyKeyIfNeeded()
         val defaults = NSUserDefaults.standardUserDefaults
         val accounts = readAllAccountPubkeys(defaults)
@@ -124,28 +121,21 @@ actual object KeyStorage {
             ?: accounts.firstOrNull { it !in loggedOut }
             ?: return null
 
-        loadPrivateKeyFromKeychain(keychainAccount(activePubkey))?.let {
-            savePrivateKey(it)
-            return it
-        }
-
-        val synchronizedKey = loadPrivateKeyFromKeychain(keychainAccount(activePubkey), synchronizable = true)
-        if (synchronizedKey != null) {
-            savePrivateKey(synchronizedKey)
-            return synchronizedKey
-        }
-
-        return null
+        val secret = loadAccountSecretFromKeychain(activePubkey)
+            ?: loadAccountSecretFromKeychain(activePubkey, synchronizable = true)
+            ?: return null
+        saveAccountSecret(activePubkey, secret)
+        return StoredAccountSecret(activePubkey, secret)
     }
 
-    actual suspend fun hasKey(): Boolean = loadPrivateKey() != null
+    actual suspend fun hasKey(): Boolean = loadActiveAccountSecret() != null
 
     actual suspend fun listAccounts(): List<StoredAccount> {
         migrateLegacyKeyIfNeeded()
         val defaults = NSUserDefaults.standardUserDefaults
         val accounts = readAllAccountPubkeys(defaults)
         var loggedOut = readLoggedOutPubkeys(defaults, accounts)
-        val validAccounts = accounts.filter(::hasStoredPrivateKey)
+        val validAccounts = accounts.filter { storedSecret(it) != null }
         if (validAccounts != accounts) {
             writeAccountPubkeys(defaults, validAccounts)
             runCatching { writeSyncedAccountPubkeys(validAccounts) }
@@ -169,6 +159,8 @@ actual object KeyStorage {
                     pubkeyHex = it,
                     npub = hexToNpub(it),
                     isLoggedOut = it in loggedOut,
+                    method = storedSecret(it)?.let { secret -> storedSecretMethod(it, secret) }
+                        ?: SignerMethod.PrivateKey,
                 )
             }
             .sortedBy { if (it.pubkeyHex == activePubkey) 0 else 1 }
@@ -321,9 +313,13 @@ actual object KeyStorage {
         }
     }
 
-    private fun hasStoredPrivateKey(pubkeyHex: String): Boolean =
-        loadPrivateKeyFromKeychain(keychainAccount(pubkeyHex)) != null ||
-            loadPrivateKeyFromKeychain(keychainAccount(pubkeyHex), synchronizable = true) != null
+    private fun storedSecret(pubkeyHex: String): String? =
+        loadAccountSecretFromKeychain(pubkeyHex) ?: loadAccountSecretFromKeychain(pubkeyHex, synchronizable = true)
+
+    /** アカウントの保存値を読み、そのアカウントの値として有効なら正規化して返す。 */
+    private fun loadAccountSecretFromKeychain(pubkeyHex: String, synchronizable: Boolean? = null): String? =
+        loadStringFromKeychain(keychainAccount(pubkeyHex), synchronizable)
+            ?.let { AccountSecretCodec.normalizeStored(pubkeyHex, it) }
 
     private fun writeAccountPubkeys(defaults: NSUserDefaults, pubkeys: List<String>) {
         if (pubkeys.isEmpty()) {

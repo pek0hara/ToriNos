@@ -1,5 +1,7 @@
 package com.nostr.torinos.crypto
 
+import com.nostr.torinos.account.AccountSecretCodec
+
 /** 文字列を保存する同期キーバリューストア。本番は `localStorage`、テストはメモリ上の実装を使う。 */
 internal interface KeyValueStore {
     fun get(key: String): String?
@@ -24,27 +26,36 @@ internal class BrowserKeyStore(private val store: KeyValueStore) {
 
     fun savePrivateKey(hexKey: String) {
         val normalized = normalizePrivateKey(hexKey)
-        val pubkeyHex = derivePublicKey(normalized.fromHex()).toHex()
+        saveAccountSecret(derivePublicKey(normalized.fromHex()).toHex(), normalized)
+    }
+
+    /** 秘密鍵、または秘密鍵以外の署名方式の保存値を、[pubkeyHex] のアカウントとして保存する。 */
+    fun saveAccountSecret(pubkeyHex: String, secret: String) {
+        val normalized = checkNotNull(AccountSecretCodec.normalizeStored(pubkeyHex, secret)) {
+            "保存する値がアカウントと一致しません"
+        }
         store.set(privateKeyKey(pubkeyHex), normalized)
         writeAccounts(readAccounts().filterNot { it == pubkeyHex } + pubkeyHex)
         store.set(ACTIVE_ACCOUNT_KEY, pubkeyHex)
         writeLoggedOut(readLoggedOut() - pubkeyHex)
     }
 
-    fun loadPrivateKey(): String? {
+    fun loadPrivateKey(): String? = privateKeyOrNull(loadActiveAccountSecret())
+
+    fun loadActiveAccountSecret(): StoredAccountSecret? {
         val loggedOut = readLoggedOut()
         val activePubkey = store.get(ACTIVE_ACCOUNT_KEY)
             ?.takeIf { it !in loggedOut }
             ?: readAccounts().firstOrNull { it !in loggedOut }
             ?: return null
-        val privateKey = loadValidPrivateKey(activePubkey) ?: return null
+        val secret = loadValidSecret(activePubkey) ?: return null
         store.set(ACTIVE_ACCOUNT_KEY, activePubkey)
-        return privateKey
+        return StoredAccountSecret(activePubkey, secret)
     }
 
     fun listAccounts(): List<StoredAccount> {
         val accounts = readAccounts()
-        val validAccounts = accounts.filter { loadValidPrivateKey(it) != null }
+        val validAccounts = accounts.filter { loadValidSecret(it) != null }
         var loggedOut = readLoggedOut()
         if (validAccounts != accounts) {
             // 鍵が消えた・壊れたアカウントを一覧から外す。保存値は別アカウントの鍵の可能性もあるため消さない。
@@ -62,6 +73,8 @@ internal class BrowserKeyStore(private val store: KeyValueStore) {
                     pubkeyHex = it,
                     npub = hexToNpub(it),
                     isLoggedOut = it in loggedOut,
+                    method = loadValidSecret(it)?.let { secret -> storedSecretMethod(it, secret) }
+                        ?: com.nostr.torinos.account.SignerMethod.PrivateKey,
                 )
             }
             .sortedBy { if (it.pubkeyHex == activePubkey) 0 else 1 }
@@ -103,14 +116,9 @@ internal class BrowserKeyStore(private val store: KeyValueStore) {
         }
     }
 
-    private fun loadValidPrivateKey(pubkeyHex: String): String? {
-        val stored = store.get(privateKeyKey(pubkeyHex)) ?: return null
-        return runCatching {
-            val normalized = normalizePrivateKey(stored)
-            check(derivePublicKey(normalized.fromHex()).toHex() == pubkeyHex) { "保存された鍵がアカウントと一致しません" }
-            normalized
-        }.getOrNull()
-    }
+    /** 保存値が鍵の一致（秘密鍵）または形式（それ以外）の確認を通れば、正規化した値を返す。 */
+    private fun loadValidSecret(pubkeyHex: String): String? =
+        store.get(privateKeyKey(pubkeyHex))?.let { AccountSecretCodec.normalizeStored(pubkeyHex, it) }
 
     private fun readAccounts(): List<String> = readList(ACCOUNTS_KEY).distinct()
 

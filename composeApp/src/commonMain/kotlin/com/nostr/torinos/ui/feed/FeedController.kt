@@ -481,7 +481,10 @@ internal class FeedController(
                 pendingOperations.remove(eventId, operationId)
                 projectEngagement(listOf(eventId))
             }
-            if (failure != null) updateFeedState { it.copy(engagementError = failureMessage) }
+            if (failure != null) updateFeedState {
+                // 署名器の失敗（拒否・応答なしなど）は、その理由をそのまま伝える。
+                it.copy(engagementError = (failure as? com.nostr.torinos.account.SignerException)?.message ?: failureMessage)
+            }
         }
     }
 

@@ -65,10 +65,10 @@ class StatusPublisherTest {
 
     private object FakeSigner : AccountSigner {
         override val pubkey: String = "2".repeat(64)
-        override fun encryptToSelf(plaintext: String): String = plaintext
-        override fun decrypt(content: String, peerPubkey: String): String = content
+        override suspend fun nip44Encrypt(plaintext: String, peerPubkey: String): String = plaintext
+        override suspend fun nip44Decrypt(content: String, peerPubkey: String): String = content
 
-        override fun sign(
+        override suspend fun sign(
             content: String,
             kind: Int,
             tags: List<List<String>>,

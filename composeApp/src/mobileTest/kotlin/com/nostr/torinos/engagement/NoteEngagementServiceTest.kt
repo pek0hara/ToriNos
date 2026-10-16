@@ -211,11 +211,11 @@ class NoteEngagementServiceTest {
         override val pubkey: String = "signer-pubkey"
         private var nextId = 0
 
-        override fun encryptToSelf(plaintext: String): String = plaintext
+        override suspend fun nip44Encrypt(plaintext: String, peerPubkey: String): String = plaintext
 
-        override fun decrypt(content: String, peerPubkey: String): String = content
+        override suspend fun nip44Decrypt(content: String, peerPubkey: String): String = content
 
-        override fun sign(
+        override suspend fun sign(
             content: String,
             kind: Int,
             tags: List<List<String>>,

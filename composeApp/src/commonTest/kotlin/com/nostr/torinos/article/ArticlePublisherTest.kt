@@ -58,9 +58,9 @@ class ArticlePublisherTest {
 
     private class Signer(override val pubkey: String) : AccountSigner {
         var signatures = 0
-        override fun encryptToSelf(plaintext: String) = error("unused")
-        override fun decrypt(content: String, peerPubkey: String) = error("unused")
-        override fun sign(content: String, kind: Int, tags: List<List<String>>, createdAt: Long?): NostrEvent {
+        override suspend fun nip44Encrypt(plaintext: String, peerPubkey: String) = error("unused")
+        override suspend fun nip44Decrypt(content: String, peerPubkey: String) = error("unused")
+        override suspend fun sign(content: String, kind: Int, tags: List<List<String>>, createdAt: Long?): NostrEvent {
             signatures++
             return NostrEvent(signatures.toString().padStart(64, '0'), pubkey, createdAt!!, kind, tags, content, "signed")
         }

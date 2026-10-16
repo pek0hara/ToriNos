@@ -1,6 +1,7 @@
 package com.nostr.torinos.article
 
 import com.nostr.torinos.account.AccountSigner
+import com.nostr.torinos.account.decodeUnlessSignerFails
 import com.nostr.torinos.crypto.isValidEvent
 import com.nostr.torinos.model.NIP23_ARTICLE_KIND
 import com.nostr.torinos.model.NostrEvent
@@ -159,12 +160,13 @@ internal class ArticleDraftRepository(
     }
 }
 
-internal fun decodeArticleDraft(event: NostrEvent, signer: AccountSigner): ArticleDraft? {
+internal suspend fun decodeArticleDraft(event: NostrEvent, signer: AccountSigner): ArticleDraft? {
     if (event.kind != ARTICLE_DRAFT_KIND || event.pubkey != signer.pubkey ||
         event.tags.tagValue("k") != NIP23_ARTICLE_KIND.toString() || event.content.isEmpty()) return null
+    val plaintext = decodeUnlessSignerFails { signer.decrypt(event.content, signer.pubkey) } ?: return null
     return try {
         val identifier = event.tags.tagValue("d") ?: return null
-        val payload = articleJson.decodeFromString<ArticleDraftPayload>(signer.decrypt(event.content, signer.pubkey))
+        val payload = articleJson.decodeFromString<ArticleDraftPayload>(plaintext)
         if (payload.pubkey != signer.pubkey || payload.kind != NIP23_ARTICLE_KIND) return null
         val extension = payload.torinos?.let { draft ->
             payload.torinosContentLayout?.restore(draft, payload.content) ?: draft

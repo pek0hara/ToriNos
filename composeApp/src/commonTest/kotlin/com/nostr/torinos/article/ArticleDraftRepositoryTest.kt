@@ -37,12 +37,12 @@ class ArticleDraftRepositoryTest {
     private val relay = "wss://draft.example"
     private open class Signer(override val pubkey: String) : AccountSigner {
         var signatures = 0
-        override fun encryptToSelf(plaintext: String) = "encrypted:$plaintext"
-        override fun decrypt(content: String, peerPubkey: String): String {
+        override suspend fun nip44Encrypt(plaintext: String, peerPubkey: String) = "encrypted:$plaintext"
+        override suspend fun nip44Decrypt(content: String, peerPubkey: String): String {
             require(peerPubkey == pubkey && content.startsWith("encrypted:"))
             return content.removePrefix("encrypted:")
         }
-        override fun sign(content: String, kind: Int, tags: List<List<String>>, createdAt: Long?): NostrEvent =
+        override suspend fun sign(content: String, kind: Int, tags: List<List<String>>, createdAt: Long?): NostrEvent =
             NostrEvent((++signatures).toString().padStart(64, '0'), pubkey, createdAt!!, kind, tags, content, "signed")
     }
     private fun session(signals: List<SubscriptionSignal>) = object : SubscriptionSession {
@@ -53,8 +53,8 @@ class ArticleDraftRepositoryTest {
     }
     @Test fun tenThousandJapaneseCharactersUseRealEncryptionAndOnlyOneCopyOfMarkdown() = runTest {
         val signer = object : Signer(owner) {
-            override fun encryptToSelf(plaintext: String) = Nip44.encryptWithConversationKey(plaintext, ByteArray(32), ByteArray(32))
-            override fun decrypt(content: String, peerPubkey: String) = Nip44.decryptWithConversationKey(content, ByteArray(32))
+            override suspend fun nip44Encrypt(plaintext: String, peerPubkey: String) = Nip44.encryptWithConversationKey(plaintext, ByteArray(32), ByteArray(32))
+            override suspend fun nip44Decrypt(content: String, peerPubkey: String) = Nip44.decryptWithConversationKey(content, ByteArray(32))
         }
         val refs = (1..50).map { MatometrReference(it.toString(16).padStart(64, '0'), commentaryMarkdown = "\r\n説明\n") }
         val base = ArticleDraft(ownerPubkey = owner, mode = ArticleDraftMode.MatometrStructured, references = refs)
@@ -166,7 +166,7 @@ class ArticleDraftRepositoryTest {
         assertEquals(events.first().tags, events.last().tags)
         assertTrue(repository.load().isEmpty())
     }
-    @Test fun foreignUnsignedArticleCanBeEditedWithoutChangingItsDraftAddress() {
+    @Test fun foreignUnsignedArticleCanBeEditedWithoutChangingItsDraftAddress() = runTest {
         val signer = Signer(owner)
         val payload = ArticleDraftPayload(owner, 1, tags = listOf(listOf("d", "article-address"), listOf("title", "他クライアント"), listOf("t", "matometr")),
             content = MatometrReference("11".repeat(32)).uri)

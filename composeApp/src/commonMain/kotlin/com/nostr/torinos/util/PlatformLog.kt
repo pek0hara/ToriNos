@@ -32,6 +32,19 @@ internal inline fun journalTraceLog(message: () -> String) {
     }
 }
 
+/**
+ * trueにすると署名器の動き（セッションの署名方式、署名・暗号化の kind と所要時間と失敗の種類、
+ * NIP-46 の要求と応答、パスキーの解錠、署名器の状態の変化）をログ出力する。動作確認用。
+ * 鍵・本文・暗号文は出さない。
+ */
+internal const val isSignerTraceEnabled = true
+
+internal inline fun signerTraceLog(message: () -> String) {
+    if (isSignerTraceEnabled) {
+        platformLog("[Signer] ${message()}")
+    }
+}
+
 /** trueにすると購読ごと・リレーごとの通信の流れ（REQ/件数/EOSE/CLOSED/完了）をログ出力する。動作確認用。 */
 internal const val isFetchTraceEnabled = false
 

@@ -42,6 +42,8 @@
 
 ### D2. 秘密鍵はブラウザの `localStorage` に保存する
 
+> **2026-10-17 更新**: 新しく保存する秘密鍵は、パスキー（WebAuthn PRF）で暗号化するように変えた。あわせて NIP-07・NIP-46 でのログインを加えた。平文の保存は読み込みだけ残し、パスキーでの保護へ移すよう案内する。理由と防げる範囲は [`signer-abstraction-design.md`](./signer-abstraction-design.md) §2・§6.2。
+
 - 保存キーは Web 専用の接頭辞 `torinos_web_` を付ける。
   - `torinos_web_accounts`: pubkey のカンマ区切り
   - `torinos_web_active_account`: アクティブな pubkey
@@ -172,8 +174,7 @@ val wasmJsMain by getting {
 
 ## 7. 将来の拡張
 
-- NIP-07 対応: `AccountSigner` を suspend にしたうえで、`window.nostr` に委譲する実装を追加する。
-  秘密鍵をブラウザに保存しないで済むので、Web 版の既定のログイン方法にする候補。
+- NIP-07 対応: 2026-10-17 に実装した（`signer-abstraction-design.md` 段階2）。
 
 ## 8. 実装で設計から変えた点と検証
 
