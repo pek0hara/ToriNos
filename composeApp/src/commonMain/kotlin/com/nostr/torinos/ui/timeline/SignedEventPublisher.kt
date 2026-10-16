@@ -67,7 +67,7 @@ internal class SignedEventPublisher(
         return publishPrepared(event, relayUrls, onEventRelayResult, onRelayResult)
     }
 
-    fun prepare(content: String, kind: Int, tags: List<List<String>>): Result<NostrEvent> = try {
+    suspend fun prepare(content: String, kind: Int, tags: List<List<String>>): Result<NostrEvent> = try {
         val activeSigner = signer ?: error("秘密鍵が設定されていません")
         Result.success(activeSigner.sign(content = content, kind = kind, tags = tags))
     } catch (cancelled: CancellationException) { throw cancelled }

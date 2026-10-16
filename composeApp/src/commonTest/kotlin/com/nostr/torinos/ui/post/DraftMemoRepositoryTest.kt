@@ -65,9 +65,9 @@ class DraftMemoRepositoryTest {
     private val relay = "wss://memo.example"
     private val signer = object : AccountSigner {
         override val pubkey = owner
-        override fun encryptToSelf(plaintext: String) = "encrypted:$plaintext"
-        override fun decrypt(content: String, peerPubkey: String) = content.removePrefix("encrypted:")
-        override fun sign(content: String, kind: Int, tags: List<List<String>>, createdAt: Long?): NostrEvent = error("unused")
+        override suspend fun nip44Encrypt(plaintext: String, peerPubkey: String) = "encrypted:$plaintext"
+        override suspend fun nip44Decrypt(content: String, peerPubkey: String) = content.removePrefix("encrypted:")
+        override suspend fun sign(content: String, kind: Int, tags: List<List<String>>, createdAt: Long?): NostrEvent = error("unused")
     }
     private fun memoEvent(text: String) = NostrEvent("11".repeat(32), owner, 100, MEMO_EVENT_KIND,
         listOf(listOf("d", "memo-1"), listOf("k", "1")),

@@ -85,12 +85,12 @@ internal class ArticleDraftRepository(
             }.toMap()
             return latest to latest.values.filter { it.content.isNotEmpty() }
         }
-        fun decode(event: NostrEvent) = decoded.getOrPut(event.id) { decodeArticleDraft(event, signer) }
+        suspend fun decode(event: NostrEvent) = decoded.getOrPut(event.id) { decodeArticleDraft(event, signer) }
         var outcomes: Map<String, RelayOutcome>? = null
         try {
             session.signals.untilFetchCompleted().collect { signal -> when (signal) {
                 is SubscriptionSignal.Event -> if (filter.matches(signal.event) && validate(signal.event)) events += signal.event
-                is SubscriptionSignal.Eose -> { ensureActive(); onProgress(snapshot().second.mapNotNull(::decode)) }
+                is SubscriptionSignal.Eose -> { ensureActive(); onProgress(snapshot().second.mapNotNull { decode(it) }) }
                 is SubscriptionSignal.FetchCompleted -> outcomes = signal.outcomes
                 else -> Unit
             } }

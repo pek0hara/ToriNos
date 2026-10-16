@@ -218,7 +218,7 @@ class ArticleDraftRepositoryTest {
     @Test fun firstEoseShowsDraftsWhileASlowRelayKeepsLoading() = runTest {
         val signer = Signer(owner)
         val slow = "wss://slow.example"
-        fun draftEvent(d: String, title: String, createdAt: Long): NostrEvent {
+        suspend fun draftEvent(d: String, title: String, createdAt: Long): NostrEvent {
             val payload = ArticleDraftPayload(owner, createdAt, tags = listOf(listOf("d", "article-$d"), listOf("title", title)), content = "本文")
             return signer.sign(signer.encryptToSelf(articleJson.encodeToString(payload)), 31234,
                 listOf(listOf("d", d), listOf("k", "30023")), createdAt)
