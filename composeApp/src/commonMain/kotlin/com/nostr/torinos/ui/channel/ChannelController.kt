@@ -1,5 +1,7 @@
 package com.nostr.torinos.ui.channel
 
+import com.nostr.torinos.network.collectRecovering
+
 import com.nostr.torinos.model.isLikeReaction
 import com.nostr.torinos.ui.post.resolveDraftEmojis
 import com.nostr.torinos.ui.post.insertDraftEmoji
@@ -10,6 +12,8 @@ import com.nostr.torinos.emoji.CustomEmoji
 import com.nostr.torinos.account.AccountSession
 import com.nostr.torinos.ui.channel.ChannelViewModel.EditThreadDialogState
 import com.nostr.torinos.ui.channel.ChannelViewModel.UiState
+import com.nostr.torinos.engagement.EngagementStore
+import com.nostr.torinos.engagement.PendingEngagementRegistry
 import com.nostr.torinos.engagement.EngagementAction
 import com.nostr.torinos.engagement.EngagementOperationId
 import com.nostr.torinos.engagement.EngagementReducer
@@ -105,11 +109,10 @@ internal class ChannelController(
     private val ownHideSubId = subscriptionIds.ownHides
 
     private val replyStore = ChannelReplyStore(channelId)
-    private val seenReactionIds = linkedSetOf<String>()
-    private val seenRepostIds = linkedSetOf<String>()
-    private val seenQuoteRepostIds = linkedSetOf<String>()
-    private val receivedReactionEvents = linkedMapOf<String, NostrEvent>()
-    private val receivedRepostEvents = linkedMapOf<String, NostrEvent>()
+    private val engagementStore = EngagementStore.shared
+    private val pendingOperations = PendingEngagementRegistry.forSession(accountSession?.sessionId)
+    private val engagementBinding = ChannelEngagementBinding(channelId, engagementStore, pendingOperations)
+    private var currentReplyCounts = emptyMap<String, Int>()
     private val watchedEventIds = linkedSetOf<String>()
     private val pendingPubkeys = mutableSetOf<String>()
     private var profileBatchJob: Job? = null
@@ -120,7 +123,7 @@ internal class ChannelController(
     private var requestSequence = 0L
     private var lastMarkedReadAt = -1L
     private var positionSaveJob: Job? = null
-    private var editPictureUploadJob: Job? = null
+    private val pictureUploads = ChannelImageUploadController(scope)
     private var editSessionSequence = 0L
     private val editPublishStates = mutableMapOf<String, ChannelPublishUiState>()
     private val reportedEditPartialEvents = mutableSetOf<String>()
@@ -190,7 +193,7 @@ internal class ChannelController(
 
     private suspend fun fetchHistoryPage(filter: NostrFilter): ChannelHistoryPage {
         val events = mutableListOf<NostrEvent>()
-        val complete = fetchChannelEvents(
+        val result = fetchChannelPage(
             SubscriptionSpec(
                 id = "$histSubId-${requestSequence++}",
                 filters = listOf(filter),
@@ -205,7 +208,7 @@ internal class ChannelController(
         val retainedEvents = events.filterNot { it.id in locallyDeletedMessageIds }.distinctBy { it.id }
         retainedEvents.maxWithOrNull(compareBy<NostrEvent> { it.createdAt }.thenBy { it.id })
             ?.let { recordLatestMessage(it) }
-        return ChannelHistoryPage(retainedEvents, complete)
+        return ChannelHistoryPage(retainedEvents, result.allAnswered, result)
     }
 
     private suspend fun recordLatestMessage(event: NostrEvent) {
@@ -229,6 +232,12 @@ internal class ChannelController(
                 removeMessageLocally(deletion.eventId)
             }
         }
+        lifecycleJobs += launch { engagementStore.changes.collect { changed ->
+            if (changed.any { it in watchedEventIds || currentMessages.any { message -> message.id == it } }) syncReadyState()
+        } }
+        lifecycleJobs += launch { pendingOperations.changes.collect { changed ->
+            if (changed.any { it in watchedEventIds }) syncReadyState()
+        } }
         if (autoStart) start()
     }
 
@@ -537,46 +546,27 @@ internal class ChannelController(
         command: NoteEngagementCommand,
         failureMessage: String,
     ) {
-        val operationId = EngagementOperationId("channel-${++nextEngagementOperationId}")
+        val operationId = EngagementOperationId("channel-$channelId-${++nextEngagementOperationId}")
         val before = currentNoteEngagement(eventId)
         val optimistic = engagementCoordinator.begin(before, operationId, request)
         if (optimistic == before) return
-        setCurrentEngagement(eventId, optimistic)
+        optimistic.pendingOperations[request.slot]?.let {
+            pendingOperations.put(eventId, request.slot, it.copy(deliveryRelayUrls = RelayStore.writableRelayUrlsSnapshot().toSet()))
+        }
         syncReadyState()
         consumeEngagementError()
         launch {
-            var committed = false
             var failure: Throwable? = null
             try {
-                val published = engagementCoordinator.execute(command) { signed ->
-                    when (command) {
-                        is NoteEngagementCommand.AddLike,
-                        is NoteEngagementCommand.AddEmoji,
-                        -> seenReactionIds.add(signed.id)
-                        is NoteEngagementCommand.AddRepost -> seenRepostIds.add(signed.id)
-                        is NoteEngagementCommand.RemoveReaction,
-                        is NoteEngagementCommand.RemoveRepost,
-                        -> Unit
-                    }
-                }.getOrThrow()
-                setCurrentEngagement(
-                    eventId,
-                    engagementCoordinator.commit(currentNoteEngagement(eventId), operationId, published.id),
-                )
-                syncReadyState()
-                committed = true
+                val published = engagementCoordinator.execute(command).getOrThrow()
+                engagementStore.observeLocal(published, accountSession?.sessionId)
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (error: Throwable) {
                 failure = error
             } finally {
-                if (!committed) {
-                    setCurrentEngagement(
-                        eventId,
-                        engagementCoordinator.rollback(currentNoteEngagement(eventId), operationId),
-                    )
-                    syncReadyState()
-                }
+                pendingOperations.remove(eventId, operationId)
+                syncReadyState()
             }
             if (failure != null) {
                 val ready = _state.value as? UiState.Ready
@@ -587,8 +577,7 @@ internal class ChannelController(
 
     fun showEditThreadDialog() {
         val current = _state.value as? UiState.Ready ?: return
-        editPictureUploadJob?.cancel()
-        editPictureUploadJob = null
+        pictureUploads.cancel()
         val recommended = normalizeRelayUrls(current.channelMeta.relays, limit = Int.MAX_VALUE)
         val candidates = editRelayCandidates(recommended, RelayStore.writableRelayUrlsSnapshot())
         _state.value = current.copy(
@@ -607,8 +596,8 @@ internal class ChannelController(
     fun dismissEditThreadDialog() {
         val current = _state.value as? UiState.Ready ?: return
         if (current.editDialog?.isSaving == true) return
-        editPictureUploadJob?.cancel()
-        editPictureUploadJob = null
+        pictureUploads.cancel()
+        current.editDialog?.let { dialog -> launch { accountSession?.channelPublications?.releaseDialog("edit-$channelId-${dialog.sessionId}") } }
         _state.value = current.copy(editDialog = null)
     }
 
@@ -635,22 +624,21 @@ internal class ChannelController(
         if (dialog.isUploadingPicture || dialog.isSaving) return
         val sessionId = dialog.sessionId
         _state.value = current.copy(editDialog = dialog.copy(isUploadingPicture = true, error = null))
-        editPictureUploadJob = launch {
-            withContext(Dispatchers.Default) {
-                ImageUploader.uploadMedia(bytes, mimeType, accountSession?.signer)
-            }.onSuccess { metadata ->
-                updateEditDialogForSession(sessionId) {
-                    it.copy(picture = metadata.url, isUploadingPicture = false)
-                }
+        pictureUploads.upload(load = { ImageUploader.uploadMedia(bytes, mimeType, accountSession?.signer) }) { result ->
+            result.onSuccess { metadata ->
+                updateEditDialogForSession(sessionId) { it.copy(picture = metadata.url, isUploadingPicture = false) }
             }.onFailure { error ->
-                updateEditDialogForSession(sessionId) {
-                    it.copy(isUploadingPicture = false, error = "画像のアップロードに失敗しました: ${error.message}")
-                }
+                updateEditDialogForSession(sessionId) { it.copy(isUploadingPicture = false, error = "画像のアップロードに失敗しました: ${error.message}") }
             }
         }
     }
 
-    fun onEditPictureRemoved() = onEditPictureUrlChange("")
+    fun onEditPictureRemoved() {
+        val current = _state.value as? UiState.Ready ?: return
+        if (current.editDialog?.isSaving == true) return
+        pictureUploads.cancel()
+        _state.value = current.copy(editDialog = current.editDialog?.copy(picture = "", isUploadingPicture = false))
+    }
 
     fun onEditRelaySelectionChange(selected: Set<String>) {
         val current = _state.value as? UiState.Ready ?: return
@@ -729,14 +717,20 @@ internal class ChannelController(
                 userWritableRelays = RelayStore.writableRelayUrlsSnapshot(),
                 relayEntries = RelayStore.entries.value,
             )
-            val result = signedEventPublisher.publish(
+            val publication = accountSession?.channelPublications ?: ChannelPublicationService(scope, null)
+            val result = publication.publish(
+                dialog = "edit-$channelId-${dialog.sessionId}", observerScope = scope,
+                validate = {
+                    check(ownPubkey == currentChannelOwnerPubkey) { "チャンネルの作成者だけが編集できます" }
+                    check(dialog.sourceEventId == effectiveMetadataSourceEventId) { "チャンネル情報が更新されました。開き直してください" }
+                },
                 content = meta.toChannelContent(),
                 kind = 41,
                 tags = ChannelEventTags.metadata(channelId, publishContext.primaryHint, categories = emptyList()) +
                     listOf(listOf("client", "ToriNos")),
                 relayUrls = delivery.metadataRelayUrls,
-                onEventRelayResult = { event, relayResult ->
-                    recordEditRelayResult(event, delivery.metadataRelayUrls.orEmpty(), relayResult)
+                onEventRelayResult = { event, relayResult, targets ->
+                    recordEditRelayResult(event, targets.toList(), relayResult)
                 },
             )
             when (result) {
@@ -749,6 +743,7 @@ internal class ChannelController(
                     } else {
                         currentChannelMeta = meta
                     }
+                    publication.releaseDialog("edit-$channelId-${dialog.sessionId}")
                     val ready = _state.value as? UiState.Ready ?: return@launch
                     reportEditPartial(
                         result.event.id,
@@ -1021,13 +1016,14 @@ internal class ChannelController(
     }
 
     private fun readyState(canLoadMore: Boolean): UiState.Ready {
+        refreshEngagement()
         val hidden = hiddenMessages()
         return UiState.Ready(
             channelMeta = currentChannelMeta,
             channelOwnerPubkey = currentChannelOwnerPubkey,
             messages = filteredMessages(hidden),
             profiles = currentProfiles,
-            replyCounts = replyStore.counts,
+            replyCounts = currentReplyCounts,
             replies = replyPreviews(hidden),
             reactionCounts = currentReactionCounts,
             likeReactionCounts = currentLikeReactionCounts,
@@ -1052,7 +1048,19 @@ internal class ChannelController(
         )
     }
 
+    private fun refreshEngagement() {
+        val targets = watchedEventIds + currentMessages.map { it.id }
+        val projections = engagementBinding.project(targets.toSet(), ownPubkey, relayContext.readRelays) ?: return
+        currentReplyCounts = projections.mapValues { it.value.replyCount }
+        currentReactionEvents = projections.mapValues { it.value.events.reactions.values.toList() }
+        currentRepostPubkeys = projections.mapValues { (_, projected) ->
+            (projected.events.reposts.values + projected.events.quotes.values).map { it.pubkey }.distinct()
+        }
+        projections.forEach { (id, projected) -> setCurrentEngagement(id, projected.state) }
+    }
+
     private fun syncReadyState() {
+        refreshEngagement()
         val current = _state.value as? UiState.Ready ?: readyState(canLoadMore = false)
         val hidden = hiddenMessages()
         // 同じチャンネルから開いたスレッド画面でも非表示を効かせる(Loop 9)。
@@ -1064,7 +1072,7 @@ internal class ChannelController(
             channelOwnerPubkey = currentChannelOwnerPubkey,
             messages = filteredMessages(hidden),
             profiles = currentProfiles,
-            replyCounts = replyStore.counts,
+            replyCounts = currentReplyCounts,
             replies = replyPreviews(hidden),
             reactionCounts = currentReactionCounts,
             likeReactionCounts = currentLikeReactionCounts,
@@ -1171,12 +1179,12 @@ internal class ChannelController(
         )
         messageSession = session
         jobs += launch {
-            session.signals.collect { signal ->
+            session.collectRecovering { signal ->
                 when (signal) {
                     is SubscriptionSignal.Event -> {
                         clearRelayRefusal(signal.relayUrl)
                         val event = signal.event
-                        if (!noteContext.matches(event) || event.id in locallyDeletedMessageIds) return@collect
+                        if (!noteContext.matches(event) || event.id in locallyDeletedMessageIds) return@collectRecovering
                         rememberMessageSource(event.id, signal.relayUrl)
                         history.receive(event)
                         recordLatestMessage(event)
@@ -1238,6 +1246,7 @@ internal class ChannelController(
     }
 
     private fun onReplyEvent(event: NostrEvent) {
+        engagementStore.observe(event, null)
         if (!noteContext.matches(event)) return
         val targetId = noteContext.replyTargetId(event) ?: return
         if (targetId !in watchedEventIds || !replyStore.receive(event)) return
@@ -1246,88 +1255,23 @@ internal class ChannelController(
     }
 
     private fun onReactionEvent(event: NostrEvent) {
-        if (event.kind != 7 || !seenReactionIds.add(event.id)) return
-        rememberReceivedEvent(receivedReactionEvents, event)
-        val targetId = event.tags.lastOrNull { it.firstOrNull() == "e" }?.getOrNull(1) ?: return
-        if (targetId !in watchedEventIds) return
-        currentReactionCounts = currentReactionCounts + (targetId to (currentReactionCounts[targetId] ?: 0) + 1)
-        if (event.isLikeReaction()) {
-            currentLikeReactionCounts = currentLikeReactionCounts + (
-                targetId to (currentLikeReactionCounts[targetId] ?: 0) + 1
-                )
-        }
-        event.toCustomReaction()?.let { reaction ->
-            currentCustomReactions = currentCustomReactions + (
-                targetId to currentCustomReactions[targetId]
-                    .orEmpty()
-                    .incrementedWith(reaction)
-            )
-        }
-        event.toUnicodeReaction()?.let { reaction ->
-            currentUnicodeReactions = currentUnicodeReactions + (
-                targetId to currentUnicodeReactions[targetId]
-                    .orEmpty()
-                    .incrementedWithUnicodeReaction(reaction)
-            )
-        }
-        currentReactionEvents = currentReactionEvents + (
-            targetId to currentReactionEvents[targetId].orEmpty().plus(event)
-        )
-        if (
-            ownPubkey != null &&
-            event.pubkey == ownPubkey &&
-            event.isLikeReaction() &&
-            !currentLikedReactions.containsKey(targetId)
-        ) {
-            currentLikedReactions = currentLikedReactions + (targetId to event.id)
-        }
-        if (ownPubkey != null && event.pubkey == ownPubkey) {
-            event.toReactionOption()?.let { option ->
-                currentOwnEmojiReactionEventIds = currentOwnEmojiReactionEventIds + (
-                    targetId to currentOwnEmojiReactionEventIds[targetId].orEmpty()
-                        .plus(option.key to event.id)
-                    )
-            }
-        }
-        syncReadyState()
+        if (event.kind != 7) return
+        engagementStore.observe(event, null)
         scheduleProfileFetch(event.pubkey)
+        syncReadyState()
     }
 
     private fun onRepostEvent(event: NostrEvent) {
-        if (event.kind !in listOf(6, 16) || !seenRepostIds.add(event.id)) return
-        rememberReceivedEvent(receivedRepostEvents, event)
-        val targetId = event.tags.lastOrNull { it.firstOrNull() == "e" }?.getOrNull(1) ?: return
-        if (targetId !in watchedEventIds) return
-        currentRepostCounts = currentRepostCounts + (targetId to (currentRepostCounts[targetId] ?: 0) + 1)
-        currentRepostPubkeys = currentRepostPubkeys + (
-            targetId to currentRepostPubkeys[targetId].orEmpty().plus(event.pubkey).distinct()
-        )
-        if (ownPubkey != null && event.pubkey == ownPubkey && !currentRepostedEvents.containsKey(targetId)) {
-            currentRepostedEvents = currentRepostedEvents + (targetId to event.id)
-        }
-        syncReadyState()
+        if (event.kind !in listOf(6, 16)) return
+        engagementStore.observe(event, null)
         scheduleProfileFetch(event.pubkey)
+        syncReadyState()
     }
 
     private fun onQuoteRepostEvent(event: NostrEvent) {
         if (!noteContext.matches(event)) return
-        val targetIds = event.tags
-            .filter { it.firstOrNull() == "q" }
-            .mapNotNull { it.getOrNull(1) }
-            .distinct()
-            .filter { it in watchedEventIds }
-            .filter { seenQuoteRepostIds.add("${event.id}:$it") }
-        if (targetIds.isEmpty()) return
-        val counts = currentRepostCounts.toMutableMap()
-        targetIds.forEach { targetId ->
-            counts[targetId] = (counts[targetId] ?: 0) + 1
-            currentRepostPubkeys = currentRepostPubkeys + (
-                targetId to currentRepostPubkeys[targetId].orEmpty().plus(event.pubkey).distinct()
-            )
-        }
-        currentRepostCounts = counts
+        engagementStore.observe(event, null)
         syncReadyState()
-        scheduleProfileFetch(event.pubkey)
     }
 
     private suspend fun supplementHistoryFrom(relayUrls: Set<String>) {
@@ -1391,7 +1335,7 @@ internal class ChannelController(
 
     fun close() {
         relayTransitionJob?.cancel()
-        editPictureUploadJob?.cancel()
+        pictureUploads.cancel()
         flushReadingPosition()
         jobs.forEach { it.cancel() }
         jobs.clear()
@@ -1400,6 +1344,7 @@ internal class ChannelController(
         profileBatchJob?.cancel()
         engagementBatchJob?.cancel()
         history.close()
+        engagementBinding.close()
         NostrRepository.close(metaSubId)
         NostrRepository.close(msgSubId)
         NostrRepository.close(histSubId)
@@ -1412,27 +1357,7 @@ internal class ChannelController(
         while (events.size > MAX_SEEN_IDS) events.remove(events.keys.first())
     }
 
-    private fun reconcileOwnEngagement() {
-        val pubkey = ownPubkey ?: return
-        receivedReactionEvents.values.filter { it.pubkey == pubkey }.forEach { event ->
-            val targetId = event.tags.lastOrNull { it.firstOrNull() == "e" }?.getOrNull(1)
-                ?: return@forEach
-            if (event.isLikeReaction()) {
-                currentLikedReactions = currentLikedReactions + (targetId to event.id)
-            }
-            event.toReactionOption()?.let { option ->
-                currentOwnEmojiReactionEventIds = currentOwnEmojiReactionEventIds + (
-                    targetId to currentOwnEmojiReactionEventIds[targetId].orEmpty().plus(option.key to event.id)
-                )
-            }
-        }
-        receivedRepostEvents.values.filter { it.pubkey == pubkey }.forEach { event ->
-            val targetId = event.tags.lastOrNull { it.firstOrNull() == "e" }?.getOrNull(1)
-                ?: return@forEach
-            currentRepostedEvents = currentRepostedEvents + (targetId to event.id)
-        }
-        syncReadyState()
-    }
+    private fun reconcileOwnEngagement() { syncReadyState() }
 
     companion object {
         private const val MAX_EDIT_RECOMMENDED_RELAYS = 10

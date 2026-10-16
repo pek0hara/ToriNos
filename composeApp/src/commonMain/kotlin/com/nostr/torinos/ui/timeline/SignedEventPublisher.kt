@@ -18,6 +18,7 @@ internal sealed interface SignedPublishResult {
     data class Failed(
         val cause: Throwable,
         val relayResult: RelayPublishResult? = null,
+        val event: NostrEvent? = null,
     ) : SignedPublishResult
 }
 
@@ -61,14 +62,24 @@ internal class SignedEventPublisher(
         onEventRelayResult: suspend (NostrEvent, RelayPublishResult) -> Unit = { _, _ -> },
         onRelayResult: suspend (RelayPublishResult) -> Unit = {},
     ): SignedPublishResult {
-        val activeSigner = signer ?: return SignedPublishResult.MissingSigner
-        val event = try {
-            activeSigner.sign(content = content, kind = kind, tags = tags)
-        } catch (cancelled: CancellationException) {
-            throw cancelled
-        } catch (error: Throwable) {
-            return SignedPublishResult.Failed(error)
-        }
+        if (signer == null) return SignedPublishResult.MissingSigner
+        val event = prepare(content, kind, tags).getOrElse { return SignedPublishResult.Failed(it) }
+        return publishPrepared(event, relayUrls, onEventRelayResult, onRelayResult)
+    }
+
+    fun prepare(content: String, kind: Int, tags: List<List<String>>): Result<NostrEvent> = try {
+        val activeSigner = signer ?: error("秘密鍵が設定されていません")
+        Result.success(activeSigner.sign(content = content, kind = kind, tags = tags))
+    } catch (cancelled: CancellationException) { throw cancelled }
+    catch (error: Throwable) { Result.failure(error) }
+
+    suspend fun publishPrepared(
+        event: NostrEvent,
+        relayUrls: Collection<String>? = null,
+        onEventRelayResult: suspend (NostrEvent, RelayPublishResult) -> Unit = { _, _ -> },
+        onRelayResult: suspend (RelayPublishResult) -> Unit = {},
+    ): SignedPublishResult {
+        check(event.pubkey == signer?.pubkey) { "署名アカウントが一致しません" }
         if (relayUrls == null) {
             return try {
                 val result = publisher(event)
@@ -77,7 +88,7 @@ internal class SignedEventPublisher(
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (error: Throwable) {
-                SignedPublishResult.Failed(error)
+                SignedPublishResult.Failed(error, event = event)
             }
         }
         return try {
@@ -89,7 +100,7 @@ internal class SignedEventPublisher(
                 onEventRelayResult(event, relayResult)
             }
             if (result.succeededRelays.isEmpty()) {
-                SignedPublishResult.Failed(IllegalStateException("すべてのリレーへの送信に失敗しました"), result)
+                SignedPublishResult.Failed(IllegalStateException("すべてのリレーへの送信に失敗しました"), result, event)
             } else {
                 ReactionEventStore.observe(event, result.succeededRelays)
                 SignedPublishResult.Published(event, result)
@@ -97,7 +108,7 @@ internal class SignedEventPublisher(
         } catch (cancelled: CancellationException) {
             throw cancelled
         } catch (error: Throwable) {
-            SignedPublishResult.Failed(error)
+            SignedPublishResult.Failed(error, event = event)
         }
     }
 }

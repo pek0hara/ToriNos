@@ -89,7 +89,7 @@ internal class JoinedChannelRepository(
                 RelayStore.writableRelayUrlsSnapshot() + RelayStore.enabledRelayUrlsSnapshot(),
                 limit = Int.MAX_VALUE,
             ).toSet()
-            val answered = fetchChannelEvents(
+            val result = fetchChannelPage(
                 SubscriptionSpec(
                     id = "joined-channels-${ownerPubkey.take(8)}-${Clock.System.now().toEpochMilliseconds()}",
                     filters = listOf(NostrFilter(kinds = listOf(JoinedChannelList.KIND), authors = listOf(ownerPubkey), limit = 5)),
@@ -98,7 +98,7 @@ internal class JoinedChannelRepository(
                 ),
                 settleAfterEoseMillis = 1_500,
             ) { event -> events += event }
-            return FetchResult(events, answered)
+            return FetchResult(events, result.allAnswered)
         }
     }
 }

@@ -89,14 +89,20 @@ object NostrRepository {
     private val bus = MutableSharedFlow<RelayEnvelope>(extraBufferCapacity = 512)
 
     internal val httpClient = createHttpClient()
+    private val publishCoordinator by lazy { RelayPublishCoordinator(scope, ::publishToRelaysWithResult) }
     private val eventRelayHints = EventRelayHintStore()
     private val stateMutex = Mutex()
-    private val activeRelays = mutableMapOf<String, ActiveRelayHandle>()
+    private val connectionPool = RelayConnectionPool { url: String ->
+        networkTraceLog { "[Repo] connecting to relay: $url" }
+        createActiveRelayHandle(NostrRelay(url, httpClient))
+    }
+    private val activeRelays get() = connectionPool.active
     private var enabledRelayUrls: List<String> = readableRelayUrls(RelayStore.defaults)
     private val _routingRelayUrls = MutableStateFlow(enabledRelayUrls.toSet())
     /** Repository の購読ルーティングへ反映済みの読み込み対象リレー。 */
     internal val routingRelayUrls: StateFlow<Set<String>> = _routingRelayUrls.asStateFlow()
-    private val activeSubscriptions = mutableMapOf<String, ActiveSubscriptionRecord>()
+    private val subscriptionRegistry = SubscriptionRegistry()
+    private val activeSubscriptions get() = subscriptionRegistry.records
     private val relayConnectionGenerations = mutableMapOf<String, Long>()
     /** リレーから最後にメッセージを受け取った時刻（epoch 秒）。切断で途切れた配信の起点に使う。 */
     private val relayLastMessageAt = mutableMapOf<String, Long>()
@@ -109,9 +115,9 @@ object NostrRepository {
     /** 同時購読数の超過を知らされて下げた上限。 */
     private val loweredSubscriptionLimits = mutableMapOf<String, Int>()
     /** 購読が閉じて空きができたリレー。待っている購読をまとめて開く。 */
-    private val slotsFreedRelays = linkedSetOf<String>()
+    private val slotsFreedRelays get() = subscriptionRegistry.slotsFreedRelays
     /** リレーごとに購読を開いた順。購読IDのない超過の通知を受けたとき、拒否された購読を選ぶのに使う。 */
-    private val openOrder = RelayOpenOrder()
+    private val openOrder get() = subscriptionRegistry.openOrder
     private val activeRelayCount = MutableStateFlow(0)
     private val _relayConnectionStates = MutableStateFlow<Map<String, RelayConnectionState>>(emptyMap())
     val relayConnectionStates: StateFlow<Map<String, RelayConnectionState>> =
@@ -242,16 +248,7 @@ object NostrRepository {
 
     private fun reconcileActiveRelaysLocked(): Pair<List<ActiveRelayHandle>, List<ActiveRelayHandle>> {
         val desiredUrls = desiredActiveRelayUrlsLocked()
-        val removed = (activeRelays.keys - desiredUrls)
-            .mapNotNull { url ->
-                relayLastMessageAt.remove(url)
-                activeRelays.remove(url)
-            }
-        val added = (desiredUrls - activeRelays.keys).map { url ->
-            networkTraceLog { "[Repo] connecting to relay: $url" }
-            val relay = NostrRelay(url, httpClient)
-            createActiveRelayHandle(relay).also { activeRelays[url] = it }
-        }
+        val (removed, added) = connectionPool.reconcile(desiredUrls) { relayLastMessageAt.remove(it) }
         activeRelayCount.value = activeRelays.size
         _relayConnectionStates.update { states -> states.filterKeys { it in desiredUrls } }
         return removed to added
@@ -261,59 +258,10 @@ object NostrRepository {
         subscriptionId: String,
         record: ActiveSubscriptionRecord,
         onlyRelayUrl: String? = null,
-    ): List<SubscriptionWireCommand> {
-        val desiredRelayUrls = record.target.urls(enabledRelayUrls).toSet()
-        val relayUrls = (record.relayStates.keys + desiredRelayUrls)
-            .let { urls -> if (onlyRelayUrl == null) urls else urls.filter { it == onlyRelayUrl } }
-
-        return relayUrls.mapNotNull { relayUrl ->
-            val desiredFilters = record.filters.takeIf { relayUrl in desiredRelayUrls }
-            val generation = relayConnectionGenerations[relayUrl] ?: 0L
-            val previous = record.relayStates[relayUrl]
-            val wasOccupying = RelaySubscriptionSlots.occupies(previous)
-            val result = SubscriptionStateMachine.reconcile(
-                state = previous,
-                desiredFilters = desiredFilters,
-                connectionGeneration = generation,
-                hasFreeSlot = occupiedSlotsLocked(relayUrl) < subscriptionLimitLocked(relayUrl),
-            )
-            if (result.state == null) {
-                record.relayStates.remove(relayUrl)
-            } else {
-                record.relayStates[relayUrl] = result.state
-            }
-            val occupies = RelaySubscriptionSlots.occupies(result.state)
-            if (wasOccupying && !occupies) slotsFreedRelays += relayUrl
-            if (!wasOccupying && occupies) {
-                openOrder.opened(relayUrl, subscriptionId)
-                // 空きを待っていた有限取得は、実際に送った時点から待ち時間を数え直す。
-                // 待っていた間にタイムアウトすると、リレーへ聞く前に取得失敗になる。
-                val behavior = record.behavior
-                if (previous != null && behavior is SubscriptionBehavior.Fetch) {
-                    record.session?.let { restartFetchTimeout(subscriptionId, it, behavior) }
-                }
-            }
-            if (previous == null && desiredFilters != null && result.command == null && !occupies) {
-                fetchTraceLog { "WAIT $subscriptionId → $relayUrl 同時購読数の上限のため空きを待つ" }
-            }
-            when (val command = result.command) {
-                is SubscriptionCommandDecision.Open -> SubscriptionWireCommand(
-                    relayUrl = relayUrl,
-                    message = buildReqMessage(subscriptionId, command.filters),
-                    generation = generation,
-                    subscriptionId = subscriptionId,
-                    filters = command.filters,
-                )
-                SubscriptionCommandDecision.Close -> SubscriptionWireCommand(
-                    relayUrl = relayUrl,
-                    message = buildCloseMessage(subscriptionId),
-                    generation = generation,
-                    subscriptionId = subscriptionId,
-                )
-                null -> null
-            }
-        }
-    }
+    ): List<SubscriptionWireCommand> = subscriptionRegistry.reconcile(
+        subscriptionId, record, enabledRelayUrls, relayConnectionGenerations,
+        ::subscriptionLimitLocked, ::restartFetchTimeout, onlyRelayUrl,
+    )
 
     private fun restartFetchTimeout(
         subscriptionId: String,
@@ -323,7 +271,9 @@ object NostrRepository {
         session.timeoutJob?.cancel()
         session.timeoutJob = scope.launch {
             delay(behavior.timeoutMillis)
-            completeFetch(subscriptionId, timedOut = true)
+            // Completing closes the subscription, which cancels this very job; without NonCancellable the
+            // cleanup stops at its first suspension and the session's signal stream is never finished.
+            withContext(NonCancellable) { completeFetch(session, timedOut = true) }
         }
     }
 
@@ -397,7 +347,7 @@ object NostrRepository {
             it.relay.connectionState.value == RelayConnectionState.Connected
         }
         val commands = mutableListOf<SubscriptionWireCommand>()
-        val completions = mutableListOf<String>()
+        val completions = mutableListOf<SubscriptionSessionImpl>()
         activeSubscriptions.forEach { (subscriptionId, record) ->
             val expected = record.fetchExpectedRelays ?: return@forEach
             if (record.fetchCompleted || !record.unavailableSweepEnabled) return@forEach
@@ -412,7 +362,7 @@ object NostrRepository {
             }
             if (record.shouldCompleteFetchLocked()) {
                 record.fetchCompletionScheduled = true
-                completions += subscriptionId
+                record.session?.let(completions::add)
             }
         }
         return UnavailableSweep(commands + drainFreedSlotsLocked(), completions)
@@ -504,7 +454,7 @@ object NostrRepository {
         }
         val signals = mutableListOf<Pair<SubscriptionSessionImpl, SubscriptionSignal>>()
         var commands = emptyList<SubscriptionWireCommand>()
-        var fetchToComplete: String? = null
+        var fetchToComplete: SubscriptionSessionImpl? = null
         var retry: RetryRequest? = null
         var emitToLegacyBus = true
 
@@ -564,7 +514,7 @@ object NostrRepository {
                         }
                         if (record.shouldCompleteFetchLocked()) {
                             record.fetchCompletionScheduled = true
-                            fetchToComplete = subscriptionId
+                            fetchToComplete = record.session
                         }
                     }
                     is RelayMessage.Closed -> {
@@ -589,10 +539,10 @@ object NostrRepository {
                                 retry = classification.disposition,
                             )
                         }
-                        record.fetchOutcomes[relayUrl] = RelayOutcome.Closed(message.message)
+                        record.fetchOutcomes[relayUrl] = RelayOutcome.Closed(message.message, classification.disposition)
                         if (record.shouldCompleteFetchLocked()) {
                             record.fetchCompletionScheduled = true
-                            fetchToComplete = subscriptionId
+                            fetchToComplete = record.session
                         } else if (
                             // 配信中の購読は回数で諦めず、間隔を延ばして再開を試み続ける。
                             record.behavior is SubscriptionBehavior.Live &&
@@ -641,9 +591,17 @@ object NostrRepository {
         sendSubscriptionCommands(commands)
     }
 
-    private suspend fun completeFetch(subscriptionId: String, timedOut: Boolean) {
+    /** [SubscriptionSession.finishPendingRelays]。時間切れと同じく、結果のないリレーを`TimedOut`にして完了させる。 */
+    internal suspend fun finishPendingFetchRelays(session: SubscriptionSessionImpl) {
+        // 完了すると購読を閉じるため、呼び出し元が取り消されても完了の知らせまでは出す。
+        withContext(NonCancellable) { completeFetch(session, timedOut = true) }
+    }
+
+    private suspend fun completeFetch(session: SubscriptionSessionImpl, timedOut: Boolean) {
+        val subscriptionId = session.id
         val completion = stateMutex.withLock {
             val record = activeSubscriptions[subscriptionId] ?: return@withLock null
+            if (record.session !== session) return@withLock null
             val expected = record.fetchExpectedRelays ?: return@withLock null
             if (record.fetchCompleted) return@withLock null
             if (!timedOut && !expected.all { it in record.fetchOutcomes }) {
@@ -672,7 +630,7 @@ object NostrRepository {
                 timedOut = timedOut || completion.outcomes.values.any { it is RelayOutcome.TimedOut },
             ),
         )
-        closeActiveSubscription(subscriptionId, buildCloseMessage(subscriptionId))
+        closeActiveSubscription(subscriptionId, buildCloseMessage(subscriptionId), completion.session)
     }
 
     private fun createTemporaryRelayHandle(relay: NostrRelay): TemporaryRelayHandle {
@@ -784,7 +742,8 @@ object NostrRepository {
                 session = session,
                 fetchExpectedRelays = if (spec.behavior is SubscriptionBehavior.Fetch) targetUrls else null,
             )
-            activeSubscriptions[spec.id] = record
+            session.initializeTargets(targetUrls)
+            subscriptionRegistry.register(spec.id, record)
             val commands = reconcileSubscriptionLocked(spec.id, record) + drainFreedSlotsLocked()
             val (removed, added) = reconcileActiveRelaysLocked()
             SessionOpenWork(
@@ -803,7 +762,7 @@ object NostrRepository {
             sendSubscriptionCommands(commands, removedHandles)
             closeRemovedRelayHandles(removedHandles)
             if (spec.replayCachedEvents) replayCachedToSession(session, spec.filters, targetRelayUrls)
-            if (completeImmediately) completeFetch(spec.id, timedOut = false)
+            if (completeImmediately) completeFetch(session, timedOut = false)
             if (spec.behavior is SubscriptionBehavior.Fetch) {
                 // キャッシュを流した後で見直す。先に完了を出すと、キャッシュの分が完了の後に届くか捨てられる。
                 stateMutex.withLock {
@@ -905,14 +864,7 @@ object NostrRepository {
     }
 
     internal suspend fun closeSubscriptionSession(session: SubscriptionSessionImpl) {
-        val ownsSubscription = stateMutex.withLock {
-            activeSubscriptions[session.id]?.session === session
-        }
-        if (ownsSubscription) {
-            closeActiveSubscription(session.id, buildCloseMessage(session.id))
-        } else {
-            session.finish()
-        }
+        closeActiveSubscription(session.id, buildCloseMessage(session.id), session)
     }
 
     suspend fun subscribeTemporaryRelay(subscriptionId: String, filter: NostrFilter, relayUrl: String) {
@@ -981,8 +933,16 @@ object NostrRepository {
         closeActiveSubscription(subscriptionId, msg)
     }
 
-    private suspend fun closeActiveSubscription(subscriptionId: String, closeMessage: String) {
+    private suspend fun closeActiveSubscription(
+        subscriptionId: String,
+        closeMessage: String,
+        expectedSession: SubscriptionSessionImpl? = null,
+    ) {
         val (commands, removedHandles, session) = stateMutex.withLock {
+            if (expectedSession != null && !subscriptionRegistry.owns(expectedSession)) {
+                expectedSession.finish()
+                return
+            }
             val record = activeSubscriptions.remove(subscriptionId)
             openOrder.forget(subscriptionId)
             record?.relayStates?.forEach { (relayUrl, state) ->
@@ -1165,48 +1125,9 @@ object NostrRepository {
         onRelayResult: suspend (RelayPublishResult) -> Unit = {},
         respectRelayWritePolicy: Boolean = true,
         awaitAcceptance: Boolean = false,
-    ): RelayPublishResult {
-        val targets = relayUrls.map { it.trim() }.filter { it.isNotBlank() }.distinct()
-        if (targets.isEmpty()) return RelayPublishResult(emptySet(), emptyMap())
-
-        val completion = CompletableDeferred<RelayPublishResult>()
-        val resultMutex = Mutex()
-        val failures = linkedMapOf<String, String>()
-        var completedCount = 0
-
-        targets.forEach { relayUrl ->
-            scope.launch {
-                val result = publishToRelaysWithResult(
-                    event = event,
-                    relayUrls = listOf(relayUrl),
-                    awaitAcceptance = awaitAcceptance,
-                    respectRelayWritePolicy = respectRelayWritePolicy,
-                )
-                runCatching { onRelayResult(result) }
-                    .onFailure { error ->
-                        appLog("[Repo] publish result callback failed: ${error::class.simpleName}: ${error.message}")
-                    }
-                val completedResult = resultMutex.withLock {
-                    completedCount++
-                    failures.putAll(result.failedRelays)
-                    when {
-                        result.succeededRelays.isNotEmpty() -> RelayPublishResult(
-                            succeededRelays = result.succeededRelays,
-                            failedRelays = failures.toMap(),
-                        )
-                        completedCount == targets.size -> RelayPublishResult(
-                            succeededRelays = emptySet(),
-                            failedRelays = failures.toMap(),
-                        )
-                        else -> null
-                    }
-                }
-                if (completedResult != null) completion.complete(completedResult)
-            }
-        }
-
-        return completion.await()
-    }
+    ): RelayPublishResult = publishCoordinator.untilFirstSuccess(
+        event, relayUrls, onRelayResult, respectRelayWritePolicy, awaitAcceptance,
+    )
 
     fun events(subscriptionId: String): Flow<NostrEvent> =
         bus
@@ -1264,85 +1185,6 @@ private data class RelayEnvelope(
     val message: RelayMessage,
 )
 
-internal class SubscriptionSessionImpl(
-    override val id: String,
-    lossless: Boolean = false,
-) : SubscriptionSession {
-    // finite fetch は EOSE/完了より前のイベントを欠落させてはならない。openSubscription は
-    // キャッシュ再生後に session を返すため、有限取得だけ無制限キューで確実に保持する。
-    private val channel = Channel<SubscriptionSignal>(
-        capacity = if (lossless) Channel.UNLIMITED else 512,
-    )
-    override val signals: Flow<SubscriptionSignal> = channel.receiveAsFlow()
-    internal var timeoutJob: Job? = null
-
-    override suspend fun update(filters: List<NostrFilter>, target: RelayTarget) {
-        NostrRepository.updateSubscriptionSession(this, filters, target)
-    }
-
-    override suspend fun close() {
-        NostrRepository.closeSubscriptionSession(this)
-    }
-
-    internal fun emit(signal: SubscriptionSignal) {
-        if (channel.trySend(signal).isFailure) {
-            appLog("[SubscriptionSession] signal buffer overflow or closed: $id signal=${signal::class.simpleName}")
-        }
-    }
-
-    internal fun finish() {
-        timeoutJob?.cancel()
-        timeoutJob = null
-        channel.close()
-    }
-}
-
-private data class ActiveSubscriptionRecord(
-    var filters: List<NostrFilter>,
-    var target: RelayTarget,
-    val behavior: SubscriptionBehavior,
-    val session: SubscriptionSessionImpl? = null,
-    val relayStates: MutableMap<String, RelaySubscriptionState> = mutableMapOf(),
-    val seenEventIds: BoundedIdSet = BoundedIdSet(4_096),
-    val deduplicateEvents: Boolean = true,
-    val replayCachedEvents: Boolean = true,
-    val fetchExpectedRelays: Set<String>? = null,
-    val fetchOutcomes: MutableMap<String, RelayOutcome> = mutableMapOf(),
-    var fetchCompletionScheduled: Boolean = false,
-    var fetchCompleted: Boolean = false,
-    /** キャッシュを流し終えるまでは、接続できないリレーで取得を終えない（[NostrRepository.openSubscription]）。 */
-    var unavailableSweepEnabled: Boolean = false,
-) {
-    fun shouldCompleteFetchLocked(): Boolean {
-        val expected = fetchExpectedRelays ?: return false
-        return !fetchCompleted && !fetchCompletionScheduled && expected.all { it in fetchOutcomes }
-    }
-}
-
-private class BoundedIdSet(
-    private val capacity: Int,
-) {
-    private val ids = LinkedHashSet<String>()
-
-    fun add(id: String): Boolean {
-        if (!ids.add(id)) return false
-        while (ids.size > capacity) {
-            ids.remove(ids.first())
-        }
-        return true
-    }
-}
-
-private data class SubscriptionWireCommand(
-    val relayUrl: String,
-    val message: String,
-    /** 送ると決めた時点の接続世代。リレーの現在の接続と違えば送らない。 */
-    val generation: Long,
-    /** 通信ログ用。REQ ならフィルター、CLOSE なら null。 */
-    val subscriptionId: String? = null,
-    val filters: List<NostrFilter>? = null,
-)
-
 private data class SubscriptionUpdateWork(
     val targetUrls: Set<String>,
     val commands: List<SubscriptionWireCommand>,
@@ -1352,7 +1194,7 @@ private data class SubscriptionUpdateWork(
 
 private class UnavailableSweep(
     val commands: List<SubscriptionWireCommand>,
-    val completions: List<String>,
+    val completions: List<SubscriptionSessionImpl>,
 )
 
 private data class SessionOpenWork(

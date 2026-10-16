@@ -1,5 +1,7 @@
 package com.nostr.torinos.ui.components
 
+import com.nostr.torinos.model.*
+
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.layout.Box
@@ -190,85 +192,97 @@ internal fun LazyListScope.noteListItems(
                     // lambdas below change only when this note's like/repost state changes.
                     val isLiked = state.isLiked(event.id)
                     val isReposted = state.isReposted(event.id)
-                    NoteCard(
-                        event = event,
-                        precomputedContent = state.parsedContents[event.id],
-                        deferWebViewLoad = deferWebViewLoad,
-                        profile = state.profiles[event.pubkey],
-                        repostedByPubkey = repostedByPubkey,
-                        repostedByProfile = repostedByPubkey?.let { state.profiles[it] },
-                        profiles = relevantProfiles,
-                        replyCount = state.replyCounts[event.id] ?: 0,
-                        replies = repliesForEvent,
-                        repostCount = state.repostCounts[event.id] ?: 0,
-                        repostPubkeys = repostPubkeysForEvent,
-                        quoteRepostEvents = quoteRepostEventsForEvent,
-                        reactionCount = state.reactionCounts[event.id] ?: 0,
-                        likeReactionCount = state.likeReactionCounts[event.id] ?: 0,
-                        customReactions = state.customReactions[event.id].orEmpty(),
-                        unicodeReactions = state.unicodeReactions[event.id].orEmpty(),
-                        reactionEvents = reactionEventsForEvent,
-                        isLiked = isLiked,
-                        ownEmojiReactionEventIds = state.displayOwnEmojiReactionEventIds(event.id),
-                        isReposted = isReposted,
-                        onUserClick = { actions.value.onUserClick(it) },
-                        onLike = if (ownPubkey != null) {
-                            {
-                                if (isLiked)
-                                    actions.value.onUnlike(event.id)
-                                else
-                                    actions.value.onLike(event.id, event.pubkey)
-                            }
-                        } else null,
-                        onEmojiReact = if (ownPubkey != null) {
-                            { option -> actions.value.onEmojiReact(event.id, event.pubkey, option) }
-                        } else null,
-                        onEmojiUnreact = if (ownPubkey != null) {
-                            { option -> actions.value.onEmojiUnreact(event.id, option) }
-                        } else null,
-                        onReply = if (canReply) {
-                            { actions.value.onReply?.invoke(event, event.content.replyPreviewText()) }
-                        } else null,
-                        onOpenReplies = if (canOpenReplies) {
-                            { actions.value.onOpenReplies?.invoke(event.id) }
-                        } else null,
-                        onOpenLikes = if (canOpenLikes) {
-                            { actions.value.onOpenLikes?.invoke(event.id) }
-                        } else null,
-                        onOpenReposts = if (canOpenReposts) {
-                            { actions.value.onOpenReposts?.invoke(event.id) }
-                        } else null,
-                        onRefreshReactions = if (canRefreshReactions) {
-                            { actions.value.onRefreshReactions?.invoke(event.id) }
-                        } else null,
-                        onRepost = if (event.kind == 1 && canRepost) {
-                            {
-                                if (isReposted)
-                                    actions.value.onUnrepost?.invoke(event.id)
-                                else
-                                    actions.value.onRepost?.invoke(event)
-                            }
-                        } else null,
-                        onHashtagClick = if (canHashtag) {
-                            { tag -> actions.value.onHashtagClick?.invoke(tag) }
-                        } else null,
-                        onNoteClick = if (canOpenReplies) {
-                            { eventId -> actions.value.onOpenReplies?.invoke(eventId) }
-                        } else null,
-                        replyParent = replyParentForEvent,
-                        quotedEvents = quotedEventsForEvent,
-                        ownPubkey = ownPubkey,
-                        onDelete = { actions.value.onDelete(event.id) },
-                        isMuted = mutedPubkeys.contains(event.pubkey),
-                        onMute = if (canMute) {
-                            { actions.value.onMuteUser?.invoke(event.pubkey) }
-                        } else null,
-                        onUnmute = if (canUnmute) {
-                            { actions.value.onUnmuteUser?.invoke(event.pubkey) }
-                        } else null,
-                        onReport = if (canReport) {
-                            { reason, detail -> actions.value.onReport?.invoke(event, reason, detail) }
-                        } else null,
+                    NoteCardHost(
+                        model = NoteCardModel(
+                            event = event,
+                            precomputedContent = state.parsedContents[event.id],
+                            profiles = relevantProfiles,
+                            isMuted = mutedPubkeys.contains(event.pubkey),
+                            author = NoteAuthorPresentation(
+                                profile = state.profiles[event.pubkey],
+                                repostedByPubkey = repostedByPubkey,
+                                repostedByProfile = repostedByPubkey?.let { state.profiles[it] },
+                                ownPubkey = ownPubkey,
+                            ),
+                            engagement = NoteEngagementPresentation(
+                                replyCount = state.replyCounts[event.id] ?: 0,
+                                replies = repliesForEvent,
+                                repostCount = state.repostCounts[event.id] ?: 0,
+                                repostPubkeys = repostPubkeysForEvent,
+                                quoteRepostEvents = quoteRepostEventsForEvent,
+                                reactionCount = state.reactionCounts[event.id] ?: 0,
+                                likeReactionCount = state.likeReactionCounts[event.id] ?: 0,
+                                customReactions = state.customReactions[event.id].orEmpty(),
+                                unicodeReactions = state.unicodeReactions[event.id].orEmpty(),
+                                reactionEvents = reactionEventsForEvent,
+                                isLiked = isLiked,
+                                ownEmojiReactionEventIds = state.displayOwnEmojiReactionEventIds(event.id),
+                                isReposted = isReposted,
+                            ),
+                            references = NoteReferencePresentation(
+                                replyParent = replyParentForEvent,
+                                quotedEvents = quotedEventsForEvent,
+                            ),
+                            policy = NoteCardPolicy(
+                                deferWebViewLoad = deferWebViewLoad,
+                            ),
+                        ),
+                        actions = NoteCardActions(
+                            onUserClick = { actions.value.onUserClick(it) },
+                            onLike = if (ownPubkey != null) {
+                                {
+                                    if (isLiked)
+                                        actions.value.onUnlike(event.id)
+                                    else
+                                        actions.value.onLike(event.id, event.pubkey)
+                                }
+                            } else null,
+                            onEmojiReact = if (ownPubkey != null) {
+                                { option -> actions.value.onEmojiReact(event.id, event.pubkey, option) }
+                            } else null,
+                            onEmojiUnreact = if (ownPubkey != null) {
+                                { option -> actions.value.onEmojiUnreact(event.id, option) }
+                            } else null,
+                            onReply = if (canReply) {
+                                { actions.value.onReply?.invoke(event, event.content.replyPreviewText()) }
+                            } else null,
+                            onOpenReplies = if (canOpenReplies) {
+                                { actions.value.onOpenReplies?.invoke(event.id) }
+                            } else null,
+                            onOpenLikes = if (canOpenLikes) {
+                                { actions.value.onOpenLikes?.invoke(event.id) }
+                            } else null,
+                            onOpenReposts = if (canOpenReposts) {
+                                { actions.value.onOpenReposts?.invoke(event.id) }
+                            } else null,
+                            onRefreshReactions = if (canRefreshReactions) {
+                                { actions.value.onRefreshReactions?.invoke(event.id) }
+                            } else null,
+                            onRepost = if (event.kind == 1 && canRepost) {
+                                {
+                                    if (isReposted)
+                                        actions.value.onUnrepost?.invoke(event.id)
+                                    else
+                                        actions.value.onRepost?.invoke(event)
+                                }
+                            } else null,
+                            onHashtagClick = if (canHashtag) {
+                                { tag -> actions.value.onHashtagClick?.invoke(tag) }
+                            } else null,
+                            onNoteClick = if (canOpenReplies) {
+                                { eventId -> actions.value.onOpenReplies?.invoke(eventId) }
+                            } else null,
+                            onDelete = { actions.value.onDelete(event.id) },
+                            onMute = if (canMute) {
+                                { actions.value.onMuteUser?.invoke(event.pubkey) }
+                            } else null,
+                            onUnmute = if (canUnmute) {
+                                { actions.value.onUnmuteUser?.invoke(event.pubkey) }
+                            } else null,
+                            onReport = if (canReport) {
+                                { reason, detail -> actions.value.onReport?.invoke(event, reason, detail) }
+                            } else null,
+                        ),
                     )
                     HorizontalDivider(
                         thickness = 0.5.dp,

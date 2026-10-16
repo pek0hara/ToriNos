@@ -1,5 +1,7 @@
 package com.nostr.torinos.ui.components
 
+import com.nostr.torinos.model.*
+
 import com.nostr.torinos.emoji.CustomEmojiCodeRegex
 import com.nostr.torinos.emoji.findStandaloneShortcodes
 import androidx.compose.foundation.clickable

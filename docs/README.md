@@ -9,11 +9,15 @@
 
 ## アーキテクチャ
 
+- [`overall-refactor-design.md`](./overall-refactor-design.md) — 2026-10-16の全体レビューに基づく、有限取得・投稿入力・集計・通信管理などのリファクタ優先順位と段階的な移行設計（主要経路を実装・移行済み）
+- [`refactor-details/README.md`](./refactor-details/README.md) — 全体レビューで選定した7箇所の詳細設計（責務・型・処理フロー・競合対策・移行手順・テスト、主要経路を実装・移行済み）
+
 - [`nip-compatibility-design.md`](./nip-compatibility-design.md) — 下書きのNIP-37互換、リポストのkindと取得先、リアクションとBech32検証の共通規則
 
 - [`account-session-viewmodel-architecture.md`](./account-session-viewmodel-architecture.md) — アカウント切り替え時の状態所有権とライフサイクル
 - [`subscription-architecture-design.md`](./subscription-architecture-design.md) — Nostr購読セッション、リレー別状態管理、フィードのエンゲージメント履歴取得と送信キュー
 - [`engagement-fetch-redesign.md`](./engagement-fetch-redesign.md) — リアクション・返信・リポストの件数を共有ストアのイベント集合から導出する再設計と、実機ログで見つかった購読・通信層の不備（二重REQ、同時購読数、NOTICE拒否）の修正方針（未着手）
+- [`relay-fetch-failure-policy-design.md`](./relay-fetch-failure-policy-design.md) — 有限取得でリレーごとの結果を読む共通の規則（確定・置き換え・取り直し・諦める回数）、遅いリレーを待たない仕組み、ジャーナルへの適用（もらったいいねも選択中のリレーから取る）
 - [`feed-relay-merge-design.md`](./feed-relay-merge-design.md) — フォローフィードのリレー別履歴カーソル、停止リレー分離、復旧マージ
 - [`feed-relay-loading-fix-plan.md`](./feed-relay-loading-fix-plan.md) — 2026-10-03レビューに基づく短いページの終端判定、未取得差分の保持、保存と表示の分離の修正方針（未着手）
 - [`feed-scroll-performance-design.md`](./feed-scroll-performance-design.md) — フィードの状態分離、描画軽量化、位置保持、画像・プリフェッチ方針

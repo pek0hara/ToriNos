@@ -1,4 +1,4 @@
-package com.nostr.torinos.ui.components
+package com.nostr.torinos.model
 
 import com.nostr.torinos.emoji.CustomEmojiCodeRegex
 

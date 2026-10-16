@@ -34,6 +34,10 @@ import com.nostr.torinos.model.latestArticleVersions
 import com.nostr.torinos.model.quotedEventIds
 import com.nostr.torinos.model.toArticleMeta
 import com.nostr.torinos.network.NostrRepository
+import com.nostr.torinos.network.RelayTarget
+import com.nostr.torinos.network.SubscriptionSpec
+import com.nostr.torinos.network.SubscriptionBehavior
+import com.nostr.torinos.network.fetchFiniteEvents
 import com.nostr.torinos.network.ProfileFetchPolicy
 import com.nostr.torinos.network.ProfileRepository
 import com.nostr.torinos.network.RelayStore
@@ -45,8 +49,6 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.awaitCancellation
-import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -55,8 +57,6 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.first
-import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 
@@ -328,7 +328,7 @@ class ArticleListViewModel(
     fun loadMore() {
         val state = _state.value
         if (state.isInitialLoad || state.isLoadingMore || !state.canLoadMore) return
-        val until = oldestCreatedAt?.minus(1) ?: return
+        val until = oldestCreatedAt ?: return
         loadJob = launch { loadPage(until = until, append = true) }
     }
 
@@ -345,27 +345,35 @@ class ArticleListViewModel(
                 is ArticleAuthorScope.Only -> listOf(scope.pubkey)
             }
             // フォローが0人のとき、空のauthorsをリレーへ送らず結果なしとして扱う。
-            val events = if (authors?.isEmpty() == true) {
-                emptyList()
+            val page = if (authors?.isEmpty() == true) {
+                null
             } else {
-                fetchArticleEvents(
+                fetchArticleEventPage(
                     filter = NostrFilter(
                         kinds = listOf(NIP23_ARTICLE_KIND),
                         authors = authors,
                         tTags = query.topic?.let(::listOf),
                         until = until,
-                        limit = ARTICLE_PAGE_SIZE,
+                        // untilは包含境界。同秒の既読分を再取得してから、その先へ進む。
+                        limit = (ARTICLE_PAGE_SIZE + rawEvents.values.count { it.createdAt == until })
+                            .coerceAtMost(ARTICLE_PAGE_SIZE * 4),
                     ),
                     relayUrl = relayUrl,
                 )
             }
-            lastPageSize = events.size
+            val events = page?.events.orEmpty()
+            val complete = page == null || page.allAnswered
+            val pagination = articlePaginationDecision(page, rawEvents.keys, append)
+            lastPageSize = if (pagination.canLoadMore) ARTICLE_PAGE_SIZE else 0
             events.forEach { event ->
                 rawEvents[event.id] = event
-                oldestCreatedAt = minOf(oldestCreatedAt ?: event.createdAt, event.createdAt)
+                if (complete) oldestCreatedAt = minOf(oldestCreatedAt ?: event.createdAt, event.createdAt)
             }
             trimRawEventWindow()
             updateStateFromEvents()
+            if (pagination.incomplete) {
+                _state.value = _state.value.copy(error = "記事の取得範囲を確認できませんでした。更新して再試行してください")
+            }
             fetchMissingProfiles()
         } catch (e: CancellationException) {
             throw e
@@ -825,39 +833,30 @@ class ArticleDetailViewModel(
     }
 
     private suspend fun fetchQuotedEvents(quoteIds: List<String>) {
-        val eventIds = quoteIds.distinct()
+        val eventIds = quoteIds.toSet()
         if (eventIds.isEmpty()) return
-        val subId = articleSubscriptionId("article-detail-quote")
         try {
-            coroutineScope {
-                launch(start = CoroutineStart.UNDISPATCHED) {
-                    NostrRepository.events(subId).collect { event ->
-                        if (event.id !in eventIds) return@collect
-                        ArticleMemoryCache.putEvent(relayUrl, event)
-                        val quoteProfiles = fetchProfiles(listOf(event.pubkey), relayUrl)
-                        val cur = _state.value
-                        _state.value = cur.copy(
-                            quotedEvents = cur.quotedEvents + (event.id to event),
-                            quotedProfiles = cur.quotedProfiles + quoteProfiles,
-                            loadingQuoteIds = cur.loadingQuoteIds - event.id,
-                        )
-                    }
-                }
-                launch {
-                    withTimeoutOrNull(ARTICLE_FETCH_TIMEOUT_MS) {
-                        NostrRepository.eose(subId).first()
-                    }
-                    _state.value = _state.value.copy(loadingQuoteIds = emptySet())
-                }
-                NostrRepository.subscribe(
-                    subId,
-                    NostrFilter(ids = eventIds, limit = eventIds.size),
-                    relayUrl = relayUrl,
-                )
-                awaitCancellation()
-            }
+            fetchFiniteEvents(
+                spec = SubscriptionSpec(
+                    id = articleSubscriptionId("article-detail-quote"),
+                    filters = listOf(NostrFilter(ids = eventIds.toList(), limit = eventIds.size)),
+                    target = relayUrl?.let(RelayTarget::Single) ?: RelayTarget.AllEnabled,
+                    behavior = SubscriptionBehavior.Fetch(ARTICLE_FETCH_TIMEOUT_MS),
+                ),
+                requestedIds = eventIds,
+                onEvent = { _, event ->
+                    ArticleMemoryCache.putEvent(relayUrl, event)
+                    val cur = _state.value
+                    _state.value = cur.copy(
+                        quotedEvents = cur.quotedEvents + (event.id to event),
+                        loadingQuoteIds = cur.loadingQuoteIds - event.id,
+                    )
+                },
+            )
+            val profiles = fetchProfiles(_state.value.quotedEvents.values.map { it.pubkey }, relayUrl)
+            _state.value = _state.value.copy(quotedProfiles = _state.value.quotedProfiles + profiles)
         } finally {
-            runCatching { NostrRepository.closeSuspending(subId) }
+            _state.value = _state.value.copy(loadingQuoteIds = emptySet())
         }
     }
 }
@@ -903,28 +902,10 @@ private fun List<NostrEvent>.toArticleItems(): List<ArticleItem> =
 private suspend fun fetchArticleEvents(
     filter: NostrFilter,
     relayUrl: String? = null,
-): List<NostrEvent> = coroutineScope {
-    val subId = articleSubscriptionId("article")
-    val mutex = Mutex()
-    val events = mutableListOf<NostrEvent>()
-    var collector: Job? = null
-    try {
-        collector = launch(start = CoroutineStart.UNDISPATCHED) {
-            NostrRepository.events(subId).collect { event ->
-                if (event.kind == NIP23_ARTICLE_KIND) {
-                    mutex.withLock { events += event }
-                }
-            }
-        }
-        NostrRepository.subscribe(subId, filter, relayUrl = relayUrl)
-        withTimeoutOrNull(ARTICLE_FETCH_TIMEOUT_MS) {
-            NostrRepository.eose(subId).first()
-        }
-        mutex.withLock { events.distinctBy { it.id } }
-    } finally {
-        runCatching { NostrRepository.close(subId) }
-        collector?.cancelAndJoin()
-    }
+): List<NostrEvent> {
+    val result = fetchArticleEventPage(filter, relayUrl)
+    check(result.events.isNotEmpty() || result.allAnswered) { "記事を取得できませんでした。再試行してください" }
+    return result.events
 }
 
 private suspend fun fetchProfiles(

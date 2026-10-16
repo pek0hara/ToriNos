@@ -1,5 +1,7 @@
 package com.nostr.torinos.ui.post
 
+import com.nostr.torinos.model.*
+
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable

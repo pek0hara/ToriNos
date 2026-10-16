@@ -198,7 +198,6 @@ internal fun AppSessionCoordinator(
         val nav = rememberNavController()
         val backStackEntry by nav.currentBackStackEntryAsState()
         val currentRoute = backStackEntry?.destination?.route
-        val composer = remember { ComposerCoordinator(pendingComposerRequests) }
         // 簡易コンポーザーと PostSheet が同じ入力状態・送信処理を共有する。
         val postViewModel = accountSessionViewModel<PostViewModel>(
             key = "post-composer",
@@ -208,198 +207,48 @@ internal fun AppSessionCoordinator(
         val dismissInlineKeyboard = rememberDismissKeyboard()
         val scope = rememberCoroutineScope()
         var showQuoteInputChoice by remember { mutableStateOf(false) }
-        var recoveryInputId by remember { mutableStateOf<String?>(null) }
-        var recoveryOpening by remember { mutableStateOf<Long?>(null) }
-        var showPendingInputs by remember { mutableStateOf(false) }
-        var pendingInputs by remember { mutableStateOf<List<PendingPostInput>>(emptyList()) }
-        var pendingInputBusy by remember { mutableStateOf(false) }
-        var pendingInputError by remember { mutableStateOf<String?>(null) }
-        var matometrError by remember { mutableStateOf<String?>(null) }
-        val inputLock = remember { kotlinx.coroutines.sync.Mutex() }
-        fun activeRecoveryInputId(): String? = recoveryInputId.takeIf { recoveryOpening == composer.openingGeneration }
-        fun snapshot(): com.nostr.torinos.ui.post.PostMemoData? = composer.currentInputSnapshot(
-            postViewModel.currentMemoSnapshot(composer.replyTarget, composer.replyNoteContext))
-        fun restoreInput(memo: com.nostr.torinos.ui.post.PostMemoData, offerPendingInputs: Boolean = true) {
-            val context = memo.channelId?.let { NoteContext.Channel(it) } ?: NoteContext.Timeline
-            composer.clearPostContext(clearDraft = true)
-            composer.replyNoteContext = context
-            composer.replyTarget = memo.restoreReplyTarget(context)
-            composer.quoteToId = memo.quoteEventId
-            composer.quoteToPubkey = memo.quotePubkey
-            composer.quoteToPreview = memo.quotePreview
-            memo.selectedRelayUrls?.let { urls -> composer.replyRelayContext = com.nostr.torinos.ui.channel.ComposerRelayContext(urls, emptyList(), null) }
-            composer.localDraft = memo
-            postViewModel.restoreMemo(memo)
-            composer.openFullScreen(PostSheetInitialState.KeepCurrent, offerPendingInputs)
+        val input = accountSessionViewModel<ComposerInputViewModel>("composer-input") { session ->
+            ComposerInputViewModel(session, postViewModel, pendingComposerRequests)
         }
-        fun offerPendingInputs(opening: Long) {
-            if (!composer.shouldOfferPendingInputs(opening)) return
-            val session = accountSession ?: return
-            scope.launch {
-                inputLock.lock()
-                try {
-                    if (session.inputFrozen.value || !composer.shouldOfferPendingInputs(opening)) return@launch
-                    val inputs = PendingPostInputs(session.articleDraftStore, session.pubkey).list(activeRecoveryInputId())
-                    if (session.inputFrozen.value || !composer.shouldOfferPendingInputs(opening)) return@launch
-                    pendingInputs = inputs
-                    pendingInputError = null
-                    showPendingInputs = pendingInputs.isNotEmpty()
-                } catch (e: CancellationException) { throw e }
-                catch (e: Exception) { matometrError = e.message }
-                finally { inputLock.unlock() }
-            }
-        }
-        fun resolvePendingInput(input: PendingPostInput, apply: Boolean) {
-            val session = accountSession ?: return
-            if (pendingInputBusy || session.inputFrozen.value) return
-            pendingInputBusy = true
-            pendingInputError = null
-            scope.launch {
-                inputLock.lock()
-                try {
-                    check(!session.inputFrozen.value) { "アカウント切替の保存処理中です" }
-                    check(composer.presentation != ComposerPresentation.Hidden) { "投稿画面が閉じられました。開き直してください" }
-                    val inputs = PendingPostInputs(session.articleDraftStore, session.pubkey)
-                    if (apply) {
-                        val current = postViewModel.state.value
-                        check(!current.isPosting && !current.isUploadingAny && !current.hasFailedUpload && !current.isSavingMemo && !current.isLoadingMemo) {
-                            "送信・画像アップロード・下書き操作の完了後に適用してください"
-                        }
-                        inputs.apply(input, snapshot(), activeRecoveryInputId()) { memo ->
-                            check(!session.inputFrozen.value) { "アカウント切替の保存処理中です" }
-                            restoreInput(memo, offerPendingInputs = false)
-                            recoveryInputId = input.id
-                            recoveryOpening = composer.openingGeneration
-                        }
-                        recoveryInputId = "current"
-                    } else inputs.discard(input)
-                    showPendingInputs = false
-                    pendingInputs = emptyList()
-                } catch (e: CancellationException) { throw e }
-                catch (e: Exception) { pendingInputError = e.message ?: "保留入力を処理できませんでした" }
-                finally { inputLock.unlock(); pendingInputBusy = false }
+        val composer = input.composer
+        fun offerPendingInputs(opening: Long) = input.offerPendingInputs(opening)
+        fun quoteSelected(newPost: Boolean) = input.quoteSelected(newPost)
+        LaunchedEffect(input.navigationDraftId) {
+            input.navigationDraftId?.let { id ->
+                nav.navigate(ArticleDraftRoute(id))
+                input.navigationDraftId = null
             }
         }
         LaunchedEffect(composer.presentation, composer.openingGeneration) {
             when (composer.presentation) {
                 ComposerPresentation.FeedInline -> offerPendingInputs(composer.openingGeneration)
-                ComposerPresentation.Hidden -> { showPendingInputs = false; pendingInputs = emptyList() }
-                ComposerPresentation.FullScreen -> Unit // PostSheet calls back after its initial restore/reset.
-            }
-        }
-        fun quoteSelected(newPost: Boolean) {
-            val session = accountSession ?: return
-            val selection = session.matometrSelection.beginHandoff() ?: return
-            scope.launch {
-                inputLock.lock()
-                try {
-                    val current = postViewModel.state.value
-                    check(!current.isPosting && !current.isUploadingAny && !current.hasFailedUpload && !current.isSavingMemo && !current.isLoadingMemo) {
-                        "送信・画像アップロード・下書き操作の完了後に引用投稿へ切り替えてください"
-                    }
-                    val previous = snapshot()
-                    val base = if (newPost) null else previous
-                    val next = buildMatometrQuoteMemo(base, selection.posts)
-                    val data = session.articleDraftStore.transaction(session.pubkey) { data ->
-                        if (selection.handoffId in data.handoffs) data else {
-                            val pending = if (newPost && previous != null) data.composers + ("pending-${articleLocalId()}" to previous) else data.composers
-                            data.copy(composers = (pending - "current") + (selection.handoffId to next), handoffs = data.handoffs + selection.handoffId)
-                        }
-                    }
-                    session.matometrSelection.markCommitted(selection.handoffId)
-                    check(!session.inputFrozen.value) { "アカウント切替の保存処理中です。引用投稿を再試行してください" }
-                    val committed = data.composers[selection.handoffId] ?: error("引き継ぎ入力が見つかりません")
-                    if (newPost || previous == null) restoreInput(committed)
-                    else {
-                        postViewModel.restoreMemo(committed)
-                        composer.quoteToId = committed.quoteEventId
-                        composer.quoteToPubkey = committed.quotePubkey
-                        composer.quoteToPreview = committed.quotePreview
-                        composer.localDraft = committed
-                        composer.openFullScreen(PostSheetInitialState.KeepCurrent)
-                    }
-                    // Keep the committed input in this account session until the next normal input save.
-                    recoveryInputId = selection.handoffId
-                    recoveryOpening = composer.openingGeneration
-                    session.matometrSelection.finishHandoff()
-                } catch (e: Exception) { session.matometrSelection.failHandoff(e.message ?: "引用投稿を開けませんでした") }
-                finally { inputLock.unlock() }
-            }
-        }
-        fun createMatometr() {
-            val session = accountSession ?: return
-            val selection = session.matometrSelection.beginHandoff() ?: return
-            scope.launch {
-                try {
-                    selection.committedId?.let { id ->
-                        nav.navigate(ArticleDraftRoute(id))
-                        session.matometrSelection.finishHandoff()
-                        return@launch
-                    }
-                    val store = session.articleDraftStore
-                    val references = selection.posts.map { it.reference }
-                    val target = selection.targetDraftId
-                    val committed = if (target == null) {
-                        val data = store.read(session.pubkey)
-                        data.drafts[selection.handoffId] ?: run {
-                            val next = ArticleDraft(draftId = selection.handoffId, ownerPubkey = session.pubkey,
-                                mode = ArticleDraftMode.MatometrStructured, references = references)
-                            check(next.content.length <= ARTICLE_CONTENT_MAX_LENGTH) { "生成後の本文は10,000文字までです。選択する投稿を減らしてください" }
-                            store.save(next, null)
-                        }
-                    } else {
-                        val draft = store.read(session.pubkey).drafts[target] ?: error("追加先の下書きが見つかりません")
-                        if (draft.revision != selection.targetRevision) throw ArticleStoreConflict()
-                        store.save(com.nostr.torinos.article.appendMatometrReferences(draft, references).getOrThrow(), draft.revision)
-                    }
-                    session.matometrSelection.markCommitted(committed.draftId)
-                    selection.posts.forEach { com.nostr.torinos.ui.article.ArticleMemoryCache.putEvent(null, it.event) }
-                    nav.navigate(ArticleDraftRoute(committed.draftId))
-                    session.matometrSelection.finishHandoff()
-                } catch (e: Exception) { session.matometrSelection.failHandoff(e.message ?: "記事を作成できませんでした") }
+                ComposerPresentation.Hidden -> { input.showPendingInputs = false; input.pendingInputs = emptyList() }
+                ComposerPresentation.FullScreen -> Unit
             }
         }
         val matometrActions = MatometrActions(quote = {
-            if (snapshot() != null) showQuoteInputChoice = true else quoteSelected(true)
-        }, article = ::createMatometr, openNote = { nav.navigate(ThreadRoute(it)) }, cancelAdd = {
+            if (input.snapshot() != null) showQuoteInputChoice = true else quoteSelected(true)
+        }, article = input::createMatometr, openNote = { nav.navigate(ThreadRoute(it)) }, cancelAdd = {
             // Adding to a draft started from its editor; cancelling returns there instead of leaving the user on the feed.
             val session = accountSession
             val target = session?.matometrSelection?.state?.value?.targetDraftId
             session?.matometrSelection?.cancel()
             if (target != null) nav.navigate(ArticleDraftRoute(target))
         })
-        DisposableEffect(accountSession, postViewModel) {
-            val unregister = accountSession?.registerInput("post-composer") {
-                postViewModel.state.first { !it.isPosting && !it.isUploadingAny && !it.isSavingMemo && !it.isLoadingMemo }
-                check(!postViewModel.state.value.hasFailedUpload) { "未アップロードの画像があります。再試行または削除してください" }
-                accountSession.matometrSelection.state.first { !it.busy }
-                inputLock.lock()
-                try {
-                    val memo = snapshot()
-                    accountSession.articleDraftStore.transaction(accountSession.pubkey) { data ->
-                        val inputId = activeRecoveryInputId() ?: "current"
-                        data.copy(composers = if (memo == null) data.composers - inputId else data.composers + (inputId to memo))
-                    }
-                } finally { inputLock.unlock() }
-            }
-            onDispose { unregister?.invoke() }
-        }
         if (showQuoteInputChoice) AlertDialog(onDismissRequest = { showQuoteInputChoice = false },
             title = { Text("引用をどの入力に追加しますか？") },
             text = { Text("現在の入力を保ったまま追加するか、現在の入力を一時的に保持して別投稿を作成できます。保留入力は投稿を開いたときに適用・破棄を選べます。アプリ終了やアカウント切替で消えます。") },
             confirmButton = { TextButton(onClick = { showQuoteInputChoice = false; quoteSelected(false) }) {
                 Text(if (composer.replyNoteContext is NoteContext.Channel) "チャンネル投稿に追加" else if (composer.replyTarget != null) "返信に追加" else "既存入力へ追加")
             } }, dismissButton = { TextButton(onClick = { showQuoteInputChoice = false; quoteSelected(true) }) { Text("別投稿を作成") } })
-        matometrError?.let { message -> AlertDialog(onDismissRequest = { matometrError = null }, title = { Text("入力を引き継げませんでした") }, text = { Text(message) },
-            confirmButton = { TextButton(onClick = { matometrError = null }) { Text("閉じる") } }) }
+        input.matometrError?.let { message -> AlertDialog(onDismissRequest = { input.matometrError = null }, title = { Text("入力を引き継げませんでした") }, text = { Text(message) },
+            confirmButton = { TextButton(onClick = { input.matometrError = null }) { Text("閉じる") } }) }
         val snackbarHostState = remember { SnackbarHostState() }
         var snackbarFailedRelays by remember { mutableStateOf<List<String>>(emptyList()) }
         var publishFailureDialogRelays by remember { mutableStateOf<List<String>?>(null) }
         val uiExceptionHandler = remember {
             loggingExceptionHandler("App", "Uncaught UI coroutine exception")
         }
-        val replyResolutionTracker = remember { ReplyResolutionTracker() }
-        var replyResolutionJob by remember { mutableStateOf<Job?>(null) }
 
         val ownPubkey = accountSession?.pubkey
         var ownProfile by remember { mutableStateOf<NostrProfile?>(null) }
@@ -547,15 +396,16 @@ internal fun AppSessionCoordinator(
         // 行き先が別のタブなら、そのタブがスタックの下に残っていても（Web 版のフィード）戻る操作では移らない。
         // 戻ると今のタブの画面が破棄され、サービスのタブごとのスクロール位置や絞り込みが失われる。
         fun selectFooterRoute(route: String) {
-            if (route == "feed") feedChromeState.collapseFraction = 0f
-            val root = currentTabRoot()
-            if (root == null) {
+            val plan = footerNavigationPlan(currentTabRoot(), route)
+            if (plan.resetFeedChrome) feedChromeState.collapseFraction = 0f
+            val root = plan.rootToReveal
+            if (plan.clearOrphanPages || root == null) {
                 // URL から直接開いたチャンネル画面など、どのタブにも属さない画面だけのとき。
                 closeOrphanPagesAndNavigate(route)
                 return
             }
             nav.popBackStack(route = root, inclusive = false)
-            if (root == route) return
+            if (!plan.navigate) return
             when (route) {
                 "feed" -> navigateFeedTab()
                 "journal" -> navigateJournalTab()
@@ -647,11 +497,7 @@ internal fun AppSessionCoordinator(
             }
         }
 
-        fun cancelPendingReplyResolution() {
-            replyResolutionTracker.invalidate()
-            replyResolutionJob?.cancel()
-            replyResolutionJob = null
-        }
+        fun cancelPendingReplyResolution() = input.replyResolver.cancel()
 
         fun openReplyComposer(
             event: NostrEvent,
@@ -660,52 +506,36 @@ internal fun AppSessionCoordinator(
             parentRelayHint: String? = null,
         ) {
             cancelPendingReplyResolution()
+            val inputGeneration = composer.inputGeneration
+            val editorRevision = postViewModel.editorRevision
+            val isCurrentInput = {
+                composer.inputGeneration == inputGeneration && postViewModel.editorRevision == editorRevision
+            }
             if (noteContext is NoteContext.Channel) {
-                // 送信先の初期選択が最初から正しいよう、relay context を作ってから投稿画面を開く(第16.14節)。
-                val request = replyResolutionTracker.begin()
-                replyResolutionJob = scope.launch {
+                input.replyResolver.resolve(load = {
                     val relayContext = channelComposerRelayContext(noteContext.channelId)
-                    if (!replyResolutionTracker.isCurrent(request)) return@launch
-                    val target = ChannelReplyContextBuilder.replyTarget(
-                        event, noteContext.channelId, parentRelayHint, relayContext,
-                    )
-                    replyResolutionJob = null
-                    if (target == null) {
-                        snackbarHostState.showSnackbar("返信元のスレッド情報を取得できませんでした")
-                        return@launch
-                    }
-                    composer.prepareReply(target, preview, noteContext, relayContext)
-                    runWithPrivateKey(PendingKeyAction.Reply) {
-                        composer.openFullScreen()
+                    ChannelReplyContextBuilder.replyTarget(event, noteContext.channelId, parentRelayHint, relayContext) to relayContext
+                }, isCurrentInput = isCurrentInput) { (target, relayContext) ->
+                    if (target == null) snackbarHostState.showSnackbar("返信元のスレッド情報を取得できませんでした")
+                    else {
+                        composer.prepareReply(target, preview, noteContext, relayContext)
+                        runWithPrivateKey(PendingKeyAction.Reply) { composer.openFullScreen() }
                     }
                 }
                 return
             }
             val requiresRootResolution = noteContext == NoteContext.Timeline &&
-                (event.kind == COMMENT_EVENT_KIND ||
-                    (event.kind == 1 && event.tags.any { it.firstOrNull() == "e" }))
-            if (!requiresRootResolution &&
-                composer.prepareReply(event, preview, noteContext)
-            ) {
-                runWithPrivateKey(PendingKeyAction.Reply) {
-                    composer.openFullScreen()
-                }
+                (event.kind == COMMENT_EVENT_KIND || (event.kind == 1 && event.tags.any { it.firstOrNull() == "e" }))
+            if (!requiresRootResolution && composer.prepareReply(event, preview, noteContext)) {
+                runWithPrivateKey(PendingKeyAction.Reply) { composer.openFullScreen() }
                 return
             }
-            val request = replyResolutionTracker.begin()
-            replyResolutionJob = scope.launch {
-                val target = resolveReplyTarget(event, noteContext)
-                if (!replyResolutionTracker.isCurrent(request)) return@launch
-                if (target == null) {
-                    replyResolutionJob = null
-                    snackbarHostState.showSnackbar("返信元のスレッド情報を取得できませんでした")
-                    return@launch
+            input.replyResolver.resolve(load = { resolveReplyTarget(event, noteContext) }, isCurrentInput = isCurrentInput) { target ->
+                if (target == null) snackbarHostState.showSnackbar("返信元のスレッド情報を取得できませんでした")
+                else {
+                    composer.prepareReply(target, preview, noteContext)
+                    runWithPrivateKey(PendingKeyAction.Reply) { composer.openFullScreen() }
                 }
-                composer.prepareReply(target, preview, noteContext)
-                runWithPrivateKey(PendingKeyAction.Reply) {
-                    composer.openFullScreen()
-                }
-                replyResolutionJob = null
             }
         }
 
@@ -1960,15 +1790,7 @@ internal fun AppSessionCoordinator(
                 }
             },
             onPosted = { completion ->
-                val completedRecoveryId = activeRecoveryInputId() ?: "current"
-                if (completion.fromCurrentDraft) { recoveryInputId = null; recoveryOpening = null; scope.launch {
-                    try {
-                        val session = accountSession ?: return@launch
-                        session.articleDraftStore.transaction(session.pubkey) { data ->
-                            data.copy(composers = data.composers - completedRecoveryId, handoffs = data.handoffs - completedRecoveryId)
-                        }
-                    } catch (e: Exception) { matometrError = "公開は完了しましたが、復旧用入力の整理に失敗しました: ${e.message}" }
-                } }
+                input.completePostedInput(completion.fromCurrentDraft)
                 val eventId = completion.eventId
                 val postedReplyToId = completion.replyToId
                 val postedNoteContext = completion.noteContext
@@ -2004,13 +1826,13 @@ internal fun AppSessionCoordinator(
             },
         )
 
-        if (showPendingInputs && pendingInputs.isNotEmpty()) PendingPostInputDialog(
-            inputs = pendingInputs,
-            busy = pendingInputBusy || accountSession?.inputFrozen?.value == true,
-            error = pendingInputError,
-            onApply = { resolvePendingInput(it, apply = true) },
-            onDiscard = { resolvePendingInput(it, apply = false) },
-            onDismiss = { showPendingInputs = false },
+        if (input.showPendingInputs && input.pendingInputs.isNotEmpty()) PendingPostInputDialog(
+            inputs = input.pendingInputs,
+            busy = input.pendingInputBusy || accountSession?.inputFrozen?.value == true,
+            error = input.pendingInputError,
+            onApply = { input.resolvePendingInput(it, apply = true) },
+            onDiscard = { input.resolvePendingInput(it, apply = false) },
+            onDismiss = { input.showPendingInputs = false },
         )
 
         publishFailureDialogRelays?.let { failedRelays ->

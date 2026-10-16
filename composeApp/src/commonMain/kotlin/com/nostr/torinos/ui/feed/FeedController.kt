@@ -1,5 +1,7 @@
 package com.nostr.torinos.ui.feed
 
+import com.nostr.torinos.network.collectRecovering
+
 import com.nostr.torinos.ui.feed.FeedViewModel.UiState
 import com.nostr.torinos.util.StartupTrace
 import com.nostr.torinos.util.appLog
@@ -150,8 +152,7 @@ internal class FeedController(
     private val safeCoroutineLauncher = SafeCoroutineLauncher(scope, "FeedController")
     /** フォロー一覧の更新で差し替わる。購読フィルタは都度ここから組み立てる。 */
     private var authorPubkeys: List<String>? = authorPubkeys
-    private val feedItemMapper = FeedItemMapper()
-    private val mentionedPubkeysCache = MentionedPubkeysCache()
+    private val projectionPipeline = FeedProjectionPipeline()
     /** UI から「先頭にいるか」の境界値だけを受け取る。高頻度なスクロール位置そのものは渡さない。 */
     private var isAtTop = true
 
@@ -167,11 +168,11 @@ internal class FeedController(
         block: suspend CoroutineScope.() -> Unit,
     ): Job = safeCoroutineLauncher.launch(start = start, block = block)
 
-    private val _state = StateStore(UiState())
-    val state: StateFlow<UiState> = _state.state
-    private var pendingFeedState = UiState()
-    private var feedStateRevision = 0L
-    private var feedStateEmitJob: Job? = null
+    private val statePublisher = FeedStatePublisher(scope) { value ->
+        if (isStartupTraceEnabled && startupTraceName != null) traceStartupState(value)
+    }
+    val state: StateFlow<UiState> = statePublisher.state
+    private val feedStateRevision get() = statePublisher.revision
     private val pendingTimelineEvents = linkedMapOf<String, NostrEvent>()
     private var timelineBatchJob: Job? = null
     private var closed = false
@@ -230,15 +231,16 @@ internal class FeedController(
     /** タイムラインに出すリポストの重複排除。付随情報の件数には使わない（件数はストアから導出する）。 */
     private val receivedRepostEvents = linkedMapOf<String, NostrEvent>()
     /** 保持中の投稿。付随情報を残す範囲と表示待ちの判定に使う値も、出し入れに合わせて更新する。 */
-    private val rawEvents = HeldFeedEvents(Int.MAX_VALUE) { event -> eventSortTimes[event.id] ?: event.createdAt }
-    private val canonicalEvents = linkedMapOf<String, NostrEvent>()
-    private val eventSortTimes = mutableMapOf<String, Long>()
+    private val timelineModel = FeedTimelineModel()
+    private val rawEvents get() = timelineModel.held
+    private val canonicalEvents get() = timelineModel.canonical
+    private val eventSortTimes get() = timelineModel.sortTimes
     private val pendingQuoteIds = linkedSetOf<String>()
     /**
      * 履歴ページで受信済みだが、ページの確定前でまだ保持していない投稿。付随情報の取得は受信時に始まるので、
      * 確定前に届いた件数を組み直しで捨てないよう、この間も保持中と同じく残す。
      */
-    private val uncommittedHistoryEventIds = linkedSetOf<String>()
+    private val uncommittedHistoryEventIds get() = timelineModel.uncommittedHistoryIds
     private val pendingRepostTargets = mutableMapOf<String, PendingRepostTarget>()
     private var subscriptionsStarted = false
     private var handledLatestResetRequest = 0
@@ -319,42 +321,14 @@ internal class FeedController(
         if (autoStart) startSubscriptions()
     }
 
-    private fun currentFeedState(): UiState = pendingFeedState
-
+    private fun currentFeedState(): UiState = statePublisher.current
     private fun setFeedState(value: UiState, immediate: Boolean = true) {
-        if (closed) return
-        pendingFeedState = value
-        feedStateRevision++
-        if (immediate) {
-            emitFeedStateNow()
-        } else {
-            scheduleFeedStateEmit()
-        }
+        if (!closed) statePublisher.set(value, immediate)
     }
-
-    private fun updateFeedState(
-        immediate: Boolean = true,
-        transform: (UiState) -> UiState,
-    ) {
-        if (closed) return
-        setFeedState(transform(pendingFeedState), immediate = immediate)
+    private fun updateFeedState(immediate: Boolean = true, transform: (UiState) -> UiState) {
+        if (!closed) setFeedState(transform(currentFeedState()), immediate)
     }
-
-    private fun scheduleFeedStateEmit() {
-        if (feedStateEmitJob?.isActive == true) return
-        feedStateEmitJob = launch {
-            delay(FEED_STATE_EMIT_DELAY_MS)
-            emitFeedStateNow()
-        }
-    }
-
-    private fun emitFeedStateNow() {
-        feedStateEmitJob?.cancel()
-        feedStateEmitJob = null
-        if (closed) return
-        _state.value = pendingFeedState
-        if (isStartupTraceEnabled && startupTraceName != null) traceStartupState(pendingFeedState)
-    }
+    private fun emitFeedStateNow() = statePublisher.publish()
 
     private var startupRevealCount = 0
 
@@ -488,7 +462,7 @@ internal class FeedController(
         val optimistic = engagementCoordinator.begin(before, operationId, request)
         if (optimistic == before) return
         // 送信中の操作はアカウントで共有する。ポスト詳細を開いても同じ表示になる。
-        optimistic.pendingOperations[request.slot]?.let { pendingOperations.put(eventId, request.slot, it) }
+        optimistic.pendingOperations[request.slot]?.let { pendingOperations.put(eventId, request.slot, it.copy(deliveryRelayUrls = com.nostr.torinos.network.RelayStore.writableRelayUrlsSnapshot().toSet())) }
         updateFeedState { it.withEngagement(eventId, optimistic).copy(engagementError = null) }
         launch {
             var committed = false
@@ -497,7 +471,7 @@ internal class FeedController(
                 val published = engagementCoordinator.execute(command).getOrThrow()
                 // 送ったイベント（リアクション・リポスト・取り消しの kind 5）をストアへ入れてから送信中の操作を外す。
                 // 件数はストアの集合から導出し直すので、同じイベントが後からリレーで届いても重ならない。
-                engagementStore.observe(published, null)
+                engagementStore.observeLocal(published, accountSession?.sessionId)
                 committed = true
             } catch (cancelled: CancellationException) {
                 throw cancelled
@@ -572,7 +546,7 @@ internal class FeedController(
         val anchor = all.getOrNull(next)?.id ?: return false
         // 先頭へ戻ったら固定を外し、以後の新着を一覧の先頭に出す。
         windowAnchorId = if (next == 0) null else anchor
-        feedStateRevision++
+        statePublisher.invalidate()
         rebuildFilteredEvents(immediate = true)
         return true
     }
@@ -605,7 +579,7 @@ internal class FeedController(
             // 古い保存済みウィンドウを見ていても、更新後は最新から表示する。
             if (windowAnchorId != null) {
                 windowAnchorId = null
-                feedStateRevision++
+                statePublisher.invalidate()
                 rebuildFilteredEvents(immediate = true)
             }
             setFeedState(currentFeedState().copy(isRefreshing = true, isLoadingMore = false))
@@ -656,8 +630,7 @@ internal class FeedController(
         stopSubscriptions()
         timelineBatchJob?.cancel()
         timelineBatchJob = null
-        feedStateEmitJob?.cancel()
-        feedStateEmitJob = null
+        statePublisher.cancelPending()
         refreshIndicatorTimeoutJob?.cancel()
         refreshIndicatorTimeoutJob = null
         initialFeedSlowJob?.cancel()
@@ -687,9 +660,7 @@ internal class FeedController(
         historyRevealOldestAt = null
         initialHistoryRequested = false
         manualRefreshRequested = false
-        feedStateRevision++
-        pendingFeedState = UiState()
-        _state.value = pendingFeedState
+        statePublisher.set(UiState())
         isAtTop = true
     }
 
@@ -857,10 +828,10 @@ internal class FeedController(
         relayHistoryCoordinator = null
         closeFeedSyncs()
         closed = true
+        statePublisher.close()
         timelineBatchJob?.cancel()
         timelineBatchJob = null
-        feedStateEmitJob?.cancel()
-        feedStateEmitJob = null
+        statePublisher.cancelPending()
         initialFeedSlowJob?.cancel()
         initialFeedSlowJob = null
         pendingTimelineEvents.clear()
@@ -1298,8 +1269,8 @@ internal class FeedController(
         )
         liveSession = session
         subscriptionJobs += launch {
-            session.signals.collect { signal ->
-                if (liveSession !== session) return@collect
+            session.collectRecovering { signal ->
+                if (liveSession !== session) return@collectRecovering
                 when (signal) {
                     is SubscriptionSignal.Event -> appendLiveEvent(signal.event, signal.relayUrl)
                     // 再送 REQ がリレーの件数上限で切られた区間を、そのリレーだけから取り直す。
@@ -1548,7 +1519,7 @@ internal class FeedController(
                     val uncommittedSnapshot = uncommittedHistoryEventIds.toSet()
                     val (newState, heldEventIds) = withContext(computeDispatcher) {
                         val heldEventIds = heldSnapshot.resolve()
-                        computeUpdatedFeedState(
+                        projectionPipeline.project(FeedProjectionInput(
                             events = events,
                             oldestVisibleAt = oldestVisibleAt,
                             current = current,
@@ -1557,7 +1528,7 @@ internal class FeedController(
                             heldEventIds = heldEventIds,
                             uncommittedEventIds = uncommittedSnapshot,
                             windowAnchor = windowAnchor,
-                        ) to heldEventIds
+                        )) to heldEventIds
                     }
                     // 投稿の出入りがなければ、次の組み直しでこの集合を使い回す。
                     rawEvents.remember(heldSnapshot, heldEventIds)
@@ -1577,100 +1548,6 @@ internal class FeedController(
         }
     }
 
-    // FeedControllerの可変フィールドを読み書きしない純粋関数。Dispatchers.Default上から呼ばれる。
-    // ただしfeedItemMapper/mentionedPubkeysCacheはevent ID単位の結果キャッシュであり、
-    // 常にupdateEventsMutex配下で直列に呼ばれるため例外として直接参照する。
-    private fun computeUpdatedFeedState(
-        events: List<NostrEvent>,
-        oldestVisibleAt: Long?,
-        current: UiState,
-        ownPubkeySnapshot: String?,
-        eventSortTimesSnapshot: Map<String, Long>,
-        /** 保持中の投稿（表示待ち・表示範囲外・除外中を含む）と、それらの返信先・引用先の ID。 */
-        heldEventIds: Set<String>,
-        /** 履歴ページで受信済みで、確定を待っている投稿の ID。 */
-        uncommittedEventIds: Set<String>,
-        windowAnchor: String?,
-    ): UiState {
-        val revealedEvents = events
-            .let { timelineEvents ->
-                oldestVisibleAt?.let { oldest ->
-                    timelineEvents.filter { event ->
-                        (eventSortTimesSnapshot[event.id] ?: event.createdAt) >= oldest
-                    }
-                } ?: timelineEvents
-            }
-        val start = windowAnchor?.let { id -> revealedEvents.indexOfFirst { it.id == id } }?.coerceAtLeast(0) ?: 0
-        val visibleEvents = revealedEvents.drop(start).take(MAX_TIMELINE_EVENTS)
-        val visibleEventIds = visibleEvents.mapTo(linkedSetOf()) { it.id }
-        val retainedEventIds = visibleEventIds + visibleEvents.mapNotNull { it.replyTargetId() } +
-            visibleEvents.flatMap { quotedEventIds(it) }
-        // 投稿ごとの付随情報は、まだ表示していない保持中の投稿の分も残す。表示前に捨てると、
-        // 後から表示したときにリポスト表示・件数・引用カードが失われ、取り直しもされない。
-        // 2 つの集合を結合して作り直さず、どちらかに含まれるかで判定する。
-        val isKept: (String) -> Boolean = {
-            it in retainedEventIds || it in heldEventIds || it in uncommittedEventIds
-        }
-        val quotedEvents = current.quotedEvents.filterKeys(isKept)
-        val replies = current.replies.filterKeys(isKept)
-        val quoteRepostEvents = current.quoteRepostEvents.filterKeys(isKept)
-        // プロフィールはキャッシュから引き直せるので、表示中の投稿に関わる分だけ持つ。
-        val retainedPubkeys = buildSet {
-            visibleEvents.forEach { event ->
-                add(event.pubkey)
-                addAll(mentionedPubkeysCache.mentionedPubkeys(event))
-            }
-            quotedEvents.filterKeys { it in retainedEventIds }.values.forEach { event ->
-                add(event.pubkey)
-                addAll(mentionedPubkeysCache.mentionedPubkeys(event))
-            }
-            replies.filterKeys { it in visibleEventIds }.values.flatten().forEach { event ->
-                add(event.pubkey)
-                addAll(mentionedPubkeysCache.mentionedPubkeys(event))
-            }
-            quoteRepostEvents.filterKeys { it in visibleEventIds }.values.flatten().forEach { event ->
-                add(event.pubkey)
-                addAll(mentionedPubkeysCache.mentionedPubkeys(event))
-            }
-            current.reactionEvents
-                .filterKeys { it in retainedEventIds }
-                .values
-                .flatten()
-                .forEach { add(it.pubkey) }
-            current.repostPubkeys
-                .filterKeys { it in retainedEventIds }
-                .values
-                .flatten()
-                .forEach(::add)
-            current.repostedByPubkeys.forEach { (eventId, pubkey) ->
-                if (eventId in visibleEventIds) add(pubkey)
-            }
-            ownPubkeySnapshot?.let(::add)
-        }
-        val profiles = current.profiles.filterKeys { it in retainedPubkeys } +
-            ProfileRepository.getCached(retainedPubkeys)
-        val parsedContents = feedItemMapper.map(visibleEvents)
-
-        return current.copy(
-            events = visibleEvents,
-            hasOlderStoredEvents = start + visibleEvents.size < revealedEvents.size,
-            hasNewerStoredEvents = start > 0,
-            parsedContents = parsedContents,
-            isInitialLoad = if (visibleEvents.isNotEmpty()) false else current.isInitialLoad,
-            initialFeedState = if (visibleEvents.isNotEmpty()) {
-                InitialFeedState.ContentReady
-            } else {
-                current.initialFeedState
-            },
-            profiles = profiles,
-            // 付随情報は追跡中の投稿の分を表示外でも残す。ストアから導出した値なので、
-            // 追跡をやめたとき（forgetEngagementHistory）に外す。ここで捨てると再受信しても戻らない。
-            quoteRepostEvents = current.quoteRepostEvents,
-            quotedEvents = quotedEvents,
-            repostedByPubkeys = current.repostedByPubkeys.filterKeys(isKept),
-
-        )
-    }
 
     /**
      * 受信した投稿を、取り込む前の状態で分類して数える。alreadyHeld が多いほど同じ投稿を取り直している。
@@ -1747,7 +1624,7 @@ internal class FeedController(
                     val engagement = (engagementStore.snapshot(targetId) ?: TargetEngagement()).scopedTo(relayScope)
                     (engagement.reactions.values + engagement.reposts.values + engagement.replies.values +
                         engagement.quotes.values).mapTo(pubkeys) { it.pubkey }
-                    acc.withProjectedEngagement(targetId, engagement, own, pendingOperations.operations(targetId))
+                    acc.withProjectedEngagement(targetId, engagement, own, pendingOperations.operations(targetId), relayScope)
                 }
             }
         }
@@ -1938,16 +1815,19 @@ internal fun FeedViewModel.UiState.withProjectedEngagement(
     engagement: TargetEngagement,
     ownPubkey: String?,
     pending: Map<EngagementSlot, PendingEngagementOperation>,
+    relayScope: Set<String>? = null,
 ): FeedViewModel.UiState {
-    val summary = summarizeEngagement(engagement, ownPubkey)
-    val display = EngagementReducer.rebase(summary.toNoteEngagementState(), pending)
+    val projected = com.nostr.torinos.engagement.projectEngagement(engagement, ownPubkey,
+        com.nostr.torinos.engagement.EngagementViewScope(relayUrls = relayScope), pending)
+    val scoped = projected.events
+    val display = projected.state
     fun Map<String, NostrEvent>.ordered() = values.sortedWith(compareBy<NostrEvent> { it.createdAt }.thenBy { it.id })
-    val reposts = engagement.reposts.ordered()
-    val quotes = engagement.quotes.ordered()
+    val reposts = scoped.reposts.ordered()
+    val quotes = scoped.quotes.ordered()
     return withEngagement(eventId, display).copy(
-        reactionEvents = reactionEvents.putListOrRemove(eventId, engagement.reactions.ordered()),
-        replyCounts = replyCounts + (eventId to summary.replyCount),
-        replies = replies.putListOrRemove(eventId, engagement.replies.ordered()),
+        reactionEvents = reactionEvents.putListOrRemove(eventId, scoped.reactions.ordered()),
+        replyCounts = replyCounts + (eventId to projected.replyCount),
+        replies = replies.putListOrRemove(eventId, scoped.replies.ordered()),
         repostEvents = repostEvents.putListOrRemove(eventId, reposts),
         quoteRepostEvents = quoteRepostEvents.putListOrRemove(eventId, quotes),
         repostPubkeys = repostPubkeys.putListOrRemove(eventId, (reposts + quotes).map { it.pubkey }.distinct()),

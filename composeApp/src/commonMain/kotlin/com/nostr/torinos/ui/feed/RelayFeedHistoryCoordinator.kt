@@ -1,15 +1,19 @@
 package com.nostr.torinos.ui.feed
 
+import com.nostr.torinos.network.collectRecovering
+
 import com.nostr.torinos.model.NostrEvent
 import com.nostr.torinos.model.NostrFilter
 import com.nostr.torinos.model.matches
-import com.nostr.torinos.network.RelayOutcome
+import com.nostr.torinos.network.RelayFetchVerdict
+import com.nostr.torinos.network.RelayRetryPolicy
 import com.nostr.torinos.network.RelayTarget
 import com.nostr.torinos.network.RetryDisposition
 import com.nostr.torinos.network.SubscriptionBehavior
 import com.nostr.torinos.network.SubscriptionSession
 import com.nostr.torinos.network.SubscriptionSignal
 import com.nostr.torinos.network.SubscriptionSpec
+import com.nostr.torinos.network.verdict
 import com.nostr.torinos.util.feedTraceLog
 import com.nostr.torinos.util.isFeedTraceEnabled
 import kotlinx.coroutines.CancellationException
@@ -198,8 +202,7 @@ internal class RelayFeedHistoryCoordinator(
         requiresExplicitLoadMore = false
         relays.forEach { (url, relay) ->
             val stalled = relay.failureCount > 0 || relay.retryJob != null || wasStorageFailure
-            if (relay.closedDisposition == RetryDisposition.RetryAfterAuth ||
-                relay.closedDisposition == RetryDisposition.DoNotRetry) return@forEach
+            if (relay.closedDisposition.verdict() == RelayFetchVerdict.Stop) return@forEach
             if (!stalled) return@forEach
             relay.suppressed = false
             relay.closedDisposition = null
@@ -310,8 +313,8 @@ internal class RelayFeedHistoryCoordinator(
     }
 
     private suspend fun collect(url: String, relay: RelayState, session: SubscriptionSession) {
-        session.signals.collect { signal ->
-            if (!active || relays[url] !== relay || relay.session !== session) return@collect
+        session.collectRecovering { signal ->
+            if (!active || relays[url] !== relay || relay.session !== session) return@collectRecovering
             when (signal) {
                 is SubscriptionSignal.Event -> handleEvent(url, relay, signal)
                 is SubscriptionSignal.Eose -> if (signal.relayUrl == url) {
@@ -390,7 +393,8 @@ internal class RelayFeedHistoryCoordinator(
         val page = relay.page
         val commit = commitPage(url, relay)
         relay.page = null
-        val succeeded = completed.outcomes[url] is RelayOutcome.Eose && commit is FeedPageCommitResult.Committed
+        val succeeded = completed.outcomes[url].verdict() == RelayFetchVerdict.Succeeded &&
+            commit is FeedPageCommitResult.Committed
         if (isFeedTraceEnabled) {
             val received = page?.events?.values?.sumOf { it.size } ?: 0
             val added = (commit as? FeedPageCommitResult.Committed)?.added
@@ -491,34 +495,33 @@ internal class RelayFeedHistoryCoordinator(
     }
 
     private fun scheduleRetry(url: String, relay: RelayState, page: Page?) {
-        val disposition = relay.closedDisposition
-        if (disposition == RetryDisposition.RetryOnFilterChange) {
-            val requested = page?.requested.orEmpty()
-            if (requested.size > 1) {
-                // 複合REQの拒否は、次回からフィルターを1件ずつ送り原因を隔離する。
-                relay.isolateFilters = true
-            } else {
-                requested.singleOrNull()?.let { relay.cursors[it.index].suppressed = true }
-                relay.closedDisposition = null
-                if (relay.cursors.any { !it.exhausted && !it.suppressed }) {
-                    scope.launch { requestRelay(url, "isolate-filter") }
+        when (relay.closedDisposition.verdict()) {
+            RelayFetchVerdict.IsolateFilters -> {
+                val requested = page?.requested.orEmpty()
+                if (requested.size > 1) {
+                    // 複合REQの拒否は、次回からフィルターを1件ずつ送り原因を隔離する。
+                    relay.isolateFilters = true
+                } else {
+                    requested.singleOrNull()?.let { relay.cursors[it.index].suppressed = true }
+                    relay.closedDisposition = null
+                    if (relay.cursors.any { !it.exhausted && !it.suppressed }) {
+                        scope.launch { requestRelay(url, "isolate-filter") }
+                    }
+                    return
                 }
+            }
+            RelayFetchVerdict.Stop -> {
+                relay.suppressed = true
                 return
             }
-        } else if (disposition == RetryDisposition.RetryAfterAuth ||
-            disposition == RetryDisposition.DoNotRetry
-        ) {
-            relay.suppressed = true
-            return
+            RelayFetchVerdict.RetryWithBackoff, RelayFetchVerdict.Succeeded -> Unit
         }
         relay.failureCount++
         if (relay.failureCount < maxFailures) startRetryTimer(url, relay)
     }
 
     private fun startRetryTimer(url: String, relay: RelayState) {
-        val attempt = relay.failureCount.coerceAtLeast(1)
-        val delayMillis = (RETRY_BASE_DELAY_MS * (1L shl (attempt - 1).coerceAtMost(4)))
-            .coerceAtMost(RETRY_MAX_DELAY_MS)
+        val delayMillis = RETRY_POLICY.delayAfter(relay.failureCount) ?: return
         relay.retryJob = scope.launch {
             delay(delayMillis)
             relay.retryJob = null
@@ -681,8 +684,8 @@ internal class RelayFeedHistoryCoordinator(
         const val DEFAULT_PAGE_SIZE = 30
         const val MAX_EMPTY_VISIBLE_PAGES = 5
         const val MAX_COVERAGE_GAPS = 64
-        const val RETRY_BASE_DELAY_MS = 2_000L
-        const val RETRY_MAX_DELAY_MS = 30_000L
+        /** 諦める回数は[maxFailures]で決めるため、待ち時間だけを使う。 */
+        val RETRY_POLICY = RelayRetryPolicy.history()
         const val MAX_CATCH_UP_PAGES = 3
         /** 差分取得で、これだけ続けて失敗したリレーは取りきれないものとして扱う。 */
         const val GIVE_UP_FAILURES = 3

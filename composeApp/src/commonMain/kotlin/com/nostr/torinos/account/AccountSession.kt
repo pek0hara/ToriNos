@@ -83,6 +83,12 @@ class AccountSession internal constructor(
         catch (e: Throwable) { _inputFrozen.value = false; throw e }
     }
     val relayStore = AccountRelayStore(this)
+    internal val channelPublications by lazy {
+        com.nostr.torinos.ui.channel.ChannelPublicationService(
+            scope = resources.scope, signer = signer, canStart = { resources.lease.isActive },
+            writableRelays = { relayStore.writableRelayUrlsSnapshot().toSet() },
+        )
+    }
     internal val articleDraftStore by lazy {
         com.nostr.torinos.article.ArticleDraftStore(transport = com.nostr.torinos.article.ArticleDraftRepository(
             signer = signer,
@@ -139,6 +145,7 @@ class AccountSession internal constructor(
     init {
         resources.onClose(followRepository::close)
         resources.onBeforeClose(privateMuteListStore::closeAndFlush)
+        resources.onClose { com.nostr.torinos.engagement.EngagementStore.shared.releaseLocalSession(sessionId) }
         resources.onClose(relayListSynchronizer::close)
         resources.onClose(emojiPreferenceSync::close)
         resources.onClose(customEmojis::close)

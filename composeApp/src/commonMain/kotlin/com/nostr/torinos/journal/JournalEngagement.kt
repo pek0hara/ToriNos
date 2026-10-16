@@ -14,7 +14,7 @@ import com.nostr.torinos.model.replyTargetId
 import com.nostr.torinos.model.toCustomReaction
 import com.nostr.torinos.model.toReactionOption
 import com.nostr.torinos.model.toUnicodeReaction
-import com.nostr.torinos.network.RelayOutcome
+import com.nostr.torinos.network.RelayFetchSummary
 import com.nostr.torinos.network.SubscriptionSignal
 
 /**
@@ -164,8 +164,28 @@ private fun JournalNoteEngagement.mergedWith(update: JournalNoteEngagement): Jou
     repostPubkeys = (repostPubkeys + update.repostPubkeys).distinct(),
 )
 
-/** タイムアウトせず、応答したすべてのリレーがEOSEを返したときだけ結果を確定する。 */
-internal fun shouldCommitJournalFetch(completion: SubscriptionSignal.FetchCompleted): Boolean =
-    !completion.timedOut &&
-        completion.outcomes.isNotEmpty() &&
-        completion.outcomes.values.all { it is RelayOutcome.Eose }
+/**
+ * 有限取得の結果。フィードと同じく、取り終えたリレーがあればその分を確定し、失敗したリレーだけを取り直す。
+ * [complete]は取得済みにしてよい、[allRelaysFinished]は取得結果で既存を置き換えてよい。
+ * [retryRelays]は間を空けて取り直すリレー（`RelayFetchVerdict.RetryWithBackoff`）。
+ */
+internal data class JournalFetchStatus(
+    val complete: Boolean,
+    val allRelaysFinished: Boolean = complete,
+    val retryRelays: Set<String> = emptySet(),
+) {
+    companion object {
+        /** 送るものがなかった。 */
+        val Finished = JournalFetchStatus(complete = true)
+
+        fun of(completion: SubscriptionSignal.FetchCompleted?): JournalFetchStatus {
+            if (completion == null) return JournalFetchStatus(complete = false)
+            val summary = RelayFetchSummary(completion.outcomes)
+            return JournalFetchStatus(
+                complete = summary.anySucceeded,
+                allRelaysFinished = summary.allSucceeded,
+                retryRelays = summary.retryable,
+            )
+        }
+    }
+}

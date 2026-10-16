@@ -17,16 +17,17 @@ import androidx.lifecycle.viewModelScope
 import com.nostr.torinos.ui.SafeViewModel
 import kotlin.time.Clock
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
-import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.Transient
 
@@ -73,8 +74,13 @@ class NotificationsViewModel(
     private val _state = MutableStateFlow(NotificationsState())
     val state: StateFlow<NotificationsState> = _state.asStateFlow()
 
-    private val activitySubId = "notif-act-$shortKey"
-    private val followsSubId = "notif-follow-$shortKey"
+    private val syncCoordinator = NotificationSyncCoordinator(
+        scope = viewModelScope,
+        idPrefix = "notif-$shortKey",
+        onActivity = ::handleActivityEvent,
+        onFollow = ::handleFollowEvent,
+    )
+    private val saveMutex = Mutex()
     private val targetLoader = TargetEventLoader(viewModelScope)
 
     private val seenItemIds = linkedSetOf<String>()
@@ -104,22 +110,13 @@ class NotificationsViewModel(
                 if (!liveSubscriptionsStarted) targetLoader.awaitIdle()
             } finally {
                 startupSyncActive = false
+                _state.update { it.copy(isInitialLoad = false) }
                 if (!liveSubscriptionsStarted) targetLoader.stop()
             }
         }
     }
 
     private fun startCollectors() {
-        collectorJobs += launch {
-            NostrRepository.events(activitySubId).collect { event ->
-                handleActivityEvent(event)
-            }
-        }
-        collectorJobs += launch {
-            NostrRepository.events(followsSubId).collect { event ->
-                handleFollowEvent(event)
-            }
-        }
         collectorJobs += launch {
             ProfileRepository.observeChanges().collect { changedPubkeys ->
                 val currentProfiles = _state.value.profiles
@@ -152,31 +149,20 @@ class NotificationsViewModel(
 
     private suspend fun syncOnce() {
         val syncStartedAt = Clock.System.now().epochSeconds
-        try {
-            val completed = withTimeoutOrNull(INITIAL_SYNC_TIMEOUT_MS) {
-                val activityEose = async { NostrRepository.eose(activitySubId).first() }
-                val followsEose = async { NostrRepository.eose(followsSubId).first() }
-                subscribeNotificationFeeds(limit = INITIAL_SYNC_LIMIT)
-                activityEose.await()
-                followsEose.await()
-            } != null
-            // Activity events schedule profile/target fetches with a short debounce.
-            delay(AUXILIARY_FETCH_DRAIN_MS)
-            if (!hasStoredFollowerList) {
-                hasStoredFollowerList = true
-                saveKnownFollowers()
-            }
-            if (completed) {
-                // 同期開始時刻を記録し、同期中に届いたフォローを次回の差分取得で取りこぼさない。
-                followSyncedAt = syncStartedAt
-                LocalNotificationStore.saveFollowSyncedAt(ownPubkey, syncStartedAt)
-            }
-            _state.update { it.copy(isInitialLoad = false) }
-        } finally {
-            if (!liveSubscriptionsStarted) {
-                closeSubscriptions()
-            }
+        val result = syncCoordinator.sync(
+            activityFilters(INITIAL_SYNC_LIMIT),
+            followFilter(ownPubkey, INITIAL_SYNC_LIMIT, followSyncSince(hasStoredFollowerList, followSyncedAt)),
+            syncStartedAt,
+        )
+        delay(AUXILIARY_FETCH_DRAIN_MS)
+        if (result.canCommitFollowerBaseline) {
+            // 基準集合を保存してから時刻を進める。失敗時は従来の位置で再取得する。
+            saveKnownFollowers()
+            hasStoredFollowerList = true
+            LocalNotificationStore.saveFollowSyncedAt(ownPubkey, syncStartedAt)
+            followSyncedAt = syncStartedAt
         }
+        _state.update { it.copy(isInitialLoad = false) }
     }
 
     fun startLiveSubscriptions() {
@@ -185,7 +171,11 @@ class NotificationsViewModel(
         scheduleMissingDetails()
         liveSubscriptionJob?.cancel()
         liveSubscriptionJob = launch {
-            subscribeNotificationFeeds(limit = LIVE_SYNC_LIMIT)
+            syncCoordinator.setVisible(
+                true, activityFilters(LIVE_SYNC_LIMIT),
+                followFilter(ownPubkey, LIVE_SYNC_LIMIT, followSyncSince(hasStoredFollowerList, followSyncedAt)),
+                Clock.System.now().epochSeconds,
+            )
         }
     }
 
@@ -195,7 +185,9 @@ class NotificationsViewModel(
         liveSubscriptionJob?.cancel()
         liveSubscriptionJob = null
         if (!startupSyncActive) cancelAuxiliaryFetches()
-        closeSubscriptions()
+        liveSubscriptionJob = launch {
+            syncCoordinator.setVisible(false, emptyList(), followFilter(ownPubkey, LIVE_SYNC_LIMIT, null), Clock.System.now().epochSeconds)
+        }
     }
 
     private fun stopAllSubscriptions() {
@@ -203,34 +195,16 @@ class NotificationsViewModel(
         cancelAuxiliaryFetches()
         startupSyncJob?.cancel()
         liveSubscriptionJob?.cancel()
-        closeSubscriptions()
+        // viewModelScopeはonClearedでキャンセル済みの場合もあるため終了専用scopeを使う。
+        kotlinx.coroutines.CoroutineScope(NonCancellable + Dispatchers.Main).launch { syncCoordinator.close() }
     }
 
-    private suspend fun subscribeNotificationFeeds(limit: Int) {
-        NostrRepository.subscribe(
-            activitySubId,
-            listOf(
-                NostrFilter(kinds = listOf(1, 6, 16, 7), pTags = listOf(ownPubkey), limit = limit),
-                NostrFilter(kinds = listOf(8), pTags = listOf(ownPubkey), limit = limit),
-                NostrFilter(
-                    kinds = listOf(COMMENT_EVENT_KIND),
-                    rootKindTags = listOf("1"),
-                    pTags = listOf(ownPubkey),
-                    limit = limit,
-                ),
-                NostrFilter(
-                    kinds = listOf(COMMENT_EVENT_KIND),
-                    rootKindTags = listOf("1"),
-                    rootPubkeyTags = listOf(ownPubkey),
-                    limit = limit,
-                ),
-            ),
-        )
-        NostrRepository.subscribe(
-            followsSubId,
-            followFilter(ownPubkey, limit, followSyncSince(hasStoredFollowerList, followSyncedAt)),
-        )
-    }
+    private fun activityFilters(limit: Int): List<NostrFilter> = listOf(
+        NostrFilter(kinds = listOf(1, 6, 16, 7), pTags = listOf(ownPubkey), limit = limit),
+        NostrFilter(kinds = listOf(8), pTags = listOf(ownPubkey), limit = limit),
+        NostrFilter(kinds = listOf(COMMENT_EVENT_KIND), rootKindTags = listOf("1"), pTags = listOf(ownPubkey), limit = limit),
+        NostrFilter(kinds = listOf(COMMENT_EVENT_KIND), rootKindTags = listOf("1"), rootPubkeyTags = listOf(ownPubkey), limit = limit),
+    )
 
     private suspend fun handleActivityEvent(event: NostrEvent) {
         if (event.pubkey == ownPubkey) return
@@ -283,8 +257,8 @@ class NotificationsViewModel(
         if (event.pubkey == ownPubkey) return
         if (!event.tags.any { it.firstOrNull() == "p" && it.getOrNull(1) == ownPubkey }) return
         if (!knownFollowerPubkeys.add(event.pubkey)) return
-        saveKnownFollowers()
         if (!hasStoredFollowerList) return
+        saveKnownFollowers()
         if (muteStore?.isMuted(event.pubkey) == true) {
             rememberSeenId(event.id)
             return
@@ -439,7 +413,7 @@ class NotificationsViewModel(
             readItemIds = snapshot.readItemIds,
         )
         launch {
-            LocalNotificationStore.save(ownPubkey, stored)
+            saveMutex.withLock { LocalNotificationStore.save(ownPubkey, stored) }
         }
     }
 
@@ -458,10 +432,6 @@ class NotificationsViewModel(
         pendingPubkeys.clear()
     }
 
-    private fun closeSubscriptions() {
-        NostrRepository.close(activitySubId)
-        NostrRepository.close(followsSubId)
-    }
 
     companion object {
         private const val MAX_ITEMS = 100

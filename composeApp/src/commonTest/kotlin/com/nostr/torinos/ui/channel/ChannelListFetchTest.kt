@@ -70,7 +70,7 @@ class ChannelListFetchTest {
         })
         val longSpec = spec.copy(behavior = SubscriptionBehavior.Fetch(10_000))
         val received = mutableListOf<NostrEvent>()
-        assertTrue(fetchChannelEvents(longSpec, { session }, settleAfterEoseMillis = 1_500) { received += it })
+        assertFalse(fetchChannelEvents(longSpec, { session }, settleAfterEoseMillis = 1_500) { received += it })
         assertEquals(1_500, testScheduler.currentTime)
         assertEquals(listOf(event), received)
         assertTrue(session.closed)
@@ -93,13 +93,13 @@ class ChannelListFetchTest {
         })
         val longSpec = spec.copy(behavior = SubscriptionBehavior.Fetch(10_000))
         val received = mutableListOf<NostrEvent>()
-        assertTrue(fetchChannelEvents(longSpec, { session }, settleAfterEoseMillis = 1_500) { received += it })
+        assertFalse(fetchChannelEvents(longSpec, { session }, settleAfterEoseMillis = 1_500) { received += it })
         assertEquals(listOf(early, late), received)
         assertEquals(3_500, testScheduler.currentTime)
     }
 
     @Test
-    fun settleModeSucceedsWhenTheOverallTimeoutComesAfterAnEose() = runTest {
+    fun settleModeDoesNotConfirmIncompletePageAtOverallTimeout() = runTest {
         val session = FakeSession(flow {
             emit(SubscriptionSignal.Eose("a"))
             repeat(20) {
@@ -109,17 +109,17 @@ class ChannelListFetchTest {
             awaitCancellation()
         })
         val longSpec = spec.copy(behavior = SubscriptionBehavior.Fetch(5_000))
-        assertTrue(fetchChannelEvents(longSpec, { session }, settleAfterEoseMillis = 1_500) {})
+        assertFalse(fetchChannelEvents(longSpec, { session }, settleAfterEoseMillis = 1_500) {})
         assertEquals(5_000, testScheduler.currentTime)
         assertTrue(session.closed)
     }
 
     @Test
-    fun settleModeAcceptsPartialCompletionButNotTotalFailure() = runTest {
+    fun settleModeKeepsPartialCompletionIncomplete() = runTest {
         val partial = FakeSession(flowOf(SubscriptionSignal.FetchCompleted(
             mapOf("a" to RelayOutcome.Eose, "b" to RelayOutcome.Closed("restricted")), false,
         )))
-        assertTrue(fetchChannelEvents(spec, { partial }, settleAfterEoseMillis = 50) {})
+        assertFalse(fetchChannelEvents(spec, { partial }, settleAfterEoseMillis = 50) {})
         val none = FakeSession(flowOf(SubscriptionSignal.FetchCompleted(
             mapOf("a" to RelayOutcome.TimedOut, "b" to RelayOutcome.Closed("restricted")), true,
         )))
@@ -133,7 +133,21 @@ class ChannelListFetchTest {
         assertEquals(100, testScheduler.currentTime)
     }
 
-    private class FakeSession(override val signals: Flow<SubscriptionSignal>) : SubscriptionSession {
+    private class FakeSession(source: Flow<SubscriptionSignal>) : SubscriptionSession {
+        private val completion = kotlinx.coroutines.channels.Channel<SubscriptionSignal>(1)
+        private val eoseRelays = mutableSetOf<String>()
+        override val signals = kotlinx.coroutines.flow.channelFlow {
+            launch { source.collect { signal ->
+                if (signal is SubscriptionSignal.Eose) eoseRelays += signal.relayUrl
+                send(signal)
+            } }
+            send(completion.receive())
+        }
+        override suspend fun finishPendingRelays() {
+            completion.trySend(SubscriptionSignal.FetchCompleted(
+                eoseRelays.associateWith { RelayOutcome.Eose } + ("unresponsive" to RelayOutcome.TimedOut), true,
+            ))
+        }
         override val id = "test"
         var closed = false
         override suspend fun update(filters: List<NostrFilter>, target: RelayTarget) = Unit

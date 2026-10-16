@@ -1,5 +1,10 @@
 # アカウント切り替え時の ViewModel 初期化仕様
 
+### 2026-10-16の実装更新
+
+投稿入力の保存・復元・引き継ぎ・flushはセッションのViewModelStoreに属するComposerInputViewModelが所有する。入力世代とPostViewModelの編集revisionを確認し、非同期結果による新しい入力の置換を防ぐ。画面展開は同じ入力を維持する。ChannelPublicationServiceもAccountSessionが所有し、開始済みの署名済み配送と画面observerの寿命を分ける。セッション終了時にはローカル集計commitの所有情報を解放する。[実装範囲と検証](./refactor-details/implementation-report.md)。
+
+
 ## 1. 目的
 
 アカウント切り替え時に、旧アカウントの状態や非同期処理が新アカウントへ混入しないことを保証する。

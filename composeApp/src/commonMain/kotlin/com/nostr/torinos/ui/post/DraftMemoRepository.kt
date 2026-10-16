@@ -4,6 +4,7 @@ import com.nostr.torinos.account.AccountSigner
 import com.nostr.torinos.model.NostrEvent
 import com.nostr.torinos.model.NostrFilter
 import com.nostr.torinos.network.NostrRepository
+import com.nostr.torinos.network.RelayOutcome
 import com.nostr.torinos.network.RelayTarget
 import com.nostr.torinos.network.SubscriptionBehavior
 import com.nostr.torinos.network.SubscriptionSession
@@ -11,6 +12,7 @@ import com.nostr.torinos.network.SubscriptionSignal
 import com.nostr.torinos.network.SubscriptionSpec
 import com.nostr.torinos.ui.timeline.SignedEventPublisher
 import com.nostr.torinos.ui.timeline.SignedPublishResult
+import kotlinx.coroutines.flow.transformWhile
 import kotlin.random.Random
 
 /** 自己暗号化した下書き（kind 31234）1件。 */
@@ -23,6 +25,9 @@ data class DraftMemo(
     val displayTime: Long get() = memo.updatedAt.takeIf { it > 0 } ?: createdAt
 }
 
+/** 1つのリレーから読んだ下書き。[complete] はそのリレーが EOSE まで答えたときだけ true。 */
+internal data class DraftMemoLoad(val drafts: List<DraftMemo>, val complete: Boolean)
+
 /** 下書きの取得・復号・削除。期間の制限なく、指定リレーの下書きをすべて取る。 */
 internal class DraftMemoRepository(
     private val signer: AccountSigner?,
@@ -30,7 +35,7 @@ internal class DraftMemoRepository(
     private val publisher: SignedEventPublisher = SignedEventPublisher(signer),
 ) {
     /** 秘密鍵がなければ null。 */
-    suspend fun loadAll(relayUrl: String?): List<DraftMemo>? {
+    suspend fun loadAll(relayUrl: String?): DraftMemoLoad? {
         val signer = signer ?: return null
         val session = openSession(
             SubscriptionSpec(
@@ -47,17 +52,25 @@ internal class DraftMemoRepository(
             ),
         )
         val events = linkedMapOf<String, NostrEvent>()
+        var complete = false
         try {
-            session.signals.collect { signal ->
-                if (signal is SubscriptionSignal.Event) events[signal.event.id] = signal.event
-            }
+            // 完了の知らせで受信を終える。流れが閉じるのを待つと、閉じなかったときに読み込み中のまま残る。
+            session.signals.transformWhile { signal -> emit(signal); signal !is SubscriptionSignal.FetchCompleted }
+                .collect { signal ->
+                    when (signal) {
+                        is SubscriptionSignal.Event -> events[signal.event.id] = signal.event
+                        is SubscriptionSignal.FetchCompleted -> complete = !signal.timedOut &&
+                            signal.outcomes.isNotEmpty() && signal.outcomes.values.all { it == RelayOutcome.Eose }
+                        else -> Unit
+                    }
+                }
         } finally {
             runCatching { session.close() }
         }
         // 削除版や読み込めない最新版も勝者とし、古い版を復活させない。
         val latest = latestPostDraftEvents(events.values.filter { it.kind == MEMO_EVENT_KIND && it.pubkey == signer.pubkey })
         val drafts = latest.mapNotNull { event -> decode(event, signer) }
-        return mergeDraftMemos(emptyList(), drafts)
+        return DraftMemoLoad(mergeDraftMemos(emptyList(), drafts), complete)
     }
 
     suspend fun delete(draft: DraftMemo): SignedPublishResult =

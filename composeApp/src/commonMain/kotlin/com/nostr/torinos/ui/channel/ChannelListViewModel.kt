@@ -1,6 +1,7 @@
 package com.nostr.torinos.ui.channel
 
 import androidx.lifecycle.ViewModel
+import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewmodel.CreationExtras
 import com.nostr.torinos.account.AccountSession
@@ -189,7 +190,7 @@ class ChannelListViewModel(
     private var newMetaJob: Job? = null
     private var authorSubscriptionJob: Job? = null
     private var detailDialogJob: Job? = null
-    private var createPictureUploadJob: Job? = null
+    private val pictureUploads = ChannelImageUploadController(viewModelScope)
     private val pendingNewMetaIds = linkedSetOf<String>()
     private val requestedNewMetaIds = mutableSetOf<String>()
     private var subscribedAuthorPubkeys: Set<String> = emptySet()
@@ -534,8 +535,7 @@ class ChannelListViewModel(
 
     fun showCreateDialog() {
         val current = _state.value as? UiState.Ready ?: return
-        createPictureUploadJob?.cancel()
-        createPictureUploadJob = null
+        pictureUploads.cancel()
         // 推奨リレーの初期選択はユーザーの書き込みリレー(FR-04)。
         val writable = normalizeRelayUrls(RelayStore.writableRelayUrlsSnapshot(), limit = Int.MAX_VALUE)
         _state.value = current.copy(
@@ -550,8 +550,8 @@ class ChannelListViewModel(
     fun dismissCreateDialog() {
         val current = _state.value as? UiState.Ready ?: return
         if (current.createDialog?.isCreating == true) return
-        createPictureUploadJob?.cancel()
-        createPictureUploadJob = null
+        pictureUploads.cancel()
+        current.createDialog?.let { dialog -> launch { accountSession?.channelPublications?.releaseDialog("create-${dialog.sessionId}") } }
         _state.value = current.copy(createDialog = null)
     }
 
@@ -599,20 +599,19 @@ class ChannelListViewModel(
         if (dialog.isUploadingPicture || dialog.isRetryingFirstPost) return
         val sessionId = dialog.sessionId
         updateCreateDialog { it.copy(isUploadingPicture = true, error = null) }
-        createPictureUploadJob = launch {
-            withContext(Dispatchers.Default) {
-                ImageUploader.uploadMedia(bytes, mimeType, accountSession?.signer)
-            }.onSuccess { metadata ->
+        pictureUploads.upload(load = { ImageUploader.uploadMedia(bytes, mimeType, accountSession?.signer) }) { result ->
+            result.onSuccess { metadata ->
                 updateCreateDialogForSession(sessionId) { it.copy(picture = metadata.url, isUploadingPicture = false) }
             }.onFailure { error ->
-                updateCreateDialogForSession(sessionId) {
-                    it.copy(isUploadingPicture = false, error = "アイコン画像のアップロードに失敗しました: ${error.message}")
-                }
+                updateCreateDialogForSession(sessionId) { it.copy(isUploadingPicture = false, error = "アイコン画像のアップロードに失敗しました: ${error.message}") }
             }
         }
     }
 
-    fun onCreatePictureRemoved() = updateCreateDialog { it.copy(picture = "") }
+    fun onCreatePictureRemoved() {
+        pictureUploads.cancel()
+        updateCreateDialog { it.copy(picture = "", isUploadingPicture = false) }
+    }
 
     private fun updateCreateDialog(transform: (CreateDialogState) -> CreateDialogState) {
         val current = _state.value as? UiState.Ready ?: return
@@ -677,7 +676,7 @@ class ChannelListViewModel(
                 publishState = ChannelPublishUiState.sending(plan.targets))
         }
         launch {
-            val publisher = SignedEventPublisher(accountSession?.signer)
+            val publisher = accountSession?.channelPublications ?: ChannelPublicationService(viewModelScope, null)
             val channelEvent = dialog.createdChannel ?: run {
                 val meta = ChannelMeta(
                     name = dialog.name.trim(),
@@ -686,12 +685,13 @@ class ChannelListViewModel(
                     relays = plan.recommendedRelays,
                 )
                 val result = publisher.publish(
+                    dialog = "create-${dialog.sessionId}", observerScope = viewModelScope,
                     content = meta.toChannelContent(),
                     kind = 40,
                     tags = listOf(listOf("client", "ToriNos")),
                     relayUrls = plan.relayUrls,
-                    onEventRelayResult = { event, relayResult ->
-                        recordCreateRelayResult(event, meta, dialog.sessionId, 40, plan.targets, relayResult)
+                    onEventRelayResult = { event, relayResult, targets ->
+                        recordCreateRelayResult(event, meta, dialog.sessionId, 40, targets.toList(), relayResult)
                     },
                 )
                 val publishState = ChannelPublishUiState.from(plan.targets, result)
@@ -714,13 +714,14 @@ class ChannelListViewModel(
                 }
                 // 初回投稿は kind 40 と同じ送信先と relay hint を使う(第16.11節 手順4)。
                 val postResult = publisher.publish(
+                    dialog = "create-${dialog.sessionId}", observerScope = viewModelScope,
                     content = firstPost.content,
                     kind = 42,
                     tags = ChannelEventTags.rootMessage(channelEvent.id, plan.primaryHint) +
                         firstPost.tags + listOf(listOf("client", "ToriNos")),
                     relayUrls = plan.relayUrls,
-                    onEventRelayResult = { event, relayResult ->
-                        recordCreateRelayResult(event, null, dialog.sessionId, 42, plan.targets, relayResult)
+                    onEventRelayResult = { event, relayResult, targets ->
+                        recordCreateRelayResult(event, null, dialog.sessionId, 42, targets.toList(), relayResult)
                     },
                 )
                 val publishState = ChannelPublishUiState.from(plan.targets, postResult)
@@ -750,6 +751,7 @@ class ChannelListViewModel(
                 createDialog = null,
                 createdChannelIdToOpen = channelEvent.id,
             )
+            publisher.releaseDialog("create-${dialog.sessionId}")
         }
     }
 
@@ -1023,7 +1025,7 @@ class ChannelListViewModel(
 
     override fun onCleared() {
         activityQueue.stop()
-        createPictureUploadJob?.cancel()
+        pictureUploads.cancel()
         jobs.forEach { it.cancel() }
         newMetaJob?.cancel()
         authorSubscriptionJob?.cancel()

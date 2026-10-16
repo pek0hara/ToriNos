@@ -2,6 +2,11 @@
 
 作成日: 2026-10-02。状態: 実装済み。
 
+### 2026-10-16の実装更新
+
+保持データはFeedTimelineModel、表示範囲はFeedWindowPolicy、キャッシュ参照はFeedProjectionPipeline、純粋な状態組み立てはFeedProjector、150ms間引き公開はFeedStatePublisherへ移した。Controllerは不変の投影入力を渡し、結果の適用前に既存revisionを確認する。投稿カードはNoteCardModel / NoteCardActions / NoteCardHostと描画部品に分割した。timeline/decoration別revisionの最適化と実機性能計測は未実施。[実装範囲と検証](./refactor-details/implementation-report.md)。
+
+
 ## 1. 目的
 
 フィードで1件のリアクション・返信・プロフィールが更新されたとき、表示中の全NoteCardが再描画される問題を解消する。変化のあったカードだけが再描画され、他のカードはCompose（Strong skipping、Kotlin 2.4）がスキップできる状態にする。

@@ -25,12 +25,15 @@ internal data class JournalFetchRequest(
 /**
  * [truncatedAt]が null でなければ、件数の上限に届いて打ち切られた。その時刻より新しいイベントは全部届いたが、
  * その時刻以前には届いていないものがある。
+ * [complete]・[allRelaysFinished]・[retryRelays]は[JournalFetchStatus]と同じ。
  */
 internal data class JournalFetchResult(
     val request: JournalFetchRequest,
     val events: List<NostrEvent>,
     val complete: Boolean,
     val truncatedAt: Long? = null,
+    val allRelaysFinished: Boolean = complete,
+    val retryRelays: Set<String> = emptySet(),
 )
 
 /** 日付・種類・取得済み範囲から、リレーへ送るフィルターを組み立てる純粋処理。 */
@@ -42,7 +45,7 @@ internal object JournalFetchPlanner {
     /**
      * [date]で、メンバーごとに足りない種類[missingByMember]を取得する。
      * 足りない種類が同じメンバーは1つのリクエストにまとめる（普段は全員同じなので1本になる）。
-     * メンバーが作ったイベントは選択中のリレーから、もらったいいねは届く先が読めないため有効な全リレーから取る。
+     * どの種類も選択中のリレーから取る。もらったいいねはフィルター（`#p`）が違うので別のリクエストにする。
      */
     fun forDate(
         date: LocalDate,
@@ -64,14 +67,14 @@ internal object JournalFetchPlanner {
             .filterValues { JournalActivityKind.ReceivedLike in it }
             .keys
         val receivedLikeRequest = receivedLikeMembers.takeIf { it.isNotEmpty() }
-            ?.let { receivedLikes(listOf(date), it, since, until, DATE_LIMIT) }
+            ?.let { receivedLikes(listOf(date), it, relayUrl, since, until, DATE_LIMIT) }
         return authoredRequests + listOfNotNull(receivedLikeRequest)
     }
 
     /**
      * [days]のうち足りない分を、日ごとではなく範囲で取る。足りない種類が同じメンバーを1つのリクエストにまとめ、
      * 範囲はそのメンバーたちに足りない日がある最初の日から最後の日までにする。範囲内の取得済みの日も取り直すが、
-     * 結果はIDで重複を除くため害はなく、リクエストを分けるより安い。もらったいいねは取得先が違うため別にする。
+     * 結果はIDで重複を除くため害はなく、リクエストを分けるより安い。もらったいいねはフィルターが違うため別にする。
      */
     fun forRange(
         days: List<LocalDate>,
@@ -102,7 +105,10 @@ internal object JournalFetchPlanner {
         }
         val receivedLikeRequest = receivedLikeMembers.takeIf { it.isNotEmpty() }?.let { targets ->
             days.missingRange(coverage, receivedLike, targets)?.let { range ->
-                receivedLikes(range, targets, clock.startOfDay(range.first()), clock.endOfDay(range.last()), PAGE_LIMIT)
+                receivedLikes(
+                    range, targets, relayUrl,
+                    since = clock.startOfDay(range.first()), until = clock.endOfDay(range.last()), limit = PAGE_LIMIT,
+                )
             }
         }
         return authoredRequests + listOfNotNull(receivedLikeRequest)
@@ -179,9 +185,11 @@ internal object JournalFetchPlanner {
         )
     }
 
+    /** 投稿などと同じく選択中のリレーから取る（未選択なら有効な全リレー）。2026-10-15 に全リレーから変えた。 */
     private fun receivedLikes(
         dates: List<LocalDate>,
         members: Set<String>,
+        relayUrl: String?,
         since: Long,
         until: Long,
         limit: Int,
@@ -198,6 +206,6 @@ internal object JournalFetchPlanner {
                 limit = limit,
             ),
         ),
-        target = RelayTarget.AllEnabled,
+        target = relayUrl?.let(RelayTarget::Single) ?: RelayTarget.AllEnabled,
     )
 }

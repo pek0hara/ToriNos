@@ -38,7 +38,7 @@ Android 実機のログ（`journal-month-fetch-design.md` 13.1）では、有効
 - 接続も失敗もしないまま止まるリレー（パケットが捨てられる等）。接続の時間切れ（OkHttp は既定10秒）か、取得の時間切れに任せる。
 - EOSE を返さない・遅いリレー。これまでどおり取得の時間切れで `TimedOut` にする。
 - 取得の「完全・不完全」の判定。`Unavailable` は `Eose` ではないので、受け手はこれまでの `TimedOut` と同じく不完全として扱う（5.4）。
-  そのため、接続できないリレーが有効な間、ジャーナルが「取得済み」を記録できない問題は残る（11章）。
+  そのため、接続できないリレーが有効な間、ジャーナルが「取得済み」を記録できない問題は残る（11章。`relay-fetch-failure-policy-design.md` で解消）。
 - 投稿の送信（`publish`）。7章で別に決める。
 - 接続できないリレーを設定から自動で外すこと、UI に出すこと。
 
@@ -138,7 +138,7 @@ internal fun fetchFailureUpdate(
 
 | 受け手 | 完全の条件 | `Unavailable` のとき |
 | --- | --- | --- |
-| `shouldCommitJournalFetch`（ジャーナル） | `!timedOut` かつ全部 `Eose` | 不完全（いまと同じ） |
+| `shouldCommitJournalFetch`（ジャーナル） | `!timedOut` かつ全部 `Eose` | 不完全（いまと同じ）。2026-10-14 に `JournalFetchStatus` へ置き換え、1つ以上の `Eose` で確定し、失敗したリレーだけ取り直すようにした（`relay-fetch-failure-policy-design.md`） |
 | `ProfileRepository`、`PostRelayResolver`、`EmojiRelayFetch`、`BadgeTransport` | 同上 | 不完全 |
 | `EventByIdFetcher` | `Eose` 以外があれば `Incomplete` | `Incomplete` |
 | `EngagementFetcher`、`EmojiDiscoveryTransport` | そのリレーが `Eose` | 失敗 |
@@ -260,8 +260,10 @@ internal fun fetchFailureUpdate(
 
 ## 11. 残る課題
 
-- **ジャーナルが「取得済み」を記録できない。** 取得済みは全リレーが EOSE を返したときだけ記録する（`shouldCommitJournalFetch`）。
+- **（2026-10-14 解消、`relay-fetch-failure-policy-design.md`）ジャーナルが「取得済み」を記録できない。**
+  1つ以上のリレーが EOSE を返せば取得済みにし、取り終えなかったリレーだけをフィードと同じ規則で取り直すようにした。諦めたリレーの復旧を検知して取り直す仕組みは入れていない。
+  以下は当時の記述。 取得済みは全リレーが EOSE を返したときだけ記録する（`shouldCommitJournalFetch`）。
   接続できないリレーが有効な間は、月を開くたびに取り直す。今回の改修で1回あたりは速くなる（約8秒→約0.7秒）が、通信の回数は変わらない。
   「つながるリレーからは取り切った」を取得済みにするには、どのリレーを除いたかを記録し、復旧したら取り直す仕組みが要る。取得済みの意味が変わるので、`journal-month-fetch-design.md` と合わせて別に設計する。
-- **月の範囲取得が、不完全な結果で次のページを取りに行かない。** `JournalRangePager.accept` は不完全な結果で `finished` にする。
+- **（2026-10-14 解消、`relay-fetch-failure-policy-design.md` 7.2）月の範囲取得が、不完全な結果で次のページを取りに行かない。** `JournalRangePager.accept` は不完全な結果で `finished` にする。
   接続できないリレーがあると毎回不完全になるので、投稿の多い月で2ページ目以降を取りこぼすおそれがある。今回の改修とは関係なく、いまも起きうる。実機で確かめるか、別に調べる。

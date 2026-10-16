@@ -32,7 +32,11 @@ data class ChannelHistoryState(
     val newMessageCount: Int = 0,
 )
 
-internal data class ChannelHistoryPage(val events: List<NostrEvent>, val complete: Boolean)
+internal data class ChannelHistoryPage(
+    val events: List<NostrEvent>,
+    val complete: Boolean,
+    val fetchResult: com.nostr.torinos.network.FiniteFetchResult? = null,
+)
 
 /** 本文の公開はページの終了時だけ行う。付随情報の更新はこの状態を変更しない。 */
 internal class ChannelHistory(

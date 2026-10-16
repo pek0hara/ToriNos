@@ -122,6 +122,8 @@ internal class PostSearchController(
     private val config: SearchConfig,
     private val nowEpochSeconds: () -> Long,
     private val ownerId: String,
+    sessionId: String? = null,
+    ownPubkey: String? = null,
 ) {
     private val launcher = SafeCoroutineLauncher(scope, "PostSearchController")
     private val fetcher = PostPageFetcher(gateway, config.searchRelayUrl, config.pageTimeoutMillis)
@@ -132,6 +134,8 @@ internal class PostSearchController(
         nowEpochSeconds = nowEpochSeconds,
         nextSubscriptionId = { "$ownerId-$generation-e${++subscriptionSerial}" },
         onChanged = ::schedulePublish,
+        sessionId = sessionId,
+        ownPubkey = ownPubkey,
     )
 
     private val _state = MutableStateFlow(PostSearchUiState())
@@ -209,6 +213,8 @@ internal class PostSearchController(
     }
 
     /** 画面が非表示になった。実行中のページは中断として記録し、付随情報の取得も止める。 */
+    fun close() { stop(); enricher.reset() }
+
     fun stop() {
         if (!visible) return
         visible = false

@@ -676,9 +676,10 @@ private fun ArticleEditContent(
             item {
                 attempt.relays.forEach { (relay, status) -> Text("$relay: ${status.state} ${status.reason}", style = MaterialTheme.typography.bodySmall) }
                 if (!attempt.complete) TextButton(onClick = editor::retryPublish, enabled = enabled && attempt.supersededBy == null) { Text("同じ版を再送") }
-                if (attempt.complete && attempt.draftCleanupError != null) {
+                if (attempt.accepted && attempt.draftCleanupError != null) {
                     Text("記事は公開済みです。下書きの削除に失敗しました。", color = MaterialTheme.colorScheme.error)
-                    TextButton(onClick = editor::retryPublish, enabled = enabled) { Text("下書きの削除を再試行") }
+                    // While relays are left, resending also retries the deletion.
+                    if (attempt.complete) TextButton(onClick = editor::retryPublish, enabled = enabled) { Text("下書きの削除を再試行") }
                 }
                 state.shareError?.let { error ->
                     Text(error, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)

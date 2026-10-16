@@ -36,9 +36,15 @@ internal class SearchResultEnricher(
     private val nowEpochSeconds: () -> Long,
     private val nextSubscriptionId: () -> String,
     private val onChanged: () -> Unit,
+    sessionId: String? = null,
+    ownPubkey: String? = null,
 ) {
     private val launcher = SafeCoroutineLauncher(scope, "SearchResultEnricher")
-    private val accumulator = SearchEngagementAccumulator(config.maxTrackedEngagementTargets)
+    private val accumulator = SearchEngagementView(
+        config.maxTrackedEngagementTargets,
+        if (gateway === RepositorySearchGateway) com.nostr.torinos.engagement.EngagementStore.shared else com.nostr.torinos.engagement.EngagementStore(),
+        sessionId, ownPubkey,
+    )
 
     private val referencedPubkeys = linkedSetOf<String>()
     private val queuedPubkeys = linkedSetOf<String>()
@@ -49,6 +55,8 @@ internal class SearchResultEnricher(
 
     private var active = false
     private var watchJob: Job? = null
+    private var engagementWatchJob: Job? = null
+    private var pendingWatchJob: Job? = null
     private var profileWorker: Job? = null
     private var engagementWorker: Job? = null
 
@@ -104,6 +112,9 @@ internal class SearchResultEnricher(
     private fun cancelJobs() {
         watchJob?.cancel()
         watchJob = null
+        engagementWatchJob?.cancel()
+        engagementWatchJob = null
+        pendingWatchJob?.cancel(); pendingWatchJob = null
         profileWorker?.cancel()
         profileWorker = null
         engagementWorker?.cancel()
@@ -121,6 +132,18 @@ internal class SearchResultEnricher(
     }
 
     private fun startWatching() {
+        engagementWatchJob?.cancel()
+        engagementWatchJob = launcher.launch {
+            accumulator.store.changes.collect { changed ->
+                if (changed.any(accumulator::isTracked)) onChanged()
+            }
+        }
+        pendingWatchJob?.cancel()
+        pendingWatchJob = launcher.launch { accumulator.pending.changes.collect { changed ->
+            if (changed.any(accumulator::isTracked)) onChanged()
+        } }
+        // 停止中に変わった集計も再公開する。
+        onChanged()
         watchJob?.cancel()
         watchJob = launcher.launch {
             // 監視開始時に空集合が届くため、停止中に変わった分もここで読み直される。
@@ -177,6 +200,7 @@ internal class SearchResultEnricher(
                 id = nextSubscriptionId(),
                 filters = engagementFilters(targets, since, config.engagementFilterLimit),
                 behavior = SubscriptionBehavior.Fetch(config.engagementTimeoutMillis),
+                replayCachedEvents = false,
             ),
         )
         var received = 0
@@ -184,7 +208,7 @@ internal class SearchResultEnricher(
             session.signals.firstOrNull { signal ->
                 when (signal) {
                     is SubscriptionSignal.Event -> {
-                        accumulator.apply(signal.event).forEach(::referencePubkey)
+                        accumulator.apply(signal.event, signal.relayUrl).forEach(::referencePubkey)
                         onChanged()
                         received++
                         // 予算に達したら残りは取得しない。対象は取得済みとして扱い、再取得しない。

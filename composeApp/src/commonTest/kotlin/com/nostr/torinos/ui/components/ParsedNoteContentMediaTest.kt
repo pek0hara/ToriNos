@@ -1,5 +1,7 @@
 package com.nostr.torinos.ui.components
 
+import com.nostr.torinos.model.*
+
 import com.nostr.torinos.model.NIP94_FILE_METADATA_KIND
 import com.nostr.torinos.model.NostrEvent
 import kotlin.test.Test

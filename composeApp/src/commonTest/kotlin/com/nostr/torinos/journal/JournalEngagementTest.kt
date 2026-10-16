@@ -7,6 +7,7 @@ import com.nostr.torinos.engagement.EngagementRequest
 import com.nostr.torinos.engagement.NoteEngagementState
 import com.nostr.torinos.model.ReactionOption
 import com.nostr.torinos.network.RelayOutcome
+import com.nostr.torinos.network.RetryDisposition
 import com.nostr.torinos.network.SubscriptionSignal
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -173,15 +174,25 @@ class JournalEngagementTest {
     }
 
     @Test
-    fun fetchIsCommittedOnlyWhenEveryRelayFinished() {
+    fun fetchIsCommittedWhenAnyRelayFinishedAndRetriesOnlyRetryableRelays() {
         fun completion(vararg outcomes: RelayOutcome, timedOut: Boolean = false) = SubscriptionSignal.FetchCompleted(
             outcomes = outcomes.withIndex().associate { (i, outcome) -> "wss://relay-$i" to outcome },
             timedOut = timedOut,
         )
 
-        assertTrue(shouldCommitJournalFetch(completion(RelayOutcome.Eose, RelayOutcome.Eose)))
-        assertFalse(shouldCommitJournalFetch(completion(RelayOutcome.Eose, RelayOutcome.TimedOut, timedOut = true)))
-        assertFalse(shouldCommitJournalFetch(completion(RelayOutcome.Eose, RelayOutcome.Unavailable("offline"))))
-        assertFalse(shouldCommitJournalFetch(completion()))
+        assertEquals(JournalFetchStatus(complete = true), JournalFetchStatus.of(completion(RelayOutcome.Eose, RelayOutcome.Eose)))
+        assertEquals(
+            JournalFetchStatus(complete = true, allRelaysFinished = false, retryRelays = setOf("wss://relay-1")),
+            JournalFetchStatus.of(completion(RelayOutcome.Eose, RelayOutcome.Unavailable("offline"))),
+        )
+        assertEquals(
+            JournalFetchStatus(complete = true, allRelaysFinished = false),
+            JournalFetchStatus.of(completion(RelayOutcome.Eose, RelayOutcome.Closed("blocked", RetryDisposition.DoNotRetry))),
+        )
+        val allFailed = JournalFetchStatus.of(completion(RelayOutcome.TimedOut, RelayOutcome.TimedOut, timedOut = true))
+        assertFalse(allFailed.complete)
+        assertEquals(setOf("wss://relay-0", "wss://relay-1"), allFailed.retryRelays)
+        assertFalse(JournalFetchStatus.of(completion()).complete)
+        assertFalse(JournalFetchStatus.of(null).complete)
     }
 }

@@ -21,6 +21,8 @@ class PendingEngagementOperations {
     private val lock = SynchronousLock()
     private val operations = mutableMapOf<String, Map<EngagementSlot, PendingEngagementOperation>>()
     private val subscribers = mutableListOf<Subscriber>()
+    private var revision = 0L
+    internal fun revision(): Long = lock.withLock { revision }
 
     /** 送信中の操作が変わった投稿ID。受け手ごとに溜めて渡す。 */
     val changes: Flow<Set<String>> = flow {
@@ -40,7 +42,7 @@ class PendingEngagementOperations {
         lock.withLock { operations[eventId].orEmpty() }
 
     fun put(eventId: String, slot: EngagementSlot, operation: PendingEngagementOperation) {
-        lock.withLock { operations[eventId] = operations[eventId].orEmpty() + (slot to operation) }
+        lock.withLock { operations[eventId] = operations[eventId].orEmpty() + (slot to operation); revision++ }
         notifyChanged(eventId)
     }
 
@@ -50,6 +52,7 @@ class PendingEngagementOperations {
             val remaining = current.filterValues { it.id != operationId }
             if (remaining.size == current.size) return@withLock false
             if (remaining.isEmpty()) operations.remove(eventId) else operations[eventId] = remaining
+            revision++
             true
         }
         if (changed) notifyChanged(eventId)

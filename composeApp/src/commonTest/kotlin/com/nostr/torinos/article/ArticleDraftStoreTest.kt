@@ -1,6 +1,7 @@
 package com.nostr.torinos.article
 
 import kotlin.test.*
+import kotlinx.coroutines.async
 import kotlinx.coroutines.test.runTest
 
 internal class MemoryArticleStorage : ArticleStorage {
@@ -83,5 +84,52 @@ class ArticleDraftStoreTest {
         assertEquals(saved, restarted.loadDraft("a", saved.draftId))
         assertTrue(restarted.read("a").composers.isEmpty())
         assertTrue(restarted.read("a").attempts.isEmpty())
+    }
+    @Test fun progressShowsRelayDraftsWithoutDroppingKnownOnesUntilTheLoadCompletes() = runTest {
+        val known = ArticleDraft(ownerPubkey = "a", title = "前回の一覧", revision = 1)
+        val fromRelay = ArticleDraft(ownerPubkey = "a", title = "届いた下書き", revision = 1)
+        var results = listOf(known)
+        val transport = object : ArticleDraftTransport {
+            override suspend fun load() = results
+            override suspend fun save(draft: ArticleDraft) = Unit
+            override suspend fun delete(draft: ArticleDraft) = Unit
+            override suspend fun loadProgressively(onProgress: suspend (List<ArticleDraft>) -> Unit): List<ArticleDraft> {
+                if (results != listOf(known)) onProgress(listOf(fromRelay))
+                return results
+            }
+        }
+        val store = ArticleDraftStore(transport = transport)
+        store.refreshDrafts("a")
+        assertEquals(listOf("前回の一覧"), store.read("a").drafts.values.map { it.title })
+        results = listOf(fromRelay)
+        val progress = mutableListOf<Set<String>>()
+        store.refreshDrafts("a") { data -> progress += data.drafts.values.map { it.title }.toSet() }
+        assertEquals(listOf(setOf("前回の一覧", "届いた下書き")), progress)
+        assertEquals(listOf("届いた下書き"), store.read("a").drafts.values.map { it.title })
+    }
+    @Test fun slowRelayLoadDoesNotBlockOpeningOrSavingAndDoesNotRevertTheSave() = runTest {
+        val loaded = ArticleDraft(ownerPubkey = "a", title = "リレーの版", revision = 1)
+        val release = kotlinx.coroutines.CompletableDeferred<Unit>()
+        val transport = object : ArticleDraftTransport {
+            var first = true
+            override suspend fun load(): List<ArticleDraft> {
+                if (first) { first = false; return listOf(loaded) }
+                release.await(); return listOf(loaded)
+            }
+            override suspend fun save(draft: ArticleDraft) = Unit
+            override suspend fun delete(draft: ArticleDraft) = Unit
+        }
+        val store = ArticleDraftStore(transport = transport)
+        store.refreshDrafts("a")
+        val refresh = async { store.refreshDrafts("a") }
+        testScheduler.runCurrent()
+        assertFalse(refresh.isCompleted)
+        assertEquals(loaded, store.loadDraft("a", loaded.draftId))
+        val edited = store.save(loaded.copy(title = "取得中に保存"), loaded.revision)
+        val created = store.save(ArticleDraft(ownerPubkey = "a", title = "取得中に作成"), null)
+        release.complete(Unit)
+        refresh.await()
+        assertEquals(edited, store.read("a").drafts[loaded.draftId])
+        assertEquals(created, store.read("a").drafts[created.draftId])
     }
 }

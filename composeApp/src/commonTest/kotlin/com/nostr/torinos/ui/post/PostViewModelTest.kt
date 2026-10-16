@@ -1,5 +1,7 @@
 package com.nostr.torinos.ui.post
 
+import com.nostr.torinos.model.*
+
 import com.nostr.torinos.model.MediaMetadata
 import com.nostr.torinos.model.NoteContext
 import com.nostr.torinos.network.RelayPublishResult

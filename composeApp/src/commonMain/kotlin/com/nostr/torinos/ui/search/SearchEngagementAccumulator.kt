@@ -1,5 +1,6 @@
 package com.nostr.torinos.ui.search
 
+import com.nostr.torinos.engagement.*
 import com.nostr.torinos.model.isLikeReaction
 import com.nostr.torinos.engagement.ReactionEventReducer
 import com.nostr.torinos.model.COMMENT_EVENT_KIND
@@ -26,127 +27,83 @@ internal data class SearchEngagement(
     val repostPubkeys: List<String> = emptyList(),
 )
 
-/**
- * 検索結果の付随イベントを対象投稿ごとに集計する。
- *
- * 重複排除の索引と集計値を対象ごとに同じ寿命で持つため、索引だけが先に消えて同じイベントを
- * 再計上することはない。追跡上限を超えて外れた対象は集計値だけを残し、以後のイベントを受け付けない。
- */
-internal class SearchEngagementAccumulator(private val maxTrackedTargets: Int) {
-    private class TargetIndex {
-        val reactionIds = mutableSetOf<String>()
-        val replyIds = mutableSetOf<String>()
-        /** kind 6 のIDと、引用（kind 1 の q タグ）のID。 */
-        val repostIds = mutableSetOf<String>()
-    }
-
-    private val tracked = LinkedHashMap<String, TargetIndex>()
-    private val engagements = mutableMapOf<String, SearchEngagement>()
-    private var snapshot: Map<String, SearchEngagement> = emptyMap()
+/** 取得方式は検索固有、集計規則とイベントは共通ストアを使う。 */
+internal class SearchEngagementView(
+    private val maxTrackedTargets: Int,
+    internal val store: EngagementStore = EngagementStore(),
+    private val sessionId: String? = null,
+    private val ownPubkey: String? = null,
+) {
+    private val tracked = linkedSetOf<String>()
+    private val admitted = mutableMapOf<String, MutableSet<String>>()
+    private val frozen = mutableMapOf<String, SearchEngagement>()
+    private var startSequence = store.localCommitSequence(sessionId)
+    private var cached = emptyMap<String, SearchEngagement>()
     private var dirty = false
+    private var storeRevision = -1L
+    internal val pending = com.nostr.torinos.engagement.PendingEngagementRegistry.forSession(sessionId)
+    private var pendingRevision = -1L
 
-    val trackedTargets: Set<String> get() = tracked.keys
-
-    fun isTracked(eventId: String): Boolean = eventId in tracked
-
-    /** 新しい対象なら追跡を始めて true を返す。上限を超えた分は古い対象から外す。 */
+    val trackedTargets: Set<String> get() = tracked.toSet()
+    fun isTracked(id: String) = id in tracked
     fun track(eventId: String): Boolean {
-        if (eventId in tracked) return false
-        tracked[eventId] = TargetIndex()
-        while (tracked.size > maxTrackedTargets) tracked.remove(tracked.keys.first())
+        if (!tracked.add(eventId)) return false
+        admitted[eventId] = linkedSetOf()
+        while (tracked.size > maxTrackedTargets) {
+            val old = tracked.first()
+            frozen[old] = project(old, includePending = false)
+            tracked.remove(old)
+            admitted.remove(old)
+        }
+        store.retain(this, tracked.toSet())
+        dirty = true
         return true
     }
 
-    /** 集計に加えたイベントの作者のうち、プロフィールを表示に使うもの。 */
-    fun apply(event: NostrEvent): Set<String> = when (event.kind) {
-        REACTION_KIND -> applyReaction(event)
-        REPOST_KIND -> applyRepost(event)
-        COMMENT_EVENT_KIND -> {
-            if (event.isSupportedTimelineComment()) applyReply(event)
-            emptySet()
-        }
-        TEXT_NOTE_KIND -> {
-            applyReply(event)
-            applyQuote(event)
-        }
-        else -> emptySet()
+    fun apply(event: NostrEvent, relayUrl: String? = null): Set<String> {
+        val references = classifyEngagementEvent(event).filter { it.targetId in tracked }
+        store.observe(event, relayUrl)
+        references.forEach { if (admitted.getValue(it.targetId).add(event.id)) dirty = true }
+        return if (references.any { it.bucket != EngagementBucket.Replies }) setOf(event.pubkey) else emptySet()
     }
 
-    /** 前回の取り出し以降に変化があった場合だけ新しいスナップショットを作る。 */
+    private fun project(id: String, includePending: Boolean = true): SearchEngagement {
+        val engagement = store.snapshot(id) ?: TargetEngagement()
+        val ids = admitted[id].orEmpty() + store.localEventsSince(id, sessionId, startSequence)
+        val projected = projectEngagement(engagement, ownPubkey, EngagementViewScope(admittedEventIds = ids), if (includePending) pending.operations(id) else emptyMap())
+        val state = projected.state
+        return SearchEngagement(
+            replyCount = projected.replyCount,
+            reactionCount = state.reactionCount, likeReactionCount = state.likeReactionCount,
+            customReactions = state.customReactions, unicodeReactions = state.unicodeReactions,
+            reactionEvents = projected.events.reactions.values.sortedWith(compareBy<NostrEvent> { it.createdAt }.thenBy { it.id }),
+            repostCount = state.repostCount,
+            repostPubkeys = (projected.events.reposts.values + projected.events.quotes.values).map { it.pubkey }.distinct(),
+        )
+    }
+
     fun snapshot(): Map<String, SearchEngagement> {
-        if (dirty) {
-            snapshot = engagements.toMap()
-            dirty = false
+        val revision = store.revision()
+        val operationsRevision = pending.revision()
+        if (dirty || revision != storeRevision || operationsRevision != pendingRevision) {
+            val next = frozen + tracked.associateWith { project(it) }
+            if (revision == store.revision() && operationsRevision == pending.revision()) {
+                cached = next
+                dirty = false
+                storeRevision = revision
+                pendingRevision = operationsRevision
+            }
         }
-        return snapshot
+        return cached
     }
 
     fun clear() {
-        tracked.clear()
-        engagements.clear()
-        snapshot = emptyMap()
-        dirty = false
-    }
-
-    private fun applyReaction(event: NostrEvent): Set<String> {
-        val targetId = event.reactionTargetId() ?: return emptySet()
-        val index = tracked[targetId] ?: return emptySet()
-        if (!index.reactionIds.add(event.id)) return emptySet()
-        update(targetId) { current ->
-            current.copy(
-                reactionCount = current.reactionCount + 1,
-                likeReactionCount = current.likeReactionCount + if (event.isLikeReaction()) 1 else 0,
-                customReactions = event.toCustomReaction()
-                    ?.let(current.customReactions::incrementedWith) ?: current.customReactions,
-                unicodeReactions = event.toUnicodeReaction()
-                    ?.let(current.unicodeReactions::incrementedWithUnicodeReaction) ?: current.unicodeReactions,
-                reactionEvents = ReactionEventReducer.add(current.reactionEvents, event),
-            )
-        }
-        return setOf(event.pubkey)
-    }
-
-    private fun applyReply(event: NostrEvent) {
-        val targetId = event.replyTargetId() ?: return
-        val index = tracked[targetId] ?: return
-        if (!index.replyIds.add(event.id)) return
-        update(targetId) { it.copy(replyCount = it.replyCount + 1) }
-    }
-
-    private fun applyRepost(event: NostrEvent): Set<String> {
-        val targetId = event.reactionTargetId() ?: return emptySet()
-        return if (addRepost(targetId, event.id, event.pubkey)) setOf(event.pubkey) else emptySet()
-    }
-
-    private fun applyQuote(event: NostrEvent): Set<String> {
-        val added = event.tags
-            .filter { it.firstOrNull() == "q" }
-            .mapNotNull { it.getOrNull(1) }
-            .distinct()
-            .count { targetId -> addRepost(targetId, event.id, event.pubkey) }
-        return if (added > 0) setOf(event.pubkey) else emptySet()
-    }
-
-    private fun addRepost(targetId: String, eventId: String, pubkey: String): Boolean {
-        val index = tracked[targetId] ?: return false
-        if (!index.repostIds.add(eventId)) return false
-        update(targetId) { current ->
-            current.copy(
-                repostCount = current.repostCount + 1,
-                repostPubkeys = if (pubkey in current.repostPubkeys) current.repostPubkeys else current.repostPubkeys + pubkey,
-            )
-        }
-        return true
-    }
-
-    private inline fun update(targetId: String, transform: (SearchEngagement) -> SearchEngagement) {
-        engagements[targetId] = transform(engagements[targetId] ?: SearchEngagement())
-        dirty = true
-    }
-
-    private companion object {
-        const val TEXT_NOTE_KIND = 1
-        const val REPOST_KIND = 6
-        const val REACTION_KIND = 7
+        tracked.clear(); admitted.clear(); frozen.clear()
+        store.release(this)
+        startSequence = store.localCommitSequence(sessionId)
+        cached = emptyMap(); dirty = false; storeRevision = -1
     }
 }
+
+// 既存のテスト・呼び出し元の段階移行用。
+internal typealias SearchEngagementAccumulator = SearchEngagementView

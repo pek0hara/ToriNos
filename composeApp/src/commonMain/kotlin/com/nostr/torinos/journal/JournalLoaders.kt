@@ -1,5 +1,7 @@
 package com.nostr.torinos.journal
 
+import com.nostr.torinos.network.collectRecovering
+
 import com.nostr.torinos.model.COMMENT_EVENT_KIND
 import com.nostr.torinos.model.NostrEvent
 import com.nostr.torinos.model.NostrFilter
@@ -12,6 +14,11 @@ import com.nostr.torinos.network.SubscriptionBehavior
 import com.nostr.torinos.network.SubscriptionSession
 import com.nostr.torinos.network.SubscriptionSignal
 import com.nostr.torinos.network.SubscriptionSpec
+import com.nostr.torinos.util.journalTraceLog
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlin.random.Random
 
 /** [JournalFetchRequest]を1回の有限購読で実行する。 */
@@ -19,9 +26,9 @@ internal fun interface JournalEventSource {
     suspend fun fetch(request: JournalFetchRequest): JournalFetchResult
 }
 
-/** 投稿IDの集合に付いたリアクション・返信・リポスト・引用を取得する。全リレー完了ならtrue。 */
+/** 投稿IDの集合に付いたリアクション・返信・リポスト・引用を取得する。 */
 internal fun interface JournalEngagementSource {
-    suspend fun fetch(noteIds: Set<String>, relayUrl: String?, onEvent: (NostrEvent) -> Unit): Boolean
+    suspend fun fetch(noteIds: Set<String>, relayUrl: String?, onEvent: (NostrEvent) -> Unit): JournalFetchStatus
 }
 
 /**
@@ -32,6 +39,7 @@ internal class NostrJournalEventSource(
     private val openSession: suspend (SubscriptionSpec) -> SubscriptionSession = NostrRepository::openSubscription,
     private val timeoutMillis: Long = JOURNAL_FETCH_TIMEOUT_MS,
     private val maxLimit: (relayUrl: String) -> Int? = RelayLimits::maxLimit,
+    private val settleMillis: Long = JOURNAL_SETTLE_MS,
 ) : JournalEventSource {
     override suspend fun fetch(request: JournalFetchRequest): JournalFetchResult {
         val received = mutableListOf<Pair<String, NostrEvent>>()
@@ -46,6 +54,7 @@ internal class NostrJournalEventSource(
                 replayCachedEvents = false,
             ),
             onRelayEvent = { relayUrl, event -> received += relayUrl to event },
+            settleMillis = settleMillis,
         )
         val requested = request.filters.mapNotNull { it.limit }.minOrNull()
         val truncatedAt = requested?.let {
@@ -53,19 +62,27 @@ internal class NostrJournalEventSource(
                 journalPageThreshold(maxLimit(relayUrl), requested)
             }
         }
-        return JournalFetchResult(request, completed.events, completed.complete, truncatedAt)
+        return JournalFetchResult(
+            request = request,
+            events = completed.events,
+            complete = completed.status.complete,
+            truncatedAt = truncatedAt,
+            allRelaysFinished = completed.status.allRelaysFinished,
+            retryRelays = completed.status.retryRelays,
+        )
     }
 }
 
 internal class NostrJournalEngagementSource(
     private val openSession: suspend (SubscriptionSpec) -> SubscriptionSession = NostrRepository::openSubscription,
     private val timeoutMillis: Long = JOURNAL_ENGAGEMENT_TIMEOUT_MS,
+    private val settleMillis: Long = JOURNAL_SETTLE_MS,
 ) : JournalEngagementSource {
     override suspend fun fetch(
         noteIds: Set<String>,
         relayUrl: String?,
         onEvent: (NostrEvent) -> Unit,
-    ): Boolean {
+    ): JournalFetchStatus {
         val ids = noteIds.toList()
         return collectFetch(
             openSession = openSession,
@@ -91,7 +108,8 @@ internal class NostrJournalEngagementSource(
                 behavior = SubscriptionBehavior.Fetch(timeoutMillis),
             ),
             onEvent = onEvent,
-        ).complete
+            settleMillis = settleMillis,
+        ).status
     }
 }
 
@@ -171,36 +189,51 @@ internal class NostrJournalInteractionSource(
         ).events
 }
 
-private class CollectedFetch(val events: List<NostrEvent>, val complete: Boolean)
+private class CollectedFetch(val events: List<NostrEvent>, val status: JournalFetchStatus)
 
 private suspend fun collectFetch(
     openSession: suspend (SubscriptionSpec) -> SubscriptionSession,
     spec: SubscriptionSpec,
     onEvent: (NostrEvent) -> Unit = {},
     onRelayEvent: (relayUrl: String, NostrEvent) -> Unit = { _, _ -> },
-): CollectedFetch {
-    if (spec.filters.isEmpty()) return CollectedFetch(emptyList(), complete = true)
+    settleMillis: Long? = null,
+): CollectedFetch = coroutineScope {
+    if (spec.filters.isEmpty()) return@coroutineScope CollectedFetch(emptyList(), JournalFetchStatus.Finished)
     val session = openSession(spec)
     val events = linkedMapOf<String, NostrEvent>()
     var completion: SubscriptionSignal.FetchCompleted? = null
+    var settleJob: Job? = null
     try {
-        session.signals.collect { signal ->
+        session.collectRecovering { signal ->
             when (signal) {
                 is SubscriptionSignal.Event -> {
                     onRelayEvent(signal.relayUrl, signal.event)
                     if (events.put(signal.event.id, signal.event) == null) onEvent(signal.event)
+                }
+                // フィードの履歴と同じく、最初のリレーが取り終えてから[settleMillis]たっても終わらないリレーは待たない。
+                // 待たなかったリレーは時間切れとして完了の知らせに入り、取り直しに回る。
+                is SubscriptionSignal.Eose -> if (settleMillis != null && settleJob == null) {
+                    settleJob = launch {
+                        delay(settleMillis)
+                        session.finishPendingRelays()
+                    }
                 }
                 is SubscriptionSignal.FetchCompleted -> completion = signal
                 else -> Unit
             }
         }
     } finally {
+        settleJob?.cancel()
         runCatching { session.close() }
     }
-    return CollectedFetch(
-        events = events.values.toList(),
-        complete = completion?.let(::shouldCommitJournalFetch) == true,
-    )
+    val status = JournalFetchStatus.of(completion)
+    if (!status.allRelaysFinished) {
+        journalTraceLog {
+            "incomplete ${spec.id} complete=${status.complete} retry=${status.retryRelays} " +
+                "outcomes=${completion?.outcomes?.entries?.joinToString { (url, outcome) -> "$url=$outcome" }}"
+        }
+    }
+    CollectedFetch(events = events.values.toList(), status = status)
 }
 
 private fun journalSubscriptionId(prefix: String): String =
@@ -208,6 +241,8 @@ private fun journalSubscriptionId(prefix: String): String =
 
 private const val JOURNAL_FETCH_TIMEOUT_MS = 8_000L
 private const val JOURNAL_ENGAGEMENT_TIMEOUT_MS = 8_000L
+/** 最初のリレーが取り終えてから、ほかのリレーを待つ時間。フィードの履歴（`HISTORY_RELAY_SETTLE_DELAY_MS`）と同じ。 */
+private const val JOURNAL_SETTLE_MS = 1_000L
 private const val ENGAGEMENT_LIMIT = 500
 private const val INTERACTION_LIMIT = 1_000
 private const val REFERENCE_CHUNK_SIZE = 200

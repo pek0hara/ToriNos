@@ -40,9 +40,11 @@ internal class SearchController(
     private val config: SearchConfig = SearchConfig(),
     nowEpochSeconds: () -> Long,
     ownerId: String = newSearchOwnerId(),
+    sessionId: String? = null,
+    ownPubkey: String? = null,
 ) {
     private val launcher = SafeCoroutineLauncher(scope, "SearchController")
-    val posts = PostSearchController(scope, gateway, config, nowEpochSeconds, ownerId)
+    val posts = PostSearchController(scope, gateway, config, nowEpochSeconds, ownerId, sessionId, ownPubkey)
 
     private val _state = MutableStateFlow(SearchUiState())
     val state: StateFlow<SearchUiState> = _state.asStateFlow()
@@ -77,6 +79,8 @@ internal class SearchController(
     }
 
     /** 画面が非表示になった時点で、検索画面が所有する通信と保留処理を止める。 */
+    fun close() { stop(); posts.close() }
+
     fun stop() {
         posts.stop()
         if (userSearchJob?.isActive == true) {

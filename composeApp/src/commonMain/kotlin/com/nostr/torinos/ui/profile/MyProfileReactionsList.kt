@@ -1,5 +1,7 @@
 package com.nostr.torinos.ui.profile
 
+import com.nostr.torinos.model.*
+
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -39,7 +41,7 @@ import com.nostr.torinos.ui.notification.NotificationTargetPreview
 import com.nostr.torinos.ui.notification.notificationTargetDestination
 import com.nostr.torinos.ui.components.ProfileNameText
 import com.nostr.torinos.ui.components.formatTimestamp
-import com.nostr.torinos.ui.components.stripImageUrls
+import com.nostr.torinos.model.stripImageUrls
 
 @Composable
 fun MyProfileReactionsList(

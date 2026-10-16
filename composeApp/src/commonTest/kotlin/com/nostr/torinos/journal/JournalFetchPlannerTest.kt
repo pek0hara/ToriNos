@@ -42,12 +42,12 @@ class JournalFetchPlannerTest {
     }
 
     @Test
-    fun receivedLikesAreFetchedFromAllRelaysSeparately() {
+    fun receivedLikesAreFetchedFromTheSelectedRelaySeparately() {
         val requests = JournalFetchPlanner.forDate(date, own(Post, ReceivedLike), "wss://memo", clock)
 
         assertEquals(2, requests.size)
         val received = requests.single { ReceivedLike in it.kinds }
-        assertEquals(RelayTarget.AllEnabled, received.target)
+        assertEquals(RelayTarget.Single("wss://memo"), received.target)
         assertEquals(listOf(7), received.filters.single().kinds)
         assertEquals(listOf(OWNER), received.filters.single().pTags)
         assertEquals(setOf(Post), requests.single { it !== received }.kinds)
@@ -56,6 +56,12 @@ class JournalFetchPlannerTest {
     @Test
     fun withoutASelectedRelayAuthoredKindsUseAllRelays() {
         val request = JournalFetchPlanner.forDate(date, own(Post), null, clock).single()
+        assertEquals(RelayTarget.AllEnabled, request.target)
+    }
+
+    @Test
+    fun withoutASelectedRelayReceivedLikesUseAllRelays() {
+        val request = JournalFetchPlanner.forDate(date, own(ReceivedLike), null, clock).single()
         assertEquals(RelayTarget.AllEnabled, request.target)
     }
 
@@ -94,7 +100,7 @@ class JournalFetchPlannerTest {
         val received = requests.single { ReceivedLike in it.kinds }
         assertEquals(listOf(OTHER, OWNER).sorted(), received.filters.single().pTags)
         assertEquals(setOf(OWNER, OTHER), received.members)
-        assertEquals(RelayTarget.AllEnabled, received.target)
+        assertEquals(RelayTarget.Single("wss://memo"), received.target)
         assertEquals(setOf(OTHER), requests.single { it !== received }.members)
     }
 
@@ -176,7 +182,7 @@ class JournalFetchPlannerTest {
     }
 
     @Test
-    fun receivedLikesInARangeComeFromAllRelaysWithThePageLimit() {
+    fun receivedLikesInARangeComeFromTheSelectedRelayWithThePageLimit() {
         val coverage = JournalCoverage().markLoaded(listOf(month), setOf(ReceivedLike), me)
 
         val requests = JournalFetchPlanner.forRange(
@@ -185,7 +191,7 @@ class JournalFetchPlannerTest {
 
         val received = requests.single { ReceivedLike in it.kinds }
         assertEquals(setOf(ReceivedLike), received.kinds)
-        assertEquals(RelayTarget.AllEnabled, received.target)
+        assertEquals(RelayTarget.Single("wss://memo"), received.target)
         assertEquals(LocalDate(2026, 9, 2), received.dates.first())
         assertEquals(listOf(7), received.filters.single().kinds)
         assertEquals(listOf(OWNER), received.filters.single().pTags)

@@ -9,6 +9,7 @@ import com.nostr.torinos.journal.JournalEngagementSource
 import com.nostr.torinos.journal.JournalEventSource
 import com.nostr.torinos.journal.JournalFetchRequest
 import com.nostr.torinos.journal.JournalFetchResult
+import com.nostr.torinos.journal.JournalFetchStatus
 import com.nostr.torinos.journal.JournalInteractionSource
 import com.nostr.torinos.journal.JournalMemberStorage
 import com.nostr.torinos.journal.JournalReferenceSource
@@ -24,6 +25,7 @@ import com.nostr.torinos.journal.utcClock
 import com.nostr.torinos.model.NostrEvent
 import com.nostr.torinos.model.NostrFilter
 import com.nostr.torinos.model.NostrProfile
+import com.nostr.torinos.network.RelayTarget
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -38,6 +40,7 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class JournalControllerTest {
+    private val DOWN = "wss://down"
     private val sep15 = LocalDate(2026, 9, 15)
     private val sep3 = LocalDate(2026, 9, 3)
     private val sep1 = LocalDate(2026, 9, 1)
@@ -53,7 +56,6 @@ class JournalControllerTest {
             engagementSource = FakeEngagement(emptyList()),
             referenceSource = NoReferences,
             profileSource = NoProfiles,
-            cachedReceivedLikes = { _, _, _ -> emptyList() },
             memberStorage = FakeMemberStorage(),
         )
         assertFalse(controller.state.value.showCalendar)
@@ -216,7 +218,7 @@ class JournalControllerTest {
     }
 
     @Test
-    fun switchingRelaysDropsEverythingFetchedFromThePreviousRelay() = runTest {
+    fun switchingRelaysDropsWhatWasFetchedFromThePreviousRelay() = runTest {
         val note = post(hexId(1))
         val relay = FakeRelay(note)
         val engagement = FakeEngagement(listOf(reaction("like", targetId = note.id)))
@@ -235,7 +237,224 @@ class JournalControllerTest {
         val state = controller.state.value
         assertTrue(state.timeline.isEmpty())
         assertTrue(state.engagement.isEmpty())
-        assertTrue(state.referencedEvents.isEmpty())
+    }
+
+    @Test
+    fun switchingRelaysRefetchesReceivedLikesFromTheNewRelay() = runTest {
+        val relay = FakeRelay(post("note", createdAt = epochOf(sep3)), reaction("got-on-a", targetId = "t", createdAt = epochOf(sep3)))
+        val controller = controller(relay)
+        controller.setKinds(setOf(JournalActivityKind.Post, JournalActivityKind.ReceivedLike))
+        controller.setRelayUrl("wss://a")
+        settle()
+        assertEquals(setOf("note", "got-on-a"), controller.state.value.timeline.eventIdsOn(listOf(sep3)))
+
+        // 新しいリレーには、別のもらったいいねだけがある。
+        relay.events.clear()
+        relay.events += reaction("got-on-b", targetId = "t", createdAt = epochOf(sep2))
+        val before = relay.requests.size
+        controller.setRelayUrl("wss://b")
+        settle()
+
+        val received = relay.requests.drop(before).filter { JournalActivityKind.ReceivedLike in it.kinds }
+        assertTrue(received.isNotEmpty())
+        assertTrue(received.all { it.target == RelayTarget.Single("wss://b") })
+        assertEquals(setOf("got-on-b"), controller.state.value.timeline.eventIdsOn(sep1.daysOfMonthUntil(sep15)))
+    }
+
+    @Test
+    fun receivedLikesAreLoadedWhenOneRelayIsDownAndOnlyThatRelayIsRetried() = runTest {
+        val relay = FakeRelay(reaction("got", targetId = "t", createdAt = epochOf(sep3)))
+        relay.downRelay = DOWN
+        relay.downRelayEvents += reaction("late", targetId = "t", createdAt = epochOf(sep2))
+        val controller = controller(relay)
+        controller.setKinds(setOf(JournalActivityKind.ReceivedLike))
+        // 全リレーを対象にした取得（リレー未選択）で確かめる。
+        controller.setRelayUrl(null)
+        settle()
+
+        val state = controller.state.value
+        assertTrue(state.coverage.hasLoadedMonth(sep1, state.kinds, sep15, setOf(OWNER)))
+        assertEquals(setOf("got"), state.timeline.eventIdsOn(sep1.daysOfMonthUntil(sep15)))
+
+        relay.downRelayRecovered = true
+        testScheduler.advanceTimeBy(2_001)
+        settle()
+
+        val retried = relay.requests.filter { it.target == RelayTarget.Single(DOWN) }
+        assertEquals(1, retried.size)
+        assertEquals(setOf(JournalActivityKind.ReceivedLike), retried.single().kinds)
+        assertEquals(setOf("got", "late"), controller.state.value.timeline.eventIdsOn(sep1.daysOfMonthUntil(sep15)))
+    }
+
+    @Test
+    fun aRelayThatStaysDownIsGivenUpAfterThreeFailures() = runTest {
+        val relay = FakeRelay(reaction("got", targetId = "t", createdAt = epochOf(sep3)))
+        relay.downRelay = DOWN
+        val controller = controller(relay)
+        controller.setKinds(setOf(JournalActivityKind.ReceivedLike))
+        // 全リレーを対象にした取得（リレー未選択）で確かめる。
+        controller.setRelayUrl(null)
+        settle()
+
+        testScheduler.advanceTimeBy(60_000)
+        settle()
+
+        assertEquals(2, relay.requests.count { it.target == RelayTarget.Single(DOWN) })
+    }
+
+    @Test
+    fun aRelayThatRefusesIsNotRetried() = runTest {
+        val relay = FakeRelay(reaction("got", targetId = "t", createdAt = epochOf(sep3)))
+        relay.downRelay = DOWN
+        relay.downRelayRefuses = true
+        val controller = controller(relay)
+        controller.setKinds(setOf(JournalActivityKind.ReceivedLike))
+        // 全リレーを対象にした取得（リレー未選択）で確かめる。
+        controller.setRelayUrl(null)
+        settle()
+
+        testScheduler.advanceTimeBy(60_000)
+        settle()
+
+        assertTrue(relay.requests.none { it.target == RelayTarget.Single(DOWN) })
+        val state = controller.state.value
+        assertTrue(state.coverage.hasLoadedMonth(sep1, state.kinds, sep15, setOf(OWNER)))
+    }
+
+    @Test
+    fun engagementRetriesOnlyAddAndNeverReplace() = runTest {
+        // 取り直しの集計には、最初の取得の後に表示へ入った分（確定した自分のいいね等）が含まれない。
+        // 置き換えるとそれが消えるため、取り直しは足すだけにする。
+        val note = post(hexId(1))
+        val earlier = reaction("earlier", targetId = note.id, pubkey = "earlier-reactor")
+        val engagement = FakeEngagement(listOf(earlier))
+        val controller = controller(FakeRelay(note), engagement)
+        controller.setRelayUrl("wss://memo")
+        settle()
+        controller.setVisibleNoteIds(setOf(note.id))
+        settle()
+
+        engagement.events = listOf(reaction("now", targetId = note.id))
+        engagement.downRelay = DOWN
+        engagement.downRelayEvents += reaction("late", targetId = note.id, pubkey = "late-reactor")
+        controller.refresh()
+        settle()
+        controller.setVisibleNoteIds(setOf(note.id))
+        settle()
+        engagement.downRelayRecovered = true
+        testScheduler.advanceTimeBy(2_001)
+        settle()
+
+        assertEquals(DOWN, engagement.relayRequests.last())
+        val ids = controller.state.value.engagementOf(note.id).reactionEvents.map { it.id }.toSet()
+        assertEquals(setOf("earlier", "now", "late"), ids)
+    }
+
+    @Test
+    fun switchingKindsKeepsRetryingReceivedLikes() = runTest {
+        val relay = FakeRelay(reaction("got", targetId = "t", createdAt = epochOf(sep3)))
+        relay.downRelay = DOWN
+        relay.downRelayEvents += reaction("late", targetId = "t", createdAt = epochOf(sep2))
+        val controller = controller(relay)
+        controller.setKinds(setOf(JournalActivityKind.ReceivedLike))
+        // 全リレーを対象にした取得（リレー未選択）で確かめる。
+        controller.setRelayUrl(null)
+        settle()
+
+        // 取り直しを待っている間に種類を足す。もらったいいねは取得済みなので取り直さないが、待っている取り直しは続ける。
+        controller.setKinds(setOf(JournalActivityKind.Post, JournalActivityKind.ReceivedLike))
+        settle()
+        relay.downRelayRecovered = true
+        testScheduler.advanceTimeBy(2_001)
+        settle()
+
+        assertTrue(
+            relay.requests.any { it.target == RelayTarget.Single(DOWN) && JournalActivityKind.ReceivedLike in it.kinds },
+        )
+        assertEquals(setOf("got", "late"), controller.state.value.timeline.eventIdsOn(sep1.daysOfMonthUntil(sep15)))
+    }
+
+    @Test
+    fun leavingTheMonthStopsItsRetries() = runTest {
+        val relay = FakeRelay(reaction("got", targetId = "t", createdAt = epochOf(sep3)))
+        relay.downRelay = DOWN
+        val controller = controller(relay)
+        controller.setKinds(setOf(JournalActivityKind.ReceivedLike))
+        // 全リレーを対象にした取得（リレー未選択）で確かめる。
+        controller.setRelayUrl(null)
+        settle()
+
+        controller.previousMonth()
+        settle()
+        relay.downRelayRecovered = true
+        testScheduler.advanceTimeBy(60_000)
+        settle()
+
+        val retried = relay.requests.filter { it.target == RelayTarget.Single(DOWN) }
+        assertTrue(retried.isNotEmpty())
+        assertTrue(retried.all { request -> request.dates.all { it.month == kotlinx.datetime.Month.AUGUST } })
+    }
+
+    @Test
+    fun refreshKeepsRowsWhenARelayDidNotFinish() = runTest {
+        val onlyOnDown = reaction("only-on-down", targetId = "t", createdAt = epochOf(sep3))
+        val relay = FakeRelay(onlyOnDown)
+        val controller = controller(relay, showCalendar = false)
+        controller.setKinds(setOf(JournalActivityKind.ReceivedLike))
+        // 全リレーを対象にした取得（リレー未選択）で確かめる。
+        controller.setRelayUrl(null)
+        settle()
+        assertEquals(setOf("only-on-down"), controller.state.value.timeline.eventIdsOn(listOf(sep3)))
+
+        // 更新の時点では、このいいねがあるリレーだけが落ちている。
+        relay.events.clear()
+        relay.downRelay = DOWN
+        controller.refresh()
+        settle()
+
+        assertEquals(setOf("only-on-down"), controller.state.value.timeline.eventIdsOn(listOf(sep3)))
+    }
+
+    @Test
+    fun engagementFromARelayThatWasDownIsAddedWithoutDoubleCounting() = runTest {
+        val note = post(hexId(1))
+        val shared = reaction("shared", targetId = note.id)
+        val engagement = FakeEngagement(listOf(shared))
+        engagement.downRelay = DOWN
+        engagement.downRelayEvents += reaction("late", targetId = note.id, pubkey = "someone-else")
+        val controller = controller(FakeRelay(note), engagement)
+        controller.setRelayUrl("wss://memo")
+        settle()
+        controller.setVisibleNoteIds(setOf(note.id))
+        settle()
+        assertEquals(1, controller.state.value.engagementOf(note.id).summary.reactionCount)
+
+        engagement.downRelayRecovered = true
+        testScheduler.advanceTimeBy(2_001)
+        settle()
+
+        assertEquals(listOf<String?>("wss://memo", DOWN), engagement.relayRequests)
+        assertEquals(2, controller.state.value.engagementOf(note.id).summary.reactionCount)
+        // 取り直しで全リレーの分がそろったので、次に表示しても取り直さない。
+        controller.setVisibleNoteIds(emptySet())
+        controller.setVisibleNoteIds(setOf(note.id))
+        settle()
+        assertEquals(2, engagement.requests.size)
+    }
+
+    @Test
+    fun switchingRelaysKeepsReferencedEvents() = runTest {
+        val relay = FakeRelay(reply("child", parentId = hexId(20), createdAt = epochOf(sep3)))
+        val references = FakeReferences(post(hexId(20), pubkey = OTHER))
+        val controller = controller(relay, references = references)
+        controller.setRelayUrl("wss://a")
+        settle()
+
+        controller.setRelayUrl("wss://b")
+        settle()
+
+        assertEquals(1, references.requests.size)
+        assertEquals(setOf(hexId(20)), controller.state.value.referencedEvents.keys)
     }
 
     @Test
@@ -276,7 +495,7 @@ class JournalControllerTest {
     }
 
     @Test
-    fun receivedLikesComeFromAllRelaysForTheWholeMonth() = runTest {
+    fun receivedLikesComeFromTheSelectedRelayForTheWholeMonth() = runTest {
         val relay = FakeRelay(reaction("got", targetId = "t", createdAt = epochOf(sep3)))
         val controller = controller(relay)
         controller.setKinds(setOf(JournalActivityKind.ReceivedLike))
@@ -285,6 +504,7 @@ class JournalControllerTest {
 
         val receivedRequests = relay.requests.filter { JournalActivityKind.ReceivedLike in it.kinds }
         assertEquals(1, receivedRequests.size)
+        assertEquals(RelayTarget.Single("wss://memo"), receivedRequests.single().target)
         assertEquals(15, receivedRequests.single().dates.size)
         assertEquals(mapOf(sep3 to 1), controller.state.value.entryCountsByDate)
     }
@@ -411,7 +631,6 @@ class JournalControllerTest {
             engagementSource = FakeEngagement(emptyList()),
             referenceSource = NoReferences,
             profileSource = NoProfiles,
-            cachedReceivedLikes = { _, _, _ -> emptyList() },
         )
 
         controller.setRelayUrl("wss://memo")
@@ -634,7 +853,6 @@ class JournalControllerTest {
             engagementSource = FakeEngagement(emptyList()),
             referenceSource = NoReferences,
             profileSource = NoProfiles,
-            cachedReceivedLikes = { _, _, _ -> emptyList() },
             memberStorage = storage,
             initialShowCalendar = true,
         )
@@ -749,7 +967,6 @@ class JournalControllerTest {
         engagementSource = engagement,
         referenceSource = references,
         profileSource = profiles,
-        cachedReceivedLikes = { _, _, _ -> emptyList() },
         memberStorage = storage,
         interactionSource = interactions,
         // 既存のテストは日ごとの表示で確かめる。
@@ -800,11 +1017,28 @@ class JournalControllerTest {
         var gate: CompletableDeferred<Unit>? = null
         /** 2回目以降（月の残りの取得）だけを止める。 */
         var backfillGate: CompletableDeferred<Unit>? = null
+        /** 有効な全リレーへの取得で取り終えないリレー。このリレーだけへの取得は[downRelayRecovered]まで失敗する。 */
+        var downRelay: String? = null
+        var downRelayRecovered = false
+        /** [downRelay]が拒否を返す（取り直さない）。 */
+        var downRelayRefuses = false
+        /** [downRelay]にだけあるイベント。 */
+        val downRelayEvents = mutableListOf<NostrEvent>()
 
         override suspend fun fetch(request: JournalFetchRequest): JournalFetchResult {
             requests += request
             gate?.await()
             if (requests.size > 1) backfillGate?.await()
+            val down = downRelay
+            val failed = if (down == null || downRelayRefuses) emptySet() else setOf(down)
+            if (down != null && request.target == RelayTarget.Single(down)) {
+                if (!downRelayRecovered) return JournalFetchResult(request, emptyList(), complete = false, retryRelays = failed)
+                return JournalFetchResult(request, downRelayEvents.filter { event -> request.filters.any { it.matches(event) } }, true)
+            }
+            if (down != null && request.target == RelayTarget.AllEnabled) {
+                val matched = events.filter { event -> request.filters.any { it.matches(event) } }
+                return JournalFetchResult(request, matched, complete, allRelaysFinished = false, retryRelays = failed)
+            }
             val matched = events
                 .filter { event -> request.filters.any { it.matches(event) } }
                 .sortedByDescending { it.createdAt }
@@ -822,13 +1056,29 @@ class JournalControllerTest {
                 (pTags == null || event.tags.any { it.firstOrNull() == "p" && it.getOrNull(1) in pTags.orEmpty() })
     }
 
-    private class FakeEngagement(private val events: List<NostrEvent>) : JournalEngagementSource {
+    private class FakeEngagement(var events: List<NostrEvent>) : JournalEngagementSource {
         val requests = mutableListOf<Set<String>>()
+        val relayRequests = mutableListOf<String?>()
+        /** 取り終えないリレー。[downRelayEvents]はこのリレーにだけあり、[downRelayRecovered]まで取れない。 */
+        var downRelay: String? = null
+        var downRelayRecovered = false
+        val downRelayEvents = mutableListOf<NostrEvent>()
 
-        override suspend fun fetch(noteIds: Set<String>, relayUrl: String?, onEvent: (NostrEvent) -> Unit): Boolean {
+        override suspend fun fetch(noteIds: Set<String>, relayUrl: String?, onEvent: (NostrEvent) -> Unit): JournalFetchStatus {
             requests += noteIds
+            relayRequests += relayUrl
+            val down = downRelay
+            if (down != null && relayUrl == down) {
+                if (!downRelayRecovered) return JournalFetchStatus(complete = false, retryRelays = setOf(down))
+                (downRelayEvents + events).forEach(onEvent)
+                return JournalFetchStatus(complete = true)
+            }
             events.forEach(onEvent)
-            return true
+            return if (down == null) {
+                JournalFetchStatus(complete = true)
+            } else {
+                JournalFetchStatus(complete = true, allRelaysFinished = false, retryRelays = setOf(down))
+            }
         }
     }
 

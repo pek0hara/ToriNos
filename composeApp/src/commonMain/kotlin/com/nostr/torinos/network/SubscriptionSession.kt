@@ -30,9 +30,19 @@ sealed interface SubscriptionBehavior {
 interface SubscriptionSession {
     val id: String
     val signals: Flow<SubscriptionSignal>
+    /** Fetch登録時に固定した対象。Live・旧テスト実装では空集合。 */
+    val expectedRelayUrls: Set<String> get() = emptySet()
+    val deliveryState: kotlinx.coroutines.flow.StateFlow<SessionDeliveryState> get() = healthyDelivery
 
     suspend fun update(filters: List<NostrFilter>, target: RelayTarget)
     suspend fun close()
+
+    /**
+     * 有限取得で、まだ結果のないリレーを時間切れ（[RelayOutcome.TimedOut]）にして、いま完了させる。
+     * 届いた結果（EOSE・CLOSED・接続できない）はそのまま。遅いリレーをいつ待たなくするかは呼び出し側が決める。
+     * 配信中の購読と、完了済みの取得では何もしない。
+     */
+    suspend fun finishPendingRelays() = Unit
 }
 
 sealed interface SubscriptionSignal {
@@ -80,7 +90,8 @@ enum class RetryDisposition {
 
 sealed interface RelayOutcome {
     data object Eose : RelayOutcome
-    data class Closed(val reason: String) : RelayOutcome
+    /** [retry]は CLOSED の理由から決めた、このリレーへ送り直してよいか。 */
+    data class Closed(val reason: String, val retry: RetryDisposition = RetryDisposition.RetryWithBackoff) : RelayOutcome
     data class Unavailable(val reason: String) : RelayOutcome
     data object TimedOut : RelayOutcome
 }

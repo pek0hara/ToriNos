@@ -1,5 +1,7 @@
 package com.nostr.torinos.ui.post
 
+import com.nostr.torinos.model.*
+
 import com.nostr.torinos.emoji.EmojiSetAddress
 import com.nostr.torinos.ui.SafeViewModel
 import com.nostr.torinos.account.AccountSession
@@ -228,10 +230,29 @@ class PostViewModel(
 ) : SafeViewModel() {
     private val _state = MutableStateFlow(PostState())
     val state: StateFlow<PostState> = _state.asStateFlow()
-    init { launch { accountSession?.inputFrozen?.collect { frozen -> _state.update { it.copy(isFrozen = frozen) } } } }
-    private val inputFrozen get() = accountSession?.inputFrozen?.value == true
-    fun onCursorChange(start: Int, end: Int) { if (!inputFrozen) _state.update { it.copy(cursorStart = start, cursorEnd = end) } }
-    fun onComposerRelaysChanged(urls: Set<String>?) { if (!inputFrozen) _state.update { it.copy(selectedRelayUrls = urls) } }
+    private var replacingInput = false
+    private var restoringInput = false
+    internal var editorRevision = 0L
+        private set
+    init { launch { accountSession?.inputFrozen?.collect { _state.update { it.copy(isFrozen = inputFrozen) } } } }
+    private val inputFrozen get() = accountSession?.inputFrozen?.value == true || (replacingInput && !restoringInput)
+
+    internal fun beginInputReplacement(): () -> Unit {
+        check(!inputFrozen) { "入力を変更できません" }
+        replacingInput = true
+        _state.update { it.copy(isFrozen = true) }
+        return {
+            replacingInput = false
+            _state.update { it.copy(isFrozen = inputFrozen) }
+        }
+    }
+
+    internal fun restoreInputMemo(memo: PostMemoData) {
+        restoringInput = true
+        try { restoreMemo(memo) } finally { restoringInput = false }
+    }
+    fun onCursorChange(start: Int, end: Int) { if (!inputFrozen) { editorRevision++; _state.update { it.copy(cursorStart = start, cursorEnd = end) } } }
+    fun onComposerRelaysChanged(urls: Set<String>?) { if (!inputFrozen) { editorRevision++; _state.update { it.copy(selectedRelayUrls = urls) } } }
     private var nextImageId = 0
     private var draftGeneration = 0
     private var editingMemoIdentifier: String? = null
@@ -241,6 +262,7 @@ class PostViewModel(
 
     fun reset() {
         if (inputFrozen) return
+        editorRevision++
         draftGeneration++
         editingMemoIdentifier = null
         editingMemoUpdatedAt = null
@@ -256,13 +278,14 @@ class PostViewModel(
     fun onTextChange(text: String) = updateText(text)
 
     fun addQuote(quote: PostQuote) {
-        if (!inputFrozen) _state.update { it.copy(quotes = (it.quotes + quote).distinctBy { q -> q.eventId }) }
+        if (!inputFrozen) { editorRevision++; _state.update { it.copy(quotes = (it.quotes + quote).distinctBy { q -> q.eventId }) } }
     }
 
     fun onCustomEmojiInserted(text: String, emoji: CustomEmoji) = updateText(text, emoji)
 
     fun onContentWarningChange(enabled: Boolean) {
         if (inputFrozen) return
+        editorRevision++
         _state.update {
             it.copy(
                 hasContentWarning = enabled,
@@ -281,6 +304,7 @@ class PostViewModel(
 
     private fun updateText(text: String, selectedEmoji: CustomEmoji? = null) {
         if (inputFrozen) return
+        editorRevision++
         _state.value = _state.value.copy(
             text = text,
             customEmojis = resolveDraftEmojis(
@@ -299,6 +323,7 @@ class PostViewModel(
         previewBytes: ByteArray = bytes,
     ) {
         if (inputFrozen) return
+        editorRevision++
         if (_state.value.images.size >= MAX_IMAGES) return
         val id = nextImageId++
         val generation = draftGeneration
@@ -350,6 +375,7 @@ class PostViewModel(
 
     fun removeImage(id: Int) {
         if (inputFrozen) return
+        editorRevision++
         _state.update { s -> s.copy(images = s.images.filter { it.id != id }, memoMessage = null) }
     }
 
@@ -364,6 +390,7 @@ class PostViewModel(
 
     fun restoreMemo(memo: PostMemoData, message: String? = null) {
         if (inputFrozen) return
+        editorRevision++
         draftGeneration++
         val metadataByUrl = memo.imageMetadata.associateBy { it.url }
         val restoredImages = memo.imageUrls
@@ -383,6 +410,7 @@ class PostViewModel(
         editingMemoEventId = memo.sourceEventId
         editingMemoPubkey = memo.sourcePubkey
         _state.value = PostState(
+            isFrozen = replacingInput || accountSession?.inputFrozen?.value == true,
             text = memo.text,
             quotes = memo.quoteInputs(),
             customEmojis = resolveDraftEmojis(memo.text, memo.customEmojis, registeredEmojis()),
@@ -446,6 +474,7 @@ class PostViewModel(
         onSaved: (() -> Unit)? = null,
     ) {
         if (inputFrozen) return
+        editorRevision++
         val current = _state.value
         val uploadedUrls = current.images.mapNotNull { it.uploadedUrl }
         if (!current.hasDraftContent) return
@@ -531,6 +560,7 @@ class PostViewModel(
         relayUrls: Collection<String>? = null,
     ) {
         if (inputFrozen) return
+        editorRevision++
         val current = _state.value
         if (current.isPosting) return
         // 入力欄が上限を守るので通常は到達しない。導線ごとの差を残さないための最後の防御。

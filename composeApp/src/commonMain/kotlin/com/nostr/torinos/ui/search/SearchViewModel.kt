@@ -9,9 +9,11 @@ import kotlin.reflect.KClass
 import kotlin.time.Clock
 
 /** 検索画面の状態を画面の寿命に合わせて保持する。処理は [SearchController] に委ねる。 */
-class SearchViewModel : ViewModel() {
+class SearchViewModel(accountSession: com.nostr.torinos.account.AccountSession? = null) : ViewModel() {
     private val controller = SearchController(
         scope = viewModelScope,
+        sessionId = accountSession?.sessionId,
+        ownPubkey = accountSession?.pubkey,
         nowEpochSeconds = { Clock.System.now().epochSeconds },
     )
 
@@ -36,7 +38,7 @@ class SearchViewModel : ViewModel() {
     fun resume() = controller.resume()
 
     override fun onCleared() {
-        controller.stop()
+        controller.close()
         super.onCleared()
     }
 

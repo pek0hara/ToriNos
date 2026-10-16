@@ -28,6 +28,16 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    override fun onResume() {
+        super.onResume()
+        com.nostr.torinos.util.refactorTraceLog("App") { "resumed diagnostics=v1" }
+    }
+
+    override fun onPause() {
+        com.nostr.torinos.util.refactorTraceLog("App") { "paused" }
+        super.onPause()
+    }
+
     override fun onConfigurationChanged(newConfig: Configuration) {
         super.onConfigurationChanged(newConfig)
         enableEdgeToEdge()

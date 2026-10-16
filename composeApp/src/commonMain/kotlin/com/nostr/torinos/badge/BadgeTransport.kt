@@ -1,5 +1,7 @@
 package com.nostr.torinos.badge
 
+import com.nostr.torinos.network.collectRecovering
+
 import com.nostr.torinos.crypto.isValidEvent
 import com.nostr.torinos.model.NostrEvent
 import com.nostr.torinos.model.NostrFilter
@@ -54,11 +56,11 @@ internal class BadgeTransport(
                     target = RelayTarget.Explicit(relays), behavior = SubscriptionBehavior.Fetch(10_000),
                     deduplicateEvents = false,
                 ))
-                session!!.signals.collect { signal ->
+                session!!.collectRecovering { signal ->
                     when (signal) {
                         is SubscriptionSignal.Event -> {
                             val event = signal.event
-                            if (signal.relayUrl !in relays) return@collect
+                            if (signal.relayUrl !in relays) return@collectRecovering
                             // Count re-deliveries per relay without validating the same event twice.
                             val known = events[event.id] == event || (filters.any { matchesBadgeFilter(event, it) } &&
                                 withContext(validationDispatcher) { validate(event) } && event.id !in events && run {
@@ -101,7 +103,7 @@ internal class BadgeTransport(
             target = RelayTarget.Explicit(relays), deduplicateEvents = false,
         ))
         try {
-            session.signals.collect { signal ->
+            session.collectRecovering { signal ->
                 if (signal is SubscriptionSignal.Event && signal.event.pubkey == pubkey &&
                     signal.event.kind == 10008 && validate(signal.event)) receive(signal.event)
             }

@@ -215,4 +215,71 @@ class ArticleDraftRepositoryTest {
             validate = { true })
         assertTrue(repository.load().isEmpty())
     }
+    @Test fun firstEoseShowsDraftsWhileASlowRelayKeepsLoading() = runTest {
+        val signer = Signer(owner)
+        val slow = "wss://slow.example"
+        fun draftEvent(d: String, title: String, createdAt: Long): NostrEvent {
+            val payload = ArticleDraftPayload(owner, createdAt, tags = listOf(listOf("d", "article-$d"), listOf("title", title)), content = "本文")
+            return signer.sign(signer.encryptToSelf(articleJson.encodeToString(payload)), 31234,
+                listOf(listOf("d", d), listOf("k", "30023")), createdAt)
+        }
+        val fast = draftEvent("a", "速いリレー", 100)
+        val late = draftEvent("b", "遅いリレー", 100)
+        val newer = draftEvent("a", "速いリレーの新しい版", 101)
+        val repository = ArticleDraftRepository(signer, { setOf(relay, slow) }, { listOf(relay) },
+            openSession = { session(listOf(SubscriptionSignal.Event(relay, fast, false), SubscriptionSignal.Eose(relay),
+                SubscriptionSignal.Event(slow, late, false), SubscriptionSignal.Event(slow, newer, false), SubscriptionSignal.Eose(slow),
+                SubscriptionSignal.FetchCompleted(mapOf(relay to RelayOutcome.Eose, slow to RelayOutcome.Eose), false))) },
+            validate = { true })
+        val progress = mutableListOf<List<String>>()
+        val result = repository.loadProgressively { drafts -> progress += drafts.map { it.title }.sorted() }
+        assertEquals(listOf(listOf("速いリレー"), listOf("速いリレーの新しい版", "遅いリレー").sorted()), progress)
+        assertEquals(listOf("速いリレーの新しい版", "遅いリレー").sorted(), result.map { it.title }.sorted())
+    }
+    @Test fun noProgressIsReportedBeforeAnyRelayFinishes() = runTest {
+        val signer = Signer(owner)
+        val repository = ArticleDraftRepository(signer, { setOf(relay) }, { listOf(relay) },
+            openSession = { session(listOf(SubscriptionSignal.FetchCompleted(mapOf(relay to RelayOutcome.TimedOut), true))) },
+            validate = { true })
+        var reported = false
+        assertFailsWith<IllegalStateException> { repository.loadProgressively { reported = true } }
+        assertFalse(reported)
+    }
+    @Test fun publishedArticleIdentifiersComeFromOwnLongFormEvents() = runTest {
+        val signer = Signer(owner)
+        val article = NostrEvent("ab".repeat(32), owner, 100, 30023, listOf(listOf("d", "published"), listOf("title", "公開済み")), "本文", "sig")
+        val foreign = NostrEvent("cd".repeat(32), "bb".repeat(32), 100, 30023, listOf(listOf("d", "others")), "本文", "sig")
+        val repository = ArticleDraftRepository(signer, { setOf(relay) }, { listOf(relay) },
+            openSession = { spec ->
+                val filter = spec.filters.single()
+                assertEquals(listOf(30023), filter.kinds)
+                assertEquals(listOf(owner), filter.authors)
+                session(listOf(SubscriptionSignal.Event(relay, article, false), SubscriptionSignal.Event(relay, foreign, false),
+                    SubscriptionSignal.FetchCompleted(mapOf(relay to RelayOutcome.Eose), false)))
+            }, validate = { true })
+        assertEquals(setOf("published"), repository.loadPublishedIdentifiers())
+    }
+    @Test fun loadsFinishOnFetchCompletedEvenIfTheSignalStreamStaysOpen() = runTest {
+        val signer = Signer(owner)
+        val payload = ArticleDraftPayload(owner, 1, tags = listOf(listOf("d", "article"), listOf("title", "届いた")), content = "本文")
+        val draft = signer.sign(signer.encryptToSelf(articleJson.encodeToString(payload)), 31234,
+            listOf(listOf("d", "draft"), listOf("k", "30023")), 100)
+        val article = NostrEvent("ab".repeat(32), owner, 100, 30023, listOf(listOf("d", "published")), "本文", "sig")
+        // A fetch that ends by timeout has been seen to leave its signal stream open after FetchCompleted.
+        fun openAfterCompletion(event: NostrEvent) = object : SubscriptionSession {
+            override val id = "test"
+            override val signals = kotlinx.coroutines.flow.flow {
+                emit(SubscriptionSignal.Event(relay, event, false))
+                emit(SubscriptionSignal.FetchCompleted(mapOf(relay to RelayOutcome.Eose), false))
+                kotlinx.coroutines.awaitCancellation()
+            }
+            override suspend fun update(filters: List<com.nostr.torinos.model.NostrFilter>, target: RelayTarget) = Unit
+            override suspend fun close() = Unit
+        }
+        val repository = ArticleDraftRepository(signer, { setOf(relay) }, { listOf(relay) },
+            openSession = { spec -> openAfterCompletion(if (spec.filters.single().kinds == listOf(30023)) article else draft) },
+            validate = { true })
+        assertEquals(listOf("届いた"), repository.load().map { it.title })
+        assertEquals(setOf("published"), repository.loadPublishedIdentifiers())
+    }
 }

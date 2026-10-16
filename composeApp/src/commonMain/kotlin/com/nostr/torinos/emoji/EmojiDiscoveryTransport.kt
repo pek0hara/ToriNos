@@ -1,5 +1,7 @@
 package com.nostr.torinos.emoji
 
+import com.nostr.torinos.network.collectRecovering
+
 import com.nostr.torinos.crypto.isValidEvent
 import com.nostr.torinos.model.NostrEvent
 import com.nostr.torinos.model.NostrFilter
@@ -35,7 +37,7 @@ internal class EmojiDiscoveryTransport(
                 behavior = SubscriptionBehavior.Fetch(10_000),
                 deduplicateEvents = false,
             ))
-            session.signals.collect { signal ->
+            session.collectRecovering { signal ->
                 when (signal) {
                     is SubscriptionSignal.Event -> {
                         val event = signal.event

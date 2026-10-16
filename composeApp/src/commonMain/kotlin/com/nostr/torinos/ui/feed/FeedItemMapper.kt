@@ -1,8 +1,10 @@
 package com.nostr.torinos.ui.feed
 
+import com.nostr.torinos.model.*
+
 import com.nostr.torinos.model.NostrEvent
-import com.nostr.torinos.ui.components.ParsedNoteContent
-import com.nostr.torinos.ui.components.parseNoteContent
+import com.nostr.torinos.model.ParsedNoteContent
+import com.nostr.torinos.model.parseNoteContent
 
 /**
  * 投稿本文の解析結果を event ID 単位でキャッシュする。Nostr イベントの content / tags は

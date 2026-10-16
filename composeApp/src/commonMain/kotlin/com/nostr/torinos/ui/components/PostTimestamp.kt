@@ -21,3 +21,38 @@ internal fun formatPostTimestamp(
 } catch (_: Exception) {
     ""
 }
+
+fun formatTimestamp(
+    epochSeconds: Long,
+    todayTimeOnly: Boolean = false,
+    nowEpochSeconds: Long = Clock.System.now().epochSeconds,
+    timeZone: TimeZone = TimeZone.currentSystemDefault(),
+): String = try {
+    val local = Instant.fromEpochSeconds(epochSeconds)
+        .toLocalDateTime(timeZone)
+    val timeOnly = if (todayTimeOnly) {
+        val today = Instant.fromEpochSeconds(nowEpochSeconds)
+            .toLocalDateTime(timeZone)
+            .date
+        if (local.date == today) {
+            local.hour.toString().padStart(2, '0') +
+                ":" +
+                local.minute.toString().padStart(2, '0')
+        } else {
+            null
+        }
+    } else {
+        null
+    }
+    timeOnly ?: buildString {
+        append((local.month.ordinal + 1).toString().padStart(2, '0'))
+        append('/')
+        append(local.day.toString().padStart(2, '0'))
+        append(' ')
+        append(local.hour.toString().padStart(2, '0'))
+        append(':')
+        append(local.minute.toString().padStart(2, '0'))
+    }
+} catch (_: Exception) {
+    ""
+}

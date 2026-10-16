@@ -1,5 +1,7 @@
 package com.nostr.torinos.ui.feed
 
+import com.nostr.torinos.model.*
+
 import androidx.lifecycle.viewModelScope
 import com.nostr.torinos.account.AccountSession
 import com.nostr.torinos.engagement.EngagementRequest
@@ -13,7 +15,7 @@ import com.nostr.torinos.model.NostrProfile
 import com.nostr.torinos.model.ReactionOption
 import com.nostr.torinos.model.UnicodeReaction
 import com.nostr.torinos.ui.SafeViewModel
-import com.nostr.torinos.ui.components.ParsedNoteContent
+import com.nostr.torinos.model.ParsedNoteContent
 import kotlinx.coroutines.flow.StateFlow
 
 /** Feed画面のFacade。履歴・ライブ・gap fill・集約の所有者はFeedController。 */

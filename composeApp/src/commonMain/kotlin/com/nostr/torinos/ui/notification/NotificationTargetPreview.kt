@@ -1,5 +1,7 @@
 package com.nostr.torinos.ui.notification
 
+import com.nostr.torinos.model.*
+
 import androidx.compose.foundation.layout.Column
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -11,7 +13,7 @@ import com.nostr.torinos.model.NostrProfile
 import com.nostr.torinos.model.stripNostrEventUris
 import com.nostr.torinos.network.TargetLoadState
 import com.nostr.torinos.ui.components.formatTimestamp
-import com.nostr.torinos.ui.components.stripImageUrls
+import com.nostr.torinos.model.stripImageUrls
 import com.nostr.torinos.ui.settings.setPlainText
 import kotlinx.coroutines.launch
 

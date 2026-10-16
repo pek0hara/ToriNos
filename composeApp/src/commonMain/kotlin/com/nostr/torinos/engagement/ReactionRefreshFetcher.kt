@@ -1,5 +1,7 @@
 package com.nostr.torinos.engagement
 
+import com.nostr.torinos.network.collectRecovering
+
 import com.nostr.torinos.model.NostrEvent
 import com.nostr.torinos.model.NostrFilter
 import com.nostr.torinos.network.NostrRepository
@@ -24,7 +26,7 @@ internal object ReactionRefreshFetcher {
             ),
         )
         try {
-            session.signals.collect { signal ->
+            session.collectRecovering { signal ->
                 if (signal is SubscriptionSignal.Event && signal.event.kind == 7) {
                     events[signal.event.id] = signal.event
                 }

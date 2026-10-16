@@ -16,6 +16,7 @@ import com.nostr.torinos.account.LocalAccountSession
 import com.nostr.torinos.article.*
 import com.nostr.torinos.ui.components.AppTopBar
 import com.nostr.torinos.ui.components.formatTimestamp
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
 import kotlinx.datetime.TimeZone
 import kotlinx.datetime.daysUntil
@@ -26,24 +27,34 @@ import kotlin.time.Instant
 internal data class ArticleDraftSummary(
     val id: String, val title: String, val preview: String, val updatedAt: Long, val revision: Long,
     val kindLabel: String, val quoteCount: Int?, val topics: List<String>,
+    /** An edit of a published article; publishing it updates that article. */
+    val isUpdate: Boolean = false,
+    val publishedAt: Long? = null,
 )
 
-internal fun ArticleDraft.toSummary() = ArticleDraftSummary(
+/**
+ * [publishedIdentifiers] are the `d` of the account's published articles. They mark drafts saved by other
+ * clients, which keep the article address but not the version they started from.
+ */
+internal fun ArticleDraft.toSummary(publishedIdentifiers: Set<String> = emptySet()) = ArticleDraftSummary(
     id = draftId,
     title = title.trim().ifBlank { "無題の記事" },
     preview = articleDraftPreview(this),
     updatedAt = updatedAt,
     revision = revision,
-    kindLabel = when {
-        baseEventId != null -> "公開記事の編集"
-        mode == ArticleDraftMode.Regular -> "通常記事"
-        else -> "まとめ"
-    },
+    kindLabel = if (mode == ArticleDraftMode.Regular) "通常記事" else "まとめ",
     quoteCount = if (isMatometr) runCatching {
         parseArticleMarkdown(content, emptyList()).sections.flatMap { it.quoteIds }.distinct().size
     }.getOrDefault(references.size) else null,
     topics = parseArticleTopics(topicsInput).filterNot { it.equals("matometr", ignoreCase = true) },
+    isUpdate = baseEventId != null || articleIdentifier in publishedIdentifiers,
+    publishedAt = originalPublishedAt.takeIf { baseEventId != null || articleIdentifier in publishedIdentifiers },
 )
+
+internal fun formatDraftPublishedAt(epochSeconds: Long, timeZone: TimeZone = TimeZone.currentSystemDefault()): String {
+    val date = Instant.fromEpochSeconds(epochSeconds).toLocalDateTime(timeZone).date
+    return "${date.month.ordinal + 1}/${date.day}に公開済み"
+}
 
 /** 概要、なければ本文（まとめなら最初の説明）の冒頭を、Markdown記号と nostr: 参照を除いた1行にする。 */
 internal fun articleDraftPreview(draft: ArticleDraft, maxLength: Int = 120): String {
@@ -89,38 +100,59 @@ internal fun formatDraftUpdatedAt(
     val session = LocalAccountSession.current ?: return
     val owner = session.pubkey
     val store = session.articleDraftStore
-    var summaries by remember { mutableStateOf<List<ArticleDraftSummary>>(emptyList()) }
+    var drafts by remember { mutableStateOf<List<ArticleDraft>>(emptyList()) }
+    var publishedIdentifiers by remember { mutableStateOf<Set<String>>(emptySet()) }
+    val summaries = remember(drafts, publishedIdentifiers) {
+        drafts.sortedByDescending { it.updatedAt }.map { it.toSummary(publishedIdentifiers) }
+    }
     var error by remember { mutableStateOf<String?>(null) }
     var deletion by remember { mutableStateOf<ArticleDraftSummary?>(null) }
     var deleting by remember { mutableStateOf(false) }
+    // loading covers the wait for a first list; refreshing lasts until every relay has answered or timed out.
     var loading by remember { mutableStateOf(true) }
+    var refreshing by remember { mutableStateOf(false) }
     var issues by remember { mutableStateOf<List<ArticleDraftLoadIssue>>(emptyList()) }
     var incompleteRelays by remember { mutableStateOf<List<String>>(emptyList()) }
     val scope = rememberCoroutineScope()
+    fun show(data: ArticleStoreData) { drafts = data.drafts.values.toList(); loading = false }
     suspend fun reload() {
         try {
-            loading = true
-            store.refreshDrafts(owner)
+            refreshing = true
+            error = null
+            store.refreshDrafts(owner) { show(it) }
             val data = store.read(owner)
             issues = data.relayDraftIssues
             incompleteRelays = data.incompleteDraftRelays
-            summaries = data.drafts.values.sortedByDescending { it.updatedAt }.map { it.toSummary() }
-            error = null
-        } catch (e: Exception) { error = e.message } finally { loading = false }
+            show(data)
+        } catch (e: CancellationException) { throw e }
+        catch (e: Exception) { error = e.message } finally { loading = false; refreshing = false }
     }
-    LaunchedEffect(owner) { reload() }
-    Scaffold(topBar = { AppTopBar(title = if (loading || error != null) "記事下書き" else "記事下書き（${summaries.size}件）", actions = { TextButton(onClick = { scope.launch { reload() } }, enabled = !loading) { Text("再取得") } }, navigationIcon = { TextButton(onClick = onBack) { Text("戻る") } }) }) { padding ->
+    LaunchedEffect(owner) {
+        // Drafts already read in this session show at once; the relays are asked again behind them.
+        runCatching { store.read(owner) }.getOrNull()?.takeIf { it.drafts.isNotEmpty() }?.let(::show)
+        launch { runCatching { store.loadPublishedIdentifiers() }.getOrNull()?.let { publishedIdentifiers = it } }
+        reload()
+    }
+    Scaffold(topBar = { AppTopBar(title = if (loading || error != null) "記事下書き" else "記事下書き（${summaries.size}件）", actions = { TextButton(onClick = { scope.launch { reload() } }, enabled = !refreshing) { Text("再取得") } }, navigationIcon = { TextButton(onClick = onBack) { Text("戻る") } }) }) { padding ->
         LazyColumn(Modifier.fillMaxSize().padding(padding), contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             if (loading) item { Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) { CircularProgressIndicator() } }
-            if (!loading && error == null && incompleteRelays.isNotEmpty()) item {
-                Text("次のリレーから取得できなかったため、一部の下書きが表示されていないか古い可能性があります\n${incompleteRelays.joinToString("\n")}",
-                    color = MaterialTheme.colorScheme.error)
+            if (!loading && refreshing) item {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    CircularProgressIndicator(Modifier.size(14.dp), strokeWidth = 2.dp)
+                    Text("ほかのリレーから取得しています", style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
+            if (!loading && !refreshing && error == null && incompleteRelays.isNotEmpty()) item {
+                Text("取得できなかったリレーがあります。一部の下書きが欠けているか古い可能性があります: ${incompleteRelays.joinToString("、") { it.removePrefix("wss://") }}",
+                    style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
             }
             items(issues, key = { "issue-${it.eventId}" }) { issue ->
-                Text("${issue.message}\n下書きID: ${issue.identifier}", color = MaterialTheme.colorScheme.error)
+                Text("${issue.message}（下書きID: ${issue.identifier}）", style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error)
             }
             error?.let { message -> item { Text(message, color = MaterialTheme.colorScheme.error); TextButton(onClick = { scope.launch { reload() } }) { Text("再読込") } } }
-            if (!loading && error == null && summaries.isEmpty()) item { Text("下書きはありません") }
+            if (!loading && !refreshing && error == null && summaries.isEmpty()) item { Text("下書きはありません") }
             items(summaries, key = { it.id }) { d ->
                 ArticleDraftCard(d, onOpen = { onOpen(d.id) }, onDelete = { deletion = d })
             }
@@ -132,7 +164,7 @@ internal fun formatDraftUpdatedAt(
                 Text(d.title, style = MaterialTheme.typography.titleSmall)
                 Text(d.preview.ifEmpty { "本文なし" }, style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 3, overflow = TextOverflow.Ellipsis)
-                Text("${d.kindLabel} · ${formatDraftUpdatedAt(d.updatedAt)}に更新", style = MaterialTheme.typography.bodySmall,
+                Text(listOfNotNull(if (d.isUpdate) "公開記事の更新" else null, d.kindLabel, "${formatDraftUpdatedAt(d.updatedAt)}に更新").joinToString(" · "), style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         },
@@ -149,7 +181,13 @@ internal fun formatDraftUpdatedAt(
     OutlinedCard(onClick = onOpen, modifier = Modifier.fillMaxWidth()) {
         Row(Modifier.padding(start = 12.dp, top = 8.dp, bottom = 10.dp, end = 4.dp)) {
             Column(Modifier.weight(1f).padding(top = 4.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                Text(d.title, style = MaterialTheme.typography.titleSmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    if (d.isUpdate) Surface(shape = RoundedCornerShape(4.dp), color = MaterialTheme.colorScheme.tertiaryContainer) {
+                        Text("更新", Modifier.padding(horizontal = 6.dp, vertical = 1.dp), style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onTertiaryContainer)
+                    }
+                    Text(d.title, Modifier.weight(1f, fill = false), style = MaterialTheme.typography.titleSmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                }
                 Text(d.preview.ifEmpty { "本文なし" }, style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 2, overflow = TextOverflow.Ellipsis)
                 Row(Modifier.padding(top = 4.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -157,7 +195,8 @@ internal fun formatDraftUpdatedAt(
                         Text(d.kindLabel, Modifier.padding(horizontal = 6.dp, vertical = 1.dp), style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSecondaryContainer)
                     }
-                    val meta = listOfNotNull(d.quoteCount?.let { "引用${it}件" }, d.topics.take(2).joinToString(" ") { "#$it" }.ifEmpty { null })
+                    val meta = listOfNotNull(d.quoteCount?.let { "引用${it}件" }, d.topics.take(2).joinToString(" ") { "#$it" }.ifEmpty { null },
+                        d.publishedAt?.let { formatDraftPublishedAt(it) })
                     Text(meta.joinToString(" · "), Modifier.weight(1f), style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
                     Text(formatDraftUpdatedAt(d.updatedAt), style = MaterialTheme.typography.labelSmall,

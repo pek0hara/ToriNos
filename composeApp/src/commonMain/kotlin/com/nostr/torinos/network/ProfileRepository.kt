@@ -270,7 +270,7 @@ private object ProfileFetchCoordinator {
                     ),
                 ),
             )
-            session.signals.collect { signal ->
+            session.collectRecovering { signal ->
                 when (signal) {
                     is SubscriptionSignal.Event -> {
                         val event = signal.event

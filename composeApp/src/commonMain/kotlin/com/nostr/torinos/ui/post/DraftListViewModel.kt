@@ -21,7 +21,20 @@ data class DraftListState(
     val isLoading: Boolean = false,
     val error: String? = null,
     val deleteDialog: DraftDeleteDialogState? = null,
+    /** EOSE まで答えなかった下書きのリレー。一覧が空なら [error]、あれば警告として出す。 */
+    val incompleteRelay: String? = null,
 )
+
+/** 取得に失敗したリレーで下書きが見つからなくても「下書きはありません」とは出さない。 */
+internal fun DraftListState.withLoaded(load: DraftMemoLoad, relayUrl: String?): DraftListState {
+    val incomplete = relayUrl.takeIf { !load.complete }
+    return copy(
+        drafts = load.drafts,
+        isLoading = false,
+        error = if (incomplete != null && load.drafts.isEmpty()) "下書きを取得できませんでした（${incomplete.removePrefix("wss://")}）" else null,
+        incompleteRelay = incomplete,
+    )
+}
 
 /** 下書き一覧シート。ジャーナルとは状態を共有しない。 */
 class DraftListViewModel internal constructor(
@@ -33,8 +46,12 @@ class DraftListViewModel internal constructor(
     private val store = StateStore(DraftListState())
     val state: StateFlow<DraftListState> = store.state
     private var loadJob: Job? = null
+    private var lastRelayUrl: String? = null
+
+    fun reload() = load(lastRelayUrl)
 
     fun load(relayUrl: String?) {
+        lastRelayUrl = relayUrl
         loadJob?.cancel()
         store.dispatch { it.copy(isLoading = true, error = null) }
         loadJob = launcher.launch {
@@ -44,7 +61,7 @@ class DraftListViewModel internal constructor(
                     if (drafts == null) {
                         current.copy(drafts = emptyList(), isLoading = false, error = "秘密鍵が設定されていません")
                     } else {
-                        current.copy(drafts = drafts, isLoading = false, error = null)
+                        current.withLoaded(drafts, relayUrl)
                     }
                 }
             } catch (e: CancellationException) {

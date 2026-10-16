@@ -1,5 +1,7 @@
 package com.nostr.torinos.ui.article
 
+import com.nostr.torinos.model.*
+
 import com.nostr.torinos.ui.components.recordReactionUse
 import com.nostr.torinos.account.LocalAccountSession
 import androidx.compose.material3.Icon
@@ -53,9 +55,9 @@ import com.nostr.torinos.ui.components.NetworkImage
 import com.nostr.torinos.ui.components.ProfileNameText
 import com.nostr.torinos.ui.components.ReactionSummaryRow
 import com.nostr.torinos.ui.components.StandardEmojiPickerSheet
-import com.nostr.torinos.ui.components.extractImageUrls
+import com.nostr.torinos.model.extractImageUrls
 import com.nostr.torinos.ui.components.formatTimestamp
-import com.nostr.torinos.ui.components.stripImageUrls
+import com.nostr.torinos.model.stripImageUrls
 import com.nostr.torinos.ui.profile.AvatarCircle
 
 /** コメントシートの中身として、リアクションの内訳とコメント一覧を並べる。 */

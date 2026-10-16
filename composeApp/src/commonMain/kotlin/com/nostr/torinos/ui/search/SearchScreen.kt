@@ -66,7 +66,7 @@ fun SearchScreen(
     onOpenReplies: (eventId: String) -> Unit = {},
     onOpenLikes: (eventId: String) -> Unit = {},
     onOpenReposts: (eventId: String) -> Unit = {},
-    viewModel: SearchViewModel = viewModel(key = "search") { SearchViewModel() },
+    viewModel: SearchViewModel = com.nostr.torinos.account.accountSessionViewModel(key = "search") { SearchViewModel(it) },
 ) {
     val state by viewModel.state.collectAsState()
     val posts by viewModel.posts.collectAsState()

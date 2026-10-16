@@ -1,5 +1,7 @@
 package com.nostr.torinos.ui.post
 
+import com.nostr.torinos.model.*
+
 import com.nostr.torinos.article.ArticleDraftStore
 import com.nostr.torinos.article.ArticleStorage
 import com.nostr.torinos.article.MemoryArticleStorage

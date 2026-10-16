@@ -1,5 +1,9 @@
 package com.nostr.torinos.ui.thread
 
+import com.nostr.torinos.ui.components.*
+
+import com.nostr.torinos.model.*
+
 import com.nostr.torinos.ui.channel.ChannelHiddenMessageStore
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -55,11 +59,10 @@ import com.nostr.torinos.model.stripNostrEventUris
 import com.nostr.torinos.model.toCustomReaction
 import com.nostr.torinos.ui.components.CustomReactionLink
 import com.nostr.torinos.ui.components.DeleteNoteDialog
-import com.nostr.torinos.ui.components.NoteCard
 import com.nostr.torinos.ui.components.ProfileNameText
 import com.nostr.torinos.ui.components.QuotedEvent
 import com.nostr.torinos.ui.components.rememberSyncedTextFieldValue
-import com.nostr.torinos.ui.components.stripImageUrls
+import com.nostr.torinos.model.stripImageUrls
 import com.nostr.torinos.ui.profile.AvatarCircle
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -235,87 +238,99 @@ fun ThreadScreen(
                         item {
                             val root = state.root ?: return@item
                             val replyParentId = noteContext.replyTargetId(root)
-                            NoteCard(
-                                event = root,
-                                profile = state.profiles[root.pubkey],
-                                profiles = state.profiles,
-                                replyParent = replyParentId?.let { parentId ->
-                                    state.quotedEvents[parentId]?.let { parentEvent ->
-                                        QuotedEvent(
-                                            event = parentEvent,
-                                            profile = state.profiles[parentEvent.pubkey],
-                                        )
-                                    }
-                                },
-                                quotedEvents = quotedEventIds(root)
-                                    .filter { it != replyParentId }
-                                    .mapNotNull { quotedEventId ->
-                                        state.quotedEvents[quotedEventId]?.let { quotedEvent ->
-                                            QuotedEvent(
-                                                event = quotedEvent,
-                                                profile = state.profiles[quotedEvent.pubkey],
-                                            )
+                            NoteCardHost(
+                                model = NoteCardModel(
+                                    event = root,
+                                    profiles = state.profiles,
+                                    author = NoteAuthorPresentation(
+                                        profile = state.profiles[root.pubkey],
+                                        ownPubkey = ownPubkey,
+                                    ),
+                                    engagement = NoteEngagementPresentation(
+                                        replyCount = state.replyCounts[root.id] ?: state.replies.size,
+                                        replies = state.replies,
+                                        reactionCount = state.reactionCounts[root.id] ?: state.reactionPubkeys.size,
+                                        likeReactionCount = state.likeReactionCounts[root.id] ?: 0,
+                                        customReactions = state.customReactions[root.id].orEmpty(),
+                                        unicodeReactions = state.unicodeReactions[root.id].orEmpty(),
+                                        reactionEvents = state.reactionEvents[root.id].orEmpty(),
+                                        repostCount = state.repostCount,
+                                        repostPubkeys = (state.repostPubkeys + state.quoteReposts.map { it.pubkey }).distinct(),
+                                        isLiked = state.isLiked(root.id),
+                                        ownEmojiReactionEventIds = state.displayOwnEmojiReactionEventIds(root.id),
+                                        isReposted = state.isRootReposted(root.id),
+                                    ),
+                                    references = NoteReferencePresentation(
+                                        replyParent = replyParentId?.let { parentId ->
+                                            state.quotedEvents[parentId]?.let { parentEvent ->
+                                                QuotedEvent(
+                                                    event = parentEvent,
+                                                    profile = state.profiles[parentEvent.pubkey],
+                                                )
+                                            }
+                                        },
+                                        quotedEvents = quotedEventIds(root)
+                                        .filter { it != replyParentId }
+                                        .mapNotNull { quotedEventId ->
+                                            state.quotedEvents[quotedEventId]?.let { quotedEvent ->
+                                                QuotedEvent(
+                                                    event = quotedEvent,
+                                                    profile = state.profiles[quotedEvent.pubkey],
+                                                )
+                                            }
+                                        },
+                                    ),
+                                    policy = NoteCardPolicy(
+                                    ),
+                                ),
+                                actions = NoteCardActions(
+                                    onUserClick = onUserClick,
+                                    onLike = if (ownPubkey != null) {
+                                        {
+                                            if (state.isLiked(root.id)) {
+                                                viewModel.unreact(root.id)
+                                            } else {
+                                                viewModel.react(root.id, root.pubkey)
+                                            }
                                         }
+                                    } else null,
+                                    onEmojiReact = if (ownPubkey != null) {
+                                        { option -> viewModel.reactWithEmoji(root.id, root.pubkey, option) }
+                                    } else null,
+                                    onEmojiUnreact = if (ownPubkey != null) {
+                                        { option -> viewModel.unreactWithEmoji(root.id, option) }
+                                    } else null,
+                                    onReply = if (ownPubkey != null && onReply != null) {
+                                        { onReply(root, root.content.replyPreviewText(), channelId) }
+                                    } else null,
+                                    onOpenReplies = {
+                                        didSelectTabManually = true
+                                        selectedTab = ThreadTab.Replies
                                     },
-                                replyCount = state.replyCounts[root.id] ?: state.replies.size,
-                                replies = state.replies,
-                                reactionCount = state.reactionCounts[root.id] ?: state.reactionPubkeys.size,
-                                likeReactionCount = state.likeReactionCounts[root.id] ?: 0,
-                                customReactions = state.customReactions[root.id].orEmpty(),
-                                unicodeReactions = state.unicodeReactions[root.id].orEmpty(),
-                                reactionEvents = state.reactionEvents[root.id].orEmpty(),
-                                repostCount = state.repostCount,
-                                repostPubkeys = (state.repostPubkeys + state.quoteReposts.map { it.pubkey }).distinct(),
-                                isLiked = state.isLiked(root.id),
-                                ownEmojiReactionEventIds = state.displayOwnEmojiReactionEventIds(root.id),
-                                isReposted = state.isRootReposted(root.id),
-                                onUserClick = onUserClick,
-                                onLike = if (ownPubkey != null) {
-                                    {
-                                        if (state.isLiked(root.id)) {
-                                            viewModel.unreact(root.id)
-                                        } else {
-                                            viewModel.react(root.id, root.pubkey)
+                                    onOpenLikes = {
+                                        didSelectTabManually = true
+                                        selectedTab = ThreadTab.Likes
+                                    },
+                                    onOpenReposts = {
+                                        didSelectTabManually = true
+                                        selectedTab = ThreadTab.Reposts
+                                    },
+                                    onRefreshReactions = { viewModel.refreshReactions(root.id) },
+                                    onRepost = if (root.kind == 1 && ownPubkey != null) {
+                                        {
+                                            if (state.isRootReposted(root.id)) {
+                                                viewModel.unrepost(root.id)
+                                            } else {
+                                                viewModel.repost(root)
+                                            }
                                         }
-                                    }
-                                } else null,
-                                onEmojiReact = if (ownPubkey != null) {
-                                    { option -> viewModel.reactWithEmoji(root.id, root.pubkey, option) }
-                                } else null,
-                                onEmojiUnreact = if (ownPubkey != null) {
-                                    { option -> viewModel.unreactWithEmoji(root.id, option) }
-                                } else null,
-                                onReply = if (ownPubkey != null && onReply != null) {
-                                    { onReply(root, root.content.replyPreviewText(), channelId) }
-                                } else null,
-                                onOpenReplies = {
-                                    didSelectTabManually = true
-                                    selectedTab = ThreadTab.Replies
-                                },
-                                onOpenLikes = {
-                                    didSelectTabManually = true
-                                    selectedTab = ThreadTab.Likes
-                                },
-                                onOpenReposts = {
-                                    didSelectTabManually = true
-                                    selectedTab = ThreadTab.Reposts
-                                },
-                                onRefreshReactions = { viewModel.refreshReactions(root.id) },
-                                onRepost = if (root.kind == 1 && ownPubkey != null) {
-                                    {
-                                        if (state.isRootReposted(root.id)) {
-                                            viewModel.unrepost(root.id)
-                                        } else {
-                                            viewModel.repost(root)
-                                        }
-                                    }
-                                } else null,
-                                onQuotedNoteClick = onOpenThread,
-                                onReplyParentClick = onOpenThread,
-                                ownPubkey = ownPubkey,
-                                onDelete = if (root.pubkey == ownPubkey) {
-                                    { deleteTargetId = root.id }
-                                } else null,
+                                    } else null,
+                                    onQuotedNoteClick = onOpenThread,
+                                    onReplyParentClick = onOpenThread,
+                                    onDelete = if (root.pubkey == ownPubkey) {
+                                        { deleteTargetId = root.id }
+                                    } else null,
+                                ),
                             )
                             PostRelayInfo(event = root)
                             HorizontalDivider()
@@ -343,65 +358,77 @@ fun ThreadScreen(
                                     items(state.replies, key = { it.id }) { reply ->
                                         val replyCount = state.replyCounts[reply.id] ?: 0
                                         val replyParentId = noteContext.replyTargetId(reply)
-                                        NoteCard(
-                                            event = reply,
-                                            profile = state.profiles[reply.pubkey],
-                                            profiles = state.profiles,
-                                            replyParent = replyParentId?.let { parentId ->
-                                                state.quotedEvents[parentId]?.let { parentEvent ->
-                                                    QuotedEvent(
-                                                        event = parentEvent,
-                                                        profile = state.profiles[parentEvent.pubkey],
-                                                    )
-                                                }
-                                            },
-                                            quotedEvents = quotedEventIds(reply)
-                                                .filter { it != replyParentId }
-                                                .mapNotNull { quotedEventId ->
-                                                    state.quotedEvents[quotedEventId]?.let { quotedEvent ->
-                                                        QuotedEvent(
-                                                            event = quotedEvent,
-                                                            profile = state.profiles[quotedEvent.pubkey],
-                                                        )
+                                        NoteCardHost(
+                                            model = NoteCardModel(
+                                                event = reply,
+                                                profiles = state.profiles,
+                                                author = NoteAuthorPresentation(
+                                                    profile = state.profiles[reply.pubkey],
+                                                    ownPubkey = ownPubkey,
+                                                ),
+                                                engagement = NoteEngagementPresentation(
+                                                    replyCount = replyCount,
+                                                    replies = state.repliesByEventId[reply.id].orEmpty(),
+                                                    reactionCount = state.reactionCounts[reply.id] ?: 0,
+                                                    likeReactionCount = state.likeReactionCounts[reply.id] ?: 0,
+                                                    customReactions = state.customReactions[reply.id].orEmpty(),
+                                                    unicodeReactions = state.unicodeReactions[reply.id].orEmpty(),
+                                                    reactionEvents = state.reactionEvents[reply.id].orEmpty(),
+                                                    isLiked = state.isLiked(reply.id),
+                                                    ownEmojiReactionEventIds = state.displayOwnEmojiReactionEventIds(reply.id),
+                                                ),
+                                                references = NoteReferencePresentation(
+                                                    replyParent = replyParentId?.let { parentId ->
+                                                        state.quotedEvents[parentId]?.let { parentEvent ->
+                                                            QuotedEvent(
+                                                                event = parentEvent,
+                                                                profile = state.profiles[parentEvent.pubkey],
+                                                            )
+                                                        }
+                                                    },
+                                                    quotedEvents = quotedEventIds(reply)
+                                                    .filter { it != replyParentId }
+                                                    .mapNotNull { quotedEventId ->
+                                                        state.quotedEvents[quotedEventId]?.let { quotedEvent ->
+                                                            QuotedEvent(
+                                                                event = quotedEvent,
+                                                                profile = state.profiles[quotedEvent.pubkey],
+                                                            )
+                                                        }
+                                                    },
+                                                ),
+                                                policy = NoteCardPolicy(
+                                                ),
+                                            ),
+                                            actions = NoteCardActions(
+                                                onUserClick = onUserClick,
+                                                onLike = if (ownPubkey != null) {
+                                                    {
+                                                        if (state.isLiked(reply.id)) {
+                                                            viewModel.unreact(reply.id)
+                                                        } else {
+                                                            viewModel.react(reply.id, reply.pubkey)
+                                                        }
                                                     }
-                                                },
-                                            replyCount = replyCount,
-                                            replies = state.repliesByEventId[reply.id].orEmpty(),
-                                            reactionCount = state.reactionCounts[reply.id] ?: 0,
-                                            likeReactionCount = state.likeReactionCounts[reply.id] ?: 0,
-                                            customReactions = state.customReactions[reply.id].orEmpty(),
-                                            unicodeReactions = state.unicodeReactions[reply.id].orEmpty(),
-                                            reactionEvents = state.reactionEvents[reply.id].orEmpty(),
-                                            isLiked = state.isLiked(reply.id),
-                                            ownEmojiReactionEventIds = state.displayOwnEmojiReactionEventIds(reply.id),
-                                            onUserClick = onUserClick,
-                                            onLike = if (ownPubkey != null) {
-                                                {
-                                                    if (state.isLiked(reply.id)) {
-                                                        viewModel.unreact(reply.id)
-                                                    } else {
-                                                        viewModel.react(reply.id, reply.pubkey)
-                                                    }
-                                                }
-                                            } else null,
-                                            onEmojiReact = if (ownPubkey != null) {
-                                                { option -> viewModel.reactWithEmoji(reply.id, reply.pubkey, option) }
-                                            } else null,
-                                            onEmojiUnreact = if (ownPubkey != null) {
-                                                { option -> viewModel.unreactWithEmoji(reply.id, option) }
-                                            } else null,
-                                            onReply = if (ownPubkey != null && onReply != null) {
-                                                { onReply(reply, reply.content.replyPreviewText(), channelId) }
-                                            } else null,
-                                            onOpenReplies = { onOpenThread(reply.id) },
-                                            onOpenLikes = { onOpenLikes(reply.id) },
-                                            onOpenReposts = { onOpenReposts(reply.id) },
-                                            onRefreshReactions = { viewModel.refreshReactions(reply.id) },
-                                            onNoteClick = onOpenThread,
-                                            ownPubkey = ownPubkey,
-                                            onDelete = if (reply.pubkey == ownPubkey) {
-                                                { deleteTargetId = reply.id }
-                                            } else null,
+                                                } else null,
+                                                onEmojiReact = if (ownPubkey != null) {
+                                                    { option -> viewModel.reactWithEmoji(reply.id, reply.pubkey, option) }
+                                                } else null,
+                                                onEmojiUnreact = if (ownPubkey != null) {
+                                                    { option -> viewModel.unreactWithEmoji(reply.id, option) }
+                                                } else null,
+                                                onReply = if (ownPubkey != null && onReply != null) {
+                                                    { onReply(reply, reply.content.replyPreviewText(), channelId) }
+                                                } else null,
+                                                onOpenReplies = { onOpenThread(reply.id) },
+                                                onOpenLikes = { onOpenLikes(reply.id) },
+                                                onOpenReposts = { onOpenReposts(reply.id) },
+                                                onRefreshReactions = { viewModel.refreshReactions(reply.id) },
+                                                onNoteClick = onOpenThread,
+                                                onDelete = if (reply.pubkey == ownPubkey) {
+                                                    { deleteTargetId = reply.id }
+                                                } else null,
+                                            ),
                                         )
                                         HorizontalDivider()
                                     }
@@ -445,63 +472,75 @@ fun ThreadScreen(
                                                 profile = state.profiles[root.pubkey],
                                             )
                                         }
-                                        NoteCard(
-                                            event = quoteRepost,
-                                            profile = state.profiles[quoteRepost.pubkey],
-                                            profiles = state.profiles,
-                                            replyCount = state.replyCounts[quoteRepost.id] ?: 0,
-                                            replies = state.repliesByEventId[quoteRepost.id].orEmpty(),
-                                            reactionCount = state.reactionCounts[quoteRepost.id] ?: 0,
-                                            likeReactionCount = state.likeReactionCounts[quoteRepost.id] ?: 0,
-                                            customReactions = state.customReactions[quoteRepost.id].orEmpty(),
-                                            unicodeReactions = state.unicodeReactions[quoteRepost.id].orEmpty(),
-                                            reactionEvents = state.reactionEvents[quoteRepost.id].orEmpty(),
-                                            repostCount = state.repostCount(quoteRepost.id, eventId),
-                                            isLiked = state.isLiked(quoteRepost.id),
-                                            ownEmojiReactionEventIds = state.displayOwnEmojiReactionEventIds(quoteRepost.id),
-                                            isReposted = state.isReposted(quoteRepost.id, eventId),
-                                            quotedEvents = listOfNotNull(quotedRoot),
-                                            onUserClick = onUserClick,
-                                            onLike = if (ownPubkey != null) {
-                                                {
-                                                    if (state.isLiked(quoteRepost.id)) {
-                                                        viewModel.unreact(quoteRepost.id)
-                                                    } else {
-                                                        viewModel.react(quoteRepost.id, quoteRepost.pubkey)
+                                        NoteCardHost(
+                                            model = NoteCardModel(
+                                                event = quoteRepost,
+                                                profiles = state.profiles,
+                                                author = NoteAuthorPresentation(
+                                                    profile = state.profiles[quoteRepost.pubkey],
+                                                    ownPubkey = ownPubkey,
+                                                ),
+                                                engagement = NoteEngagementPresentation(
+                                                    replyCount = state.replyCounts[quoteRepost.id] ?: 0,
+                                                    replies = state.repliesByEventId[quoteRepost.id].orEmpty(),
+                                                    reactionCount = state.reactionCounts[quoteRepost.id] ?: 0,
+                                                    likeReactionCount = state.likeReactionCounts[quoteRepost.id] ?: 0,
+                                                    customReactions = state.customReactions[quoteRepost.id].orEmpty(),
+                                                    unicodeReactions = state.unicodeReactions[quoteRepost.id].orEmpty(),
+                                                    reactionEvents = state.reactionEvents[quoteRepost.id].orEmpty(),
+                                                    repostCount = state.repostCount(quoteRepost.id, eventId),
+                                                    isLiked = state.isLiked(quoteRepost.id),
+                                                    ownEmojiReactionEventIds = state.displayOwnEmojiReactionEventIds(quoteRepost.id),
+                                                    isReposted = state.isReposted(quoteRepost.id, eventId),
+                                                ),
+                                                references = NoteReferencePresentation(
+                                                    quotedEvents = listOfNotNull(quotedRoot),
+                                                ),
+                                                policy = NoteCardPolicy(
+                                                ),
+                                            ),
+                                            actions = NoteCardActions(
+                                                onUserClick = onUserClick,
+                                                onLike = if (ownPubkey != null) {
+                                                    {
+                                                        if (state.isLiked(quoteRepost.id)) {
+                                                            viewModel.unreact(quoteRepost.id)
+                                                        } else {
+                                                            viewModel.react(quoteRepost.id, quoteRepost.pubkey)
+                                                        }
                                                     }
-                                                }
-                                            } else null,
-                                            onEmojiReact = if (ownPubkey != null) {
-                                                { option -> viewModel.reactWithEmoji(quoteRepost.id, quoteRepost.pubkey, option) }
-                                            } else null,
-                                            onEmojiUnreact = if (ownPubkey != null) {
-                                                { option -> viewModel.unreactWithEmoji(quoteRepost.id, option) }
-                                            } else null,
-                                            onReply = if (ownPubkey != null && onReply != null) {
-                                                {
-                                                    onReply(
-                                                        quoteRepost,
-                                                        quoteRepost.content.replyPreviewText(),
-                                                        channelId,
-                                                    )
-                                                }
-                                            } else null,
-                                            onOpenReplies = { onOpenThread(quoteRepost.id) },
-                                            onOpenLikes = { onOpenLikes(quoteRepost.id) },
-                                            onOpenReposts = { onOpenReposts(quoteRepost.id) },
-                                            onRefreshReactions = { viewModel.refreshReactions(quoteRepost.id) },
-                                            onRepost = if (quoteRepost.kind == 1 && ownPubkey != null) {
-                                                {
-                                                    if (state.isReposted(quoteRepost.id, eventId)) {
-                                                        viewModel.unrepost(quoteRepost.id)
-                                                    } else {
-                                                        viewModel.repost(quoteRepost)
+                                                } else null,
+                                                onEmojiReact = if (ownPubkey != null) {
+                                                    { option -> viewModel.reactWithEmoji(quoteRepost.id, quoteRepost.pubkey, option) }
+                                                } else null,
+                                                onEmojiUnreact = if (ownPubkey != null) {
+                                                    { option -> viewModel.unreactWithEmoji(quoteRepost.id, option) }
+                                                } else null,
+                                                onReply = if (ownPubkey != null && onReply != null) {
+                                                    {
+                                                        onReply(
+                                                            quoteRepost,
+                                                            quoteRepost.content.replyPreviewText(),
+                                                            channelId,
+                                                        )
                                                     }
-                                                }
-                                            } else null,
-                                            onNoteClick = onOpenThread,
-                                            onQuotedNoteClick = onOpenThread,
-                                            ownPubkey = ownPubkey,
+                                                } else null,
+                                                onOpenReplies = { onOpenThread(quoteRepost.id) },
+                                                onOpenLikes = { onOpenLikes(quoteRepost.id) },
+                                                onOpenReposts = { onOpenReposts(quoteRepost.id) },
+                                                onRefreshReactions = { viewModel.refreshReactions(quoteRepost.id) },
+                                                onRepost = if (quoteRepost.kind == 1 && ownPubkey != null) {
+                                                    {
+                                                        if (state.isReposted(quoteRepost.id, eventId)) {
+                                                            viewModel.unrepost(quoteRepost.id)
+                                                        } else {
+                                                            viewModel.repost(quoteRepost)
+                                                        }
+                                                    }
+                                                } else null,
+                                                onNoteClick = onOpenThread,
+                                                onQuotedNoteClick = onOpenThread,
+                                            ),
                                         )
                                         HorizontalDivider()
                                     }

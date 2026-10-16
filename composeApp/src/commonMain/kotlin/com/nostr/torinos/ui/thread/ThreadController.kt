@@ -84,6 +84,7 @@ internal class ThreadController(
     private val quoteRepostSubId = "thread-qrepost-$shortId"
     private val replyParentSubId = "thread-parent-$shortId"
 
+    private var channelReadRelays: Set<String>? = if (noteContext is NoteContext.Channel) emptySet() else null
     private val subscriptionJobs = mutableListOf<Job>()
     private val lifecycleJobs = mutableListOf<Job>()
     private val seenReplyIds = linkedSetOf<String>()
@@ -364,7 +365,7 @@ internal class ThreadController(
         val before = _state.value.noteEngagement(targetEventId, eventId)
         val optimistic = engagementCoordinator.begin(before, operationId, request)
         if (optimistic == before) return
-        optimistic.pendingOperations[request.slot]?.let { pendingOperations.put(targetEventId, request.slot, it) }
+        optimistic.pendingOperations[request.slot]?.let { pendingOperations.put(targetEventId, request.slot, it.copy(deliveryRelayUrls = com.nostr.torinos.network.RelayStore.writableRelayUrlsSnapshot().toSet())) }
         _state.value = _state.value.withEngagement(targetEventId, eventId, optimistic, ownPubkey)
             .copy(engagementError = null)
         launch {
@@ -372,7 +373,7 @@ internal class ThreadController(
             try {
                 val published = engagementCoordinator.execute(command).getOrThrow()
                 // 送ったイベント（取り消しは kind 5）をストアへ入れてから送信中の操作を外す。
-                engagementStore.observe(published, null)
+                engagementStore.observeLocal(published, accountSession?.sessionId)
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (error: Throwable) {
@@ -583,7 +584,7 @@ internal class ThreadController(
         val newPubkeys = linkedSetOf<String>()
         targetIds.distinct().forEach { targetId ->
             val engagement = engagementStore.snapshot(targetId) ?: TargetEngagement()
-            next = next.withProjectedEngagement(targetId, eventId, engagement, own, pendingOperations.operations(targetId))
+            next = next.withProjectedEngagement(targetId, eventId, engagement, own, pendingOperations.operations(targetId), noteContext, channelReadRelays)
             if (targetId == eventId) newQuotes += engagement.quotes.keys.filter { it !in engagementTargets }
             // 他の画面が先に受信したイベントは、この画面の購読には届かない。一覧に出す人のプロフィールをここで求める。
             (engagement.reactions.values + engagement.reposts.values + engagement.quotes.values)
@@ -704,7 +705,12 @@ internal class ThreadController(
         val target = (noteContext as? NoteContext.Channel)?.let {
             channelThreadReadTarget(it.channelId)
         } ?: RelayTarget.AllEnabled
-        return NostrRepository.subscribe(subscriptionId, filters, target)
+        val relays = NostrRepository.subscribe(subscriptionId, filters, target)
+        if (noteContext is NoteContext.Channel && channelReadRelays != relays) {
+            channelReadRelays = relays
+            projectEngagement(engagementTargets.toList())
+        }
+        return relays
     }
 
     private fun replyFilters(ids: List<String>, limit: Int? = null): List<NostrFilter> =
@@ -798,10 +804,15 @@ internal fun ThreadViewModel.UiState.withProjectedEngagement(
     engagement: TargetEngagement,
     ownPubkey: String?,
     pending: Map<EngagementSlot, PendingEngagementOperation>,
+    noteContext: NoteContext = NoteContext.Timeline,
+    relayScope: Set<String>? = null,
 ): ThreadViewModel.UiState {
-    val summary = summarizeEngagement(engagement, ownPubkey)
-    val display = EngagementReducer.rebase(summary.toNoteEngagementState(), pending)
-    val reactions = engagement.reactions.values.sortedWith(compareBy<NostrEvent> { it.createdAt }.thenBy { it.id })
+    val projected = com.nostr.torinos.engagement.projectEngagement(
+        engagement, ownPubkey, com.nostr.torinos.engagement.EngagementViewScope(noteContext, relayScope), pending,
+    )
+    val scoped = projected.events
+    val display = projected.state
+    val reactions = scoped.reactions.values.sortedWith(compareBy<NostrEvent> { it.createdAt }.thenBy { it.id })
     var next = withEngagement(eventId, rootEventId, display, ownPubkey = null).copy(
         reactionEvents = reactionEvents.putListOrRemove(eventId, reactions),
     )
@@ -814,9 +825,9 @@ internal fun ThreadViewModel.UiState.withProjectedEngagement(
         }
         next = next.copy(
             reactionPubkeys = reactions.reversed().map { it.pubkey }.distinct().withOwn(display.hasOwnReaction),
-            repostPubkeys = engagement.reposts.values.sortedByDescending { it.createdAt }.map { it.pubkey }.distinct()
+            repostPubkeys = scoped.reposts.values.sortedByDescending { it.createdAt }.map { it.pubkey }.distinct()
                 .withOwn(display.isRepostedByMe),
-            quoteReposts = engagement.quotes.values.sortedByDescending { it.createdAt },
+            quoteReposts = scoped.quotes.values.sortedByDescending { it.createdAt },
         )
     }
     return next

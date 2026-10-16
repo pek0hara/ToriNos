@@ -138,7 +138,8 @@ internal class ArticlePublisher(
         }
         } catch (e: kotlinx.coroutines.CancellationException) { throw e }
         catch (e: Exception) { error("公開結果の保存に失敗しました。署名済みイベントを保持しています: ${e.message}") }
-        return if (updated.complete) cleanPublishedDraft(updated) else updated
+        // The article is out once any relay accepted it; the rest are resent from this attempt, not from the draft.
+        return if (updated.accepted) cleanPublishedDraft(updated) else updated
     }
     private suspend fun cleanPublishedDraft(attempt: ArticlePublishAttempt): ArticlePublishAttempt {
         try { return store.cleanPublishedDraft(owner, attempt.id) }

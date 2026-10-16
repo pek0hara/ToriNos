@@ -6,6 +6,7 @@ import com.nostr.torinos.article.MatometrReference
 import kotlinx.datetime.TimeZone
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
@@ -52,5 +53,29 @@ class ArticleDraftSummaryTest {
         assertEquals("昨日", formatDraftUpdatedAt(now - 86_400, now, tz))
         assertEquals("6日前", formatDraftUpdatedAt(now - 6 * 86_400, now, tz))
         assertTrue(formatDraftUpdatedAt(now - 7 * 86_400, now, tz).startsWith("09/30"))
+    }
+
+    @Test fun editOfAPublishedArticleIsMarkedAsAnUpdateAndKeepsItsKind() {
+        val edit = ArticleDraft(ownerPubkey = owner, articleIdentifier = "published", baseEventId = "ef".repeat(32),
+            originalPublishedAt = 1_790_000_000, bodyMarkdown = "本文").toSummary()
+        assertTrue(edit.isUpdate)
+        assertEquals("通常記事", edit.kindLabel)
+        assertEquals(1_790_000_000, edit.publishedAt)
+        val newDraft = ArticleDraft(ownerPubkey = owner, articleIdentifier = "new", bodyMarkdown = "本文").toSummary()
+        assertFalse(newDraft.isUpdate)
+        assertNull(newDraft.publishedAt)
+    }
+
+    @Test fun draftWithoutBaseIsAnUpdateOnceItsAddressIsKnownToBePublished() {
+        val foreign = ArticleDraft(ownerPubkey = owner, articleIdentifier = "published", mode = ArticleDraftMode.MatometrMarkdown,
+            bodyMarkdown = "本文")
+        assertFalse(foreign.toSummary().isUpdate)
+        val summary = foreign.toSummary(publishedIdentifiers = setOf("published"))
+        assertTrue(summary.isUpdate)
+        assertEquals("まとめ", summary.kindLabel)
+    }
+
+    @Test fun publishedDateIsMonthAndDay() {
+        assertEquals("10/1に公開済み", formatDraftPublishedAt(1_790_812_800, TimeZone.UTC)) // 2026-10-01 00:00 UTC
     }
 }

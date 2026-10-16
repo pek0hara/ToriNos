@@ -38,8 +38,9 @@ internal fun ComposerHost(
         // 取り出しと同時にnullへ戻すので、再コンポーズやUIの切り替えで二重に処理されない。
         val completion = postViewModel.consumeCompletion() ?: return@LaunchedEffect
         // 送信中に入力状態が破棄されていた場合、今開いている投稿UIは別の入力なので閉じない。
-        if (completion.fromCurrentDraft) coordinator.dismissPost()
-        onPosted(completion)
+        // 復旧用入力の識別子を、文脈を消す前に所有者へ渡す。
+        try { onPosted(completion) }
+        finally { if (completion.fromCurrentDraft) coordinator.dismissPost() }
     }
 
     LaunchedEffect(postState.staleFailure) {

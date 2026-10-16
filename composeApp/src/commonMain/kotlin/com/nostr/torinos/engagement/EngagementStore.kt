@@ -40,6 +40,7 @@ class EngagementStore(
         val replies = linkedMapOf<String, NostrEvent>()
         val quotes = linkedMapOf<String, NostrEvent>()
         val sources = mutableMapOf<String, MutableSet<String>>()
+        val localCommits = mutableMapOf<String, Pair<String, Long>>()
 
         fun buckets() = listOf(reactions, reposts, replies, quotes)
     }
@@ -57,6 +58,38 @@ class EngagementStore(
         val signal = Channel<Unit>(Channel.CONFLATED)
     }
     private val subscribers = mutableListOf<Subscriber>()
+    private var revision = 0L
+    private val localSequences = mutableMapOf<String, Long>()
+
+    internal fun revision(): Long = lock.withLock { revision }
+    internal fun localCommitSequence(sessionId: String?): Long = lock.withLock { localSequences[sessionId] ?: 0L }
+    internal fun localEventsSince(targetId: String, sessionId: String?, since: Long): Set<String> = lock.withLock {
+        entries[targetId]?.localCommits.orEmpty().filterValues { it.first == sessionId && it.second > since }.keys.toSet()
+    }
+
+    internal fun observeLocal(event: NostrEvent, sessionId: String?) {
+        if (sessionId == null) { observe(event, null); return }
+        val changed = lock.withLock {
+            val changed = (if (event.kind == DELETION_KIND) applyDeletionLocked(event) else addLocked(event, null)).toMutableSet()
+            val sequence = (localSequences[sessionId] ?: 0L) + 1
+            localSequences[sessionId] = sequence
+            targetsOf(event).forEach { (targetId, bucket) ->
+                entries[targetId]?.let { entry -> if (event.id in bucket(entry)) {
+                    entry.localCommits[event.id] = sessionId to sequence
+                    changed += targetId
+                } }
+            }
+            revision++
+            changed
+        }
+        if (changed.isNotEmpty()) notifyChanged(changed)
+    }
+
+    internal fun releaseLocalSession(sessionId: String) = lock.withLock {
+        localSequences.remove(sessionId)
+        entries.values.forEach { entry -> entry.localCommits.entries.removeAll { it.value.first == sessionId } }
+        revision++
+    }
 
     /**
      * 中身が変わった投稿ID。受け手ごとに変化を溜めて渡すので、受け手が遅くても取りこぼさず、
@@ -77,7 +110,9 @@ class EngagementStore(
 
     fun observe(event: NostrEvent, sourceRelay: String?) {
         val changed = lock.withLock {
-            if (event.kind == DELETION_KIND) applyDeletionLocked(event) else addLocked(event, sourceRelay)
+            val changed = if (event.kind == DELETION_KIND) applyDeletionLocked(event) else addLocked(event, sourceRelay)
+            if (changed.isNotEmpty()) revision++
+            changed
         }
         if (changed.isNotEmpty()) notifyChanged(changed)
     }
@@ -86,6 +121,7 @@ class EngagementStore(
     fun retain(owner: Any, targetIds: Set<String>) {
         lock.withLock {
             val previous = owners[owner].orEmpty()
+            if (previous != targetIds) revision++
             if (targetIds.isEmpty()) owners.remove(owner) else owners[owner] = targetIds
             val added = (targetIds - previous).filter { targetId ->
                 retainCounts[targetId] = (retainCounts[targetId] ?: 0) + 1
@@ -125,12 +161,15 @@ class EngagementStore(
         )
     }
 
-    internal fun clearForTest() = lock.withLock {
+    internal fun clearForTest(): Unit = lock.withLock {
         owners.clear()
         retainCounts.clear()
         entries.clear()
         deletedBy.clear()
         unassigned.clear()
+        localSequences.clear()
+        revision++
+        Unit
     }
 
     private fun addLocked(event: NostrEvent, sourceRelay: String?): Set<String> {
@@ -184,6 +223,7 @@ class EngagementStore(
                     if (target != null && target.pubkey == deletion.pubkey) {
                         events.remove(eventId)
                         entry.sources.remove(eventId)
+                        entry.localCommits.remove(eventId)
                         changed += targetId
                     }
                 }
@@ -192,21 +232,15 @@ class EngagementStore(
         return changed
     }
 
-    private fun targetsOf(event: NostrEvent): List<Pair<String, (Entry) -> MutableMap<String, NostrEvent>>> = when (event.kind) {
-        REACTION_KIND -> listOfNotNull(event.lastETag()?.let { it to Entry::reactions })
-        REPOST_KIND, GENERIC_REPOST_KIND -> listOfNotNull(event.lastETag()?.let { it to Entry::reposts })
-        1 -> listOfNotNull(event.replyTargetId()?.let { it to Entry::replies }) +
-            event.tags.filter { it.firstOrNull() == "q" }.mapNotNull { it.getOrNull(1) }.distinct()
-                .map { it to Entry::quotes }
-        COMMENT_EVENT_KIND -> if (event.isSupportedTimelineComment()) {
-            listOfNotNull(event.replyTargetId()?.let { it to Entry::replies })
-        } else {
-            emptyList()
+    private fun targetsOf(event: NostrEvent): List<Pair<String, (Entry) -> MutableMap<String, NostrEvent>>> =
+        classifyEngagementEvent(event).map { reference ->
+            reference.targetId to { entry: Entry -> when (reference.bucket) {
+                EngagementBucket.Reactions -> entry.reactions
+                EngagementBucket.Reposts -> entry.reposts
+                EngagementBucket.Replies -> entry.replies
+                EngagementBucket.Quotes -> entry.quotes
+            } }
         }
-        else -> emptyList()
-    }
-
-    private fun NostrEvent.lastETag(): String? = tags.lastOrNull { it.firstOrNull() == "e" }?.getOrNull(1)
 
     companion object {
         /** アカウントによらず共有する。イベント自体は公開データで、自分の状態は導出時に決める。 */

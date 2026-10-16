@@ -1,5 +1,7 @@
 package com.nostr.torinos.ui.components
 
+import com.nostr.torinos.model.*
+
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.foundation.clickable

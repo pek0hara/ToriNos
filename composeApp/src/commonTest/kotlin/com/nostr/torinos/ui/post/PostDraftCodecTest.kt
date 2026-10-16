@@ -1,5 +1,7 @@
 package com.nostr.torinos.ui.post
 
+import com.nostr.torinos.model.*
+
 import com.nostr.torinos.emoji.CustomEmoji
 import com.nostr.torinos.model.NostrEvent
 import com.nostr.torinos.model.COMMENT_EVENT_KIND

@@ -1,5 +1,12 @@
 # Nostr 購読基盤 再設計
 
+### 2026-10-16の実装更新
+
+購読レコード・枠・wire commandの決定はSubscriptionRegistry、接続handle集合はRelayConnectionPool、最初の受理と残りの配送はRelayPublishCoordinator、配信はSubscriptionSessionImpl / SessionSignalMailboxへ分離した。これらの状態変更は引き続きRepositoryのstateMutexで調停する。Sessionのclose・完了・タイマーはIDだけでなくインスタンス一致を確認する。
+
+有限取得の共通入口はfetchFiniteEvents、リレー別範囲継続はfetchFiniteRange。allAnsweredとrangeCompleteを区別し、上限不明の短い応答を終端としない。Liveの満杯・handler例外はdeliveryStateのNeedsResyncへ記録し、collectRecoveringが有限補完、反映barrier、世代・revision照合後に解除する。予算内に完全性を確認できなければ未解消のまま残す。[実装範囲と検証](./refactor-details/implementation-report.md)。
+
+
 ## 1. 目的
 
 ToriNos の Nostr 購読を、次の性質を持つ基盤へ移行する。

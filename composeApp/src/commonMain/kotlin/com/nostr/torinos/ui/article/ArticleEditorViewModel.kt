@@ -2,6 +2,7 @@ package com.nostr.torinos.ui.article
 
 import com.nostr.torinos.account.AccountSession
 import com.nostr.torinos.article.*
+import com.nostr.torinos.model.ArticleItem
 import com.nostr.torinos.model.NostrEvent
 import com.nostr.torinos.model.NostrProfile
 import com.nostr.torinos.network.ImageUploader
@@ -98,10 +99,16 @@ class ArticleEditorViewModel(
     private val _state = MutableStateFlow(ArticleEditorState(isLoadingArticle = true))
     val state = _state.asStateFlow()
     private var testStore: ArticleDraftStore? = null
+    private var fetchLatest: suspend (pubkey: String, identifier: String, relayUrl: String?) -> ArticleItem? = ::fetchLatestArticleByAddress
     internal constructor(accountSession: AccountSession, store: ArticleDraftStore, draftId: String? = null,
-        saveIdleMillis: Long = ARTICLE_SAVE_IDLE_MILLIS, saveMaxIntervalMillis: Long = ARTICLE_SAVE_MAX_INTERVAL_MILLIS) :
-        this(accountSession = accountSession, draftId = draftId, saveIdleMillis = saveIdleMillis,
-            saveMaxIntervalMillis = saveMaxIntervalMillis) { testStore = store }
+        saveIdleMillis: Long = ARTICLE_SAVE_IDLE_MILLIS, saveMaxIntervalMillis: Long = ARTICLE_SAVE_MAX_INTERVAL_MILLIS,
+        editPubkey: String? = null, editIdentifier: String? = null,
+        fetchLatest: (suspend (String, String, String?) -> ArticleItem?)? = null) :
+        this(editPubkey = editPubkey, editIdentifier = editIdentifier, accountSession = accountSession, draftId = draftId,
+            saveIdleMillis = saveIdleMillis, saveMaxIntervalMillis = saveMaxIntervalMillis) {
+        testStore = store
+        fetchLatest?.let { this.fetchLatest = it }
+    }
     private val store get() = testStore ?: accountSession?.articleDraftStore ?: error("ログインしてください")
     private val saveMutex = Mutex()
     private var saveJob: Job? = null
@@ -136,11 +143,15 @@ class ArticleEditorViewModel(
         launch {
             try {
                 val session = accountSession ?: error("記事の作成にはログインしてください")
-                var draft = if (draftId != null) store.loadDraft(session.pubkey, draftId)
+                // An update already being written resumes from its draft instead of starting a second one.
+                val resumed = if (draftId == null && editPubkey == session.pubkey && editIdentifier != null)
+                    store.read(session.pubkey).drafts.values.filter { it.articleIdentifier == editIdentifier }.maxByOrNull { it.updatedAt }
+                    else null
+                var draft = resumed ?: if (draftId != null) store.loadDraft(session.pubkey, draftId)
                     ?: error("下書きが見つかりません") else ArticleDraft(ownerPubkey = session.pubkey)
-                if (draftId == null && editPubkey != null && editIdentifier != null) {
+                if (resumed == null && draftId == null && editPubkey != null && editIdentifier != null) {
                     check(editPubkey == session.pubkey) { "この記事を公開したアカウントでログインしてください" }
-                    val article = fetchLatestArticleByAddress(editPubkey, editIdentifier, relayUrl)
+                    val article = fetchLatest(editPubkey, editIdentifier, relayUrl)
                         ?: error("編集する記事の最新版を確認できません")
                     val data = store.read(session.pubkey)
                     val archived = data.archives[editIdentifier]?.let { data.attempts[it] }
@@ -162,6 +173,7 @@ class ArticleEditorViewModel(
                 val data = store.read(session.pubkey)
                 _state.update { it.copy(publishAttempt = data.attempts.values.filter { a -> a.draft.draftId == draft.draftId && a.supersededBy == null }.maxByOrNull { a -> a.event.createdAt }) }
                 if (draft.baseEventId != null) checkLatest(draft)
+                else if (draft.originalPublishedAt != null) checkPublishedWithoutBase(draft)
             } catch (e: CancellationException) { throw e }
             catch (e: Exception) { _state.update { it.copy(isLoadingArticle = false, error = e.message) } }
         }
@@ -196,11 +208,20 @@ class ArticleEditorViewModel(
     }
     private fun startSave() = launch { runSave() }
     private suspend fun runSave() { try { flush() } catch (e: CancellationException) { throw e } catch (_: Exception) { } }
-    suspend fun flush(): ArticleDraft? = saveMutex.withLock {
+    /** [force] stores even an untouched published article, since publishing starts from a stored draft. */
+    suspend fun flush(force: Boolean = false): ArticleDraft? = saveMutex.withLock {
         val draft = _state.value.draft ?: return@withLock null
         if (discarded) return@withLock null
         if (savedGeneration == editGeneration && expectedRevision != null && draft.hasContent) return@withLock draft
         val generation = editGeneration
+        // A published article opened and left as it was is not a draft yet.
+        val untouched = baseline?.takeIf { it.revision == 0L }?.saveComparable() == draft.saveComparable()
+        if (!force && expectedRevision == null && untouched) {
+            savedGeneration = generation
+            unsavedSince = null
+            _state.update { it.copy(saveState = ArticleSaveState.Saved) }
+            return@withLock draft
+        }
         if (expectedRevision != null && draft.hasContent && draft.saveComparable() == lastSaved) {
             savedGeneration = generation
             unsavedSince = null
@@ -394,8 +415,17 @@ class ArticleEditorViewModel(
             finally { _state.update { if (cover) it.copy(isUploadingCover = false) else it.copy(isUploadingBodyImage = false) } }
         }
     }
+    /**
+     * A draft from another client keeps the article address but not the version it started from. If that address
+     * is published, publishing replaces it, so treat it as an update and ask before overwriting.
+     */
+    private suspend fun checkPublishedWithoutBase(draft: ArticleDraft) {
+        val latest = fetchLatest(draft.ownerPubkey, draft.articleIdentifier, relayUrl) ?: return
+        _state.update { it.copy(editingArticle = EditingArticle(draft.ownerPubkey, draft.articleIdentifier, latest.meta.publishedAt ?: draft.originalPublishedAt),
+            updateConflict = true, error = "公開中の版と比べられません。確認してから更新してください") }
+    }
     private suspend fun checkLatest(draft: ArticleDraft) {
-        val latest = fetchLatestArticleByAddress(draft.ownerPubkey, draft.articleIdentifier, relayUrl)
+        val latest = fetchLatest(draft.ownerPubkey, draft.articleIdentifier, relayUrl)
         if (latest != null) store.transaction(draft.ownerPubkey) { data ->
             val old = data.identities[draft.articleIdentifier]
             data.copy(identities = data.identities + (draft.articleIdentifier to ArticleIdentity(draft.articleIdentifier,
@@ -406,10 +436,11 @@ class ArticleEditorViewModel(
     }
     fun confirmOverwrite() { launch {
         val d = state.value.draft ?: return@launch
-        val latest = fetchLatestArticleByAddress(d.ownerPubkey, d.articleIdentifier, relayUrl)
+        val latest = fetchLatest(d.ownerPubkey, d.articleIdentifier, relayUrl)
         if (latest == null) { _state.update { it.copy(error = "最新版を確認できません") }; return@launch }
         change { it.copy(baseEventId = latest.event.id, originalPublishedAt = latest.meta.publishedAt) }
-        _state.update { it.copy(updateConflict = false) }
+        _state.update { it.copy(updateConflict = false, error = null,
+            editingArticle = EditingArticle(d.ownerPubkey, d.articleIdentifier, latest.meta.publishedAt)) }
     } }
     fun copyAsNew() { change { it.copy(articleIdentifier = "torinos-${articleLocalId()}", baseEventId = null, originalPublishedAt = null) }; _state.update { it.copy(editingArticle = null, updateConflict = false) } }
     fun publish() {
@@ -467,19 +498,36 @@ class ArticleEditorViewModel(
             false
         }
     }
+    /**
+     * Once a relay accepted the article its draft is deleted, so further edits start a new draft of the
+     * published version instead of saving over the deleted revision.
+     */
+    private suspend fun continueAfterPublication(owner: String, attempt: ArticlePublishAttempt) = saveMutex.withLock {
+        val current = _state.value.draft ?: return@withLock
+        if (expectedRevision == null || store.read(owner).drafts.containsKey(current.draftId)) return@withLock
+        val published = current.copy(revision = 0, baseEventId = attempt.event.id, originalPublishedAt = attempt.draft.originalPublishedAt)
+        expectedRevision = null
+        baseline = published
+        lastSaved = null
+        savedGeneration = editGeneration
+        unsavedSince = null
+        _state.update { it.copy(draft = published, saveState = ArticleSaveState.Saved, updateConflict = false,
+            editingArticle = EditingArticle(owner, published.articleIdentifier, published.originalPublishedAt)) }
+    }
     private fun performPublish(attemptId: String?) {
         if (state.value.isPublishing || state.value.frozen) return
         _state.update { it.copy(isPublishing = true, error = null) }
         launch {
             try {
                 val session = accountSession ?: error("ログインしてください")
-                val d = flush() ?: error("下書きがありません")
+                val d = flush(force = true) ?: error("下書きがありません")
                 if (attemptId == null && d.baseEventId != null) {
                     checkLatest(d); check(!state.value.updateConflict) { state.value.error ?: "最新版と競合しています" }
                 }
                 val publisher = ArticlePublisher(session.pubkey, session.signer, store, session.relayStore::writableRelayUrlsSnapshot)
                 val result = if (attemptId == null) publisher.publish(d) else publisher.retry(attemptId)
                 if (result.accepted) ArticleMemoryCache.publishArticle(result.event, result.relays.filterValues { it.state == ArticleRelayState.Accepted }.keys.toList())
+                if (result.accepted) continueAfterPublication(session.pubkey, result)
                 // 共有に失敗したら記事を開かずに留まり、共有だけを再試行できるようにする。
                 val shared = !result.accepted || shareIfRequested(session, result)
                 _state.update { it.copy(publishAttempt = result,

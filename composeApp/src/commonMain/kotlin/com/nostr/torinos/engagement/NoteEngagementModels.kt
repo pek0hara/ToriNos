@@ -64,6 +64,8 @@ data class PendingEngagementOperation(
     val request: EngagementRequest,
     val removedEventId: String? = null,
     val appliedDelta: EngagementDelta,
+    /** nullは旧呼び出しの未指定。指定時は閲覧リレーと重なる操作だけを楽観表示する。 */
+    val deliveryRelayUrls: Set<String>? = null,
 )
 
 sealed interface EngagementAction {

@@ -11,7 +11,9 @@ import com.nostr.torinos.ui.article.buildArticleTags
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.flow.transformWhile
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.SerialName
@@ -24,6 +26,10 @@ internal interface ArticleDraftTransport {
     /** Relays that did not finish the last load; drafts stored only there may be missing or stale. */
     val incompleteRelays: List<String> get() = emptyList()
     suspend fun load(): List<ArticleDraft>
+    /** Like [load], but reports the drafts known so far each time a relay finishes, starting with the first. */
+    suspend fun loadProgressively(onProgress: suspend (List<ArticleDraft>) -> Unit): List<ArticleDraft> = load()
+    /** `d` of the account's published articles, so drafts without their base version still show as updates. */
+    suspend fun loadPublishedIdentifiers(): Set<String> = emptySet()
     suspend fun save(draft: ArticleDraft)
     suspend fun delete(draft: ArticleDraft)
 }
@@ -59,7 +65,8 @@ internal class ArticleDraftRepository(
         private set
     private val latestEvents = mutableMapOf<String, NostrEvent>()
     private val lastAttemptedAt = mutableMapOf<String, Long>()
-    override suspend fun load(): List<ArticleDraft> {
+    override suspend fun load(): List<ArticleDraft> = loadProgressively {}
+    override suspend fun loadProgressively(onProgress: suspend (List<ArticleDraft>) -> Unit): List<ArticleDraft> {
         ensureActive()
         val relays = readRelays()
         check(relays.isNotEmpty()) { "記事下書きを取得するリレーがありません" }
@@ -68,10 +75,21 @@ internal class ArticleDraftRepository(
         val session = openSession(SubscriptionSpec("article-drafts-${articleLocalId()}", listOf(filter),
             RelayTarget.Explicit(relays), SubscriptionBehavior.Fetch(10_000), deduplicateEvents = false))
         val events = mutableListOf<NostrEvent>()
+        // Decrypting is the costly part, and each relay that finishes re-reads the drafts so far.
+        val decoded = mutableMapOf<String, ArticleDraft?>()
+        fun snapshot(): Pair<Map<String, NostrEvent>, List<NostrEvent>> {
+            // Include our accepted writes, so a relay's delayed indexing cannot revert a just-saved draft.
+            val latest = (events + latestEvents.values).groupBy { it.tags.tagValue("d") }.mapNotNull { (id, versions) ->
+                if (id == null) null else id to versions.sortedWith(compareByDescending<NostrEvent> { it.createdAt }.thenBy { it.id }).first()
+            }.toMap()
+            return latest to latest.values.filter { it.content.isNotEmpty() }
+        }
+        fun decode(event: NostrEvent) = decoded.getOrPut(event.id) { decodeArticleDraft(event, signer) }
         var outcomes: Map<String, RelayOutcome>? = null
         try {
-            session.signals.collect { signal -> when (signal) {
+            session.signals.untilFetchCompleted().collect { signal -> when (signal) {
                 is SubscriptionSignal.Event -> if (filter.matches(signal.event) && validate(signal.event)) events += signal.event
+                is SubscriptionSignal.Eose -> { ensureActive(); onProgress(snapshot().second.mapNotNull(::decode)) }
                 is SubscriptionSignal.FetchCompleted -> outcomes = signal.outcomes
                 else -> Unit
             } }
@@ -80,13 +98,10 @@ internal class ArticleDraftRepository(
         // One unreachable relay must not hide every draft; only a fetch with no completed relay is a failure.
         val completed = outcomes.orEmpty().filterValues { it == RelayOutcome.Eose }.keys
         check(completed.isNotEmpty()) { "記事下書きの取得を完了できませんでした。再取得してください" }
-        // Include our accepted writes, so a relay's delayed indexing cannot revert a just-saved draft.
-        val latest = (events + latestEvents.values).groupBy { it.tags.tagValue("d") }.mapNotNull { (id, versions) ->
-            if (id == null) null else id to versions.sortedWith(compareByDescending<NostrEvent> { it.createdAt }.thenBy { it.id }).first()
-        }.toMap()
+        val (latest, present) = snapshot()
         val issues = mutableListOf<ArticleDraftLoadIssue>()
-        val drafts = latest.values.filter { it.content.isNotEmpty() }.mapNotNull { event ->
-            decodeArticleDraft(event, signer).also { draft ->
+        val drafts = present.mapNotNull { event ->
+            decode(event).also { draft ->
                 if (draft == null) issues += ArticleDraftLoadIssue(event.tags.tagValue("d").orEmpty(), event.id,
                     "この下書きを読み込めませんでした。元データは削除されていません")
             }
@@ -95,6 +110,22 @@ internal class ArticleDraftRepository(
         loadIssues = issues
         incompleteRelays = outcomes.orEmpty().keys.filterNot { it in completed }.sorted()
         return drafts
+    }
+    override suspend fun loadPublishedIdentifiers(): Set<String> {
+        ensureActive()
+        val relays = readRelays()
+        if (relays.isEmpty()) return emptySet()
+        val filter = NostrFilter(kinds = listOf(NIP23_ARTICLE_KIND), authors = listOf(signer.pubkey), limit = 1000)
+        val session = openSession(SubscriptionSpec("article-published-${articleLocalId()}", listOf(filter),
+            RelayTarget.Explicit(relays), SubscriptionBehavior.Fetch(10_000)))
+        val identifiers = mutableSetOf<String>()
+        try {
+            session.signals.untilFetchCompleted().collect { signal ->
+                if (signal is SubscriptionSignal.Event && filter.matches(signal.event) && validate(signal.event))
+                    signal.event.tags.tagValue("d")?.let(identifiers::add)
+            }
+        } finally { withContext(NonCancellable) { session.close() } }
+        return identifiers
     }
     override suspend fun save(draft: ArticleDraft) {
         require(draft.ownerPubkey == signer.pubkey)
@@ -155,3 +186,8 @@ internal fun decodeArticleDraft(event: NostrEvent, signer: AccountSigner): Artic
 }
 private fun List<List<String>>.tagValue(name: String) = firstOrNull { it.firstOrNull() == name }?.getOrNull(1)
 internal const val ARTICLE_DRAFT_KIND = 31234
+/** Ends with [SubscriptionSignal.FetchCompleted] instead of waiting for the session to close its stream. */
+private fun Flow<SubscriptionSignal>.untilFetchCompleted() = transformWhile { signal ->
+    emit(signal)
+    signal !is SubscriptionSignal.FetchCompleted
+}

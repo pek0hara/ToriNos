@@ -67,17 +67,36 @@ internal class ArticleDraftStore(
             catch (e: Exception) { throw ArticleStoreCorrupt() }
     }
     suspend fun read(owner: String): ArticleStoreData = mutex.withLock { decode(storage.read(owner), owner) }
-    suspend fun refreshDrafts(owner: String) = mutex.withLock {
-        val relay = transport ?: return@withLock
-        val drafts = relay.load()
-        check(drafts.all { it.ownerPubkey == owner })
-        val raw = storage.read(owner)
-        val current = decode(raw, owner)
-        val refreshed = current.copy(drafts = drafts.associateBy { it.draftId }, relayDraftIssues = relay.loadIssues,
-            incompleteDraftRelays = relay.incompleteRelays,
-            generation = current.generation + 1)
-        if (!storage.compareAndSet(owner, raw, articleJson.encodeToString(refreshed))) throw ArticleStoreConflict()
+    /**
+     * Reloads drafts from the relays. [onProgress] gets the list each time a relay finishes; until the load
+     * completes, drafts already in memory stay listed. The lock is held only to apply results, so the
+     * editor can open and save while a slow relay is still being waited for.
+     */
+    suspend fun refreshDrafts(owner: String, onProgress: suspend (ArticleStoreData) -> Unit = {}) {
+        val relay = transport ?: return
+        var applied = read(owner).drafts
+        // A draft saved or deleted here during the load is newer than anything the load started from.
+        fun localChanges(current: Map<String, ArticleDraft>) =
+            (current.keys + applied.keys).filter { current[it] != applied[it] }.associateWith { current[it] }
+        suspend fun apply(drafts: List<ArticleDraft>, final: Boolean): ArticleStoreData = mutex.withLock {
+            check(drafts.all { it.ownerPubkey == owner })
+            val raw = storage.read(owner)
+            val current = decode(raw, owner)
+            val loaded = (if (final) emptyMap() else current.drafts) + drafts.associateBy { it.draftId }
+            val merged = localChanges(current.drafts).entries.fold(loaded) { acc, (id, draft) ->
+                if (draft == null) acc - id else acc + (id to draft)
+            }
+            val refreshed = current.copy(drafts = merged, generation = current.generation + 1).let {
+                if (final) it.copy(relayDraftIssues = relay.loadIssues, incompleteDraftRelays = relay.incompleteRelays) else it
+            }
+            if (!storage.compareAndSet(owner, raw, articleJson.encodeToString(refreshed))) throw ArticleStoreConflict()
+            applied = merged
+            refreshed
+        }
+        val drafts = relay.loadProgressively { partial -> onProgress(apply(partial, final = false)) }
+        apply(drafts, final = true)
     }
+    suspend fun loadPublishedIdentifiers(): Set<String> = transport?.loadPublishedIdentifiers().orEmpty()
     suspend fun loadDraft(owner: String, id: String): ArticleDraft? {
         read(owner).drafts[id]?.let { return it }
         refreshDrafts(owner)
@@ -118,13 +137,14 @@ internal class ArticleDraftStore(
             data.copy(drafts = data.drafts - id)
         }
     }
-    /** The article receipt has already been committed; failure here only retains the draft. */
+    /** Called once any relay accepted the article; failure here only retains the draft. */
     suspend fun cleanPublishedDraft(owner: String, attemptId: String): ArticlePublishAttempt {
         val data = transaction(owner) { current ->
             val attempt = current.attempts[attemptId] ?: error("公開履歴が見つかりません")
-            check(attempt.complete) { "記事の受理確認が完了していません" }
+            check(attempt.accepted) { "記事を受理したリレーがありません" }
+            // Compare the whole draft: once deleted, a later edit restarts at revision 1 under the same ID.
             current.copy(
-                drafts = if (current.drafts[attempt.draft.draftId]?.revision == attempt.draft.revision)
+                drafts = if (current.drafts[attempt.draft.draftId] == attempt.draft)
                     current.drafts - attempt.draft.draftId else current.drafts,
                 attempts = current.attempts + (attemptId to attempt.copy(draftCleanupError = null)),
             )

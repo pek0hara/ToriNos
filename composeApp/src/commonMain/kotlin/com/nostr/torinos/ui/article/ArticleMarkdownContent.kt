@@ -1,5 +1,7 @@
 package com.nostr.torinos.ui.article
 
+import com.nostr.torinos.model.*
+
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -58,9 +60,9 @@ import com.nostr.torinos.model.stripNostrEventUris
 import com.nostr.torinos.ui.components.LinkedText
 import com.nostr.torinos.ui.components.NetworkImage
 import com.nostr.torinos.ui.components.ProfileNameText
-import com.nostr.torinos.ui.components.extractImageUrls
+import com.nostr.torinos.model.extractImageUrls
 import com.nostr.torinos.ui.components.formatTimestamp
-import com.nostr.torinos.ui.components.stripImageUrls
+import com.nostr.torinos.model.stripImageUrls
 import com.nostr.torinos.ui.profile.AvatarCircle
 
 @Composable

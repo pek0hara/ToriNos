@@ -1,17 +1,21 @@
 package com.nostr.torinos.ui.feed
 
+import com.nostr.torinos.network.collectRecovering
+
 import com.nostr.torinos.engagement.EngagementStore
 import com.nostr.torinos.model.COMMENT_EVENT_KIND
 import com.nostr.torinos.model.NostrEvent
 import com.nostr.torinos.model.NostrFilter
+import com.nostr.torinos.network.RelayFetchVerdict
 import com.nostr.torinos.network.RelayLimits
-import com.nostr.torinos.network.RelayOutcome
+import com.nostr.torinos.network.RelayRetryPolicy
 import com.nostr.torinos.network.RelayTarget
 import com.nostr.torinos.network.RetryDisposition
 import com.nostr.torinos.network.SubscriptionBehavior
 import com.nostr.torinos.network.SubscriptionSession
 import com.nostr.torinos.network.SubscriptionSignal
 import com.nostr.torinos.network.SubscriptionSpec
+import com.nostr.torinos.network.verdict
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
@@ -270,8 +274,8 @@ internal class EngagementFetcher(
             )
             engagementSession = session
             jobs += scope.launch {
-                session.signals.collect { signal ->
-                    if (engagementSession !== session) return@collect
+                session.collectRecovering { signal ->
+                    if (engagementSession !== session) return@collectRecovering
                     if (signal is SubscriptionSignal.Event) {
                         engagementEventMutex.withLock { onEvent(signal.event, signal.relayUrl) }
                     }
@@ -362,8 +366,8 @@ internal class EngagementFetcher(
         var closedDisposition: RetryDisposition? = null
         val page = EngagementHistoryPage(work.partitions, eventIds.toSet(), requestedUntil = work.until ?: until)
         jobs += scope.launch {
-            session.signals.collect { signal ->
-                if (engagementHistorySessions[work.relayUrl] !== session) return@collect
+            session.collectRecovering { signal ->
+                if (engagementHistorySessions[work.relayUrl] !== session) return@collectRecovering
                 when (signal) {
                     is SubscriptionSignal.Event -> engagementEventMutex.withLock {
                         if (signal.relayUrl == work.relayUrl) page.record(signal.event)
@@ -377,7 +381,7 @@ internal class EngagementFetcher(
                         var shouldRetryWithBackoff = false
                         engagementEventMutex.withLock {
                             val succeeded = !signal.timedOut &&
-                                signal.outcomes[work.relayUrl] is RelayOutcome.Eose
+                                signal.outcomes[work.relayUrl].verdict() == RelayFetchVerdict.Succeeded
                             if (succeeded) {
                                 val nextUntil = page.nextUntil(threshold = pageThreshold)
                                 eventIds.forEach { eventId ->
@@ -401,14 +405,11 @@ internal class EngagementFetcher(
                                 engagementFailureCounts.remove(work.relayUrl)
                                 engagementRetryJobs.remove(work.relayUrl)?.cancel()
                             } else {
-                                val retry = closedDisposition ?: RetryDisposition.RetryWithBackoff
-                                if (
-                                    retry == RetryDisposition.RetryOnFilterChange &&
-                                    work.partitions.size > 1
-                                ) {
+                                val verdict = closedDisposition.verdict()
+                                if (verdict == RelayFetchVerdict.IsolateFilters && work.partitions.size > 1) {
                                     isolatedEngagementRelays += work.relayUrl
                                     shouldRetryImmediately = true
-                                } else if (retry == RetryDisposition.RetryWithBackoff) {
+                                } else if (verdict == RelayFetchVerdict.RetryWithBackoff) {
                                     shouldRetryWithBackoff = true
                                 } else {
                                     // 認証必須・ブロック・単一フィルターでの拒否は、再送しても同じ結果になる。
@@ -508,9 +509,7 @@ internal class EngagementFetcher(
         if (!started || engagementRetryJobs[work.relayUrl]?.isActive == true) return
         val attempt = (engagementFailureCounts[work.relayUrl] ?: 0) + 1
         engagementFailureCounts[work.relayUrl] = attempt
-        if (attempt > MAX_ENGAGEMENT_HISTORY_RETRIES) return
-        val delayMillis = (ENGAGEMENT_RETRY_BASE_DELAY_MS * (1L shl (attempt - 1).coerceAtMost(4)))
-            .coerceAtMost(ENGAGEMENT_RETRY_MAX_DELAY_MS)
+        val delayMillis = ENGAGEMENT_RETRY_POLICY.delayAfter(attempt) ?: return
         engagementRetryJobs[work.relayUrl] = scope.launch {
             delay(delayMillis)
             engagementRetryJobs.remove(work.relayUrl)
@@ -636,8 +635,12 @@ internal class EngagementFetcher(
          */
         const val ENGAGEMENT_HISTORY_PAGE_THRESHOLD = 100
         const val MAX_ENGAGEMENT_HISTORY_RETRIES = 4
-        const val ENGAGEMENT_RETRY_BASE_DELAY_MS = 1_000L
-        const val ENGAGEMENT_RETRY_MAX_DELAY_MS = 30_000L
+        /** [MAX_ENGAGEMENT_HISTORY_RETRIES]回まで取り直し、その次の失敗で諦める。 */
+        val ENGAGEMENT_RETRY_POLICY = RelayRetryPolicy(
+            baseDelayMillis = 1_000L,
+            maxDelayMillis = 30_000L,
+            maxFailures = MAX_ENGAGEMENT_HISTORY_RETRIES + 1,
+        )
         const val ENGAGEMENT_LIVE_OVERLAP_SECONDS = 120L
     }
 }

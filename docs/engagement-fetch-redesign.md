@@ -1,5 +1,10 @@
 # 付随情報（リアクション・返信・リポスト）の取得と集計の再設計
 
+### 2026-10-16の実装更新
+
+検索・チャンネルも共有EngagementStoreとPendingEngagementOperationsを利用する。EngagementEventClassifierはkind 1/1111/42の返信・引用を文脈で分類し、EngagementProjectionは閲覧リレー、受理イベントID、pendingの配送先を適用して表示を作る。Feed・Threadも同じ投影へ接続した。検索はsessionId付きのlocal commit sequenceにより停止中の自分の確定操作を回復する。チャンネルの件数はChannelEngagementBindingがstore/pendingのrevision一致を確認して公開する。[実装範囲と検証](./refactor-details/implementation-report.md)。
+
+
 ## 1. 対象と結論
 
 状態: 2026-10-09 に段階1〜6を実装済み（11章）。フィードとポスト詳細（通常の投稿）が対象。残りは12章。

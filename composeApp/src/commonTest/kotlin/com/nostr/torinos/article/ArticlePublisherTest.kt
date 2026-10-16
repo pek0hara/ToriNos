@@ -227,24 +227,45 @@ class ArticlePublisherTest {
         assertTrue(store.read(owner).drafts.isEmpty())
         assertEquals(first.id, store.read(owner).archives[draft.articleIdentifier])
     }
-    @Test fun partialAcceptanceKeepsNewerRevisionWhenOldVersionCompletes() = runTest {
-        val store = ArticleDraftStore(MemoryArticleStorage())
+    @Test fun partialAcceptanceDeletesTheDraftAndRetrySendsOnlyToTheRest() = runTest {
+        var deletions = 0
+        val transport = object : ArticleDraftTransport {
+            override suspend fun load() = emptyList<ArticleDraft>()
+            override suspend fun save(draft: ArticleDraft) = Unit
+            override suspend fun delete(draft: ArticleDraft) { deletions++ }
+        }
+        val store = ArticleDraftStore(transport = transport)
         val signer = Signer(owner)
         val draft = store.save(ArticleDraft(ownerPubkey = owner, title = "title", bodyMarkdown = "body"), null)
         val sentTargets = mutableListOf<Collection<String>>()
         var firstCall = true
         val publisher = ArticlePublisher(owner, signer, store, { listOf("wss://one", "wss://two") }, nowSeconds = { 100 }, send = { _, relays ->
             sentTargets += relays
-            if (firstCall) { firstCall = false; RelayPublishResult(setOf("wss://one"), mapOf("wss://two" to "rejected"), setOf("wss://two")) }
+            if (firstCall) { firstCall = false; RelayPublishResult(setOf("wss://one"), mapOf("wss://two" to "timeout")) }
             else RelayPublishResult(relays.toSet(), emptyMap())
         })
         val result = publisher.publish(draft)
         assertTrue(result.accepted)
         assertFalse(result.complete)
-        val newer = store.save(draft.copy(bodyMarkdown = "new edits"), draft.revision)
-        publisher.retry(result.id)
+        assertNull(result.draftCleanupError)
+        assertTrue(store.read(owner).drafts.isEmpty())
+        assertEquals(1, deletions)
+        // An edit after the partial publication is a new draft; resending the old version must not delete it.
+        val newer = store.save(draft.copy(bodyMarkdown = "new edits"), null)
+        val retried = publisher.retry(result.id)
+        assertTrue(retried.complete)
         assertEquals(setOf("wss://two"), sentTargets.last().toSet())
         assertEquals(newer, store.read(owner).drafts[draft.draftId])
+        assertEquals(1, signer.signatures)
+        assertEquals(1, deletions)
+    }
+    @Test fun noAcceptanceKeepsTheDraft() = runTest {
+        val store = ArticleDraftStore(MemoryArticleStorage())
+        val draft = store.save(ArticleDraft(ownerPubkey = owner, title = "title", bodyMarkdown = "body"), null)
+        val publisher = ArticlePublisher(owner, Signer(owner), store, { listOf("wss://one", "wss://two") }, nowSeconds = { 100 },
+            send = { _, relays -> RelayPublishResult(emptySet(), relays.associateWith { "rejected" }, relays.toSet()) })
+        assertFalse(publisher.publish(draft).accepted)
+        assertEquals(draft.draftId, store.read(owner).drafts.values.single().draftId)
     }
     @Test fun editedPublicationSupersedesOldAttemptAndKeepsFirstPublicationTime() = runTest {
         val store = ArticleDraftStore(MemoryArticleStorage())

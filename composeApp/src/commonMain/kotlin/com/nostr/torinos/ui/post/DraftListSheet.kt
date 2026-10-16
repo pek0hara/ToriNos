@@ -114,11 +114,16 @@ internal fun DraftListSheet(
                     modifier = Modifier.fillMaxWidth().weight(1f),
                     contentAlignment = Alignment.Center,
                 ) {
-                    Text(
-                        text = state.error.orEmpty(),
-                        color = MaterialTheme.colorScheme.error,
-                        modifier = Modifier.padding(24.dp),
-                    )
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Text(
+                            text = state.error.orEmpty(),
+                            color = MaterialTheme.colorScheme.error,
+                            modifier = Modifier.padding(start = 24.dp, end = 24.dp, top = 24.dp),
+                        )
+                        if (state.incompleteRelay != null) {
+                            TextButton(onClick = viewModel::reload, enabled = !state.isLoading) { Text("再取得") }
+                        }
+                    }
                 }
                 drafts.isEmpty() -> Box(
                     modifier = Modifier.fillMaxWidth().weight(1f),
@@ -130,6 +135,16 @@ internal fun DraftListSheet(
                     )
                 }
                 else -> LazyColumn(modifier = Modifier.weight(1f)) {
+                    state.incompleteRelay?.let { relay ->
+                        item(key = "incomplete") {
+                            Text(
+                                text = "取得しきれなかったため、一部の下書きが表示されていないか古い可能性があります: ${relay.removePrefix("wss://")}",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.error,
+                                modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+                            )
+                        }
+                    }
                     items(drafts, key = { it.eventId }) { item ->
                         DraftRow(
                             item = item,

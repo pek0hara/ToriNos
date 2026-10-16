@@ -4,10 +4,14 @@ import com.nostr.torinos.model.NostrEvent
 import com.nostr.torinos.model.NostrFilter
 import kotlinx.datetime.LocalDate
 
-/** 1ページで取り切れた日と、その日のイベント。 */
+/**
+ * 1ページで取り切れた日と、その日のイベント。
+ * [allRelaysFinished]は、ここまでのページをすべてのリレーが取り終えたか（取得結果で置き換えてよいか）。
+ */
 internal data class JournalPageOutcome(
     val closedDates: List<LocalDate>,
     val events: List<NostrEvent>,
+    val allRelaysFinished: Boolean = true,
 )
 
 /**
@@ -25,6 +29,11 @@ internal class JournalRangePager(
     private var until: Long? = null
     private var pages = 0
     private var finished = false
+    private var allRelaysFinished = true
+    private val failedRelays = linkedSetOf<String>()
+
+    /** どれかのページで取り終えず、間を空けて取り直すリレー。 */
+    val retryRelays: Set<String> get() = failedRelays
 
     /** 次に送るリクエスト。終わったら null。 */
     fun next(): JournalFetchRequest? {
@@ -36,9 +45,11 @@ internal class JournalRangePager(
     fun accept(result: JournalFetchResult): JournalPageOutcome {
         pages += 1
         result.events.forEach { pendingEvents.getOrPut(it.id) { it } }
+        failedRelays += result.retryRelays
+        allRelaysFinished = allRelaysFinished && result.allRelaysFinished
         if (!result.complete) {
             finished = true
-            return JournalPageOutcome(emptyList(), emptyList())
+            return JournalPageOutcome(emptyList(), emptyList(), allRelaysFinished = false)
         }
         val cutOff = result.truncatedAt
         val closed = if (cutOff == null) pendingDates else pendingDates.filter { clock.startOfDay(it) > cutOff }
@@ -54,7 +65,7 @@ internal class JournalRangePager(
             pages >= maxPages -> finished = true
             else -> until = cutOff
         }
-        return JournalPageOutcome(closed, events)
+        return JournalPageOutcome(closed, events, allRelaysFinished)
     }
 
     /** 終わった時点で取り切れなかった日のイベント。取得済みにはせず、足すだけにする。 */

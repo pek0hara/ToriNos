@@ -1,5 +1,9 @@
 package com.nostr.torinos.ui.channel
 
+import com.nostr.torinos.ui.components.*
+
+import com.nostr.torinos.model.*
+
 import com.nostr.torinos.model.ReactionOption
 import com.nostr.torinos.ui.components.CustomEmojiOpenRequest
 import com.nostr.torinos.ui.components.LocalCustomEmojiNavigator
@@ -75,13 +79,12 @@ import com.nostr.torinos.account.LocalAccountSession
 import com.nostr.torinos.network.RelayStore
 import com.nostr.torinos.ui.components.LazyListScrollbar
 import com.nostr.torinos.ui.components.LinkedText
-import com.nostr.torinos.ui.components.NoteCard
 import com.nostr.torinos.ui.components.ProfileNameText
 import com.nostr.torinos.ui.components.rememberSyncedTextFieldValue
 import com.nostr.torinos.ui.components.rememberOptimizedImagePickerLauncher
 import com.nostr.torinos.ui.components.RelayMultiSelectDialog
 import com.nostr.torinos.model.stripNostrEventUris
-import com.nostr.torinos.ui.components.stripImageUrls
+import com.nostr.torinos.model.stripImageUrls
 import com.nostr.torinos.ui.profile.AvatarCircle
 import com.nostr.torinos.ui.components.DismissKeyboardOnLeave
 import com.nostr.torinos.ui.components.avoidStaleAccessibilityFocus
@@ -428,60 +431,72 @@ fun ChannelScreen(
                                                     if (message.id == highlightedId) MaterialTheme.colorScheme.secondaryContainer
                                                     else MaterialTheme.colorScheme.surface,
                                                 )) {
-                                                    NoteCard(
-                                                        event = message,
-                                                        profile = s.profiles[message.pubkey],
-                                                        profiles = s.profiles,
-                                                        replyCount = s.replyCounts[message.id] ?: 0,
-                                                        replies = s.replies[message.id].orEmpty(),
-                                                        reactionCount = s.reactionCounts[message.id] ?: 0,
-                                                        likeReactionCount = s.likeReactionCounts[message.id] ?: 0,
-                                                        customReactions = s.customReactions[message.id].orEmpty(),
-                                                        unicodeReactions = s.unicodeReactions[message.id].orEmpty(),
-                                                        reactionEvents = s.reactionEvents[message.id].orEmpty(),
-                                                        repostCount = s.repostCounts[message.id] ?: 0,
-                                                        repostPubkeys = s.repostPubkeys[message.id].orEmpty(),
-                                                        isLiked = s.isLiked(message.id),
-                                                        ownEmojiReactionEventIds = s.displayOwnEmojiReactionEventIds(message.id),
-                                                        isReposted = s.isReposted(message.id),
-                                                        onUserClick = onUserClick,
-                                                        onLike = if (ownPubkey != null) {
-                                                            {
-                                                                if (s.isLiked(message.id)) {
-                                                                    viewModel.unreact(message.id)
-                                                                } else {
-                                                                    viewModel.react(message.id, message.pubkey)
+                                                    NoteCardHost(
+                                                        model = NoteCardModel(
+                                                            event = message,
+                                                            profiles = s.profiles,
+                                                            isMuted = mutedPubkeys.contains(message.pubkey),
+                                                            author = NoteAuthorPresentation(
+                                                                profile = s.profiles[message.pubkey],
+                                                                ownPubkey = ownPubkey,
+                                                            ),
+                                                            engagement = NoteEngagementPresentation(
+                                                                replyCount = s.replyCounts[message.id] ?: 0,
+                                                                replies = s.replies[message.id].orEmpty(),
+                                                                reactionCount = s.reactionCounts[message.id] ?: 0,
+                                                                likeReactionCount = s.likeReactionCounts[message.id] ?: 0,
+                                                                customReactions = s.customReactions[message.id].orEmpty(),
+                                                                unicodeReactions = s.unicodeReactions[message.id].orEmpty(),
+                                                                reactionEvents = s.reactionEvents[message.id].orEmpty(),
+                                                                repostCount = s.repostCounts[message.id] ?: 0,
+                                                                repostPubkeys = s.repostPubkeys[message.id].orEmpty(),
+                                                                isLiked = s.isLiked(message.id),
+                                                                ownEmojiReactionEventIds = s.displayOwnEmojiReactionEventIds(message.id),
+                                                                isReposted = s.isReposted(message.id),
+                                                            ),
+                                                            references = NoteReferencePresentation(
+                                                            ),
+                                                            policy = NoteCardPolicy(
+                                                            ),
+                                                        ),
+                                                        actions = NoteCardActions(
+                                                            onUserClick = onUserClick,
+                                                            onLike = if (ownPubkey != null) {
+                                                                {
+                                                                    if (s.isLiked(message.id)) {
+                                                                        viewModel.unreact(message.id)
+                                                                    } else {
+                                                                        viewModel.react(message.id, message.pubkey)
+                                                                    }
                                                                 }
-                                                            }
-                                                        } else null,
-                                                        onEmojiReact = if (ownPubkey != null) {
-                                                            { option -> viewModel.reactWithEmoji(message.id, message.pubkey, option) }
-                                                        } else null,
-                                                        onEmojiUnreact = if (ownPubkey != null) {
-                                                            { option -> viewModel.unreactWithEmoji(message.id, option) }
-                                                        } else null,
-                                                        onReply = if (ownPubkey != null && onReply != null) {
-                                                            { onReply(message, message.content.replyPreviewText(), channelId, viewModel.replyRelayHint(message.id)) }
-                                                        } else null,
-                                                        onOpenReplies = { onOpenThread(message.id) },
-                                                        onOpenLikes = { onOpenLikes(message.id) },
-                                                        onOpenReposts = { onOpenReposts(message.id) },
-                                                        onRepost = if (ownPubkey != null) {
-                                                            {
-                                                                if (s.isReposted(message.id)) {
-                                                                    viewModel.unrepost(message.id)
-                                                                } else {
-                                                                    viewModel.repost(message)
+                                                            } else null,
+                                                            onEmojiReact = if (ownPubkey != null) {
+                                                                { option -> viewModel.reactWithEmoji(message.id, message.pubkey, option) }
+                                                            } else null,
+                                                            onEmojiUnreact = if (ownPubkey != null) {
+                                                                { option -> viewModel.unreactWithEmoji(message.id, option) }
+                                                            } else null,
+                                                            onReply = if (ownPubkey != null && onReply != null) {
+                                                                { onReply(message, message.content.replyPreviewText(), channelId, viewModel.replyRelayHint(message.id)) }
+                                                            } else null,
+                                                            onOpenReplies = { onOpenThread(message.id) },
+                                                            onOpenLikes = { onOpenLikes(message.id) },
+                                                            onOpenReposts = { onOpenReposts(message.id) },
+                                                            onRepost = if (ownPubkey != null) {
+                                                                {
+                                                                    if (s.isReposted(message.id)) {
+                                                                        viewModel.unrepost(message.id)
+                                                                    } else {
+                                                                        viewModel.repost(message)
+                                                                    }
                                                                 }
-                                                            }
-                                                        } else null,
-                                                        ownPubkey = ownPubkey,
-                                                        onDelete = { viewModel.deleteMessage(message.id) },
-                                                        onHide = if (ownPubkey != null) {
-                                                            { viewModel.hideMessage(message.id) }
-                                                        } else null,
-                                                        isMuted = mutedPubkeys.contains(message.pubkey),
-                                                        onNoteClick = onOpenThread,
+                                                            } else null,
+                                                            onDelete = { viewModel.deleteMessage(message.id) },
+                                                            onHide = if (ownPubkey != null) {
+                                                                { viewModel.hideMessage(message.id) }
+                                                            } else null,
+                                                            onNoteClick = onOpenThread,
+                                                        ),
                                                     )
                                                 }
                                                 HorizontalDivider()

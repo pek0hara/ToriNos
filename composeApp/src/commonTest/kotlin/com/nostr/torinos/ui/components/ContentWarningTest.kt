@@ -1,5 +1,7 @@
 package com.nostr.torinos.ui.components
 
+import com.nostr.torinos.model.*
+
 import kotlin.test.Test
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue

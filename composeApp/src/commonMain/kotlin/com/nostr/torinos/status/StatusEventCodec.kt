@@ -1,11 +1,13 @@
 package com.nostr.torinos.status
 
+import com.nostr.torinos.model.*
+
 import com.nostr.torinos.emoji.EmojiSetAddress
 import com.nostr.torinos.emoji.customEmojiMap
 import com.nostr.torinos.emoji.customEmojiTagsForContent
 import com.nostr.torinos.model.NostrEvent
 import com.nostr.torinos.emoji.CustomEmoji
-import com.nostr.torinos.ui.components.extractWebUrls
+import com.nostr.torinos.model.extractWebUrls
 
 object StatusEventCodec {
     fun parse(event: NostrEvent): StatusEntry? {

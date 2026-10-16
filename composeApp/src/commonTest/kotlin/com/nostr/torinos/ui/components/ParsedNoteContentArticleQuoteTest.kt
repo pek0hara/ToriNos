@@ -1,5 +1,7 @@
 package com.nostr.torinos.ui.components
 
+import com.nostr.torinos.model.*
+
 import com.nostr.torinos.model.NostrEvent
 import com.nostr.torinos.model.encodeNaddr
 import kotlin.test.Test

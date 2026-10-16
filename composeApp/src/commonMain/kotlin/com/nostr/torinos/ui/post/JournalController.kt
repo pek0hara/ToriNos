@@ -21,8 +21,10 @@ import com.nostr.torinos.journal.JournalFetchResult
 import com.nostr.torinos.journal.JournalInteractionSource
 import com.nostr.torinos.journal.JournalMemberStorage
 import com.nostr.torinos.journal.JournalMembers
+import com.nostr.torinos.journal.JournalNoteEngagement
 import com.nostr.torinos.journal.JournalRangePager
 import com.nostr.torinos.journal.JournalReferenceSource
+import com.nostr.torinos.journal.JournalRelayRetries
 import com.nostr.torinos.journal.JournalTimeline
 import com.nostr.torinos.journal.NostrJournalEngagementSource
 import com.nostr.torinos.journal.NostrJournalEventSource
@@ -44,7 +46,7 @@ import com.nostr.torinos.model.NostrProfile
 import com.nostr.torinos.model.ReactionOption
 import com.nostr.torinos.network.ProfileFetchPolicy
 import com.nostr.torinos.network.ProfileRepository
-import com.nostr.torinos.network.ReactionEventStore
+import com.nostr.torinos.network.RelayTarget
 import com.nostr.torinos.ui.SafeCoroutineLauncher
 import com.nostr.torinos.ui.timeline.NoteDeletionResult
 import com.nostr.torinos.ui.timeline.NoteDeletionService
@@ -98,8 +100,6 @@ internal class JournalController(
     private val engagementSource: JournalEngagementSource = NostrJournalEngagementSource(),
     private val referenceSource: JournalReferenceSource = NostrJournalReferenceSource(),
     private val profileSource: JournalProfileSource = JournalProfileSource.Repository,
-    private val cachedReceivedLikes: (pubkey: String, since: Long, until: Long) -> List<NostrEvent> =
-        ReactionEventStore::receivedReactions,
     private val memberStorage: JournalMemberStorage = JournalMemberStorage.Local,
     private val interactionSource: JournalInteractionSource = NostrJournalInteractionSource(),
     initialShowCalendar: Boolean = false,
@@ -119,6 +119,11 @@ internal class JournalController(
     private var loadJob: Job? = null
     private var backfillJob: Job? = null
     private var engagementJob: Job? = null
+    /** 取り終えなかったリレーだけを取り直す。月の移動・リレーの切り替え・手動の更新でやめる。 */
+    private val relayRetries = JournalRelayRetries(
+        launch = { block -> launcher.launch { block() } },
+        log = { message -> log(message) },
+    )
     private var profileObserverJob: Job? = null
     private var relayUrl: String? = null
     private var hasConfiguredRelayUrl = false
@@ -466,7 +471,7 @@ internal class JournalController(
     /**
      * 月を開く。選択日を先に取り、続けて月の残りの日を裏で取る。
      * [refresh]はその月を取り直す。取得が完了した日だけ結果で置き換え、失敗した日は既存を残す。
-     * [reset]はリレー切り替えで、取得由来の状態をすべて捨てる。
+     * [reset]はリレー切り替えで、選んだリレーから取った状態を捨てる。ID で取った参照先は中身が変わらないため残す。
      */
     private fun loadMonth(
         month: LocalDate,
@@ -483,6 +488,8 @@ internal class JournalController(
         val token = LoadToken(monthGeneration, monthStart)
         val today = clock.today()
         val current = store.value
+        // 種類やメンバーの切り替えでは、待っている取り直しを続ける（取得済みの記録はもう付いている）。
+        if (reset || refresh || monthStart != current.selectedMonth) relayRetries.cancelAll()
         val nextSelectedDate = selectedDate?.takeIf { it.isSameMonth(monthStart) }
             ?: current.selectedDate.takeIf { it.isSameMonth(monthStart) }
             ?: monthStart
@@ -514,14 +521,13 @@ internal class JournalController(
                 state.copy(
                     timeline = JournalTimeline.Empty,
                     coverage = JournalCoverage(),
-                    referencedEvents = emptyMap(),
                     engagement = emptyMap(),
                 )
             } else {
                 state
             }
             if (refresh) next = next.copy(coverage = next.coverage.forgetMonth(monthStart))
-            next.withCachedReceivedLikes(members, next.fetchMembers, monthStart, today).copy(
+            next.copy(
                 selectedMonth = monthStart,
                 selectedDate = nextSelectedDate,
                 error = null,
@@ -559,6 +565,7 @@ internal class JournalController(
                 )
                 if (!isCurrent(token)) return@launch logStale("initial", token)
                 val accepted = applyResults(results, replace = refresh)
+                scheduleRelayRetries(results)
                 update { it.copy(isLoading = false) }
                 log { "initial done date=$nextSelectedDate ${store.value.summary()}" }
                 fetchReferences(accepted)
@@ -601,7 +608,8 @@ internal class JournalController(
                 token.month.daysOfMonthUntil(today), current.coverage, kinds, current.fetchMembers, relayUrl, clock,
             )
             for (request in requests) {
-                if (!fetchPages(token, request, replace)) return
+                val fetched = fetchPages(token, request, replace) ?: return
+                scheduleRelayRetries(request, fetched.retryRelays)
             }
             log { "backfill done month=${token.month} ${store.value.summary()}" }
             // 参照先は日ごとではなく、月の分がそろってから1回で取る。返信の親やいいねの対象が
@@ -621,21 +629,30 @@ internal class JournalController(
 
     /**
      * [request]の範囲を、打ち切られるたびに`until`を下げて取る。取り切れた日は取得済みにし（[replace]なら置き換え）、
-     * 取り切れなかった日のイベントは足すだけにする。月を離れたら false。
+     * 取り切れなかった日のイベントは足すだけにする。[token]の月を離れたら null。
+     * [token]が null なら世代を見ない（取り直しは`JournalRelayRetries.cancelAll`で処理ごと止める）。
      */
-    private suspend fun fetchPages(token: LoadToken, request: JournalFetchRequest, replace: Boolean): Boolean {
+    private suspend fun fetchPages(token: LoadToken?, request: JournalFetchRequest, replace: Boolean): PagedFetch? {
         val pager = JournalRangePager(request, clock)
+        val accepted = mutableListOf<NostrEvent>()
         while (true) {
             val page = pager.next() ?: break
             val result = fetchAll(listOf(page)).single()
-            if (!isCurrent(token)) {
+            if (token != null && !isCurrent(token)) {
                 logStale("backfill ${request.kinds}", token)
-                return false
+                return null
             }
             val outcome = pager.accept(result)
             if (outcome.closedDates.isNotEmpty() || outcome.events.isNotEmpty()) {
-                applyResults(
-                    listOf(JournalFetchResult(request.copy(dates = outcome.closedDates), outcome.events, complete = true)),
+                accepted += applyResults(
+                    listOf(
+                        JournalFetchResult(
+                            request.copy(dates = outcome.closedDates),
+                            outcome.events,
+                            complete = true,
+                            allRelaysFinished = outcome.allRelaysFinished,
+                        ),
+                    ),
                     replace,
                 )
             }
@@ -643,9 +660,37 @@ internal class JournalController(
         val leftovers = pager.leftovers()
         if (leftovers.isNotEmpty()) {
             log { "backfill left ${leftovers.size} events unrecorded" }
-            applyResults(listOf(JournalFetchResult(request.copy(dates = emptyList()), leftovers, complete = false)), replace)
+            accepted += applyResults(
+                listOf(JournalFetchResult(request.copy(dates = emptyList()), leftovers, complete = false)),
+                replace,
+            )
         }
-        return true
+        return PagedFetch(accepted, pager.retryRelays)
+    }
+
+    private class PagedFetch(val accepted: List<NostrEvent>, val retryRelays: Set<String>)
+
+    private fun scheduleRelayRetries(results: List<JournalFetchResult>) {
+        results.forEach { scheduleRelayRetries(it.request, it.retryRelays) }
+    }
+
+    /**
+     * [relays]で取り終えなかった[request]を、そのリレーだけに送り直す。届いた分は足すだけにする（置き換えない）。
+     * 取得済みの記録は、ほかのリレーで取り終えた時点で付いている。
+     * 種類やメンバーを切り替えても続け、月の移動・リレーの切り替え・手動の更新でやめる（`loadMonth`）。
+     */
+    private fun scheduleRelayRetries(request: JournalFetchRequest, relays: Set<String>) {
+        relays.forEach { url ->
+            relayRetries.schedule(url) { retryUrl ->
+                val fetched = fetchPages(null, request.copy(target = RelayTarget.Single(retryUrl)), replace = false)
+                    ?: return@schedule true
+                if (fetched.accepted.isNotEmpty()) {
+                    log { "retry relay=$retryUrl kinds=${request.kinds} accepted=${fetched.accepted.size}" }
+                    fetchReferences(fetched.accepted)
+                }
+                retryUrl !in fetched.retryRelays
+            }
+        }
     }
 
     /** 選択中の月の1日を開く。[force]なら取得済みでも取り直し、完了した分だけ結果で置き換える。 */
@@ -678,6 +723,7 @@ internal class JournalController(
                 val results = fetchAll(JournalFetchPlanner.forDate(date, missing, relayUrl, clock))
                 if (!isCurrent(token)) return@launch logStale("date $date", token)
                 val accepted = applyResults(results, replace = force)
+                scheduleRelayRetries(results)
                 update { it.copy(isLoading = false) }
                 log { "loadDate done date=$date entries=${store.value.visibleEntries.size} ${store.value.summary()}" }
                 fetchReferences(accepted)
@@ -736,7 +782,8 @@ internal class JournalController(
                 val request = result.request
                 // 件数の上限で打ち切られた結果は、取り切れていない日があるため未完了と同じに扱う。
                 val complete = result.complete && result.truncatedAt == null
-                if (replace && complete) {
+                // 取り終えなかったリレーにしかない行を消さないよう、置き換えは全リレーが取り終えたときだけにする。
+                if (replace && complete && result.allRelaysFinished) {
                     request.dates.forEach { date ->
                         timeline = timeline.removeMatching(date, request.kinds, request.members)
                     }
@@ -763,32 +810,6 @@ internal class JournalController(
             if (request.accepts(roles)) JournalActivity(event, clock.dateOf(event.createdAt), roles) else null
         }
 
-    /** `ReactionEventStore`にある、その月の[targets]のもらったいいねを通信前に表示する。 */
-    private fun JournalState.withCachedReceivedLikes(
-        members: JournalMembers,
-        targets: Set<String>,
-        monthStart: LocalDate,
-        today: LocalDate,
-    ): JournalState {
-        if (JournalActivityKind.ReceivedLike !in kinds) return this
-        val days = monthStart.daysOfMonthUntil(today)
-        if (days.isEmpty()) return this
-        val since = clock.startOfDay(days.first())
-        val until = clock.endOfDay(days.last())
-        val activities = targets
-            .flatMap { pubkey -> cachedReceivedLikes(pubkey, since, until) }
-            .distinctBy { it.id }
-            .mapNotNull { event ->
-                val roles = JournalActivityClassifier.classify(event, members)
-                if (roles.values.any { JournalActivityKind.ReceivedLike in it }) {
-                    JournalActivity(event, clock.dateOf(event.createdAt), roles)
-                } else {
-                    null
-                }
-            }
-        return if (activities.isEmpty()) this else copy(timeline = timeline.upsert(activities))
-    }
-
     private fun fetchEngagement(noteIds: Set<String>) {
         engagementJob?.cancel()
         engagementJob = launcher.launch {
@@ -806,31 +827,83 @@ internal class JournalController(
                 lastEmission = now
             }
 
+            // 取り直したリレーからも同じイベントが届くため、数えるのは1回だけにする。
+            val counted = mutableSetOf<String>()
             var received = 0
-            val complete = engagementSource.fetch(noteIds, relayUrl) { event ->
+            val status = engagementSource.fetch(noteIds, relayUrl) { event ->
                 received += 1
-                dirty += aggregator.add(event)
+                if (counted.add(event.id)) dirty += aggregator.add(event)
                 emitProgress(force = false)
             }
             val snapshot = aggregator.snapshot()
             log {
-                "engagement notes=${noteIds.size} events=$received withData=${snapshot.size} complete=$complete " +
+                "engagement notes=${noteIds.size} events=$received withData=${snapshot.size} " +
+                    "complete=${status.complete} allRelays=${status.allRelaysFinished} retry=${status.retryRelays} " +
                     "cachedNotes=${store.value.engagement.size}"
             }
-            if (complete) {
-                update { it.copy(engagement = it.engagement.replaceCompleted(noteIds, snapshot)) }
-                loadedEngagementNoteIds += noteIds
+            if (status.complete) {
+                commitEngagement(noteIds, snapshot, status.allRelaysFinished)
                 dirty.clear()
             } else {
                 emitProgress(force = true)
             }
-            fetchReferences(snapshot.values.flatMap { it.replies })
-            watchProfiles(
-                snapshot.values.flatMapTo(mutableSetOf()) { engagement ->
-                    engagement.reactionEvents.map { it.pubkey } + engagement.repostPubkeys
+            scheduleEngagementRetries(noteIds, aggregator, counted, status.retryRelays)
+            showEngagementDetails(snapshot)
+        }
+    }
+
+    /**
+     * 取得したエンゲージメントを反映する。全リレーが取り終えていれば結果で置き換え、そうでなければ足すだけにする。
+     */
+    private fun commitEngagement(
+        noteIds: Set<String>,
+        snapshot: Map<String, JournalNoteEngagement>,
+        allRelaysFinished: Boolean,
+    ) {
+        update {
+            it.copy(
+                engagement = if (allRelaysFinished) {
+                    it.engagement.replaceCompleted(noteIds, snapshot)
+                } else {
+                    it.engagement.mergeProgressive(snapshot)
                 },
             )
         }
+        loadedEngagementNoteIds += noteIds
+    }
+
+    /**
+     * 取り終えなかったリレーだけにエンゲージメントを取り直し、最初の取得の集計に足して反映する。
+     * 置き換えはしない。集計には最初の取得の後に表示へ入った分（確定した自分のいいね等）が含まれず、置き換えると消えるため。
+     */
+    private fun scheduleEngagementRetries(
+        noteIds: Set<String>,
+        aggregator: JournalEngagementAggregator,
+        counted: MutableSet<String>,
+        retryRelays: Set<String>,
+    ) {
+        retryRelays.forEach { url ->
+            relayRetries.schedule(url) { retryUrl ->
+                val retried = engagementSource.fetch(noteIds, retryUrl) { event ->
+                    if (counted.add(event.id)) aggregator.add(event)
+                }
+                if (retried.complete) {
+                    val snapshot = aggregator.snapshot()
+                    commitEngagement(noteIds, snapshot, allRelaysFinished = false)
+                    showEngagementDetails(snapshot)
+                }
+                retried.complete
+            }
+        }
+    }
+
+    private suspend fun showEngagementDetails(snapshot: Map<String, JournalNoteEngagement>) {
+        fetchReferences(snapshot.values.flatMap { it.replies })
+        watchProfiles(
+            snapshot.values.flatMapTo(mutableSetOf()) { engagement ->
+                engagement.reactionEvents.map { it.pubkey } + engagement.repostPubkeys
+            },
+        )
     }
 
     /**

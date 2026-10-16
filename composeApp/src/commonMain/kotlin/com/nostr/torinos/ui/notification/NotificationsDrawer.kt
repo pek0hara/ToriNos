@@ -1,5 +1,7 @@
 package com.nostr.torinos.ui.notification
 
+import com.nostr.torinos.ui.components.*
+
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -7,7 +9,6 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.remember
 import androidx.compose.ui.draw.clip
 import com.nostr.torinos.model.COMMENT_EVENT_KIND
-import com.nostr.torinos.ui.components.NoteCard
 import com.nostr.torinos.ui.components.QuotedEvent
 import com.nostr.torinos.ui.components.ReactionSummaryRow
 import kotlinx.datetime.DateTimeUnit
@@ -264,18 +265,30 @@ private fun ReplyNotification(
                 )
             }
         }
-        NoteCard(
-            event = reply,
-            profile = state.profiles[reply.pubkey],
-            profiles = state.profiles,
-            replyCount = 0,
-            reactionCount = 0,
-            replyParent = parent?.let { QuotedEvent(it, state.profiles[it.pubkey]) },
-            onUserClick = onUserClick,
-            onNoteClick = { notificationTargetDestination(reply)?.let(onOpenTarget) },
-            onQuotedNoteClick = openThread,
-            onReplyParentClick = openThread,
-            showEngagement = false,
+        NoteCardHost(
+            model = NoteCardModel(
+                event = reply,
+                profiles = state.profiles,
+                author = NoteAuthorPresentation(
+                    profile = state.profiles[reply.pubkey],
+                ),
+                engagement = NoteEngagementPresentation(
+                    replyCount = 0,
+                    reactionCount = 0,
+                ),
+                references = NoteReferencePresentation(
+                    replyParent = parent?.let { QuotedEvent(it, state.profiles[it.pubkey]) },
+                ),
+                policy = NoteCardPolicy(
+                    showEngagement = false,
+                ),
+            ),
+            actions = NoteCardActions(
+                onUserClick = onUserClick,
+                onNoteClick = { notificationTargetDestination(reply)?.let(onOpenTarget) },
+                onQuotedNoteClick = openThread,
+                onReplyParentClick = openThread,
+            ),
         )
     }
 }
@@ -309,21 +322,33 @@ private fun EngagementNotification(
                     .clip(TargetCardShape)
                     .border(1.dp, MaterialTheme.colorScheme.outlineVariant, TargetCardShape),
             ) {
-                NoteCard(
-                    event = target,
-                    profile = state.profiles[target.pubkey],
-                    profiles = state.profiles,
-                    replyCount = 0,
-                    reactionCount = reactions.totalCount,
-                    likeReactionCount = reactions.likeCount,
-                    customReactions = reactions.customReactions,
-                    unicodeReactions = reactions.unicodeReactions,
-                    onUserClick = onUserClick,
-                    onNoteClick = { notificationTargetDestination(target)?.let(onOpenTarget) },
-                    onQuotedNoteClick = openThread,
-                    onReplyParentClick = openThread,
-                    showEngagement = false,
-                    showReactions = true,
+                NoteCardHost(
+                    model = NoteCardModel(
+                        event = target,
+                        profiles = state.profiles,
+                        author = NoteAuthorPresentation(
+                            profile = state.profiles[target.pubkey],
+                        ),
+                        engagement = NoteEngagementPresentation(
+                            replyCount = 0,
+                            reactionCount = reactions.totalCount,
+                            likeReactionCount = reactions.likeCount,
+                            customReactions = reactions.customReactions,
+                            unicodeReactions = reactions.unicodeReactions,
+                        ),
+                        references = NoteReferencePresentation(
+                        ),
+                        policy = NoteCardPolicy(
+                            showEngagement = false,
+                            showReactions = true,
+                        ),
+                    ),
+                    actions = NoteCardActions(
+                        onUserClick = onUserClick,
+                        onNoteClick = { notificationTargetDestination(target)?.let(onOpenTarget) },
+                        onQuotedNoteClick = openThread,
+                        onReplyParentClick = openThread,
+                    ),
                 )
             }
         } else {

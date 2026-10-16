@@ -68,6 +68,8 @@ internal class ComposerCoordinator(
     /** `presentation == FullScreen` のとき、`PostSheet` を開く時点の初期化方法。 */
     var sheetInitialState by mutableStateOf(PostSheetInitialState.Reset)
         private set
+    var inputGeneration by mutableStateOf(0L)
+        private set
     var openingGeneration by mutableStateOf(0L)
         private set
     private var offerPendingInputsOnOpening = true
@@ -165,6 +167,7 @@ internal class ComposerCoordinator(
         noteContext: NoteContext,
         relayContext: ComposerRelayContext? = null,
     ) {
+        inputGeneration++
         replyRelayContext = relayContext
         quoteToId = null
         quoteToPubkey = null
@@ -267,6 +270,7 @@ internal class ComposerCoordinator(
     }
 
     fun clearPostContext(clearDraft: Boolean) {
+        if (clearDraft) inputGeneration++
         if (clearDraft) localDraft = null
         replyTarget = null
         replyToPreview = null

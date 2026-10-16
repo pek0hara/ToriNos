@@ -4,6 +4,7 @@ import androidx.lifecycle.viewModelScope
 import com.nostr.torinos.account.*
 import com.nostr.torinos.article.*
 import com.nostr.torinos.model.NostrEvent
+import com.nostr.torinos.model.toArticleMeta
 import kotlinx.coroutines.*
 import kotlinx.coroutines.test.*
 import kotlin.test.*
@@ -206,6 +207,91 @@ class ArticleEditorPersistenceTest {
             advanceTimeBy(10_000); runCurrent()
             assertEquals("削除中に入力した本文", store.read(session.pubkey).drafts.values.single().bodyMarkdown)
             assertEquals(ArticleSaveState.Saved, vm.state.value.saveState)
+        } finally { vm.detachInputGate(); vm.viewModelScope.cancel(); session.resources.close(); Dispatchers.resetMain() }
+    }
+    private fun publishedArticle(pubkey: String): com.nostr.torinos.model.ArticleItem {
+        val event = NostrEvent("ef".repeat(32), pubkey, 200, 30023, listOf(listOf("d", "published"), listOf("title", "公開済みの記事"),
+            listOf("published_at", "150")), "公開版の本文", "sig")
+        return com.nostr.torinos.model.ArticleItem(event, assertNotNull(event.toArticleMeta()))
+    }
+    @Test fun openingAPublishedArticleWithoutEditingCreatesNoDraft() = runTest {
+        Dispatchers.setMain(StandardTestDispatcher(testScheduler))
+        val session = session()
+        val store = ArticleDraftStore(MemoryArticleStorage())
+        val article = publishedArticle(session.pubkey)
+        val vm = ArticleEditorViewModel(session, store, editPubkey = session.pubkey, editIdentifier = "published",
+            fetchLatest = { _, _, _ -> article })
+        try {
+            runCurrent()
+            assertTrue(vm.state.value.isEditing)
+            assertFalse(vm.state.value.updateConflict)
+            // Leaving and ON_STOP both flush; neither may store the untouched article as a draft.
+            vm.saveNow(); runCurrent()
+            var left = false
+            vm.leave { left = true }; runCurrent()
+            assertTrue(left)
+            advanceTimeBy(60_000); runCurrent()
+            assertTrue(store.read(session.pubkey).drafts.isEmpty())
+            vm.onTitleChange("直した題")
+            vm.saveNow(); runCurrent()
+            val saved = store.read(session.pubkey).drafts.values.single()
+            assertEquals("直した題", saved.title)
+            assertEquals(article.event.id, saved.baseEventId)
+            assertEquals("published", saved.articleIdentifier)
+        } finally { vm.detachInputGate(); vm.viewModelScope.cancel(); session.resources.close(); Dispatchers.resetMain() }
+    }
+    @Test fun editingAnArticleWithAnExistingDraftReopensThatDraft() = runTest {
+        Dispatchers.setMain(StandardTestDispatcher(testScheduler))
+        val session = session()
+        val store = ArticleDraftStore(MemoryArticleStorage())
+        val article = publishedArticle(session.pubkey)
+        val existing = store.save(ArticleDraft(ownerPubkey = session.pubkey, articleIdentifier = "published", baseEventId = article.event.id,
+            originalPublishedAt = 150, title = "書きかけの更新", bodyMarkdown = "途中"), null)
+        val vm = ArticleEditorViewModel(session, store, editPubkey = session.pubkey, editIdentifier = "published",
+            fetchLatest = { _, _, _ -> article })
+        try {
+            runCurrent()
+            assertEquals(existing.draftId, vm.state.value.draft!!.draftId)
+            assertEquals("書きかけの更新", vm.state.value.title)
+            assertTrue(vm.state.value.isEditing)
+            assertFalse(vm.state.value.updateConflict)
+            vm.onContentChange("途中の続き")
+            vm.saveNow(); runCurrent()
+            val saved = store.read(session.pubkey).drafts.values.single()
+            assertEquals(existing.draftId, saved.draftId)
+            assertEquals(existing.revision + 1, saved.revision)
+        } finally { vm.detachInputGate(); vm.viewModelScope.cancel(); session.resources.close(); Dispatchers.resetMain() }
+    }
+    @Test fun draftOfAPublishedArticleWithoutItsBaseOpensAsAnUpdateNeedingConfirmation() = runTest {
+        Dispatchers.setMain(StandardTestDispatcher(testScheduler))
+        val session = session()
+        val store = ArticleDraftStore(MemoryArticleStorage())
+        val article = publishedArticle(session.pubkey)
+        // A draft saved by another client keeps the article address and published_at but not the version it started from.
+        val foreign = store.save(ArticleDraft(ownerPubkey = session.pubkey, articleIdentifier = "published",
+            originalPublishedAt = 150, title = "他クライアントの下書き", bodyMarkdown = "本文"), null)
+        val vm = ArticleEditorViewModel(session, store, foreign.draftId, fetchLatest = { _, identifier, _ ->
+            article.takeIf { identifier == "published" } })
+        try {
+            runCurrent()
+            assertTrue(vm.state.value.isEditing)
+            assertTrue(vm.state.value.updateConflict)
+            vm.confirmOverwrite(); runCurrent()
+            assertFalse(vm.state.value.updateConflict)
+            assertEquals(article.event.id, vm.state.value.draft!!.baseEventId)
+        } finally { vm.detachInputGate(); vm.viewModelScope.cancel(); session.resources.close(); Dispatchers.resetMain() }
+    }
+    @Test fun unpublishedDraftDoesNotLookUpAPublishedVersion() = runTest {
+        Dispatchers.setMain(StandardTestDispatcher(testScheduler))
+        val session = session()
+        val store = ArticleDraftStore(MemoryArticleStorage())
+        val draft = store.save(ArticleDraft(ownerPubkey = session.pubkey, title = "新しい記事", bodyMarkdown = "本文"), null)
+        var lookups = 0
+        val vm = ArticleEditorViewModel(session, store, draft.draftId, fetchLatest = { _, _, _ -> lookups++; null })
+        try {
+            runCurrent()
+            assertFalse(vm.state.value.isEditing)
+            assertEquals(0, lookups)
         } finally { vm.detachInputGate(); vm.viewModelScope.cancel(); session.resources.close(); Dispatchers.resetMain() }
     }
 }

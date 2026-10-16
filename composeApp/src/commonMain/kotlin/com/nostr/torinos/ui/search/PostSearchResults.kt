@@ -1,5 +1,7 @@
 package com.nostr.torinos.ui.search
 
+import com.nostr.torinos.ui.components.*
+
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -20,7 +22,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
-import com.nostr.torinos.ui.components.NoteCard
 
 /** 投稿検索の結果欄に出すもの。ページ状態と結果件数から決める。 */
 internal sealed interface PostResultsBody {
@@ -114,23 +115,35 @@ internal fun PostSearchResults(
             is PostResultsBody.Results -> LazyColumn(state = listState, modifier = Modifier.fillMaxSize()) {
                 items(state.events, key = { it.id }) { event ->
                     val engagement = state.engagements[event.id] ?: EMPTY_ENGAGEMENT
-                    NoteCard(
-                        event = event,
-                        profile = state.profiles[event.pubkey],
-                        profiles = state.profiles,
-                        replyCount = engagement.replyCount,
-                        reactionCount = engagement.reactionCount,
-                        likeReactionCount = engagement.likeReactionCount,
-                        customReactions = engagement.customReactions,
-                        unicodeReactions = engagement.unicodeReactions,
-                        reactionEvents = engagement.reactionEvents,
-                        repostCount = engagement.repostCount,
-                        repostPubkeys = engagement.repostPubkeys,
-                        onUserClick = onUserClick,
-                        onNoteClick = onOpenThread,
-                        onOpenReplies = { onOpenReplies(event.id) },
-                        onOpenLikes = { onOpenLikes(event.id) },
-                        onOpenReposts = { onOpenReposts(event.id) },
+                    NoteCardHost(
+                        model = NoteCardModel(
+                            event = event,
+                            profiles = state.profiles,
+                            author = NoteAuthorPresentation(
+                                profile = state.profiles[event.pubkey],
+                            ),
+                            engagement = NoteEngagementPresentation(
+                                replyCount = engagement.replyCount,
+                                reactionCount = engagement.reactionCount,
+                                likeReactionCount = engagement.likeReactionCount,
+                                customReactions = engagement.customReactions,
+                                unicodeReactions = engagement.unicodeReactions,
+                                reactionEvents = engagement.reactionEvents,
+                                repostCount = engagement.repostCount,
+                                repostPubkeys = engagement.repostPubkeys,
+                            ),
+                            references = NoteReferencePresentation(
+                            ),
+                            policy = NoteCardPolicy(
+                            ),
+                        ),
+                        actions = NoteCardActions(
+                            onUserClick = onUserClick,
+                            onNoteClick = onOpenThread,
+                            onOpenReplies = { onOpenReplies(event.id) },
+                            onOpenLikes = { onOpenLikes(event.id) },
+                            onOpenReposts = { onOpenReposts(event.id) },
+                        ),
                     )
                     HorizontalDivider()
                 }
