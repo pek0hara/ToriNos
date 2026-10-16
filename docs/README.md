@@ -44,6 +44,8 @@
 
 - [`push-notification-durable-object-design.md`](./push-notification-durable-object-design.md) — Yabume共有購読とDurable Objectを使うプッシュ通知基盤の現行設計
 - [`zap-feature-design.md`](./zap-feature-design.md) — ポストカードの⚡ボタンからのZap送信（NIP-57）、請求書の検証、レシートの検証と合計表示、NWC（NIP-47）の段階計画（未着手）
+- [`feed-startup-cache-design.md`](./feed-startup-cache-design.md) — 起動直後に前回のフィードの先頭とプロフィールを表示する、上限つき使い捨てのスナップショットと新しい取得結果との合流（未着手）
+- [`dm-feature-design.md`](./dm-feature-design.md) — NIP-17の1対1のDM、NIP-42認証、DMリレー（kind 10050）、開封の検証、端末での暗号化保存、会話一覧とリクエスト（未着手）
 
 ## 開発フロー
 
