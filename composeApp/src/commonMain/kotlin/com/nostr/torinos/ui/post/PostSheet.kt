@@ -50,7 +50,7 @@ import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
-import androidx.compose.ui.window.DialogProperties
+import com.nostr.torinos.ui.components.fullScreenDialogProperties
 import com.nostr.torinos.MaxContentWidth
 import com.nostr.torinos.model.NoteContext
 import com.nostr.torinos.ui.channel.ComposerRelayContext
@@ -235,11 +235,7 @@ fun PostSheet(
 
     Dialog(
         onDismissRequest = ::requestCancel,
-        properties = DialogProperties(
-            usePlatformDefaultWidth = false,
-            dismissOnBackPress = true,
-            dismissOnClickOutside = false,
-        ),
+        properties = fullScreenDialogProperties(),
     ) {
         Box(
             modifier = Modifier.fillMaxSize(),
