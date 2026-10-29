@@ -244,7 +244,6 @@ internal fun AppSessionCoordinator(
         input.matometrError?.let { message -> AlertDialog(onDismissRequest = { input.matometrError = null }, title = { Text("入力を引き継げませんでした") }, text = { Text(message) },
             confirmButton = { TextButton(onClick = { input.matometrError = null }) { Text("閉じる") } }) }
         val snackbarHostState = remember { SnackbarHostState() }
-        var snackbarFailedRelays by remember { mutableStateOf<List<String>>(emptyList()) }
         var publishFailureDialogRelays by remember { mutableStateOf<List<String>?>(null) }
         val uiExceptionHandler = remember {
             loggingExceptionHandler("App", "Uncaught UI coroutine exception")
@@ -1144,9 +1143,10 @@ internal fun AppSessionCoordinator(
                 containerColor = MaterialTheme.colorScheme.background,
                 snackbarHost = {
                     SnackbarHost(snackbarHostState) { data ->
+                        val failedRelays = (data.visuals as? PublishResultSnackbarVisuals)?.failedRelays.orEmpty()
                         Snackbar(
-                            modifier = Modifier.clickable(enabled = snackbarFailedRelays.isNotEmpty()) {
-                                publishFailureDialogRelays = snackbarFailedRelays
+                            modifier = Modifier.clickable(enabled = failedRelays.isNotEmpty()) {
+                                publishFailureDialogRelays = failedRelays
                                 data.dismiss()
                             },
                         ) {
@@ -1794,21 +1794,7 @@ internal fun AppSessionCoordinator(
                 val eventId = completion.eventId
                 val postedReplyToId = completion.replyToId
                 val postedNoteContext = completion.noteContext
-                val publishResult = completion.publishResult
-                val warning = completion.warning
-                scope.launch {
-                    snackbarHostState.currentSnackbarData?.dismiss()
-                    snackbarFailedRelays = publishResult.failedRelays.keys.toList()
-                    snackbarHostState.showSnackbar(
-                        message = warning ?: publishResult.snackbarMessage(),
-                        duration = if (warning != null || publishResult.failureCount > 0) {
-                            SnackbarDuration.Long
-                        } else {
-                            SnackbarDuration.Short
-                        },
-                    )
-                    snackbarFailedRelays = emptyList()
-                }
+                scope.launch { showPostCompletionSnackbars(snackbarHostState, completion) }
                 if (postedReplyToId != null && postedReplyToId == articleCommentParentId) {
                     articleCommentPostedSignal++
                 } else if (postedReplyToId != null) {
@@ -1886,13 +1872,6 @@ private fun AgeVerificationDialog(
         },
     )
 }
-
-private fun RelayPublishResult.snackbarMessage(): String =
-    if (failureCount == 0) {
-        "すべてのリレーに送信成功しました。"
-    } else {
-        "送信しました。成功${successCount}リレー 失敗${failureCount}リレー"
-    }
 
 @Composable
 private fun PublishFailureDialog(

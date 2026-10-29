@@ -18,14 +18,17 @@ internal class RelayPublishCoordinator(
         onRelayResult: suspend (RelayPublishResult) -> Unit = {},
         respectRelayWritePolicy: Boolean = true,
         awaitAcceptance: Boolean = false,
+        /** 全リレーの結果がそろったときに一度だけ、まとめた結果で呼ぶ。呼び出し元が先に戻っても配送のscopeで呼ばれる。 */
+        onAllCompleted: suspend (RelayPublishResult) -> Unit = {},
     ): RelayPublishResult {
         val targets = relayUrls.map { it.trim() }.filter { it.isNotBlank() }.distinct()
-        if (targets.isEmpty()) return RelayPublishResult(emptySet(), emptyMap())
+        if (targets.isEmpty()) return RelayPublishResult(emptySet(), emptyMap()).also { onAllCompleted(it) }
 
         val trace = com.nostr.torinos.util.nextRefactorTraceId()
         refactorTraceLog("Publish") { "start trace=$trace kind=${event.kind} event=${event.id.take(12)} targets=${targets.size}" }
         val completion = CompletableDeferred<RelayPublishResult>()
         val resultMutex = Mutex()
+        val successes = linkedSetOf<String>()
         val failures = linkedMapOf<String, String>()
         val rejected = linkedSetOf<String>()
         var completedCount = 0
@@ -43,10 +46,15 @@ internal class RelayPublishCoordinator(
                 catch (error: Throwable) {
                     appLog("[Repo] publish result callback failed: ${error::class.simpleName}: ${error.message}")
                 }
+                var allResult: RelayPublishResult? = null
                 val completedResult = resultMutex.withLock {
                     completedCount++
+                    successes += result.succeededRelays
                     failures.putAll(result.failedRelays)
                     rejected += result.rejectedRelays
+                    if (completedCount == targets.size) {
+                        allResult = RelayPublishResult(successes.toSet(), failures.toMap(), rejected.toSet())
+                    }
                     when {
                         result.succeededRelays.isNotEmpty() -> RelayPublishResult(
                             succeededRelays = result.succeededRelays,
@@ -62,6 +70,13 @@ internal class RelayPublishCoordinator(
                     }
                 }
                 if (completedResult != null) completion.complete(completedResult)
+                allResult?.let { all ->
+                    try { onAllCompleted(all) }
+                    catch (cancelled: CancellationException) { throw cancelled }
+                    catch (error: Throwable) {
+                        appLog("[Repo] publish all-completed callback failed: ${error::class.simpleName}: ${error.message}")
+                    }
+                }
             }.invokeOnCompletion { cause ->
                 if (cause is CancellationException) {
                     refactorTraceLog("Publish") { "cancelled trace=$trace" }

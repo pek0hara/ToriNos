@@ -262,13 +262,17 @@ class PostViewModelTest {
         assertEquals("ポストに失敗しました", next.staleFailure)
     }
 
+    private val publishResult = RelayPublishResult(setOf("wss://relay.example"), emptyMap())
+    private val finalResult = kotlinx.coroutines.CompletableDeferred(publishResult)
+
     private fun completion(fromCurrentDraft: Boolean) = PostCompletion(
         eventId = "event",
         replyToId = "parent",
         noteContext = NoteContext.Timeline,
-        publishResult = RelayPublishResult(setOf("wss://relay.example"), emptyMap()),
+        publishResult = publishResult,
         warning = null,
         fromCurrentDraft = fromCurrentDraft,
+        finalResult = finalResult,
     )
 
     @Test

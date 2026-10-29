@@ -33,7 +33,8 @@ internal data class DraftMemoLoad(val drafts: List<DraftMemo>, val complete: Boo
 internal class DraftMemoRepository(
     private val signer: AccountSigner?,
     private val openSession: suspend (SubscriptionSpec) -> SubscriptionSession = NostrRepository::openSubscription,
-    private val publisher: SignedEventPublisher = SignedEventPublisher(signer),
+    // 削除も最初の受理で戻す。応答しないリレーの時間切れで確認ダイアログが止まらないように。
+    private val publisher: SignedEventPublisher = SignedEventPublisher(signer, publisher = NostrRepository::publishUntilFirstSuccess),
 ) {
     /** 秘密鍵がなければ null。 */
     suspend fun loadAll(relayUrl: String?): DraftMemoLoad? {

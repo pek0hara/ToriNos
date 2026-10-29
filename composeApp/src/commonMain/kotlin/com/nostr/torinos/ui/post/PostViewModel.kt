@@ -19,6 +19,8 @@ import com.nostr.torinos.network.RelayPublishResult
 import com.nostr.torinos.emoji.customEmojiTagsForContent
 import kotlin.time.Clock
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -49,6 +51,7 @@ data class PostCompletion(
     val eventId: String,
     val replyToId: String?,
     val noteContext: NoteContext,
+    /** 最初に受理したリレーまでの結果。投稿UIはこれで閉じる。 */
     val publishResult: RelayPublishResult,
     val warning: String?,
     /**
@@ -57,7 +60,26 @@ data class PostCompletion(
      * ホストは投稿UIを閉じず、通知と遷移だけを行う。
      */
     val fromCurrentDraft: Boolean = true,
+    /** 全リレーの結果。応答しないリレーがあると時間切れまで待つので、UIを閉じた後に受け取る。 */
+    val finalResult: Deferred<RelayPublishResult> = CompletableDeferred(publishResult),
 )
+
+/** 投稿の送信。最初に受理したリレーで戻り、全リレーの結果は [onAllCompleted] で後から届く。 */
+fun interface PostPublisher {
+    suspend fun publish(
+        event: NostrEvent,
+        relayUrls: Collection<String>?,
+        onAllCompleted: suspend (RelayPublishResult) -> Unit,
+    ): RelayPublishResult
+}
+
+private val defaultPostPublisher = PostPublisher { event, relayUrls, onAllCompleted ->
+    if (relayUrls == null) {
+        NostrRepository.publishUntilFirstSuccess(event, onAllCompleted)
+    } else {
+        NostrRepository.publishToRelaysUntilFirstSuccess(event, relayUrls, onAllCompleted = onAllCompleted)
+    }
+}
 
 data class PostState(
     val text: String = "",
@@ -227,6 +249,12 @@ internal fun PostMemoData.restoreReplyTarget(noteContext: NoteContext): ReplyTar
 
 class PostViewModel(
     private val accountSession: AccountSession? = null,
+    /**
+     * 下書きの保存と削除の送信。最初に受理したリレーで戻り、残りは裏で送り続ける。
+     * 応答しないリレーの時間切れを待つと、保存のたびに数秒止まる。
+     */
+    private val publishDraft: suspend (NostrEvent) -> RelayPublishResult = { NostrRepository.publishUntilFirstSuccess(it) },
+    private val publishPost: PostPublisher = defaultPostPublisher,
 ) : SafeViewModel() {
     private val _state = MutableStateFlow(PostState())
     val state: StateFlow<PostState> = _state.asStateFlow()
@@ -532,7 +560,7 @@ class PostViewModel(
                     ),
                     createdAt = updatedAt,
                 )
-                NostrRepository.publish(event)
+                publishDraft(event)
                 event
             }.onSuccess {
                 editingMemoIdentifier = identifier
@@ -612,18 +640,14 @@ class PostViewModel(
 
             runCatching {
                 val event = signer.sign(text, kind = replyTarget?.eventKind ?: noteContext.eventKind, tags = tags)
-                val publishResult = if (targetRelayUrls == null) {
-                    NostrRepository.publish(event)
-                } else {
-                    NostrRepository.publishToRelaysWithResult(event, targetRelayUrls).also { result ->
-                        check(result.succeededRelays.isNotEmpty()) {
-                            "すべてのリレーへの送信に失敗しました: " +
-                                result.failedRelays.keys.joinToString()
-                        }
-                    }
+                // 応答しないリレーの時間切れを待たずに閉じる。全リレーの結果は finalResult で後から知らせる。
+                val finalResult = CompletableDeferred<RelayPublishResult>()
+                val publishResult = publishPost.publish(event, targetRelayUrls) { finalResult.complete(it) }
+                check(publishResult.succeededRelays.isNotEmpty()) {
+                    "すべてのリレーへの送信に失敗しました: " + publishResult.failedRelays.keys.joinToString()
                 }
-                event to publishResult
-            }.onSuccess { (event, publishResult) ->
+                Triple(event, publishResult, finalResult)
+            }.onSuccess { (event, publishResult, finalResult) ->
                 val deletionWarning = deleteRestoredMemoAfterPost(signer, restoredMemo)
                 val isCurrent = generation == draftGeneration
                 val completion = PostCompletion(
@@ -633,6 +657,7 @@ class PostViewModel(
                     publishResult = publishResult,
                     warning = deletionWarning,
                     fromCurrentDraft = isCurrent,
+                    finalResult = finalResult,
                 )
                 if (isCurrent && deletionWarning == null) clearEditingMemo()
                 _state.update { reducePostSuccess(it, isCurrent, completion) }
@@ -682,7 +707,7 @@ class PostViewModel(
                 kind = 5,
                 tags = draftDeletionTags(eventId, sourcePubkey, memo.identifier),
             )
-            NostrRepository.publish(deletion)
+            publishDraft(deletion)
             null
         } catch (cancelled: CancellationException) {
             throw cancelled

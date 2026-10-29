@@ -26,6 +26,26 @@ class RelayCoordinationTest {
         assertEquals(listOf("fast", "slow"), delivered)
     }
 
+    @Test fun allCompletedReportsEveryRelayOnceAfterTheSlowestFinishes() = runTest {
+        val coordinator = RelayPublishCoordinator(this) { _, urls, _, _ ->
+            val relay = urls.single()
+            delay(if (relay == "slow") 100 else 10)
+            if (relay == "bad") RelayPublishResult(emptySet(), mapOf(relay to "timeout"))
+            else RelayPublishResult(setOf(relay), emptyMap())
+        }
+        val finals = mutableListOf<RelayPublishResult>()
+        val first = coordinator.untilFirstSuccess(
+            NostrEvent("id", "me", 1, 1, emptyList(), "", "sig"), listOf("fast", "slow", "bad"),
+            onAllCompleted = { finals += it },
+        )
+        assertEquals(setOf("fast"), first.succeededRelays)
+        assertTrue(finals.isEmpty())
+        advanceUntilIdle()
+        val all = finals.single()
+        assertEquals(setOf("fast", "slow"), all.succeededRelays)
+        assertEquals(mapOf("bad" to "timeout"), all.failedRelays)
+    }
+
     @Test fun allFailuresAreCombinedEvenWhenObserverThrows() = runTest {
         val coordinator = RelayPublishCoordinator(this) { _, urls, _, _ ->
             delay(1)

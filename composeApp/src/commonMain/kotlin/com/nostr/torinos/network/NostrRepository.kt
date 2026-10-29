@@ -999,7 +999,10 @@ object NostrRepository {
      * 残りのリレーへの送信はリポジトリのスコープで継続するため、未接続リレーの
      * タイムアウトが投稿完了後のUIを塞がない。
      */
-    suspend fun publishUntilFirstSuccess(event: NostrEvent): RelayPublishResult {
+    suspend fun publishUntilFirstSuccess(
+        event: NostrEvent,
+        onAllCompleted: suspend (RelayPublishResult) -> Unit = {},
+    ): RelayPublishResult {
         val targets = RelayStore.writableRelayUrlsSnapshot()
         check(targets.isNotEmpty()) { "書き込み可能なリレーがありません" }
         val result = publishToRelaysUntilFirstSuccess(
@@ -1011,6 +1014,7 @@ object NostrRepository {
                     relayResult.succeededRelays.forEach { EngagementStore.shared.observe(event, it) }
                 }
             },
+            onAllCompleted = onAllCompleted,
         )
         check(result.succeededRelays.isNotEmpty()) {
             "すべてのリレーへの送信に失敗しました: ${result.failedRelays.keys.joinToString()}"
@@ -1125,8 +1129,9 @@ object NostrRepository {
         onRelayResult: suspend (RelayPublishResult) -> Unit = {},
         respectRelayWritePolicy: Boolean = true,
         awaitAcceptance: Boolean = false,
+        onAllCompleted: suspend (RelayPublishResult) -> Unit = {},
     ): RelayPublishResult = publishCoordinator.untilFirstSuccess(
-        event, relayUrls, onRelayResult, respectRelayWritePolicy, awaitAcceptance,
+        event, relayUrls, onRelayResult, respectRelayWritePolicy, awaitAcceptance, onAllCompleted,
     )
 
     fun events(subscriptionId: String): Flow<NostrEvent> =
