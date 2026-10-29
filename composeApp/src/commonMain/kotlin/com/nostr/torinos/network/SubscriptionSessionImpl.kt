@@ -34,10 +34,12 @@ internal class SubscriptionSessionImpl(
 
     internal fun initializeTargets(urls: Set<String>) { expectedRelayUrls = urls.toSet() }
 
-    internal fun configureSpec(spec: SubscriptionSpec, relays: Set<String>) = specLock.withLock {
-        val fixed = spec.copy(target = RelayTarget.Explicit(relays.toSet()))
-        val changed = currentSpec != null && currentSpec != fixed
-        currentSpec = fixed
+    internal fun configureSpec(spec: SubscriptionSpec, relays: Set<String>) {
+        val changed = specLock.withLock {
+            val fixed = spec.copy(target = RelayTarget.Explicit(relays.toSet()))
+            (currentSpec != null && currentSpec != fixed).also { currentSpec = fixed }
+        }
+        // mailboxは状態の購読者をその場で再開させることがあるため、specLockの外で呼ぶ。
         mailbox.configure(relays, changed)
     }
 
