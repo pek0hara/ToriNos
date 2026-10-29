@@ -612,6 +612,8 @@ internal fun NoteCardContent(
                             },
                         )
                     }
+                    // リポストのカードでも、event は元の投稿なので元の作者へ送る。
+                    com.nostr.torinos.ui.zap.ZapAction(event = event, authorProfile = profile, hidden = isMuted)
                 }
                 AnimatedVisibility(
                     visible = expandedEngagement != null,

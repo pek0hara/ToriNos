@@ -19,6 +19,8 @@ data class TargetEngagement(
     val replies: Map<String, NostrEvent> = emptyMap(),
     /** q タグでこの投稿を引用した投稿。 */
     val quotes: Map<String, NostrEvent> = emptyMap(),
+    /** Zap レシート（kind 9735）。未検証のまま持つ。 */
+    val zaps: Map<String, NostrEvent> = emptyMap(),
     /** イベントIDごとの受信元リレー。特定リレーのフィードが、そのリレーの分だけを数えるのに使う。 */
     val sourceRelays: Map<String, Set<String>> = emptyMap(),
 )
@@ -39,10 +41,11 @@ class EngagementStore(
         val reposts = linkedMapOf<String, NostrEvent>()
         val replies = linkedMapOf<String, NostrEvent>()
         val quotes = linkedMapOf<String, NostrEvent>()
+        val zaps = linkedMapOf<String, NostrEvent>()
         val sources = mutableMapOf<String, MutableSet<String>>()
         val localCommits = mutableMapOf<String, Pair<String, Long>>()
 
-        fun buckets() = listOf(reactions, reposts, replies, quotes)
+        fun buckets() = listOf(reactions, reposts, replies, quotes, zaps)
     }
 
     private val lock = SynchronousLock()
@@ -157,6 +160,7 @@ class EngagementStore(
             reposts = entry.reposts.toMap(),
             replies = entry.replies.toMap(),
             quotes = entry.quotes.toMap(),
+            zaps = entry.zaps.toMap(),
             sourceRelays = entry.sources.mapValues { (_, relays) -> relays.toSet() },
         )
     }
@@ -239,6 +243,7 @@ class EngagementStore(
                 EngagementBucket.Reposts -> entry.reposts
                 EngagementBucket.Replies -> entry.replies
                 EngagementBucket.Quotes -> entry.quotes
+                EngagementBucket.Zaps -> entry.zaps
             } }
         }
 

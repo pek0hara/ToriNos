@@ -60,7 +60,8 @@ fun summarizeEngagement(
 fun TargetEngagement.scopedTo(relayScope: Set<String>?): TargetEngagement {
     if (relayScope == null) return this
     fun Map<String, NostrEvent>.scoped() = filterKeys { id -> sourceRelays[id].orEmpty().any { it in relayScope } }
-    return copy(reactions = reactions.scoped(), reposts = reposts.scoped(), replies = replies.scoped(), quotes = quotes.scoped())
+    return copy(reactions = reactions.scoped(), reposts = reposts.scoped(), replies = replies.scoped(), quotes = quotes.scoped(),
+        zaps = zaps.scoped())
 }
 
 /** 表示の楽観更新（[EngagementReducer]）が扱う形にする。 */

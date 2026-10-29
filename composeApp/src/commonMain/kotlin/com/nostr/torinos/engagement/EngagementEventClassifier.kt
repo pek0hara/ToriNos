@@ -2,7 +2,7 @@ package com.nostr.torinos.engagement
 
 import com.nostr.torinos.model.*
 
-internal enum class EngagementBucket { Reactions, Reposts, Replies, Quotes }
+internal enum class EngagementBucket { Reactions, Reposts, Replies, Quotes, Zaps }
 internal data class EngagementReference(val targetId: String, val bucket: EngagementBucket)
 
 internal fun classifyEngagementEvent(event: NostrEvent): List<EngagementReference> {
@@ -12,6 +12,8 @@ internal fun classifyEngagementEvent(event: NostrEvent): List<EngagementReferenc
     return when (event.kind) {
         7 -> lastTarget(EngagementBucket.Reactions)
         6, 16 -> lastTarget(EngagementBucket.Reposts)
+        // Zap レシートの検証と集計は zap パッケージで行う。ここでは投稿ごとに集めるだけ。
+        com.nostr.torinos.zap.ZAP_RECEIPT_KIND -> lastTarget(EngagementBucket.Zaps)
         1, 42, COMMENT_EVENT_KIND -> {
             val context = when (event.kind) {
                 42 -> event.channelRootId()?.let(NoteContext::Channel) ?: return emptyList()

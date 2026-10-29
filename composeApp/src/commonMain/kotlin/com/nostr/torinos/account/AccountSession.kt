@@ -135,6 +135,8 @@ class AccountSession internal constructor(
         ),
         ensureActive = ::ensureActive,
     )
+    /** Zap の送信。セッションのスコープで動き、アカウントの切り替えで支払い待ちも捨てる。 */
+    val zaps: com.nostr.torinos.zap.ZapSender by lazy { com.nostr.torinos.zap.createZapSender(this, resources.scope) }
     private var repositoriesStarted = false
 
     init {
@@ -189,6 +191,7 @@ class AccountSession internal constructor(
     internal fun onAppForeground() {
         if (!resources.lease.isActive) return
         emojiPreferenceSync.onAppForeground()
+        zaps.onAppForeground()
         badges.onForeground()
         badgeIssuer.onForeground()
     }

@@ -16,6 +16,7 @@ import com.nostr.torinos.network.SubscriptionSession
 import com.nostr.torinos.network.SubscriptionSignal
 import com.nostr.torinos.network.SubscriptionSpec
 import com.nostr.torinos.network.verdict
+import com.nostr.torinos.zap.ZAP_RECEIPT_KIND
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
@@ -602,12 +603,13 @@ internal class EngagementFetcher(
         since: Long? = null,
         until: Long? = null,
     ): List<NostrFilter> {
-        // kind 以外が同一の #e 系(リアクション・kind 1 返信・リポスト)は1本にまとめる。
+        // kind 以外が同一の #e 系(リアクション・kind 1 返信・リポスト・Zap)は1本にまとめる。
         // 別々に送るとID一覧を3回送ることになり、REQ が大きくなる。
         val mergedEventTagPartitions = setOf(
             EngagementPartition.Reaction,
             EngagementPartition.KindOneReply,
             EngagementPartition.Repost,
+            EngagementPartition.Zap,
         )
         val merged = NostrFilter(
             kinds = mergedEventTagPartitions.flatMap { it.filter(ids).kinds.orEmpty() },
@@ -695,7 +697,8 @@ private enum class EngagementPartition {
     Nip22Reply,
     Nip22RootReply,
     Repost,
-    QuoteRepost;
+    QuoteRepost,
+    Zap;
 
     fun filter(
         ids: List<String>,
@@ -724,6 +727,7 @@ private enum class EngagementPartition {
         // kind 1 以外へのリポストは kind 16（NIP-18）。他クライアントの受信も数える。
         Repost -> NostrFilter(kinds = listOf(6, 16), eTags = ids, since = since, until = until, limit = limit)
         QuoteRepost -> NostrFilter(kinds = listOf(1), qTags = ids, since = since, until = until, limit = limit)
+        Zap -> NostrFilter(kinds = listOf(ZAP_RECEIPT_KIND), eTags = ids, since = since, until = until, limit = limit)
     }
 
     /** [filter]に一致するイベントか。件数の数え上げ用なので、タグの値だけで判定する。 */
@@ -736,6 +740,7 @@ private enum class EngagementPartition {
             Nip22RootReply -> event.kind == COMMENT_EVENT_KIND && hasTag("E")
             Repost -> (event.kind == 6 || event.kind == 16) && hasTag("e")
             QuoteRepost -> event.kind == 1 && hasTag("q")
+            Zap -> event.kind == ZAP_RECEIPT_KIND && hasTag("e")
         }
     }
 }

@@ -329,7 +329,7 @@ NIP 対応は、公式 NIPs リポジトリの kind/NIP 対応表を基準に整
 - NIP-04: 旧 DM はプッシュ通知計画上の通知対象候補として記載があるが、本体 UI の送受信機能としては未対応。
 - NIP-17/NIP-59: 新しい Private Direct Messages/Gift Wrap 系 DM は未対応。
 - NIP-55: Android の署名アプリ（Amber など）の Intent 連携は未対応（`signer-abstraction-design.md` の段階4）。
-- NIP-57: Zap は未対応。
+- NIP-57: Zap は部分対応（2026-10-17）。投稿への Zap の送信（外部ウォレットアプリへ請求書を渡す）と、フィード・スレッドでの受け取った合計の表示。NWC・分配・記事とプロフィールへの Zap は未対応（`zap-feature-design.md`）。
 - NIP-42: リレー認証は未対応。`auth-required:` で拒否された購読・投稿は認証せずに失敗として扱う。
 
 ## データ保存要件

@@ -12,6 +12,15 @@ object Bech32 {
 
     /** bech32 文字列を (hrp, data bytes) に変換。検証失敗時は例外。 */
     fun decode(bech32: String): Pair<String, ByteArray> {
+        val (hrp, words) = decodeWords(bech32)
+        return Pair(hrp, convertBits(words, 5, 8, pad = false))
+    }
+
+    /**
+     * bech32 文字列を (hrp, 5 ビット単位の値) に変換する。チェックサムは除く。
+     * BOLT11 のようにタグ付きフィールドを 5 ビット単位で読む形式のため。長さの上限は設けない。
+     */
+    fun decodeWords(bech32: String): Pair<String, IntArray> {
         require(!(bech32.any { it in 'a'..'z' } && bech32.any { it in 'A'..'Z' })) {
             "大文字と小文字が混在しています"
         }
@@ -31,10 +40,20 @@ object Bech32 {
 
         require(verifyChecksum(hrp, values)) { "チェックサムが一致しません" }
 
-        // チェックサム 6 文字を除いたデータを 5bit → 8bit 変換
-        val bytes = convertBits(values.copyOf(values.size - 6), 5, 8, pad = false)
-        return Pair(hrp, bytes)
+        return Pair(hrp, values.copyOf(values.size - 6))
     }
+
+    /** 5 ビット単位の値を 8 ビットに詰め直す。余りのビットは 0 でなければならない。 */
+    fun wordsToBytes(words: IntArray): ByteArray = convertBits(words, 5, 8, pad = false)
+
+    /** 5 ビット単位の値から bech32 文字列を作る。 */
+    fun encodeWords(hrp: String, words: IntArray): String {
+        val checksum = createChecksum(hrp, words)
+        return hrp + "1" + (words.toList() + checksum.toList()).joinToString("") { CHARSET[it].toString() }
+    }
+
+    /** 8 ビットのバイト列を 5 ビット単位の値にする（末尾は 0 で埋める）。 */
+    fun bytesToWords(bytes: ByteArray): IntArray = convertBitsFrom8(bytes)
 
     private fun convertBits(data: IntArray, fromBits: Int, toBits: Int, pad: Boolean): ByteArray {
         var acc = 0
@@ -109,11 +128,7 @@ object Bech32 {
     }
 
     /** bytes を bech32 エンコードして hrp1... 形式の文字列を返す */
-    fun encode(hrp: String, bytes: ByteArray): String {
-        val data = convertBitsFrom8(bytes)
-        val checksum = createChecksum(hrp, data)
-        return hrp + "1" + (data.toList() + checksum.toList()).joinToString("") { CHARSET[it].toString() }
-    }
+    fun encode(hrp: String, bytes: ByteArray): String = encodeWords(hrp, convertBitsFrom8(bytes))
 }
 
 /** hex 秘密鍵を nsec1... 形式に変換する */

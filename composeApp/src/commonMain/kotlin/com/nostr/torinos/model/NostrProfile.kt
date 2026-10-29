@@ -13,6 +13,10 @@ data class NostrProfile(
     val banner: String? = null,
     val about: String? = null,
     val nip05: String? = null,
+    /** Lightning アドレス（LUD-16、`name@domain`）。Zap の受け取り先。 */
+    val lud16: String? = null,
+    /** bech32 の LNURL（LUD-06）。`lud16` がないときの Zap の受け取り先。 */
+    val lud06: String? = null,
     val customEmojis: Map<String, String> = emptyMap(),
 ) {
     /** 表示名。display_name → name → null の優先順 */

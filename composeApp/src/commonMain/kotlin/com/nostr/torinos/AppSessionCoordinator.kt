@@ -249,6 +249,11 @@ internal fun AppSessionCoordinator(
             loggingExceptionHandler("App", "Uncaught UI coroutine exception")
         }
 
+        com.nostr.torinos.ui.zap.ZapEventHost(accountSession) { message ->
+            snackbarHostState.currentSnackbarData?.dismiss()
+            snackbarHostState.showSnackbar(message)
+        }
+
         val ownPubkey = accountSession?.pubkey
         var ownProfile by remember { mutableStateOf<NostrProfile?>(null) }
         val isAccountLoaded = true
