@@ -81,15 +81,21 @@ fun MyProfileScreen(
     val state by viewModel.state.collectAsState()
     val feedState by feedViewModel.state.collectAsState()
     var showRelayList by remember(ownPubkey) { mutableStateOf(false) }
-    var showBannerEdit by remember(ownPubkey) { mutableStateOf(false) }
-    var showAvatarEdit by remember(ownPubkey) { mutableStateOf(false) }
-    var showNameEdit by remember(ownPubkey) { mutableStateOf(false) }
-    var showAboutEdit by remember(ownPubkey) { mutableStateOf(false) }
+    // どの鉛筆も同じ編集シートを開き、押した項目の欄から始める。null は「プロフィールを編集」から開いたとき。
+    var profileEditField by remember(ownPubkey) { mutableStateOf<EditProfileField?>(null) }
+    var showProfileEdit by remember(ownPubkey) { mutableStateOf(false) }
     var showStatusEdit by remember(ownPubkey) { mutableStateOf(false) }
     var bannerHeightPx by remember(ownPubkey) { mutableIntStateOf(0) }
     val editProfileViewModel = accountSessionViewModel<EditProfileViewModel>(
         key = "edit-profile-$ownPubkey",
     ) { accountSession -> EditProfileViewModel(accountSession = accountSession) }
+    fun openProfileEdit(field: EditProfileField?) {
+        // 開く前に読み込み中へ切り替える。前回の読み込み結果のまま一瞬入力できる状態で開くと、
+        // 最初のフォーカスがその間に当たって、読み込みで欄が無効になったときに外れてしまう。
+        editProfileViewModel.reload()
+        profileEditField = field
+        showProfileEdit = true
+    }
     val profileListState = rememberSaveable(ownPubkey, saver = LazyListState.Saver) {
         LazyListState()
     }
@@ -134,36 +140,15 @@ fun MyProfileScreen(
             )
         },
     ) { padding ->
-        if (showAvatarEdit) {
-            AvatarEditDialog(
-                currentProfile = state.profile,
+        if (showProfileEdit) {
+            EditProfileSheet(
                 pubkey = ownPubkey,
+                initialField = profileEditField,
+                onDismiss = {
+                    showProfileEdit = false
+                    profileEditField = null
+                },
                 viewModel = editProfileViewModel,
-                onDismiss = { showAvatarEdit = false },
-                onSaved = { viewModel.applyProfile(it) },
-            )
-        }
-        if (showBannerEdit) {
-            BannerEditDialog(
-                currentProfile = state.profile,
-                viewModel = editProfileViewModel,
-                onDismiss = { showBannerEdit = false },
-                onSaved = { viewModel.applyProfile(it) },
-            )
-        }
-        if (showNameEdit) {
-            NameEditDialog(
-                currentProfile = state.profile,
-                viewModel = editProfileViewModel,
-                onDismiss = { showNameEdit = false },
-                onSaved = { viewModel.applyProfile(it) },
-            )
-        }
-        if (showAboutEdit) {
-            AboutEditDialog(
-                currentProfile = state.profile,
-                viewModel = editProfileViewModel,
-                onDismiss = { showAboutEdit = false },
                 onSaved = { viewModel.applyProfile(it) },
             )
         }
@@ -207,11 +192,12 @@ fun MyProfileScreen(
                     onEditGeneralStatus = { showStatusEdit = true },
                     onUserClick = onUserClick,
                     onBack = onBack,
-                    onEditBanner = { showBannerEdit = true },
-                    onEditAvatar = { showAvatarEdit = true },
+                    onEditBanner = { openProfileEdit(EditProfileField.Images) },
+                    onEditAvatar = { openProfileEdit(EditProfileField.Images) },
                     onOpenAccountSwitcher = onOpenAccountSwitcher,
-                    onEditName = { showNameEdit = true },
-                    onEditAbout = { showAboutEdit = true },
+                    onEditName = { openProfileEdit(EditProfileField.DisplayName) },
+                    onEditAbout = { openProfileEdit(EditProfileField.About) },
+                    onEditProfile = { openProfileEdit(null) },
                     showBackButton = false,
                     onBannerHeightChanged = { bannerHeightPx = it },
                 )

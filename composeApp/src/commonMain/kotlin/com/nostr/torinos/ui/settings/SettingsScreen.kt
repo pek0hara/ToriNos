@@ -60,6 +60,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.nostr.torinos.crypto.hexToNpub
 import com.nostr.torinos.crypto.StoredAccount
+import com.nostr.torinos.ui.profile.ProfileDetailField
 import com.nostr.torinos.ui.setup.privateKeyStorageLocation
 import com.nostr.torinos.ui.setup.storedAccountDeletionMessage
 import kotlinx.coroutines.delay
@@ -98,6 +99,8 @@ fun SettingsScreen(
     val useFooterComposer by DisplayPreferencesStore.useFooterComposer.collectAsState()
     val fontScale by DisplayPreferencesStore.fontScale.collectAsState()
     val footerConfig by DisplayPreferencesStore.footerConfig.collectAsState()
+    // プロフィールの詳細は署名できるアカウントのときだけ出す。
+    val hasAccountSession = com.nostr.torinos.account.LocalAccountSession.current != null
 
     LaunchedEffect(accountViewModel) {
         accountViewModel?.secretKeyEvent?.collect { nsec = it }
@@ -165,6 +168,16 @@ fun SettingsScreen(
                     onUseFooterComposerChange = DisplayPreferencesStore::setUseFooterComposer,
                 )
                 HorizontalDivider()
+            }
+            item {
+                ZapSettingsSection(ownPubkey = ownPubkey.takeIf { hasAccountSession })
+                HorizontalDivider()
+            }
+            if (ownPubkey != null && hasAccountSession) {
+                item {
+                    ProfileDetailsSection(ownPubkey = ownPubkey)
+                    HorizontalDivider()
+                }
             }
             item {
                 FilterSection(
@@ -766,6 +779,41 @@ private fun FontScaleRow(
                 text = "端末の文字サイズが大きいため、これ以上は大きくなりません。",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+}
+
+@Composable
+private fun ZapSettingsSection(ownPubkey: String?) {
+    val enabled by com.nostr.torinos.zap.ZapSettingsStore.enabled.collectAsState()
+    val amounts by com.nostr.torinos.zap.ZapSettingsStore.amounts.collectAsState()
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(16.dp),
+    ) {
+        Text(
+            text = "Zap",
+            style = MaterialTheme.typography.titleSmall,
+            fontWeight = FontWeight.Bold,
+            modifier = Modifier.padding(bottom = 4.dp),
+        )
+        DisplayToggleRow(
+            label = "⚡を表示する",
+            description = "投稿の⚡と、受け取った Zap の合計を出します。支払いはウォレットのアプリで行います",
+            checked = enabled,
+            onCheckedChange = com.nostr.torinos.zap.ZapSettingsStore::setEnabled,
+        )
+        // 受け取り先はプロフィール（kind 0）の lud16。⚡を出さない設定でも受け取りはできるので、常に出す。
+        if (ownPubkey != null) {
+            ProfileDetailRows(ownPubkey = ownPubkey, fields = listOf(ProfileDetailField.Lud16))
+        }
+        if (enabled) {
+            com.nostr.torinos.ui.zap.ZapAmountEditor(
+                amounts = amounts,
+                onAmountsChange = com.nostr.torinos.zap.ZapSettingsStore::setAmounts,
+                modifier = Modifier.padding(top = 8.dp),
             )
         }
     }

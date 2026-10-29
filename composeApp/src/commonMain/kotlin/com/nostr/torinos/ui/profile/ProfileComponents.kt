@@ -28,6 +28,7 @@ import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material.icons.filled.AddPhotoAlternate
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Sms
 import androidx.compose.material.icons.filled.FileDownload
@@ -253,6 +254,8 @@ internal fun ProfileHeader(
     onOpenAccountSwitcher: (() -> Unit)? = null,
     onEditName: (() -> Unit)? = null,
     onEditAbout: (() -> Unit)? = null,
+    /** 全項目をまとめて編集する画面を開く（Lightning アドレスなど、個別の鉛筆がない項目もここで変える）。 */
+    onEditProfile: (() -> Unit)? = null,
     generalStatus: ProfileGeneralStatus? = null,
     onEditGeneralStatus: (() -> Unit)? = null,
     showBackButton: Boolean = true,
@@ -267,6 +270,16 @@ internal fun ProfileHeader(
     var showBadges by remember(pubkey) { mutableStateOf(false) }
     if (showBadges) com.nostr.torinos.badge.BadgeListSheet(pubkey, { showBadges = false }, onUserClick)
     var pubkeyCopied by remember(pubkey) { mutableStateOf(false) }
+    // タップしたアイコン・バナーを拡大表示する（投稿の画像と同じ表示）。
+    var expandedImageUrl by remember(pubkey) { mutableStateOf<String?>(null) }
+    expandedImageUrl?.let { url ->
+        com.nostr.torinos.ui.components.ExpandedImageDialog(
+            imageUrls = listOf(url),
+            initialIndex = 0,
+            onDismiss = { expandedImageUrl = null },
+        )
+    }
+    val onImageClick: (String) -> Unit = { expandedImageUrl = it }
     val hasBannerArea = !profile?.banner.isNullOrBlank() ||
         (isOwnProfile && onEditBanner != null) ||
         onBack != null ||
@@ -298,6 +311,7 @@ internal fun ProfileHeader(
                         bannerUrl = profile?.banner,
                         isOwnProfile = isOwnProfile,
                         onEditBanner = onEditBanner,
+                        onImageClick = onImageClick,
                         modifier = Modifier.fillMaxSize(),
                     )
                 }
@@ -306,6 +320,7 @@ internal fun ProfileHeader(
                     profile = profile,
                     size = 96,
                     onEditAvatar = if (isOwnProfile) onEditAvatar else null,
+                    onImageClick = onImageClick,
                     modifier = Modifier
                         .align(Alignment.BottomStart)
                         .padding(start = 16.dp),
@@ -384,6 +399,7 @@ internal fun ProfileHeader(
                         profile = profile,
                         size = 64,
                         onEditAvatar = if (isOwnProfile) onEditAvatar else null,
+                    onImageClick = onImageClick,
                     )
                     if (isOwnProfile && onOpenAccountSwitcher != null) {
                         AccountSwitcherButton(onClick = onOpenAccountSwitcher)
@@ -508,23 +524,16 @@ internal fun ProfileHeader(
                     )
                 }
             }
-            if (isOwnProfile && profile?.about.isNullOrBlank() && onEditAbout != null) {
-                TextButton(onClick = onEditAbout, contentPadding = androidx.compose.foundation.layout.PaddingValues(0.dp)) {
-                    Icon(Icons.Default.Edit, contentDescription = null, modifier = Modifier.size(14.dp))
-                    androidx.compose.foundation.layout.Spacer(modifier = Modifier.size(4.dp))
-                    Text("自己紹介を追加", style = MaterialTheme.typography.bodySmall)
-                }
-            } else {
-                profile?.about?.takeIf { it.isNotBlank() }?.let { about ->
-                    ProfileAboutText(
-                        about = about,
-                        customEmojis = profile.customEmojis,
-                        linkedProfiles = linkedProfiles,
-                        isOwnProfile = isOwnProfile,
-                        onUserClick = onUserClick,
-                        onEditAbout = onEditAbout,
-                    )
-                }
+            // 自己紹介が空のときの入口は「プロフィールを編集」に任せる（同じ役割のリンクが並ばないように）。
+            profile?.about?.takeIf { it.isNotBlank() }?.let { about ->
+                ProfileAboutText(
+                    about = about,
+                    customEmojis = profile.customEmojis,
+                    linkedProfiles = linkedProfiles,
+                    isOwnProfile = isOwnProfile,
+                    onUserClick = onUserClick,
+                    onEditAbout = onEditAbout,
+                )
             }
             generalStatus?.takeIf { it.content.isNotBlank() }?.let { status ->
                 ProfileGeneralStatusText(
@@ -532,6 +541,13 @@ internal fun ProfileHeader(
                     isOwnProfile = isOwnProfile,
                     onEditGeneralStatus = onEditGeneralStatus,
                 )
+            }
+            if (isOwnProfile && onEditProfile != null) {
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                    TextButton(onClick = onEditProfile) {
+                        Text("プロフィールを編集", style = MaterialTheme.typography.bodySmall)
+                    }
+                }
             }
         }
     }
@@ -661,13 +677,18 @@ private fun ProfileBanner(
     bannerUrl: String?,
     isOwnProfile: Boolean,
     onEditBanner: (() -> Unit)?,
+    onImageClick: (String) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     if (bannerUrl.isNullOrBlank() && (!isOwnProfile || onEditBanner == null)) return
 
     Box(
         modifier = modifier
-            .background(MaterialTheme.colorScheme.surfaceVariant),
+            .background(MaterialTheme.colorScheme.surfaceVariant)
+            .then(
+                if (bannerUrl.isNullOrBlank()) Modifier
+                else Modifier.clickable(onClickLabel = "バナーを拡大") { onImageClick(bannerUrl) },
+            ),
     ) {
         if (!bannerUrl.isNullOrBlank()) {
             NetworkImage(
@@ -688,7 +709,7 @@ private fun ProfileBanner(
                 contentAlignment = Alignment.Center,
             ) {
                 Icon(
-                    Icons.Default.Edit,
+                    Icons.Default.AddPhotoAlternate,
                     contentDescription = "バナーを変更",
                     modifier = Modifier.size(16.dp),
                     tint = MaterialTheme.colorScheme.onPrimary,
@@ -704,8 +725,10 @@ private fun ProfileAvatar(
     profile: NostrProfile?,
     size: Int,
     onEditAvatar: (() -> Unit)?,
+    onImageClick: (String) -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    val pictureUrl = profile?.picture?.takeIf { it.isNotBlank() }
     Box(modifier = modifier.size(size.dp)) {
         val avatarFrameModifier = if (onEditAvatar != null && size >= 80) {
             Modifier.border(4.dp, MaterialTheme.colorScheme.surface, CircleShape)
@@ -717,7 +740,10 @@ private fun ProfileAvatar(
             name = profile?.bestName,
             pictureUrl = profile?.picture,
             size = size,
-            modifier = avatarFrameModifier,
+            modifier = avatarFrameModifier.then(
+                if (pictureUrl == null) Modifier
+                else Modifier.clip(CircleShape).clickable(onClickLabel = "アイコンを拡大") { onImageClick(pictureUrl) },
+            ),
         )
         if (onEditAvatar != null) {
             Box(
@@ -730,7 +756,7 @@ private fun ProfileAvatar(
                 contentAlignment = Alignment.Center,
             ) {
                 Icon(
-                    Icons.Default.Edit,
+                    Icons.Default.AddPhotoAlternate,
                     contentDescription = "アイコンを変更",
                     modifier = Modifier.size(if (size >= 80) 16.dp else 13.dp),
                     tint = MaterialTheme.colorScheme.onPrimary,
