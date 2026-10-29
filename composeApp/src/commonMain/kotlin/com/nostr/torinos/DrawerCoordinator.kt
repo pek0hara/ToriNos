@@ -101,6 +101,9 @@ internal class DrawerCoordinator(
                 }
 
                 profileHistory.clear()
+                // 前回開いた記録が残っていると、前回の「閉じ切った」通知が遅れて処理されたときに
+                // ここで開き直したプロフィールまで消され、中身のないドロワーが開いてしまう。
+                hasProfileOpened = false
                 if (isProfileDocked) {
                     // 左パネルは中央の画面と同時に見えるので、通知ドロワーも閉じない。
                     profileDestination = ProfileDrawerDestination.Profile(pubkey)
@@ -236,6 +239,10 @@ internal class DrawerCoordinator(
         scope.launch {
             transitionMutex.withLock {
                 when {
+                    profileState.currentValue == DrawerValue.Open && profileDestination == null -> {
+                        // 表示先のないドロワーは白い画面になるだけなので閉じる。
+                        if (!isProfileDocked) profileState.close()
+                    }
                     profileState.currentValue == DrawerValue.Open -> hasProfileOpened = true
                     profileState.currentValue == DrawerValue.Closed &&
                         profileState.targetValue == DrawerValue.Closed &&

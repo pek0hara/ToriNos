@@ -59,6 +59,50 @@ class DrawerCoordinatorTest {
     }
 
     @Test
+    fun staleClosedStateFromPreviousSessionDoesNotClearReopenedProfile() = runTest {
+        val profileState = DrawerState(DrawerValue.Closed)
+        val coordinator = DrawerCoordinator(DrawerState(DrawerValue.Closed), profileState, this)
+
+        // 1回目: 開き切ったことを記録する。
+        coordinator.openProfile("first")
+        runCurrent()
+        coordinator.onProfileStateChanged()
+        runCurrent()
+
+        // 閉じ切ったが、その状態変化の通知はまだ処理されていない。
+        profileState.snapTo(DrawerValue.Closed)
+
+        // すぐに開き直す。開くアニメーションは連続タップのドラッグで中断され、
+        // 前回分の遅れた通知が処理される時点ではまだ Closed に留まっている。
+        coordinator.openProfile("second")
+        runCurrent()
+        profileState.snapTo(DrawerValue.Closed)
+        coordinator.onProfileStateChanged()
+        runCurrent()
+
+        // 指を離すとドロワーは開いた側に吸い付く。
+        profileState.snapTo(DrawerValue.Open)
+        coordinator.onProfileStateChanged()
+        runCurrent()
+
+        assertEquals(ProfileDrawerDestination.Profile("second"), coordinator.profileDestination)
+        assertTrue(coordinator.isProfileContentReady)
+    }
+
+    @Test
+    fun openDrawerWithoutDestinationCloses() = runTest {
+        // 表示先のないドロワーが開いたままになると、中身のない白い画面で止まる。
+        val profileState = DrawerState(DrawerValue.Open)
+        val coordinator = DrawerCoordinator(DrawerState(DrawerValue.Closed), profileState, this)
+
+        coordinator.onProfileStateChanged()
+        runCurrent()
+
+        assertNull(coordinator.profileDestination)
+        assertEquals(DrawerValue.Closed, profileState.currentValue)
+    }
+
+    @Test
     fun systemBackClosesNotificationsBeforeProfile() {
         assertEquals(DrawerBackTarget.Notifications, drawerBackTarget(notificationsOpen = true, profileOpen = true))
         assertEquals(DrawerBackTarget.Notifications, drawerBackTarget(notificationsOpen = true, profileOpen = false))
