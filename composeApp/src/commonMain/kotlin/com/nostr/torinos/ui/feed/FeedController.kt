@@ -1444,6 +1444,8 @@ internal class FeedController(
     }
 
     private fun updateTimelineSortTime(eventId: String, timelineCreatedAt: Long) {
+        // 表示済みの投稿はリポストされても動かさない。読んでいた位置から消えたように見えるため。
+        if (isShownInTimeline(eventId)) return
         val currentSortTime = eventSortTimes[eventId]
         if (currentSortTime != null && timelineCreatedAt <= currentSortTime) return
         eventSortTimes[eventId] = timelineCreatedAt
@@ -1452,6 +1454,17 @@ internal class FeedController(
         if (cur.events.none { it.id == eventId } && eventId !in pendingTimelineEvents) return
         if (eventId in pendingTimelineEvents) return
         updateEvents { current -> sortTimelineEvents(current.events) }
+    }
+
+    /**
+     * 一覧に出ている（スクロールでたどり着ける）投稿。表示待ちのまとめ・ミュート中・表示境界より古いものは含まない。
+     * 画面の状態は遅れて反映されるので、保持中の情報から判定する。
+     */
+    private fun isShownInTimeline(eventId: String): Boolean {
+        val event = rawEvents[eventId] ?: return false
+        if (eventId in pendingTimelineEvents || isFiltered(event)) return false
+        val sortTime = eventSortTimes[eventId] ?: event.createdAt
+        return sortTime >= (historyRevealOldestAt ?: Long.MIN_VALUE)
     }
 
     private fun sortTimelineEvents(events: List<NostrEvent>): List<NostrEvent> =

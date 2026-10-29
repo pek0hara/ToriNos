@@ -1553,6 +1553,94 @@ class FeedControllerAsyncRegressionTest {
     }
 
     @Test
+    fun repostOfShownNoteKeepsItsPosition() = runTest {
+        val (gateway, controller) = repostFeed()
+        deliverLive(gateway, event("a", 20), event("b", 10))
+        assertEquals(listOf("a", "b"), controller.state.value.events.map { it.id })
+
+        // 表示中の b がリポストされても、読んでいる位置から動かさない。
+        deliverLive(gateway, repostOf(event("b", 10), id = "repost-b", createdAt = 30))
+
+        val state = controller.state.value
+        assertEquals(listOf("a", "b"), state.events.map { it.id })
+        assertEquals("reposter", state.repostedByPubkeys["b"])
+        assertEquals(1, state.repostCounts["b"])
+        controller.close()
+    }
+
+    @Test
+    fun repostedShownNoteStaysInPlaceWhenTimelineIsResorted() = runTest {
+        val (gateway, controller) = repostFeed()
+        deliverLive(gateway, event("a", 20), event("b", 10))
+        deliverLive(gateway, repostOf(event("b", 10), id = "repost-b", createdAt = 30))
+
+        // 新着をまとめて出すときは保持中の全件を並べ直すが、それでも b は動かない。
+        deliverLive(gateway, event("c", 40))
+
+        assertEquals(listOf("c", "a", "b"), controller.state.value.events.map { it.id })
+        controller.close()
+    }
+
+    @Test
+    fun repostOfUnseenNoteIsShownAtRepostTime() = runTest {
+        val (gateway, controller) = repostFeed()
+        deliverLive(gateway, event("a", 20))
+
+        deliverLive(gateway, repostOf(event("old", 5), id = "repost-old", createdAt = 30))
+
+        assertEquals(listOf("old", "a"), controller.state.value.events.map { it.id })
+        controller.close()
+    }
+
+    @Test
+    fun repostOfNoteWaitingInBatchIsShownAtRepostTime() = runTest {
+        val (gateway, controller) = repostFeed()
+        deliverLive(gateway, event("a", 20))
+
+        // まだ表示前（まとめ待ち）の投稿は、リポスト時刻の位置に出す。
+        val live = gateway.liveSessions.first { !it.id.startsWith("reac-") }
+        live.event(event("b", 10))
+        runCurrent()
+        live.event(repostOf(event("b", 10), id = "repost-b", createdAt = 30))
+        advanceTimeBy(151)
+        runCurrent()
+
+        assertEquals(listOf("b", "a"), controller.state.value.events.map { it.id })
+        controller.close()
+    }
+
+    private fun kotlinx.coroutines.test.TestScope.repostFeed(): Pair<FakeGateway, FeedController> {
+        val gateway = FakeGateway()
+        val controller = FeedController(
+            computeDispatcher = Dispatchers.Unconfined,
+            includeRepostsInFeed = true,
+            scope = backgroundScope,
+            subscriptions = gateway,
+        )
+        runCurrent()
+        gateway.completeInitialFeedHistory()
+        runCurrent()
+        return gateway to controller
+    }
+
+    private fun kotlinx.coroutines.test.TestScope.deliverLive(gateway: FakeGateway, vararg events: NostrEvent) {
+        val live = gateway.liveSessions.first { !it.id.startsWith("reac-") }
+        events.forEach { live.event(it) }
+        advanceTimeBy(151)
+        runCurrent()
+    }
+
+    private fun repostOf(target: NostrEvent, id: String, createdAt: Long) = NostrEvent(
+        id = id,
+        pubkey = "reposter",
+        createdAt = createdAt,
+        kind = 6,
+        tags = listOf(listOf("e", target.id), listOf("p", target.pubkey)),
+        content = kotlinx.serialization.json.Json.encodeToString(NostrEvent.serializer(), target),
+        sig = "signature",
+    )
+
+    @Test
     fun reactionRedeliveredAfterSeenIdsRollOverIsNotCountedAgain() = runTest {
         val gateway = FakeGateway()
         val controller = controllerTrackingTarget(gateway)
