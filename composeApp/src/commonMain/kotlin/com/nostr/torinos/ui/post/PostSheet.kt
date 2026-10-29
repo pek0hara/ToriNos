@@ -39,6 +39,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.withFrameNanos
@@ -58,6 +59,7 @@ import com.nostr.torinos.model.ReplyTarget
 import com.nostr.torinos.account.accountSessionViewModel
 import com.nostr.torinos.model.encodeNevent
 import com.nostr.torinos.emoji.CustomEmoji
+import com.nostr.torinos.network.EventByIdFetcher
 import com.nostr.torinos.network.RelayStore
 import com.nostr.torinos.ui.components.RelayMultiSelectDialog
 import com.nostr.torinos.ui.components.rememberDismissKeyboard
@@ -128,6 +130,24 @@ fun PostSheet(
         selectedDraft?.restoreReplyTarget(activeNoteContext)
     } else {
         replyTarget ?: initialMemo?.restoreReplyTarget(noteContext)
+    }
+    // 下書きには返信先の本文がないので、返信先を戻したときは投稿を取得して欄に出す。
+    val replyPreviewSource = replyPreviewSource(selectedDraft, replyToPreview, activeReplyTarget)
+    val fetchedReplyPreview by produceState<ReplyPreview>(ReplyPreview.Loading, replyPreviewSource) {
+        value = ReplyPreview.Loading
+        if (replyPreviewSource is ReplyPreviewSource.Fetch) {
+            val fetcher = EventByIdFetcher()
+            value = loadReplyPreview(replyPreviewSource.parent) { ids, target, onEvent -> fetcher.fetch(ids, target, onEvent) }
+        }
+    }
+    val replyPreviewText = when (replyPreviewSource) {
+        is ReplyPreviewSource.Given -> replyPreviewSource.text
+        is ReplyPreviewSource.Fetch -> when (val preview = fetchedReplyPreview) {
+            ReplyPreview.Loading -> "読み込み中…"
+            is ReplyPreview.Loaded -> preview.text
+            ReplyPreview.Unavailable -> "返信先の投稿を取得できませんでした"
+        }
+        ReplyPreviewSource.None -> null
     }
     val pickImage = rememberOptimizedImagePickerLauncher { image ->
         if (image != null) {
@@ -257,7 +277,7 @@ fun PostSheet(
             ) {
                 PostSheetContent(
                     state = state,
-                    replyToPreview = replyToPreview.takeIf { selectedDraft == null },
+                    replyToPreview = replyPreviewText,
                     onDismiss = ::requestCancel,
                     onCursorChange = postViewModel::onCursorChange,
                     onOpenDrafts = {

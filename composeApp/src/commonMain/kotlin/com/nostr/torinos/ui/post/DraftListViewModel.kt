@@ -48,9 +48,15 @@ class DraftListViewModel internal constructor(
     private var loadJob: Job? = null
     private var lastRelayUrl: String? = null
 
-    fun reload() = load(lastRelayUrl)
+    fun reload() = start(lastRelayUrl)
 
+    /** シートの表示で呼ぶ。同じリレーを取得中なら始め直さない（リレー一覧の再通知で取り消して取り直していた）。 */
     fun load(relayUrl: String?) {
+        if (relayUrl == lastRelayUrl && loadJob?.isActive == true) return
+        start(relayUrl)
+    }
+
+    private fun start(relayUrl: String?) {
         lastRelayUrl = relayUrl
         loadJob?.cancel()
         store.dispatch { it.copy(isLoading = true, error = null) }

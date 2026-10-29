@@ -55,10 +55,10 @@ internal fun DraftListSheet(
     val selectedRelayUrl by RelayStore.selectedMemoRelayUrl.collectAsState()
     val drafts = state.drafts
 
-    LaunchedEffect(relays, selectedRelayUrl) {
-        if (relays.isNotEmpty()) {
-            viewModel.load(selectedRelayUrl?.takeIf { it in relays } ?: relays.first())
-        }
+    // 取得先のリレーが変わったときだけ読み直す。
+    val targetRelayUrl = selectedRelayUrl?.takeIf { it in relays } ?: relays.firstOrNull()
+    LaunchedEffect(targetRelayUrl) {
+        targetRelayUrl?.let(viewModel::load)
     }
 
     ModalBottomSheet(onDismissRequest = onDismiss) {
@@ -207,6 +207,13 @@ private fun DraftRow(
         horizontalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         Column(modifier = Modifier.weight(1f)) {
+            if (item.memo.replyToId != null) {
+                Text(
+                    text = "返信",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
             Text(
                 text = item.memo.text.ifBlank {
                     val quotes = item.memo.quoteInputs()
