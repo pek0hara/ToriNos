@@ -73,18 +73,11 @@ class BadgeEventsTest {
         assertEquals("https://image.example/large", badgeDisplay(definition, badgeAward(), badgeOwner).thumbnailUrl(64))
         assertEquals("https://image.example/full", badgeDisplay(definition, badgeAward(), badgeOwner).thumbnailUrl(256))
     }
-    @Test fun stripUsesOneDpGapsAndReservesNameSpace() {
-        assertEquals(99f, badgeStripWidth(BadgeStripLayout(3, 2)))
-        assertEquals(74f, badgeStripWidth(BadgeStripLayout(3, 0)))
-        assertEquals(BadgeStripLayout(3, 2), badgeStripLayout(5, 203f))
-        assertEquals(BadgeStripLayout(2, 3), badgeStripLayout(5, 202f))
-        assertEquals(BadgeStripLayout(1, 4), badgeStripLayout(5, 153f))
-        assertEquals(BadgeStripLayout(0, 5), badgeStripLayout(5, 128f))
-        assertEquals(BadgeStripLayout(0, 0), badgeStripLayout(5, 127f))
-        assertEquals(BadgeStripLayout(3, 0), badgeStripLayout(3, 178f))
-        assertTrue(badgeStripLayout(5, 203f, 2f).visibleCount < 3)
-        assertEquals(BadgeStripLayout(2, 998), badgeStripLayout(1000, 203f, overflowWidth = 40f))
-        assertEquals(90f, badgeStripWidth(BadgeStripLayout(2, 998), 40f))
-        assertEquals(0f, badgeStripWidth(BadgeStripLayout(0, 0)))
+    @Test fun avatarBadgesShowUpToFourThenOverflow() {
+        assertEquals(BadgeStripLayout(0, 0), avatarBadgeLayout(0))
+        assertEquals(BadgeStripLayout(3, 0), avatarBadgeLayout(3))
+        assertEquals(BadgeStripLayout(4, 0), avatarBadgeLayout(4))
+        assertEquals(BadgeStripLayout(4, 1), avatarBadgeLayout(5))
+        assertEquals(BadgeStripLayout(4, 996), avatarBadgeLayout(1000))
     }
 }

@@ -89,25 +89,31 @@ internal fun BadgeImage(badge: BadgeDisplayItem, size: Int = 24, detail: Boolean
     }
 }
 
+/** プロフィールアイコンの下に置くバッジ。アイコンの幅に収まるよう2列で並べる。 */
 @Composable
-internal fun BadgeStrip(
+internal fun AvatarBadgeGrid(
     badges: List<BadgeDisplayItem>,
-    layout: BadgeStripLayout,
     onBadge: (BadgeDisplayItem) -> Unit,
     onList: () -> Unit,
-    itemHeight: Dp = 42.dp,
 ) {
-    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(1.dp)) {
-        badges.take(layout.visibleCount).forEach { badge ->
-            Box(Modifier.width(24.dp).height(itemHeight).clickable { onBadge(badge) }, contentAlignment = Alignment.Center) {
-                BadgeImage(badge)
+    val layout = avatarBadgeLayout(badges.size)
+    if (layout.visibleCount == 0) return
+    val slot = 20.dp
+    Column(verticalArrangement = Arrangement.spacedBy(1.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+        badges.take(layout.visibleCount).chunked(2).forEach { row ->
+            Row(horizontalArrangement = Arrangement.spacedBy(1.dp)) {
+                row.forEach { badge ->
+                    Box(Modifier.size(slot).clickable { onBadge(badge) }, contentAlignment = Alignment.Center) {
+                        BadgeImage(badge, size = 20)
+                    }
+                }
             }
         }
         if (layout.overflowCount > 0) {
-            Box(Modifier.height(itemHeight).clickable(onClick = onList), contentAlignment = Alignment.Center) {
-                Text("+${layout.overflowCount}", style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.primary, maxLines = 1, softWrap = false)
-            }
+            // 欄を押し広げないよう、幅が足りなければはみ出して描く。
+            Text("+${layout.overflowCount}", style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.primary, maxLines = 1, softWrap = false,
+                modifier = Modifier.clickable(onClick = onList).wrapContentWidth(unbounded = true))
         }
     }
 }

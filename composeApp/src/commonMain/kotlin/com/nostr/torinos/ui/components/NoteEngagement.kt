@@ -381,6 +381,7 @@ internal fun ReactionSummaryRow(
     onEmojiReact: ((ReactionOption) -> Unit)?,
     onEmojiUnreact: ((ReactionOption) -> Unit)?,
     onOpenStandardEmojiPicker: () -> Unit,
+    trailing: (@Composable () -> Unit)? = null,
 ) {
     val reactionChipColors = reactionChipColors(isSystemInDarkTheme())
     val emojiReactionCount = customReactions.sumOf { it.count } + unicodeReactions.sumOf { it.count }
@@ -390,11 +391,18 @@ internal fun ReactionSummaryRow(
     var showQuickMenu by remember { mutableStateOf(false) }
     val openCustomEmoji = LocalCustomEmojiNavigator.current
 
+    // 行を表示幅以上にして、余裕があれば trailing を右端に、あふれたら並びの最後に続ける。
+    androidx.compose.foundation.layout.BoxWithConstraints(Modifier.fillMaxWidth()) {
     Row(
         modifier = Modifier
-            .fillMaxWidth()
-            .horizontalScroll(rememberScrollState()),
+            .horizontalScroll(rememberScrollState())
+            .widthIn(min = maxWidth),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+    Row(
         horizontalArrangement = Arrangement.spacedBy(6.dp),
+        verticalAlignment = Alignment.CenterVertically,
     ) {
         if (likeCount > 0) {
             ReactionChip(
@@ -515,6 +523,9 @@ internal fun ReactionSummaryRow(
                 )
             }
         }
+    }
+        if (trailing != null) Box(Modifier.padding(start = 8.dp)) { trailing() }
+    }
     }
 }
 

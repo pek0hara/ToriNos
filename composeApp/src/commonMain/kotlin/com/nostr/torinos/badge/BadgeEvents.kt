@@ -140,17 +140,6 @@ internal fun badgeDisplay(definition: NostrEvent, award: NostrEvent, recipient: 
 internal fun badgeDefinitionDisplay(definition: NostrEvent): BadgeDisplayItem = badgeDisplay(definition, definition, "")
 
 internal data class BadgeStripLayout(val visibleCount: Int, val overflowCount: Int)
-internal fun badgeStripWidth(layout: BadgeStripLayout, overflowWidth: Float = 24f): Float {
-    val slots = layout.visibleCount + if (layout.overflowCount > 0) 1 else 0
-    return layout.visibleCount * 24f + (if (layout.overflowCount > 0) overflowWidth else 0f) +
-        (slots - 1).coerceAtLeast(0)
-}
-
-internal fun badgeStripLayout(count: Int, availableWidth: Float, fontScale: Float = 1f, overflowWidth: Float = 24f): BadgeStripLayout {
-    val remaining = availableWidth - 96f * fontScale.coerceAtLeast(1f) - 8f
-    for (visible in count.coerceIn(0, 3) downTo 0) {
-        val candidate = BadgeStripLayout(visible, count - visible)
-        if (badgeStripWidth(candidate, overflowWidth) <= remaining) return candidate
-    }
-    return BadgeStripLayout(0, 0)
-}
+/** アイコンの下には2列×2行の4つまで並べ、残りは次の行の「+N」にまとめる。 */
+internal fun avatarBadgeLayout(count: Int): BadgeStripLayout =
+    if (count <= 4) BadgeStripLayout(count.coerceAtLeast(0), 0) else BadgeStripLayout(4, count - 4)

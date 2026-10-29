@@ -5,7 +5,7 @@ import kotlin.time.Instant
 import kotlinx.datetime.TimeZone
 import kotlinx.datetime.toLocalDateTime
 
-/** プロフィールアイコンの下に、必要な年・日付・時刻を縦に表示する。 */
+/** 名前の行に出す投稿時刻。今日なら時刻だけ、別の日は日付、別の年は年も付ける。 */
 internal fun formatPostTimestamp(
     epochSeconds: Long,
     nowEpochSeconds: Long = Clock.System.now().epochSeconds,
@@ -13,11 +13,13 @@ internal fun formatPostTimestamp(
 ): String = try {
     val local = Instant.fromEpochSeconds(epochSeconds).toLocalDateTime(timeZone)
     val today = Instant.fromEpochSeconds(nowEpochSeconds).toLocalDateTime(timeZone).date
-    buildList {
-        if (local.year != today.year) add(local.year.toString())
-        if (local.date != today) add("${(local.month.ordinal + 1).toString().padStart(2, '0')}/${local.day.toString().padStart(2, '0')}")
-        add("${local.hour.toString().padStart(2, '0')}:${local.minute.toString().padStart(2, '0')}")
-    }.joinToString("\n")
+    val time = "${local.hour.toString().padStart(2, '0')}:${local.minute.toString().padStart(2, '0')}"
+    val monthDay = "${(local.month.ordinal + 1).toString().padStart(2, '0')}/${local.day.toString().padStart(2, '0')}"
+    when {
+        local.year != today.year -> "${local.year}/$monthDay $time"
+        local.date != today -> "$monthDay $time"
+        else -> time
+    }
 } catch (_: Exception) {
     ""
 }

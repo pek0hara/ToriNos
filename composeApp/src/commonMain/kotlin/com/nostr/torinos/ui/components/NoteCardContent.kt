@@ -11,7 +11,6 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -47,12 +46,8 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalClipboard
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.rememberTextMeasurer
-import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.platform.LocalDensity
-import com.nostr.torinos.ui.theme.LocalAppFontScale
 import com.nostr.torinos.account.LocalAccountSession
 import com.nostr.torinos.model.NostrEvent
 import com.nostr.torinos.model.ReactionOption
@@ -62,7 +57,6 @@ import com.nostr.torinos.ui.profile.AvatarCircle
 import com.nostr.torinos.article.canSelectForMatometr
 import com.nostr.torinos.ui.settings.setPlainText
 import kotlinx.coroutines.launch
-import kotlin.math.max
 
 @Composable
 internal fun NoteCardContent(
@@ -119,7 +113,7 @@ internal fun NoteCardContent(
     val showImagePreviews = model.policy.showImagePreviews
     val showXPreviews = model.policy.showXPreviews
 
-    // Read inside the name row only, so badge updates do not recompose the whole card.
+    // Read inside AvatarBadges only, so badge updates do not recompose the whole card.
     val badgesState = com.nostr.torinos.badge.rememberBadges(event.pubkey)
     var selectedBadge by remember(event.id, event.pubkey) { mutableStateOf<com.nostr.torinos.badge.BadgeDisplayItem?>(null) }
     var showBadges by remember(event.id, event.pubkey) { mutableStateOf(false) }
@@ -216,13 +210,7 @@ internal fun NoteCardContent(
                 size = 42,
                 modifier = Modifier.clickable { onUserClick(event.pubkey) },
             )
-            Text(
-                text = formatPostTimestamp(event.createdAt),
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                textAlign = TextAlign.Center,
-                softWrap = false,
-            )
+            AvatarBadges(badgesState, { selectedBadge = it }, { showBadges = true })
             com.nostr.torinos.ui.article.MatometrSelectionCheckbox(event)
         }
 
@@ -258,55 +246,29 @@ internal fun NoteCardContent(
                     }
                 }
 
-                BoxWithConstraints(Modifier.fillMaxWidth().heightIn(min = nameRowHeight), contentAlignment = Alignment.CenterStart) {
-                    val density = LocalDensity.current
-                    // 名前欄に残す幅は、OSとアプリ設定の両方で大きくした文字に合わせる。
-                    val textScale = density.fontScale * LocalAppFontScale.current
-                    val textMeasurer = rememberTextMeasurer()
-                    val labelStyle = MaterialTheme.typography.labelSmall
-                    val badges = badgesState.value
-                    val client = event.clientName?.takeIf { it.isNotBlank() }
-                    // Text widths only depend on the string, style and density; measure them once per change.
-                    val measuredClientWidth = remember(client, labelStyle, density) {
-                        client?.let { with(density) { textMeasurer.measure(it, labelStyle).size.width.toDp() } }
-                    }
-                    val clientWidth = measuredClientWidth
-                        ?.coerceAtMost((64f * textScale).dp)
-                        ?.coerceAtMost(maxWidth * 0.25f) ?: 0.dp
-                    val availableWidth = (maxWidth - (if (hasMenu) 24.dp else 0.dp) - clientWidth -
-                        (if (client != null) 4.dp else 0.dp)).coerceAtLeast(0.dp)
-                    val overflowWidth = remember(badges.size, labelStyle, density) {
-                        with(density) { textMeasurer.measure("+${badges.size}", labelStyle).size.width.toDp().value }
-                    }
-                    val layout = com.nostr.torinos.badge.badgeStripLayout(badges.size, availableWidth.value, textScale, overflowWidth)
-                    val badgeWidth = com.nostr.torinos.badge.badgeStripWidth(layout, overflowWidth)
-                    Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                        ProfileNameText(
-                            profile = profile,
-                            fallback = event.shortPubkey,
-                            style = MaterialTheme.typography.labelLarge,
-                            fontWeight = FontWeight.Bold,
-                            color = MaterialTheme.colorScheme.primary,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                            modifier = Modifier.widthIn(max = (availableWidth - badgeWidth.dp - if (badgeWidth > 0) 8.dp else 0.dp).coerceAtLeast(0.dp))
-                                .clickable { onUserClick(event.pubkey) },
-                        )
-                        if (badgeWidth > 0) {
-                            Spacer(Modifier.width(8.dp))
-                            com.nostr.torinos.badge.BadgeStrip(
-                                badges, layout, { selectedBadge = it }, { showBadges = true },
-                                itemHeight = nameRowHeight,
+                Row(
+                    modifier = Modifier.fillMaxWidth().heightIn(min = nameRowHeight),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                        Box(Modifier.weight(1f), contentAlignment = Alignment.CenterStart) {
+                            ProfileNameText(
+                                profile = profile,
+                                fallback = event.shortPubkey,
+                                style = MaterialTheme.typography.labelLarge,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.primary,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.clickable { onUserClick(event.pubkey) },
                             )
                         }
-                        Spacer(Modifier.weight(1f))
-                        if (client != null) {
-                            Spacer(Modifier.width(4.dp))
-                            Text(client, style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                modifier = Modifier.widthIn(max = clientWidth), maxLines = 1,
-                                overflow = TextOverflow.Ellipsis)
-                        }
+                        Text(
+                            text = formatPostTimestamp(event.createdAt),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            softWrap = false,
+                            modifier = Modifier.padding(start = 8.dp, end = 2.dp),
+                        )
                         if (hasMenu) Box {
                             IconButton(
                                 onClick = { showMenu = true },
@@ -402,7 +364,6 @@ internal fun NoteCardContent(
                                 }
                             }
                         }
-                    }
                 }
             }
             Spacer(modifier = Modifier.height(2.dp))
@@ -508,20 +469,39 @@ internal fun NoteCardContent(
                     )
                 }
             }
-            if (showReactions && reactionCount > 0) {
+            val client = event.clientName?.takeIf { it.isNotBlank() }
+            if (showReactions || client != null) {
                 Spacer(modifier = Modifier.height(8.dp))
-                ReactionSummaryRow(
-                    totalReactionCount = reactionCount,
-                    explicitLikeCount = likeReactionCount,
-                    isLiked = isLiked,
-                    customReactions = customReactions,
-                    unicodeReactions = unicodeReactions,
-                    ownEmojiReactionEventIds = ownEmojiReactionEventIds,
-                    onLike = onLike,
-                    onEmojiReact = onEmojiReact,
-                    onEmojiUnreact = onEmojiUnreact,
-                    onOpenStandardEmojiPicker = { showStandardEmojiPicker = true },
-                )
+                // リアクションの有無にかかわらず行を出し、右端に投稿したクライアントを添える。
+                val via: (@Composable () -> Unit)? = client?.let { name ->
+                    @Composable {
+                        Text(
+                            text = "via $name",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.widthIn(max = 160.dp),
+                        )
+                    }
+                }
+                if (showReactions) {
+                    ReactionSummaryRow(
+                        totalReactionCount = reactionCount,
+                        explicitLikeCount = likeReactionCount,
+                        isLiked = isLiked,
+                        customReactions = customReactions,
+                        unicodeReactions = unicodeReactions,
+                        ownEmojiReactionEventIds = ownEmojiReactionEventIds,
+                        onLike = onLike,
+                        onEmojiReact = onEmojiReact,
+                        onEmojiUnreact = onEmojiUnreact,
+                        onOpenStandardEmojiPicker = { showStandardEmojiPicker = true },
+                        trailing = via,
+                    )
+                } else if (via != null) {
+                    Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.CenterEnd) { via() }
+                }
             }
             if (showEngagement) {
                 Spacer(modifier = Modifier.height(3.dp))
@@ -678,4 +658,13 @@ internal fun NoteCardContent(
         )
     }
 
+}
+
+@Composable
+private fun AvatarBadges(
+    badgesState: androidx.compose.runtime.State<List<com.nostr.torinos.badge.BadgeDisplayItem>>,
+    onBadge: (com.nostr.torinos.badge.BadgeDisplayItem) -> Unit,
+    onList: () -> Unit,
+) {
+    com.nostr.torinos.badge.AvatarBadgeGrid(badgesState.value, onBadge, onList)
 }
