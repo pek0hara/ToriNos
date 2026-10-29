@@ -126,8 +126,10 @@ internal class BadgeRepository(
         val enqueue = lock.withLock {
             val last = fetchedAt[pubkey]
             val fail = failures[pubkey] ?: 0
+            // Reuse display data across scrolling and foreground transitions. Keep failures on
+            // the shorter retry backoff so a temporary relay outage cannot hide badges for minutes.
             val ttl = if (fail > 0) (5_000L * (1L shl fail.coerceAtMost(6))) else
-                if (states[pubkey]?.value?.badges?.isEmpty() != false) 60_000L else 300_000L
+                if (states[pubkey]?.value?.badges?.isEmpty() != false) 600_000L else 1_800_000L
             when {
                 // The running fetch already covers a plain request; a forced one runs after it.
                 pubkey in inFlight && !force -> false
@@ -142,7 +144,7 @@ internal class BadgeRepository(
         if (enqueue) wake.trySend(Unit)
     }
 
-    fun onForeground() { lock.withLock { consumers.keys.toList() }.forEach { request(it, force = true) } }
+    fun onForeground() { lock.withLock { consumers.keys.toList() }.forEach { request(it) } }
     fun resolveMore(pubkey: String) {
         lock.withLock { resolutionLimits[pubkey] = (resolutionLimits[pubkey] ?: 100) + 100 }
         request(pubkey, force = true)

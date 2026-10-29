@@ -12,6 +12,61 @@ import kotlin.test.*
 class BadgeFetchEfficiencyTest {
     private val relays = setOf("wss://one.example")
     private val data get() = listOf(badgeEvent(10008, tags = badgePair().tags), badgeAward(), badgeDefinition())
+
+    @Test fun displayCacheSurvivesRemountAndForegroundUntilExpiry() = runTest {
+        for ((events, ttl) in listOf(data to 1_800_000L, emptyList<NostrEvent>() to 600_000L)) {
+            var now = 0L
+            val requests = mutableListOf<SubscriptionSpec>()
+            val repo = BadgeRepository(backgroundScope, BadgeTransport(open = { spec ->
+                requests += spec
+                badgeResponse(spec, events)
+            }, validate = { true }, validationDispatcher = StandardTestDispatcher(testScheduler)),
+                { relays }, nowMillis = { now })
+            val release = repo.acquire(badgeOwner)
+            advanceTimeBy(101); runCurrent()
+            assertTrue(requests.isNotEmpty())
+            val initialRequests = requests.size
+            release()
+
+            now = ttl - 1
+            val remounted = repo.acquire(badgeOwner)
+            repo.onForeground()
+            // The periodic check also respects the same cache lifetime.
+            advanceTimeBy(60_101); runCurrent()
+            assertEquals(initialRequests, requests.size)
+            assertEquals(if (events.isEmpty()) 0 else 1, repo.observe(badgeOwner).value.badges.size)
+
+            now = ttl
+            repo.onForeground()
+            advanceTimeBy(101); runCurrent()
+            assertTrue(requests.size > initialRequests)
+            assertEquals(2, requests.count { spec -> spec.filters.any { it.kinds == listOf(10008) } })
+            remounted(); repo.close()
+        }
+    }
+
+    @Test fun failedFetchRetriesBeforeDisplayCacheExpiry() = runTest {
+        var now = 0L
+        var selections = 0
+        val repo = BadgeRepository(backgroundScope, BadgeTransport(open = { spec ->
+            if (spec.filters.any { it.kinds == listOf(10008) }) selections++
+            badgeResponse(spec, emptyList(), complete = false)
+        }, validate = { true }, validationDispatcher = StandardTestDispatcher(testScheduler)),
+            { relays }, nowMillis = { now })
+        val release = repo.acquire(badgeOwner)
+        advanceTimeBy(101); runCurrent()
+        assertEquals(1, selections)
+        now = 9_999
+        repo.onForeground()
+        advanceTimeBy(101); runCurrent()
+        assertEquals(1, selections)
+        now = 10_000
+        repo.onForeground()
+        advanceTimeBy(101); runCurrent()
+        assertEquals(2, selections)
+        release(); repo.close()
+    }
+
     private fun delayed(spec: SubscriptionSpec, events: List<NostrEvent>, wait: Long, complete: Boolean = true) = object : SubscriptionSession {
         override val id = spec.id
         override val signals = flow {
