@@ -422,6 +422,7 @@ internal fun NoteCardContent(
                         onHashtagClick = onHashtagClick,
                     )
                 }
+                HiddenTextContent(eventId = event.id, text = event.content)
                 if (parsedContent.imageUrls.isNotEmpty()) {
                     Spacer(modifier = Modifier.height(8.dp))
                     if (showImagePreviews || imagePreviewRevealed) {
