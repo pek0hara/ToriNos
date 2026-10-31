@@ -193,6 +193,8 @@ platform :android do
       package_name: package_name,
       json_key: json_key,
       aab: File.expand_path("../#{aab_path}", __dir__),
+      # The gradle step picks up leftover APKs from earlier builds; only the bundle should go up.
+      skip_upload_apk: true,
       track: options[:track] || "production",
       # Upload as a draft by default so the release is reviewed in Play Console before it goes out.
       release_status: options[:release_status] || "draft",
