@@ -162,3 +162,44 @@ platform :ios do
     upload_to_testflight(metadata_options)
   end
 end
+
+platform :android do
+  package_name = "com.nostr.torinos"
+  aab_path = "androidApp/build/outputs/bundle/release/androidApp-release.aab"
+
+  private_lane :play_json_key_path do
+    path = File.expand_path(
+      ENV["SUPPLY_JSON_KEY"].to_s.empty? ? "~/.config/torinos/nostr-torinos-f9eafe2256a8.json" : ENV["SUPPLY_JSON_KEY"]
+    )
+    UI.user_error!("Google Play のサービスアカウント鍵が見つかりません: #{path}（SUPPLY_JSON_KEY で場所を指定できます）") unless File.exist?(path)
+    path
+  end
+
+  desc "Check that the Google Play service account key can reach the Play Console"
+  lane :validate_play_key do
+    validate_play_store_json_key(json_key: play_json_key_path)
+  end
+
+  desc "Build the signed Android bundle and upload it to Google Play"
+  desc "Release notes are read from fastlane/metadata/android/<locale>/changelogs/<versionCode>.txt"
+  lane :release do |options|
+    ensure_git_status_clean unless options[:allow_dirty]
+
+    json_key = play_json_key_path
+
+    gradle(task: ":androidApp:bundleRelease") unless options[:skip_build]
+
+    upload_to_play_store(
+      package_name: package_name,
+      json_key: json_key,
+      aab: File.expand_path("../#{aab_path}", __dir__),
+      track: options[:track] || "production",
+      # Upload as a draft by default so the release is reviewed in Play Console before it goes out.
+      release_status: options[:release_status] || "draft",
+      validate_only: options[:validate_only] == true,
+      skip_upload_metadata: true,
+      skip_upload_images: true,
+      skip_upload_screenshots: true
+    )
+  end
+end
