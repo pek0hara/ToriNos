@@ -35,7 +35,7 @@ jobs:
       - name: Assemble site
         run: |
           mkdir -p _site/app
-          cp index.html privacy-policy.html styles.css .nojekyll _site/
+          cp index.html privacy-policy.html child-safety.html styles.css .nojekyll _site/
           cp -R composeApp/build/dist/wasmJs/productionExecutable/. _site/app/
 
       - uses: actions/configure-pages@v5
