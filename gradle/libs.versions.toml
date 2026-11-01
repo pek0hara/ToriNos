@@ -14,7 +14,7 @@ secp256k1-kmp = "0.23.0"
 datastore = "1.2.1"
 media3 = "1.11.1"
 android-minSdk = "24"
-android-targetSdk = "35"
+android-targetSdk = "36"
 android-compileSdk = "37"
 
 [libraries]
