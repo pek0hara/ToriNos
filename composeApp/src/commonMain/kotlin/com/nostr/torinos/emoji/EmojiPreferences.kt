@@ -36,12 +36,16 @@ sealed interface RecentReaction {
  *
  * [revision] は端末で同期対象（セット・お気に入り）を変更するたびに増え、[syncedRevision] はリレーへ
  * 送信済み、またはリレーの内容を取り込んだ時点の値。`revision > syncedRevision` なら未送信の変更がある。
+ *
+ * [defaultReaction] はハートボタンのタップで送るリアクション。`null` はいいね（`+`）。
+ * 端末内だけに保存し、同期しない。
  */
 data class EmojiPreferences(
     val sets: List<RegisteredEmojiSet> = emptyList(),
     val favorites: List<CustomEmoji> = emptyList(),
     val unresolvedSetAddresses: Set<EmojiSetAddress> = emptySet(),
     val recent: List<RecentReaction> = emptyList(),
+    val defaultReaction: RecentReaction? = null,
     val revision: Long = 0,
     val syncedRevision: Long = 0,
 ) {

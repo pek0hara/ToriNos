@@ -87,6 +87,7 @@ import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.compose.dropUnlessResumed
 import com.nostr.torinos.account.AccountSession
 import com.nostr.torinos.account.accountSessionViewModel
 import com.nostr.torinos.crypto.isWebPlatform
@@ -1266,6 +1267,8 @@ internal fun AppSessionCoordinator(
                     // フィードは下部バーの裏までリストを描き、余白はリストのcontentPaddingで取る。
                     .padding(bottom = if (currentRoute == "feed") 0.dp else padding.calculateBottomPadding()),
             ) {
+                // 各画面の戻るは dropUnlessResumed で包む。閉じるアニメーション中の画面にも
+                // タップが届くため、戻るの直後に同じ位置を押すと2回戻ってスタックが空になり、真っ白になる。
                 AppNavigationGraph(
                     navController = nav,
                     modifier = Modifier.weight(1f),
@@ -1433,7 +1436,7 @@ internal fun AppSessionCoordinator(
                             onOpenRelaySettings = ::requestRelaySettings,
                             onOpenSettings = { openSettings() },
                             // URL（#status-page）から直接開いたときは戻り先がないので、ホームへ移る。
-                            onBack = {
+                            onBack = dropUnlessResumed {
                                 if (nav.previousBackStackEntry != null) nav.popBackStack() else selectFooterRoute("feed")
                             },
                         )
@@ -1468,7 +1471,7 @@ internal fun AppSessionCoordinator(
                             pubkey = route.pubkey,
                             identifier = route.identifier,
                             ownPubkey = ownPubkey,
-                            onBack = { nav.popBackStack() },
+                            onBack = dropUnlessResumed { nav.popBackStack() },
                             onEditArticle = { pubkey, identifier ->
                                 nav.navigate(ArticleEditorRoute(pubkey, identifier))
                             },
@@ -1488,11 +1491,11 @@ internal fun AppSessionCoordinator(
                         )
                     }
                     composable("article-drafts") {
-                        ArticleDraftListScreen(onBack = { nav.popBackStack() }, onOpen = { nav.navigate(ArticleDraftRoute(it)) })
+                        ArticleDraftListScreen(onBack = dropUnlessResumed { nav.popBackStack() }, onOpen = { nav.navigate(ArticleDraftRoute(it)) })
                     }
                     composable<ArticleDraftRoute> { entry ->
                         val route = entry.toRoute<ArticleDraftRoute>()
-                        ArticleEditorScreen(draftId = route.draftId, onBack = { nav.popBackStack() },
+                        ArticleEditorScreen(draftId = route.draftId, onBack = dropUnlessResumed { nav.popBackStack() },
                             onAddPosts = ::leaveEditorToPickPosts,
                             onNoteClick = { nav.navigate(ThreadRoute(it)) }, onUserClick = ::openProfileDrawer,
                             onPublished = { pubkey, identifier -> nav.navigate(ArticleRoute(pubkey, identifier)) {
@@ -1503,7 +1506,7 @@ internal fun AppSessionCoordinator(
                         ArticleEditorScreen(
                             onAddPosts = ::leaveEditorToPickPosts,
                             onNoteClick = { nav.navigate(ThreadRoute(it)) }, onUserClick = ::openProfileDrawer,
-                            onBack = { nav.popBackStack() },
+                            onBack = dropUnlessResumed { nav.popBackStack() },
                             onPublished = { pubkey, identifier ->
                                 nav.navigate(ArticleRoute(pubkey, identifier)) {
                                     popUpTo("article-editor") { inclusive = true }
@@ -1520,7 +1523,7 @@ internal fun AppSessionCoordinator(
                             editPubkey = route.pubkey,
                             editIdentifier = route.identifier,
                             relayUrl = selectedArticleRelayUrl,
-                            onBack = { nav.popBackStack() },
+                            onBack = dropUnlessResumed { nav.popBackStack() },
                             onPublished = { pubkey, identifier ->
                                 nav.navigate(ArticleRoute(pubkey, identifier)) {
                                     popUpTo(ArticleEditorRoute(route.pubkey, route.identifier)) { inclusive = true }
@@ -1532,7 +1535,7 @@ internal fun AppSessionCoordinator(
                         val route = backStack.toRoute<UserArticlesRoute>()
                         UserArticleListScreen(
                             pubkey = route.pubkey,
-                            onBack = { nav.popBackStack() },
+                            onBack = dropUnlessResumed { nav.popBackStack() },
                             onArticleClick = { pubkey, identifier ->
                                 nav.navigate(ArticleRoute(pubkey, identifier))
                             },
@@ -1542,7 +1545,7 @@ internal fun AppSessionCoordinator(
                     }
                     composable("journal") {
                         JournalScreen(
-                            onBack = { nav.popBackStack() },
+                            onBack = dropUnlessResumed { nav.popBackStack() },
                             toggleCalendarRequest = composer.journalToggleCalendarRequest,
                             showCalendarToggleFab = composer.presentation == ComposerPresentation.Hidden,
                             accountKey = accountSession?.sessionId.orEmpty(),
@@ -1562,7 +1565,7 @@ internal fun AppSessionCoordinator(
                         val route = backStack.toRoute<ChannelRoute>()
                         ChannelScreen(
                             channelId = route.channelId,
-                            onBack = { nav.popBackStack() },
+                            onBack = dropUnlessResumed { nav.popBackStack() },
                             onUserClick = ::openProfileDrawer,
                             onReply = { event, preview, chId, parentRelayHint ->
                                 openReplyComposer(event, preview, noteContextForChannel(chId), parentRelayHint)
@@ -1585,7 +1588,7 @@ internal fun AppSessionCoordinator(
                             eventId = route.eventId,
                             initialTab = route.initialTab,
                             channelId = route.channelId.takeIf { it.isNotBlank() },
-                            onBack = { nav.popBackStack() },
+                            onBack = dropUnlessResumed { nav.popBackStack() },
                             onUserClick = ::openProfileDrawer,
                             onReply = { event, preview, chId ->
                                 openReplyComposer(event, preview, noteContextForChannel(chId))
@@ -1608,7 +1611,7 @@ internal fun AppSessionCoordinator(
                         val pubkey = ownPubkey ?: return@composable
                         MyProfileScreen(
                             ownPubkey = pubkey,
-                            onBack = { nav.popBackStack() },
+                            onBack = dropUnlessResumed { nav.popBackStack() },
                             onOpenFollowing = {
                                 nav.navigate(FollowingRoute(pubkey))
                             },
@@ -1639,7 +1642,7 @@ internal fun AppSessionCoordinator(
                     composable("settings") {
                         SettingsScreen(
                             ownPubkey = ownPubkey,
-                            onBack = { nav.popBackStack() },
+                            onBack = dropUnlessResumed { nav.popBackStack() },
                             onAccountChanged = {},
                             onAddAccountClick = {
                                 composer.pendingKeyAction = null
@@ -1653,23 +1656,23 @@ internal fun AppSessionCoordinator(
                     }
                     composable("mute-list") {
                         MuteListScreen(
-                            onBack = { nav.popBackStack() },
+                            onBack = dropUnlessResumed { nav.popBackStack() },
                             onUserClick = ::openProfileDrawer,
                         )
                     }
                     composable("ng-words") {
-                        NgWordScreen(onBack = { nav.popBackStack() })
+                        NgWordScreen(onBack = dropUnlessResumed { nav.popBackStack() })
                     }
                     composable("relay-settings") {
                         RelaySettingsScreen(
-                            onBack = { nav.popBackStack() },
+                            onBack = dropUnlessResumed { nav.popBackStack() },
                             onOpenProfile = ::openProfileDrawer,
                         )
                     }
                     composable<CustomEmojiRoute> { backStack ->
                         val route = backStack.toRoute<CustomEmojiRoute>()
                         CustomEmojiSettingsScreen(
-                            onBack = { nav.popBackStack() },
+                            onBack = dropUnlessResumed { nav.popBackStack() },
                             onOpenRelaySettings = ::requestRelaySettings,
                             onOpenProfile = ::openProfileDrawer,
                             initialQuery = route.query,
@@ -1681,7 +1684,7 @@ internal fun AppSessionCoordinator(
                         val route = backStack.toRoute<SearchRoute>()
                         SearchScreen(
                             initialQuery = route.query,
-                            onBack = { nav.popBackStack() },
+                            onBack = dropUnlessResumed { nav.popBackStack() },
                             onUserClick = ::openProfileDrawer,
                             onOpenThread = { eventId -> nav.navigate(ThreadRoute(eventId)) },
                             onOpenReplies = { eventId -> nav.navigate(ThreadRoute(eventId)) },
@@ -1694,7 +1697,7 @@ internal fun AppSessionCoordinator(
                         FollowListScreen(
                             mode = FollowListMode.FOLLOWING,
                             ownPubkey = route.pubkey,
-                            onBack = { nav.popBackStack() },
+                            onBack = dropUnlessResumed { nav.popBackStack() },
                             onUserClick = ::openProfileDrawer,
                         )
                     }
@@ -1703,7 +1706,7 @@ internal fun AppSessionCoordinator(
                         FollowListScreen(
                             mode = FollowListMode.FOLLOWERS,
                             ownPubkey = route.pubkey,
-                            onBack = { nav.popBackStack() },
+                            onBack = dropUnlessResumed { nav.popBackStack() },
                             onUserClick = ::openProfileDrawer,
                         )
                     }
@@ -1712,7 +1715,7 @@ internal fun AppSessionCoordinator(
                         val isOwnRouteProfile = route.pubkey == ownPubkey
                         UserProfileScreen(
                             pubkey = route.pubkey,
-                            onBack = { nav.popBackStack() },
+                            onBack = dropUnlessResumed { nav.popBackStack() },
                             isOwnProfile = isOwnRouteProfile,
                             ownPubkey = ownPubkey,
                             onOpenFollowing = {
@@ -1747,7 +1750,7 @@ internal fun AppSessionCoordinator(
                     composable<UserJournalRoute> { backStack ->
                         val route = backStack.toRoute<UserJournalRoute>()
                         JournalScreen(
-                            onBack = { nav.popBackStack() },
+                            onBack = dropUnlessResumed { nav.popBackStack() },
                             onOpenThread = { eventId -> nav.navigate(ThreadRoute(eventId)) },
                             onReply = { event, preview ->
                                 openReplyComposer(event, preview, NoteContext.Timeline)

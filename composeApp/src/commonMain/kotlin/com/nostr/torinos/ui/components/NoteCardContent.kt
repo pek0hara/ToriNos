@@ -154,13 +154,31 @@ internal fun NoteCardContent(
             .plus(unicodeReactions.asSequence().map { ReactionOption.Unicode(it.content) })
             .firstOrNull { ownEmojiReactionEventIds.containsKey(it.key) }
     }
-    val onHeartClick: (() -> Unit)? = when {
-        isLiked -> onLike
-        ownEmojiReaction != null && onEmojiUnreact != null -> {
-            { onEmojiUnreact(ownEmojiReaction) }
+    val defaultReactionState = rememberDefaultReaction()
+    val heartEnabled = when {
+        isLiked -> onLike != null
+        ownEmojiReaction != null -> onEmojiUnreact != null
+        hasOwnReaction -> false
+        else -> onLike != null
+    }
+    // デフォルトは押したときに読む。カードの描画は読み上げ用の説明だけが追う。
+    val onHeartClick: (() -> Unit)? = if (heartEnabled) {
+        {
+            val action = heartTapAction(
+                isLiked = isLiked,
+                hasOwnEmojiReaction = ownEmojiReactionEventIds.isNotEmpty(),
+                ownEmojiReaction = ownEmojiReaction,
+                defaultReaction = defaultReactionState.value.takeIf { onEmojiReact != null },
+            )
+            when (action) {
+                HeartTapAction.Like, HeartTapAction.Unlike -> onLike?.invoke()
+                is HeartTapAction.React -> onEmojiReact?.invoke(action.option)
+                is HeartTapAction.Unreact -> onEmojiUnreact?.invoke(action.option)
+                HeartTapAction.None -> Unit
+            }
         }
-        !hasOwnReaction -> onLike
-        else -> null
+    } else {
+        null
     }
     val hasMenu = true
     val parsedContent = precomputedContent ?: remember(event.content, event.tags, event.kind) {
@@ -565,7 +583,7 @@ internal fun NoteCardContent(
                                 isLiked -> "いいねを解除"
                                 ownEmojiReaction != null -> "${ownEmojiReaction.eventContent}のリアクションを解除"
                                 hasOwnReaction -> "リアクションを解除"
-                                else -> "いいね"
+                                else -> defaultReactionState.value.takeIf { onEmojiReact != null }.heartContentDescription()
                             },
                             count = reactionCount,
                             countText = if (reactionCount > 0) {
@@ -653,6 +671,7 @@ internal fun NoteCardContent(
         val accountSession = LocalAccountSession.current
         StandardEmojiPickerSheet(
             onDismiss = { showStandardEmojiPicker = false },
+            defaultReactionMode = DefaultReactionPickerMode.Offer,
             onSelect = { option ->
                 showStandardEmojiPicker = false
                 accountSession.recordReactionUse(option)

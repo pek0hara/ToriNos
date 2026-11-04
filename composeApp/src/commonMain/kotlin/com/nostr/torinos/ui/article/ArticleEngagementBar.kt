@@ -53,6 +53,10 @@ import com.nostr.torinos.model.ReactionOption
 import com.nostr.torinos.ui.components.NetworkImage
 import com.nostr.torinos.ui.components.QuickReactionMenu
 import com.nostr.torinos.ui.components.StandardEmojiPickerSheet
+import com.nostr.torinos.ui.components.DefaultReactionPickerMode
+import com.nostr.torinos.ui.components.HeartTapAction
+import com.nostr.torinos.ui.components.heartTapAction
+import com.nostr.torinos.ui.components.rememberDefaultReaction
 
 /**
  * 記事詳細の下部に常に出す「いいね」と「コメント」の2つのボタン。
@@ -123,6 +127,7 @@ internal fun ArticleEngagementBar(
         val accountSession = LocalAccountSession.current
         StandardEmojiPickerSheet(
             onDismiss = { showStandardEmojiPicker = false },
+            defaultReactionMode = DefaultReactionPickerMode.Offer,
             onSelect = { option ->
                 showStandardEmojiPicker = false
                 accountSession.recordReactionUse(option)
@@ -149,12 +154,27 @@ private fun ArticleLikeButton(
         )
     val isPending = reactions?.isReactionPending == true
     val canOperate = actions != null && reactions != null && !isPending
+    val defaultReactionState = rememberDefaultReaction()
     val onClick: (() -> Unit)? = when {
         !canOperate || actions == null || reactions == null -> null
-        ownEmoji != null -> { { actions.onUnreact(ownEmoji) } }
-        isLiked -> actions.onUnlike
-        reactions.hasOwnReaction -> null
-        else -> actions.onLike
+        reactions.hasOwnReaction && ownEmoji == null && !isLiked -> null
+        else -> {
+            {
+                // 記事は自分の絵文字リアクションの取り消しを、いいねの取り消しより優先する（従来どおり）。
+                val action = if (ownEmoji != null) {
+                    HeartTapAction.Unreact(ownEmoji)
+                } else {
+                    heartTapAction(isLiked, reactions.hasOwnReaction, null, defaultReactionState.value)
+                }
+                when (action) {
+                    HeartTapAction.Like -> actions.onLike()
+                    HeartTapAction.Unlike -> actions.onUnlike()
+                    is HeartTapAction.React -> actions.onReact(action.option)
+                    is HeartTapAction.Unreact -> actions.onUnreact(action.option)
+                    HeartTapAction.None -> Unit
+                }
+            }
+        }
     }
     val onLongClick: (() -> Unit)? = if (canOperate && reactions?.hasOwnReaction == false) onLongPress else null
     BarPillButton(

@@ -43,6 +43,12 @@ internal fun EmojiPreferences.recordUse(reaction: RecentReaction): EmojiPreferen
     )
 }
 
+/** ハートボタンのタップで送るリアクションを変える。`null` と正規化できない値はいいね。同期対象ではない。 */
+internal fun EmojiPreferences.setDefaultReaction(reaction: RecentReaction?): EmojiPreferences {
+    val normalized = reaction?.normalized()
+    return if (normalized == defaultReaction) this else copy(defaultReaction = normalized)
+}
+
 /**
  * リレーの kind 10030 から得た内容を取り込む。
  *

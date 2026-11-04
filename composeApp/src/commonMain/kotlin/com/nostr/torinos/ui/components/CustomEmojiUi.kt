@@ -1,7 +1,10 @@
 package com.nostr.torinos.ui.components
 
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.State
 import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.derivedStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.compositionLocalOf
 import com.nostr.torinos.account.AccountSession
@@ -18,6 +21,27 @@ import com.nostr.torinos.model.ReactionOption
 internal fun rememberEmojiPreferences(): EmojiPreferences {
     val repository = LocalAccountSession.current?.customEmojis
     return repository?.preferences?.collectAsState()?.value ?: remember { EmojiPreferences() }
+}
+
+/**
+ * 現在のアカウントのデフォルトのリアクション。`null` はいいね。
+ * 投稿ごとに読むため、絵文字設定のほかの変更（最近使った等）では読み手を再描画しない。
+ */
+@Composable
+internal fun rememberDefaultReaction(): State<ReactionOption?> {
+    val preferences = rememberEmojiPreferencesState()
+    return remember(preferences) { derivedStateOf { preferences.value.defaultReactionOption() } }
+}
+
+@Composable
+private fun rememberEmojiPreferencesState(): State<EmojiPreferences> {
+    val repository = LocalAccountSession.current?.customEmojis
+    return repository?.preferences?.collectAsState() ?: remember { mutableStateOf(EmojiPreferences()) }
+}
+
+/** デフォルトのリアクションを変える。`null` はいいね。 */
+internal fun AccountSession?.setDefaultReaction(option: ReactionOption?) {
+    this?.customEmojis?.setDefaultReaction(option?.toRecentReaction())
 }
 
 internal fun ReactionOption.toRecentReaction(): RecentReaction = when (this) {

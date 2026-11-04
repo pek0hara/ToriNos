@@ -58,13 +58,24 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.nostr.torinos.account.LocalAccountSession
 import com.nostr.torinos.model.ReactionOption
 import com.nostr.torinos.emoji.CustomEmoji
 import com.nostr.torinos.emoji.EmojiSetDiscovery
 import com.nostr.torinos.emoji.EmojiSetDiscoveryState
 import com.nostr.torinos.emoji.normalizeEmojiSearchQuery
+
+/** リアクション用に開いたピッカーで、デフォルトのリアクションを選べるようにするか。 */
+internal enum class DefaultReactionPickerMode {
+    /** タップで送る。上の「変更」から、デフォルトを選ぶ状態に切り替えられる。 */
+    Offer,
+
+    /** 設定画面から開く。最初からデフォルトを選ぶ状態で、選んだら閉じる。 */
+    SelectOnly,
+}
 
 internal data class EmojiPickerSection(
     val title: String,
@@ -128,8 +139,11 @@ internal fun StandardEmojiPickerSheet(
      * 渡せる場合だけ出す。画面を移ると下書きが消える入力欄があるため。
      */
     showEmojiSetsButton: Boolean = true,
+    /** リアクション用に開くときだけ渡す。投稿欄からは渡さない。 */
+    defaultReactionMode: DefaultReactionPickerMode? = null,
 ) {
     DismissKeyboardOnLeave()
+    val accountSession = LocalAccountSession.current
     val openCustomEmoji = LocalCustomEmojiNavigator.current
     val openEmojiSets = onOpenCustomEmojiSettings ?: {
         onDismiss()
@@ -149,6 +163,16 @@ internal fun StandardEmojiPickerSheet(
     DisposableEffect(selectedRelay, relaysLoaded) {
         val release = if (relaysLoaded) selectedRelay?.let(EmojiSetDiscovery::acquire) else null
         onDispose { release?.invoke() }
+    }
+    val currentDefault = remember(emojiPreferences) { emojiPreferences.defaultReactionOption() }
+    var selectingDefault by remember { mutableStateOf(defaultReactionMode == DefaultReactionPickerMode.SelectOnly) }
+    val onTileClick: (ReactionOption?) -> Unit = { option ->
+        if (selectingDefault) {
+            accountSession.setDefaultReaction(option)
+            if (defaultReactionMode == DefaultReactionPickerMode.SelectOnly) onDismiss() else selectingDefault = false
+        } else if (option != null) {
+            onSelect(option)
+        }
     }
     var query by remember { mutableStateOf("") }
     var filter by remember { mutableStateOf<EmojiPickerFilter>(EmojiPickerFilter.All) }
@@ -199,7 +223,21 @@ internal fun StandardEmojiPickerSheet(
                 .fillMaxHeight(0.78f)
                 .padding(horizontal = 16.dp),
         ) {
-            if (showEmojiSetsButton) {
+            if (defaultReactionMode != null && accountSession != null) {
+                DefaultReactionHeader(
+                    current = currentDefault,
+                    selecting = selectingDefault,
+                    onStartSelecting = { selectingDefault = true },
+                    onCancel = {
+                        if (defaultReactionMode == DefaultReactionPickerMode.SelectOnly) onDismiss() else selectingDefault = false
+                    },
+                    emojiSetsButton = if (showEmojiSetsButton) {
+                        { EmojiSetsButton(onClick = openEmojiSets) }
+                    } else {
+                        null
+                    },
+                )
+            } else if (showEmojiSetsButton) {
                 EmojiSetsButton(
                     onClick = openEmojiSets,
                     modifier = Modifier.align(Alignment.End),
@@ -239,6 +277,15 @@ internal fun StandardEmojiPickerSheet(
                 horizontalArrangement = Arrangement.SpaceEvenly,
                 verticalArrangement = Arrangement.spacedBy(4.dp),
             ) {
+                if (selectingDefault) {
+                    item(key = "default-like") {
+                        EmojiPickerGridTile(
+                            option = null,
+                            selected = currentDefault == null,
+                            onSelect = onTileClick,
+                        )
+                    }
+                }
                 visibleSections.forEach { section ->
                     item(
                         key = "title-${section.title}",
@@ -250,7 +297,11 @@ internal fun StandardEmojiPickerSheet(
                         items = section.options,
                         key = { "${section.title}-${it.key}" },
                     ) { option ->
-                        EmojiPickerGridTile(option = option, onSelect = onSelect)
+                        EmojiPickerGridTile(
+                            option = option,
+                            selected = selectingDefault && option.key == currentDefault?.key,
+                            onSelect = onTileClick,
+                        )
                     }
                 }
 
@@ -372,10 +423,87 @@ private fun EmojiPickerSectionTitle(title: String) {
     )
 }
 
+/**
+ * ピッカー上部の「デフォルト」の行。通常は今のデフォルトと「変更」、選ぶ状態では案内と「キャンセル」を出す。
+ */
+@Composable
+private fun DefaultReactionHeader(
+    current: ReactionOption?,
+    selecting: Boolean,
+    onStartSelecting: () -> Unit,
+    onCancel: () -> Unit,
+    emojiSetsButton: (@Composable () -> Unit)?,
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        if (selecting) {
+            Text(
+                text = "デフォルトにする絵文字を選ぶ",
+                style = MaterialTheme.typography.labelLarge,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f),
+            )
+            TextButton(onClick = onCancel) { Text("キャンセル") }
+        } else {
+            Text(
+                text = "デフォルト",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+            )
+            Box(
+                modifier = Modifier
+                    .size(28.dp)
+                    .semantics { contentDescription = current.defaultReactionLabel() },
+                contentAlignment = Alignment.Center,
+            ) {
+                ReactionOptionIcon(current, emojiSize = 20.sp, imageSize = 22.dp)
+            }
+            TextButton(onClick = onStartSelecting) { Text("変更") }
+            Spacer(modifier = Modifier.weight(1f))
+            emojiSetsButton?.invoke()
+        }
+    }
+}
+
+/** デフォルトのリアクションの名前。`null` はいいね。 */
+internal fun ReactionOption?.defaultReactionLabel(): String = when (this) {
+    null -> "いいね（＋）"
+    is ReactionOption.Unicode -> value
+    is ReactionOption.Custom -> ":${shortcode}:"
+}
+
+/** リアクションのアイコン。`null` はいいね（❤️）。 */
+@Composable
+internal fun ReactionOptionIcon(
+    option: ReactionOption?,
+    emojiSize: androidx.compose.ui.unit.TextUnit,
+    imageSize: androidx.compose.ui.unit.Dp,
+    maxDecodeSizePx: Int? = null,
+) {
+    when (option) {
+        null -> Text(text = "❤️", fontSize = emojiSize)
+        is ReactionOption.Unicode -> Text(text = option.value, fontSize = emojiSize)
+        is ReactionOption.Custom -> NetworkImage(
+            url = option.imageUrl,
+            contentDescription = null,
+            contentScale = ContentScale.Fit,
+            maxDecodeSizePx = maxDecodeSizePx,
+            modifier = Modifier.size(imageSize),
+        )
+    }
+}
+
+/** [option] が `null` のタイルは「いいね（＋）」。デフォルトを選ぶときだけ出す。 */
 @Composable
 private fun EmojiPickerGridTile(
-    option: ReactionOption,
-    onSelect: (ReactionOption) -> Unit,
+    option: ReactionOption?,
+    selected: Boolean,
+    onSelect: (ReactionOption?) -> Unit,
 ) {
     val density = LocalDensity.current
     val decodeSizePx = remember(density) { with(density) { 30.dp.roundToPx() } }
@@ -383,25 +511,14 @@ private fun EmojiPickerGridTile(
         modifier = Modifier
             .size(42.dp)
             .clip(RoundedCornerShape(10.dp))
+            .background(if (selected) MaterialTheme.colorScheme.primaryContainer else Color.Transparent)
             .clickable { onSelect(option) }
             .semantics {
-                contentDescription = when (option) {
-                    is ReactionOption.Unicode -> option.value
-                    is ReactionOption.Custom -> ":${option.shortcode}:"
-                }
+                contentDescription = option.defaultReactionLabel()
             },
         contentAlignment = Alignment.Center,
     ) {
-        when (option) {
-            is ReactionOption.Unicode -> Text(text = option.value, fontSize = 27.sp)
-            is ReactionOption.Custom -> NetworkImage(
-                url = option.imageUrl,
-                contentDescription = null,
-                contentScale = ContentScale.Fit,
-                maxDecodeSizePx = decodeSizePx,
-                modifier = Modifier.size(30.dp),
-            )
-        }
+        ReactionOptionIcon(option, emojiSize = 27.sp, imageSize = 30.dp, maxDecodeSizePx = decodeSizePx)
     }
 }
 

@@ -55,6 +55,7 @@ import com.nostr.torinos.ui.components.NetworkImage
 import com.nostr.torinos.ui.components.ProfileNameText
 import com.nostr.torinos.ui.components.ReactionSummaryRow
 import com.nostr.torinos.ui.components.StandardEmojiPickerSheet
+import com.nostr.torinos.ui.components.DefaultReactionPickerMode
 import com.nostr.torinos.model.extractImageUrls
 import com.nostr.torinos.ui.components.formatTimestamp
 import com.nostr.torinos.model.stripImageUrls
@@ -205,6 +206,7 @@ private fun ArticleReactions(
         val accountSession = LocalAccountSession.current
         StandardEmojiPickerSheet(
             onDismiss = { showStandardEmojiPicker = false },
+            defaultReactionMode = DefaultReactionPickerMode.Offer,
             onSelect = { option ->
                 showStandardEmojiPicker = false
                 accountSession.recordReactionUse(option)

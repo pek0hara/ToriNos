@@ -127,5 +127,31 @@ class EmojiPreferencesReducerTest {
         assertEquals(null, preferences.setAddressOf(dog))
     }
 
+    @Test
+    fun setDefaultReactionNormalizesAndDoesNotBumpRevision() {
+        val preferences = EmojiPreferences().registerSet(cats)
+
+        val custom = preferences.setDefaultReaction(RecentReaction.Custom(CustomEmoji(" :cat: ", " ${cat.imageUrl} ")))
+        assertEquals(RecentReaction.Custom(cat), custom.defaultReaction)
+        assertEquals(preferences.revision, custom.revision)
+
+        assertEquals(RecentReaction.Unicode("🎉"), preferences.setDefaultReaction(RecentReaction.Unicode(" 🎉 ")).defaultReaction)
+        assertEquals(null, custom.setDefaultReaction(RecentReaction.Unicode("  ")).defaultReaction)
+        assertEquals(null, custom.setDefaultReaction(RecentReaction.Custom(CustomEmoji("cat", ""))).defaultReaction)
+        assertEquals(null, custom.setDefaultReaction(null).defaultReaction)
+    }
+
+    @Test
+    fun defaultReactionSurvivesRemoteAndDoesNotAffectRecent() {
+        val local = EmojiPreferences()
+            .setDefaultReaction(RecentReaction.Custom(cat))
+            .let { it.markSynced(it.revision) }
+
+        val applied = local.applyRemote(listOf(kusaB), listOf(dogs), emptySet())
+
+        assertEquals(RecentReaction.Custom(cat), applied.defaultReaction)
+        assertEquals(emptyList(), applied.recent)
+    }
+
     private val dog = CustomEmoji("dog", "https://example.com/dog.png")
 }

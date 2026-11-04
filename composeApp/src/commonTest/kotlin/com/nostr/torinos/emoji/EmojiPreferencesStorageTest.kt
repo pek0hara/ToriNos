@@ -84,4 +84,24 @@ class EmojiPreferencesStorageTest {
     fun emptyStoreLoadsDefaults() = runTest {
         assertEquals(EmojiPreferences(), EmojiPreferencesStorage(FakeStore()).load(pubkey))
     }
+
+    @Test
+    fun roundTripsDefaultReaction() = runTest {
+        listOf(RecentReaction.Unicode("🎉"), RecentReaction.Custom(cat), null).forEach { reaction ->
+            val store = FakeStore()
+            val storage = EmojiPreferencesStorage(store)
+            val preferences = EmojiPreferences().setDefaultReaction(reaction)
+
+            storage.save(pubkey, preferences)
+
+            assertEquals(reaction, storage.load(pubkey).defaultReaction)
+        }
+    }
+
+    @Test
+    fun v2WithoutDefaultReactionLoadsLike() = runTest {
+        val store = FakeStore(mapOf("emoji_preferences_v2_$pubkey" to """{"version":2,"favorites":[]}"""))
+
+        assertNull(EmojiPreferencesStorage(store).load(pubkey).defaultReaction)
+    }
 }

@@ -186,6 +186,12 @@ fun SettingsScreen(
                 )
                 HorizontalDivider()
             }
+            if (hasAccountSession) {
+                item {
+                    DefaultReactionSettingsSection()
+                    HorizontalDivider()
+                }
+            }
             item {
                 SettingsLinkSection("絵文字", "カスタム絵文字", onCustomEmojiClick)
                 HorizontalDivider()

@@ -109,6 +109,7 @@ private data class StoredEmojiPreferences(
     val favorites: List<CustomEmoji> = emptyList(),
     val unresolvedSetAddresses: List<String> = emptyList(),
     val recent: List<StoredRecentReaction> = emptyList(),
+    val defaultReaction: StoredRecentReaction? = null,
     val revision: Long = 0,
     val syncedRevision: Long = 0,
 )
@@ -120,7 +121,7 @@ private data class StoredEmojiSet(
     val emojis: List<CustomEmoji>,
 )
 
-/** 旧形式と v2 で共通の最近使ったリアクション。 */
+/** 旧形式と v2 で共通の最近使ったリアクション。v2 のデフォルトのリアクションにも使う。 */
 @Serializable
 private data class StoredRecentReaction(
     val kind: String,
@@ -166,6 +167,7 @@ private fun EmojiPreferences.toStored() = StoredEmojiPreferences(
     favorites = favorites,
     unresolvedSetAddresses = unresolvedSetAddresses.map { it.value },
     recent = recent.map(StoredRecentReaction::from),
+    defaultReaction = defaultReaction?.let(StoredRecentReaction::from),
     revision = revision,
     syncedRevision = syncedRevision,
 )
@@ -179,6 +181,7 @@ private fun StoredEmojiPreferences.toPreferences(): EmojiPreferences {
         favorites = favorites,
         unresolvedSetAddresses = unresolvedSetAddresses.mapNotNull(EmojiSetAddress::parse).toSet(),
         recent = recent.mapNotNull { it.toRecent() },
+        defaultReaction = defaultReaction?.toRecent(),
         revision = revision,
         syncedRevision = syncedRevision,
     )

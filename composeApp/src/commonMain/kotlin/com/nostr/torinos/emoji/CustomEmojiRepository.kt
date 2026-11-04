@@ -91,6 +91,8 @@ class CustomEmojiRepository internal constructor(
 
     fun recordUse(reaction: RecentReaction) = local { it.recordUse(reaction) }
 
+    fun setDefaultReaction(reaction: RecentReaction?) = local { it.setDefaultReaction(reaction) }
+
     /** リレーの内容を取り込み、適用後の状態を返す。未送信の変更があれば端末側が残る。 */
     internal suspend fun applyRemote(
         favorites: List<CustomEmoji>,
