@@ -14,11 +14,17 @@ internal suspend fun fetchArticleEventPage(
     filter: NostrFilter,
     relayUrl: String? = null,
     open: suspend (SubscriptionSpec) -> SubscriptionSession = NostrRepository::openSubscription,
+): FiniteFetchResult = fetchArticleEventPage(filter, relayUrl?.let(RelayTarget::Single) ?: RelayTarget.AllEnabled, open)
+
+internal suspend fun fetchArticleEventPage(
+    filter: NostrFilter,
+    target: RelayTarget,
+    open: suspend (SubscriptionSpec) -> SubscriptionSession = NostrRepository::openSubscription,
 ): FiniteFetchResult = fetchFiniteEvents(
     spec = SubscriptionSpec(
         id = articleSubscriptionId("article"),
         filters = listOf(filter),
-        target = relayUrl?.let(RelayTarget::Single) ?: RelayTarget.AllEnabled,
+        target = target,
         behavior = SubscriptionBehavior.Fetch(8_000),
     ),
     open = open,

@@ -28,6 +28,7 @@ import com.nostr.torinos.model.ArticleItem
 import com.nostr.torinos.model.NostrAddressReference
 import com.nostr.torinos.network.ProfileFetchPolicy
 import com.nostr.torinos.network.ProfileRepository
+import com.nostr.torinos.network.RelayTarget
 import com.nostr.torinos.ui.components.LocalArticleNavigator
 import com.nostr.torinos.ui.components.ProfileNameText
 import com.nostr.torinos.ui.profile.AvatarCircle
@@ -50,7 +51,7 @@ internal sealed interface QuotedArticleState {
 /**
  * 引用された記事をアドレスごとに1回だけ取得して共有する。同じ記事が複数の投稿に出ても取り直さない。
  * 記事画面で読み込んだ記事（[ArticleMemoryCache]）があれば通信しない。
- * 取得は naddr のリレーを先に試し、見つからなければ有効な全リレーから探す。
+ * 取得の順序は [loadQuotedArticle]。
  */
 internal object QuotedArticleStore {
     // UI スレッドからだけ触る。取得結果は StateFlow の値として書き戻す。
@@ -78,14 +79,8 @@ internal object QuotedArticleStore {
 
     private fun fetch(reference: NostrAddressReference, flow: MutableStateFlow<QuotedArticleState>) {
         scope.launch {
-            val article = try {
-                reference.relayUrls.firstOrNull()?.let { relay ->
-                    fetchLatestArticleByAddress(reference.pubkey, reference.identifier, relay)
-                } ?: fetchLatestArticleByAddress(reference.pubkey, reference.identifier, null)
-            } catch (e: CancellationException) {
-                throw e
-            } catch (_: Throwable) {
-                null
+            val article = loadQuotedArticle(reference) { target ->
+                fetchLatestArticleByAddress(reference.pubkey, reference.identifier, target)
             }
             flow.value = article?.let(QuotedArticleState::Loaded) ?: QuotedArticleState.NotFound
         }
@@ -93,6 +88,29 @@ internal object QuotedArticleStore {
 
     private const val MaximumEntries = 200
 }
+
+/**
+ * 引用された記事を、有効なリレー、naddr に付いたリレーの順に探す。
+ * naddr のリレーは設定に無いことが多い（Ditto の relay.ditto.pub など）ので、設定外でも問い合わせる。
+ * 片方が応答しなくても、もう片方は試す。
+ */
+internal suspend fun loadQuotedArticle(
+    reference: NostrAddressReference,
+    fetch: suspend (RelayTarget) -> ArticleItem?,
+): ArticleItem? {
+    suspend fun attempt(target: RelayTarget): ArticleItem? = try {
+        fetch(target)
+    } catch (e: CancellationException) {
+        throw e
+    } catch (_: Throwable) {
+        null
+    }
+    attempt(RelayTarget.AllEnabled)?.let { return it }
+    val hints = reference.relayUrls.filter { it.startsWith("wss://") }.take(MaximumHintRelays).toSet()
+    return if (hints.isEmpty()) null else attempt(RelayTarget.Explicit(hints))
+}
+
+private const val MaximumHintRelays = 3
 
 /**
  * 投稿の中の記事引用。投稿の引用と同じ枠で、記事のタイトル・概要・作成者を出す。

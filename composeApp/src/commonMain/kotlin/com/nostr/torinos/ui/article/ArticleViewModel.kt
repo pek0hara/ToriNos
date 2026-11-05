@@ -865,6 +865,13 @@ internal suspend fun fetchLatestArticleByAddress(
     pubkey: String,
     identifier: String,
     relayUrl: String?,
+): ArticleItem? = fetchLatestArticleByAddress(pubkey, identifier, relayUrl?.let(RelayTarget::Single) ?: RelayTarget.AllEnabled)
+
+/** [target] には設定外のリレー（naddr のリレーヒントなど）も [RelayTarget.Explicit] で渡せる。 */
+internal suspend fun fetchLatestArticleByAddress(
+    pubkey: String,
+    identifier: String,
+    target: RelayTarget,
 ): ArticleItem? {
     val dTagEvents = fetchArticleEvents(
         filter = NostrFilter(
@@ -873,7 +880,7 @@ internal suspend fun fetchLatestArticleByAddress(
             dTags = listOf(identifier),
             limit = 10,
         ),
-        relayUrl = relayUrl,
+        target = target,
     )
     val exact = dTagEvents.toArticleItems()
         .filter { it.meta.identifier == identifier }
@@ -886,7 +893,7 @@ internal suspend fun fetchLatestArticleByAddress(
             authors = listOf(pubkey),
             limit = ARTICLE_DETAIL_AUTHOR_FALLBACK_LIMIT,
         ),
-        relayUrl = relayUrl,
+        target = target,
     )
         .toArticleItems()
         .filter { it.meta.identifier == identifier }
@@ -901,9 +908,9 @@ private fun List<NostrEvent>.toArticleItems(): List<ArticleItem> =
 
 private suspend fun fetchArticleEvents(
     filter: NostrFilter,
-    relayUrl: String? = null,
+    target: RelayTarget,
 ): List<NostrEvent> {
-    val result = fetchArticleEventPage(filter, relayUrl)
+    val result = fetchArticleEventPage(filter, target)
     check(result.events.isNotEmpty() || result.allAnswered) { "記事を取得できませんでした。再試行してください" }
     return result.events
 }

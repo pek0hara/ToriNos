@@ -47,7 +47,7 @@ class JournalControllerTest {
     private val sep2 = LocalDate(2026, 9, 2)
 
     @Test
-    fun calendarIsHiddenByDefault() = runTest {
+    fun calendarIsShownByDefault() = runTest {
         val controller = JournalController(
             accountSession = session(),
             scope = backgroundScope,
@@ -58,7 +58,7 @@ class JournalControllerTest {
             profileSource = NoProfiles,
             memberStorage = FakeMemberStorage(),
         )
-        assertFalse(controller.state.value.showCalendar)
+        assertTrue(controller.state.value.showCalendar)
     }
 
     @Test

@@ -1547,7 +1547,6 @@ internal fun AppSessionCoordinator(
                         JournalScreen(
                             onBack = dropUnlessResumed { nav.popBackStack() },
                             toggleCalendarRequest = composer.journalToggleCalendarRequest,
-                            showCalendarToggleFab = composer.presentation == ComposerPresentation.Hidden,
                             accountKey = accountSession?.sessionId.orEmpty(),
                             onOpenThread = { eventId -> nav.navigate(ThreadRoute(eventId)) },
                             onReply = { event, preview ->

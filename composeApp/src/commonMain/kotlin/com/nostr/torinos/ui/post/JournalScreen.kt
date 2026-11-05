@@ -2,6 +2,11 @@ package com.nostr.torinos.ui.post
 
 import com.nostr.torinos.ui.components.*
 
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -21,7 +26,6 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.automirrored.filled.ViewList
 import androidx.compose.material.icons.filled.ArrowDownward
 import androidx.compose.material.icons.filled.ArrowUpward
 import androidx.compose.material.icons.filled.CalendarMonth
@@ -77,7 +81,6 @@ import com.nostr.torinos.model.quotedEventIds
 import com.nostr.torinos.model.replyTargetId
 import com.nostr.torinos.network.RelayStore
 import com.nostr.torinos.ui.article.LocalMatometrSelectionEnabled
-import com.nostr.torinos.ui.components.AppFloatingActionButton
 import com.nostr.torinos.ui.components.AppTopBar
 import com.nostr.torinos.ui.components.DeleteNoteDialog
 import com.nostr.torinos.ui.components.NoteSkeletonList
@@ -107,7 +110,6 @@ fun JournalScreen(
     ownProfile: NostrProfile? = null,
     onOpenRelaySettings: () -> Unit = {},
     targetPubkey: String? = null,
-    showCalendarToggleFab: Boolean = true,
     viewModel: JournalViewModel = accountSessionViewModel(
         key = targetPubkey?.let { "journal-$it" } ?: "journal-${accountKey ?: "anonymous"}",
     ) { accountSession ->
@@ -137,7 +139,8 @@ fun JournalScreen(
     LaunchedEffect(isListLoading) {
         if (!isListLoading) pullRefreshRequested = false
     }
-    var calendarCollapsed by rememberSaveable(accountKey, targetPubkey) { mutableStateOf(false) }
+    // 開いたときは選択週だけに畳んでおき、一覧を広く見せる。
+    var calendarCollapsed by rememberSaveable(accountKey, targetPubkey) { mutableStateOf(true) }
     // 今日へ合わせ済みの月。詳細から戻って画面を作り直したときに、読み返していた位置から飛ばさない。
     var todayScrolledMonth by rememberSaveable(accountKey, targetPubkey) { mutableStateOf<String?>(null) }
     // 日表示から月表示へ切り替えたか。切り替えたときは今日ではなく、日表示で見ていた行から見せる。
@@ -146,6 +149,8 @@ fun JournalScreen(
     val pendingTodayScroll = remember { booleanArrayOf(false) }
     // 日表示で先頭に見えていた行と、その行の中のずれ。
     var dayViewAnchor by remember(accountKey, targetPubkey) { mutableStateOf<JournalDayViewAnchor?>(null) }
+    // カレンダーを畳んでいる間はフィルターも一緒に畳み、一覧を広く見せる。広げると元の開閉に戻る。
+    val isFilterVisible = showFilterHeader && !(state.showCalendar && calendarCollapsed)
     val calendarCollapseConnection = remember(journalListState, accountKey, targetPubkey) {
         JournalCalendarCollapseConnection(
             listState = journalListState,
@@ -234,8 +239,10 @@ fun JournalScreen(
     }
 
     // 一覧が消えると引っ張りで広げられないため、空の日は月全体を見せる。
-    LaunchedEffect(visibleEntries.isEmpty()) {
-        if (visibleEntries.isEmpty()) calendarCollapsed = false
+    // 取得中も一覧は空なので、取得を終えて空だと分かってから広げる（開いた直後に畳んだ状態を崩さない）。
+    val isConfirmedEmpty = visibleEntries.isEmpty() && !isListLoading
+    LaunchedEffect(isConfirmedEmpty) {
+        if (isConfirmedEmpty) calendarCollapsed = false
     }
 
     LaunchedEffect(state.engagementError) {
@@ -264,16 +271,6 @@ fun JournalScreen(
     Scaffold(
         contentWindowInsets = WindowInsets(0),
         snackbarHost = { SnackbarHost(snackbarHostState) },
-        floatingActionButton = {
-            if (showCalendarToggleFab) {
-                // アイコンは切り替え先を表す。
-                AppFloatingActionButton(
-                    onClick = viewModel::toggleCalendar,
-                    icon = if (state.showCalendar) Icons.AutoMirrored.Filled.ViewList else Icons.Default.CalendarMonth,
-                    contentDescription = if (state.showCalendar) "月の一覧に切り替える" else "日ごとの表示に切り替える",
-                )
-            }
-        },
         topBar = {
             Column {
             AppTopBar(
@@ -309,11 +306,29 @@ fun JournalScreen(
                 },
                 actions = {
                     com.nostr.torinos.ui.article.MatometrStartButton()
-                    IconButton(onClick = { showFilterHeader = !showFilterHeader }) {
+                    // フィルターと同じく、カレンダーを出している間は色を付ける。
+                    IconButton(onClick = viewModel::toggleCalendar) {
+                        Icon(
+                            Icons.Default.CalendarMonth,
+                            contentDescription = if (state.showCalendar) "月の一覧に切り替える" else "カレンダーを表示する",
+                            tint = if (state.showCalendar) MaterialTheme.colorScheme.primary else headerContentColor,
+                        )
+                    }
+                    IconButton(
+                        onClick = {
+                            if (isFilterVisible) {
+                                showFilterHeader = false
+                            } else {
+                                // 畳まれて見えないときは、カレンダーごと広げて出す。
+                                showFilterHeader = true
+                                calendarCollapsed = false
+                            }
+                        },
+                    ) {
                         Icon(
                             Icons.Default.FilterList,
-                            contentDescription = if (showFilterHeader) "フィルターを閉じる" else "フィルターを開く",
-                            tint = if (showFilterHeader) MaterialTheme.colorScheme.primary else headerContentColor,
+                            contentDescription = if (isFilterVisible) "フィルターを閉じる" else "フィルターを開く",
+                            tint = if (isFilterVisible) MaterialTheme.colorScheme.primary else headerContentColor,
                         )
                     }
                 },
@@ -346,32 +361,38 @@ fun JournalScreen(
                     onExpand = { calendarCollapsed = false },
                 )
             }
-            if (showFilterHeader) {
-                JournalFilterHeader(
-                    kinds = JournalActivityKind.entries.filter { it in availableKinds },
-                    selectedKinds = explicitlySelectedKinds,
-                    defaultKinds = defaultJournalKinds(),
-                    counts = state.kindCounts,
-                    onToggle = { kind ->
-                        val nextKinds = if (kind in explicitlySelectedKinds) {
-                            explicitlySelectedKinds - kind
-                        } else {
-                            explicitlySelectedKinds + kind
-                        }
-                        selectedKindNames = nextKinds.sortedBy { it.ordinal }.map { it.name }
-                    },
-                )
-                // 先頭（自分、または開いた人）は外せない。他人のジャーナルで足した人は保存しない。
-                JournalMemberBar(
-                    members = state.members,
-                    selectedMembers = state.selectedMembers,
-                    profiles = state.profiles,
-                    removablePubkey = { it != state.members.firstOrNull() },
-                    canAdd = state.canAddMember,
-                    onToggle = viewModel::toggleMemberSelection,
-                    onRemove = viewModel::removeMember,
-                    onAdd = { showMemberSheet = true },
-                )
+            AnimatedVisibility(
+                visible = isFilterVisible,
+                enter = expandVertically(expandFrom = Alignment.Top) + fadeIn(),
+                exit = shrinkVertically(shrinkTowards = Alignment.Top) + fadeOut(),
+            ) {
+                Column {
+                    JournalFilterHeader(
+                        kinds = JournalActivityKind.entries.filter { it in availableKinds },
+                        selectedKinds = explicitlySelectedKinds,
+                        defaultKinds = defaultJournalKinds(),
+                        counts = state.kindCounts,
+                        onToggle = { kind ->
+                            val nextKinds = if (kind in explicitlySelectedKinds) {
+                                explicitlySelectedKinds - kind
+                            } else {
+                                explicitlySelectedKinds + kind
+                            }
+                            selectedKindNames = nextKinds.sortedBy { it.ordinal }.map { it.name }
+                        },
+                    )
+                    // 先頭（自分、または開いた人）は外せない。他人のジャーナルで足した人は保存しない。
+                    JournalMemberBar(
+                        members = state.members,
+                        selectedMembers = state.selectedMembers,
+                        profiles = state.profiles,
+                        removablePubkey = { it != state.members.firstOrNull() },
+                        canAdd = state.canAddMember,
+                        onToggle = viewModel::toggleMemberSelection,
+                        onRemove = viewModel::removeMember,
+                        onAdd = { showMemberSheet = true },
+                    )
+                }
             }
             HorizontalDivider()
             val scope = rememberCoroutineScope()

@@ -88,7 +88,7 @@ data class JournalState(
             isSelf: Boolean,
             members: List<String>,
             clock: JournalClock = JournalClock(),
-            showCalendar: Boolean = false,
+            showCalendar: Boolean = true,
         ): JournalState {
             val today = clock.today()
             return JournalState(

@@ -102,7 +102,7 @@ internal class JournalController(
     private val profileSource: JournalProfileSource = JournalProfileSource.Repository,
     private val memberStorage: JournalMemberStorage = JournalMemberStorage.Local,
     private val interactionSource: JournalInteractionSource = NostrJournalInteractionSource(),
-    initialShowCalendar: Boolean = false,
+    initialShowCalendar: Boolean = true,
 ) {
     private val isSelf = targetPubkey == null
     private val ownPubkey = accountSession?.signer?.pubkey
