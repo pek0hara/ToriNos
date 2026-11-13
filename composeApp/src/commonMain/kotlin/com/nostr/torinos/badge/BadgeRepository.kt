@@ -28,6 +28,8 @@ internal class BadgeRepository(
     internal val transport: BadgeTransport = BadgeTransport(),
     private val readRelays: () -> Set<String>,
     private val nowMillis: () -> Long = { Clock.System.now().toEpochMilliseconds() },
+    /** アカウントをまたいで共有するイベント本体(§14)。受信したイベントを渡し、初めて扱う著者を読み込む。 */
+    private val eventStore: BadgeEventStore? = null,
 ) {
     // `lock` is not reentrant on iOS: never call a function that takes it while holding it.
     private val lock = SynchronousLock()
@@ -54,6 +56,9 @@ internal class BadgeRepository(
     private val incomplete = mutableSetOf<String>()
     private val resolutionLimits = mutableMapOf<String, Int>()
     private val relayMetadataFetchedAt = mutableMapOf<String, Long>()
+    // Authors already loaded from eventStore, and authors waiting for it. Loaded events are not treated as fetched.
+    private val seeded = mutableSetOf<String>()
+    private val seedRequests = mutableSetOf<String>()
     private val wake = Channel<Unit>(Channel.CONFLATED)
     private val worker = scope.launch {
         for (signal in wake) {
@@ -91,7 +96,43 @@ internal class BadgeRepository(
         }
     }
 
-    fun observe(pubkey: String): StateFlow<BadgeProfileState> = recomputeLock.withLock {
+    // Authors requested before the store finished loading from disk are loaded once it is ready.
+    private val seedJob = eventStore?.let { store ->
+        scope.launch {
+            store.ready.first { it }
+            lock.withLock { seedRequests.toList() }.forEach(::loadSeed)
+        }
+    }
+
+    /**
+     * Loads the author's stored events off the caller's thread (observe runs during composition).
+     * The request is recorded before checking readiness, so seedJob picks up an author whose
+     * request races with the store becoming ready.
+     */
+    private fun seed(pubkey: String) {
+        val store = eventStore ?: return
+        store.touch(pubkey)
+        if (!lock.withLock { pubkey !in seeded && seedRequests.add(pubkey) }) return
+        if (store.ready.value) scope.launch { loadSeed(pubkey) }
+    }
+
+    private fun loadSeed(pubkey: String) {
+        val store = eventStore ?: return
+        if (!lock.withLock { seedRequests.remove(pubkey) && seeded.add(pubkey) }) return
+        val events = store.eventsFor(pubkey)
+        if (events.isNotEmpty()) ingestLocal(events)
+        com.nostr.torinos.util.persistentCacheLog {
+            "badge seed pubkey=${pubkey.take(8)} events=${events.size} " +
+                "badges=${lock.withLock { states[pubkey]?.value?.badges?.size ?: 0 }}"
+        }
+    }
+
+    fun observe(pubkey: String): StateFlow<BadgeProfileState> {
+        seed(pubkey)
+        return observeState(pubkey)
+    }
+
+    private fun observeState(pubkey: String): StateFlow<BadgeProfileState> = recomputeLock.withLock {
         val (flow, created) = lock.withLock {
             states[pubkey]?.let { it to false } ?: MutableStateFlow(BadgeProfileState()).let {
                 states[pubkey] = it
@@ -106,6 +147,7 @@ internal class BadgeRepository(
 
     fun acquire(pubkey: String): () -> Unit {
         if (!badgeHex(pubkey)) return {}
+        seed(pubkey)
         lock.withLock { consumers[pubkey] = (consumers[pubkey] ?: 0) + 1 }
         request(pubkey)
         var released = false
@@ -234,7 +276,13 @@ internal class BadgeRepository(
         badgeDisplay(definition, award, recipient)
     }
 
-    internal fun ingest(events: List<NostrEvent>) = recomputeLock.withLock {
+    /** [share]=false keeps the events in this account only, e.g. own events not yet accepted by a relay. */
+    internal fun ingest(events: List<NostrEvent>, share: Boolean = true) {
+        ingestLocal(events)
+        if (share) eventStore?.put(events)
+    }
+
+    private fun ingestLocal(events: List<NostrEvent>) = recomputeLock.withLock {
         val affected = lock.withLock {
             val affected = mutableSetOf<String>()
             fun mark(event: NostrEvent) {
@@ -350,7 +398,7 @@ internal class BadgeRepository(
         lock.withLock {
             val evictable = states.keys.filter { it !in consumers && it !in pending && it !in inFlight && it !in activeRefreshes }.toMutableList()
             while (states.size > 1_000 && evictable.isNotEmpty()) {
-                val key = evictable.removeAt(0); states.remove(key); fetchedAt.remove(key); failures.remove(key); resolutionLimits.remove(key); incomplete.remove(key)
+                val key = evictable.removeAt(0); states.remove(key); fetchedAt.remove(key); failures.remove(key); resolutionLimits.remove(key); incomplete.remove(key); seeded.remove(key)
                 setDependencies(key, emptySet())
             }
         }
@@ -514,6 +562,21 @@ internal class BadgeRepository(
         first.await() && more && discovery.complete
     }
 
+    /** Everyone [address] was awarded to, read from the issuer's relays; awards are not kept in the cache. */
+    internal suspend fun awardees(address: BadgeAddress, known: BadgeAwardee? = null, force: Boolean = false): BadgeAwardeesResult {
+        val base = readRelays()
+        val discovery = discoverRelays(setOf(address.pubkey), base)
+        val relays = relaysFor(setOf(address.pubkey), base = base)
+        val awards = queries.fetch(listOf(NostrFilter(kinds = listOf(8), authors = listOf(address.pubkey),
+            aTags = listOf(address.value), limit = BADGE_AWARDEES_LIMIT)), relays, 60_000L, force)
+        val ids = awards.events.map { it.id }.sorted()
+        val deletions = queries.fetch(ids.chunked(100).map { NostrFilter(kinds = listOf(5), authors = listOf(address.pubkey), eTags = it) },
+            relays, 30_000L, force)
+        val truncated = awards.events.size >= BADGE_AWARDEES_LIMIT
+        return BadgeAwardeesResult(badgeAwardees(address, awards.events + deletions.events, known),
+            complete = awards.complete && deletions.complete && discovery.complete && !truncated, truncated = truncated)
+    }
+
     private suspend fun fetchDeletions(relevant: List<NostrEvent>, relays: Set<String>, force: Boolean = false): Boolean {
         val deletionFilters = relevant.groupBy { it.pubkey }.flatMap { (author, events) ->
             buildList {
@@ -525,7 +588,7 @@ internal class BadgeRepository(
         return queries.fetch(deletionFilters, relays, 30_000L, force, onEvent = { ingest(listOf(it)) }).complete
     }
 
-    fun close() { worker.cancel(); refreshJob.cancel(); wake.close() }
+    fun close() { worker.cancel(); refreshJob.cancel(); seedJob?.cancel(); wake.close() }
 }
 
 /** Only the displayed list; equal lists are not re-emitted, so the first instance is kept. */

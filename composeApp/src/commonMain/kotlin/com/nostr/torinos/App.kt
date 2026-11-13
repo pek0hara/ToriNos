@@ -25,7 +25,9 @@ import androidx.compose.ui.unit.dp
 import com.nostr.torinos.account.AccountSessionHost
 import com.nostr.torinos.account.AccountSessionState
 import com.nostr.torinos.account.AccountSessions
+import com.nostr.torinos.badge.AppBadgeCachePersistence
 import com.nostr.torinos.ui.components.SignerStatusBanner
+import com.nostr.torinos.network.AppProfilePersistence
 import com.nostr.torinos.network.DisplayPreferencesStore
 import com.nostr.torinos.network.LocalSettingsStorage
 import com.nostr.torinos.ui.theme.NostrTheme
@@ -62,6 +64,8 @@ fun App() {
         }
 
         LaunchedEffect(Unit) {
+            AppProfilePersistence.start()
+            AppBadgeCachePersistence.start()
             AccountSessions.manager.initialize()
             try {
                 ageVerificationStatus = LocalSettingsStorage.getString(AgeVerificationKey)

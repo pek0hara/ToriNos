@@ -4,7 +4,6 @@ import com.nostr.torinos.account.AccountSession
 import com.nostr.torinos.model.NostrEvent
 import com.nostr.torinos.model.NostrFilter
 import com.nostr.torinos.network.NostrRepository
-import com.nostr.torinos.network.ProfileFetchPolicy
 import com.nostr.torinos.network.ProfileRepository
 import com.nostr.torinos.network.RelayListEventCache
 import com.nostr.torinos.network.RelayTarget
@@ -18,7 +17,11 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withContext
 import kotlin.time.Clock
 
-private const val PROFILE_MAX_AGE_MS = 10 * 60 * 1_000L
+/**
+ * Zap の受け取り先を決めるプロフィールの鮮度。⚡を押すたびに取り直し、古い Lightning アドレスへ送らないようにする。
+ * 詳細シートを開いてから送るまでの短い間は、二重に取りに行かない。
+ */
+private const val PROFILE_MAX_AGE_MS = 60 * 1_000L
 /**
  * レシート待ちの購読 ID。Zap リクエストごとに違う ID にする（同じ ID はリレーで前の購読を上書きする）。
  * 共有のカウンターだと、別々のスレッドで同時に始まった Zap で重なることがある。
@@ -71,10 +74,7 @@ internal fun createZapSender(session: AccountSession, scope: CoroutineScope): Za
     scope = scope,
     deps = ZapSenderDependencies(
         sign = { content, kind, tags -> session.signer.sign(content = content, kind = kind, tags = tags) },
-        profileOf = { pubkey ->
-            ProfileRepository.awaitProfiles(setOf(pubkey), ProfileFetchPolicy.CacheFirst(PROFILE_MAX_AGE_MS), timeoutMillis = 5_000L)[pubkey]
-                ?: ProfileRepository.getCached(pubkey)
-        },
+        profileOf = { pubkey -> ProfileRepository.awaitFresh(pubkey, PROFILE_MAX_AGE_MS) },
         endpointOf = { url -> LnurlHttp.endpoints.get(url) },
         httpGet = LnurlHttp::get,
         ownReadRelays = session.relayStore::enabledRelayUrlsSnapshot,

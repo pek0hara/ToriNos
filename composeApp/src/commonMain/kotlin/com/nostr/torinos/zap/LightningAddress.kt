@@ -9,6 +9,8 @@ import com.nostr.torinos.model.NostrProfile
 data class ZapRecipientAddress(
     /** LNURL-pay の応答を取りに行く URL（https）。 */
     val url: String,
+    /** 画面に出す受け取り先。送り先を決めたのと同じ項目から作る（`lud16` なら `name@domain`、`lud06` なら「LNURL（ドメイン）」）。 */
+    val label: String,
 ) {
     /** LUD-01 の bech32 `lnurl`（小文字）。 */
     val lnurl: String get() = encodeLnurl(url)
@@ -48,6 +50,10 @@ fun encodeLnurl(url: String): String = Bech32.encode("lnurl", url.encodeToByteAr
 
 /** プロフィールの `lud16` を優先し、なければ `lud06` から受け取り先を決める。 */
 fun NostrProfile.zapRecipientAddress(): ZapRecipientAddress? {
-    lud16?.takeIf { it.isNotBlank() }?.let(::lud16ToUrl)?.let { return ZapRecipientAddress(it) }
-    return lud06?.takeIf { it.isNotBlank() }?.let(::decodeLnurl)?.let(::ZapRecipientAddress)
+    lud16?.takeIf { it.isNotBlank() }?.let { address ->
+        lud16ToUrl(address)?.let { return ZapRecipientAddress(it, label = address.trim().lowercase()) }
+    }
+    return lud06?.takeIf { it.isNotBlank() }?.let(::decodeLnurl)?.let { url ->
+        ZapRecipientAddress(url, label = "LNURL（${url.removePrefix("https://").substringBefore('/').substringBefore('?')}）")
+    }
 }

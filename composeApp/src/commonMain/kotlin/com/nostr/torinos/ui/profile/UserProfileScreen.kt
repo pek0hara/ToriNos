@@ -2,14 +2,10 @@ package com.nostr.torinos.ui.profile
 
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.WindowInsets
-import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.foundation.lazy.LazyListState
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Today
 import androidx.compose.material3.HorizontalDivider
-import androidx.compose.material3.Icon
 import androidx.compose.material3.PrimaryTabRow
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
@@ -26,13 +22,11 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.LifecycleStartEffect
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.nostr.torinos.account.accountSessionViewModel
 import com.nostr.torinos.account.LocalAccountSession
 import com.nostr.torinos.ui.components.NoteTimeline
-import com.nostr.torinos.ui.components.AppFloatingActionButton
 import com.nostr.torinos.ui.feed.FeedViewModel
 import com.nostr.torinos.model.COMMENT_EVENT_KIND
 import com.nostr.torinos.model.NostrEvent
@@ -54,6 +48,7 @@ fun UserProfileScreen(
     onOpenLikes: (eventId: String) -> Unit = {},
     onOpenReposts: (eventId: String) -> Unit = {},
     onOpenJournal: (() -> Unit)? = null,
+    onOpenStatusList: (() -> Unit)? = null,
     longBackgroundResetRequest: Int = 0,
 ) {
     val ownerKey = ownPubkey ?: "anonymous"
@@ -143,18 +138,6 @@ fun UserProfileScreen(
         modifier = Modifier.fillMaxSize(),
         contentWindowInsets = WindowInsets(0),
         snackbarHost = { SnackbarHost(snackbarHostState) },
-        floatingActionButton = {
-            if (!isOwnProfile && onOpenJournal != null) {
-                AppFloatingActionButton(
-                    onClick = onOpenJournal,
-                    icon = Icons.Default.Today,
-                    contentDescription = "ジャーナル",
-                    modifier = Modifier
-                        .navigationBarsPadding()
-                        .padding(bottom = 8.dp),
-                )
-            }
-        },
     ) { padding ->
         if (showRelayList) {
             ProfileRelayListDialog(
@@ -176,6 +159,8 @@ fun UserProfileScreen(
                     isMuted = isMuted,
                     relayUrls = state.relayUrls,
                     generalStatus = state.generalStatus,
+                    onOpenStatusList = onOpenStatusList,
+                    onOpenJournal = onOpenJournal.takeIf { !isOwnProfile },
                     onFollow = viewModel::follow,
                     onUnfollow = viewModel::unfollow,
                     onMuteToggle = {

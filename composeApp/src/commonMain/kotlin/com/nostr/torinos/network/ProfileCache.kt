@@ -9,11 +9,15 @@ import com.nostr.torinos.util.withLock
 import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.flow.onStart
+import kotlinx.coroutines.flow.update
 import kotlin.time.Clock
 
 object ProfileCache {
@@ -22,6 +26,8 @@ object ProfileCache {
         val eventId: String?,
         val createdAt: Long,
         val fetchedAt: Long,
+        /** 永続化用の元kind:0イベント。楽観更新だけで元イベントを受信していない場合はnull。 */
+        val event: NostrEvent? = null,
     )
 
     private data class FetchedProfile(
@@ -31,11 +37,17 @@ object ProfileCache {
 
     private val lock = SynchronousLock()
     private val entriesByPubkey = LinkedHashMap<String, Entry>()
+    /** 保存済みアカウントなど、件数上限による追い出しの対象から外すpubkey。 */
+    private var pinnedPubkeys: Set<String> = emptySet()
     private val changedPubkeys = MutableSharedFlow<Set<String>>(
         replay = 1,
         extraBufferCapacity = ChangeBufferCapacity,
         onBufferOverflow = BufferOverflow.DROP_OLDEST,
     )
+    private val persistVersionState = MutableStateFlow(0L)
+
+    /** 永続化すべき変更のたびに増える。永続キャッシュからの読み込み([restore])では増えない。 */
+    internal val persistVersion: StateFlow<Long> = persistVersionState.asStateFlow()
 
     /**
      * 編集直後など、対応する kind:0 イベントをまだ受信していないプロフィールを即時反映する。
@@ -45,11 +57,15 @@ object ProfileCache {
         val now = Clock.System.now().toEpochMilliseconds()
         val changed = lock.withLock {
             val existing = entriesByPubkey[pubkey]
+            // プロフィール画面は表示中のプロフィールをそのまま渡す。編集ではないので何も変えない。
+            if (existing?.profile == profile) return
             entriesByPubkey[pubkey] = Entry(
                 profile = profile,
                 eventId = existing?.eventId,
                 createdAt = existing?.createdAt ?: Long.MIN_VALUE,
                 fetchedAt = now,
+                // 表示中のプロフィールと一致しない元イベントを、取得し直したものとして保存しない。
+                event = null,
             )
             linkedSetOf(pubkey).also { trimToMaximumLocked(setOf(pubkey), it) }
         }
@@ -89,6 +105,7 @@ object ProfileCache {
                             eventId = event.id,
                             createdAt = event.createdAt,
                             fetchedAt = fetchedAt,
+                            event = event,
                         )
                         changed.add(event.pubkey)
                     }
@@ -113,6 +130,42 @@ object ProfileCache {
         notifyChanges(changed)
         return result
     }
+
+    /**
+     * 永続キャッシュから読み込んだkind:0を、保存時の取得時刻のまま反映する。
+     * 起動後にリレーから受信済みの新しい版や、楽観更新中のプロフィールは置き換えない。
+     */
+    fun restore(stored: Collection<Pair<NostrEvent, Long>>) {
+        if (stored.isEmpty()) return
+        val restored = stored.mapNotNull { (event, fetchedAt) ->
+            if (event.kind != PROFILE_KIND) return@mapNotNull null
+            event.toProfile()?.let { profile -> Triple(event, profile, fetchedAt) }
+        }
+        val changed = linkedSetOf<String>()
+        lock.withLock {
+            restored.forEach { (event, profile, fetchedAt) ->
+                val existing = entriesByPubkey[event.pubkey]
+                if (existing != null && (existing.eventId == null || !event.isNewerThan(existing))) return@forEach
+                entriesByPubkey[event.pubkey] = Entry(
+                    profile = profile,
+                    eventId = event.id,
+                    createdAt = event.createdAt,
+                    fetchedAt = maxOf(fetchedAt, existing?.fetchedAt ?: Long.MIN_VALUE),
+                    event = event,
+                )
+                changed.add(event.pubkey)
+            }
+            trimToMaximumLocked(emptySet(), changed)
+        }
+        cacheTraceLog { "[ProfileCache] restore input=${stored.size} changed=${changed.size}" }
+        notifyChanges(changed, persist = false)
+    }
+
+    fun setPinnedPubkeys(pubkeys: Set<String>) {
+        lock.withLock { pinnedPubkeys = pubkeys.toSet() }
+    }
+
+    internal fun pinnedPubkeys(): Set<String> = lock.withLock { pinnedPubkeys }
 
     /** リレーで再検証できた既存プロフィールの取得時刻だけを更新する。 */
     fun markFetched(pubkeys: Collection<String>, fetchedAt: Long = Clock.System.now().toEpochMilliseconds()) {
@@ -175,6 +228,7 @@ object ProfileCache {
 
     internal fun clearForTest() {
         val removed = lock.withLock {
+            pinnedPubkeys = emptySet()
             entriesByPubkey.keys.toSet().also { entriesByPubkey.clear() }
         }
         notifyChanges(removed)
@@ -182,14 +236,9 @@ object ProfileCache {
 
     private fun trimToMaximumLocked(protectedKeys: Set<String>, changed: MutableSet<String>) {
         while (entriesByPubkey.size > MaximumEntries) {
-            val candidateKey = entriesByPubkey.entries
-                .asSequence()
-                .filter { it.key !in protectedKeys }
-                .minWithOrNull(compareBy({ it.value.fetchedAt }, { it.key }))
-                ?.key
-                ?: entriesByPubkey.entries
-                    .minWithOrNull(compareBy({ it.value.fetchedAt }, { it.key }))
-                    ?.key
+            val candidateKey = oldestKeyLocked { it !in protectedKeys && it !in pinnedPubkeys }
+                ?: oldestKeyLocked { it !in pinnedPubkeys }
+                ?: oldestKeyLocked { true }
                 ?: return
             entriesByPubkey.remove(candidateKey)
             changed.add(candidateKey)
@@ -197,8 +246,17 @@ object ProfileCache {
         }
     }
 
-    private fun notifyChanges(pubkeys: Set<String>) {
-        if (pubkeys.isNotEmpty()) changedPubkeys.tryEmit(pubkeys)
+    private inline fun oldestKeyLocked(crossinline evictable: (String) -> Boolean): String? =
+        entriesByPubkey.entries
+            .asSequence()
+            .filter { evictable(it.key) }
+            .minWithOrNull(compareBy({ it.value.fetchedAt }, { it.key }))
+            ?.key
+
+    private fun notifyChanges(pubkeys: Set<String>, persist: Boolean = true) {
+        if (pubkeys.isEmpty()) return
+        changedPubkeys.tryEmit(pubkeys)
+        if (persist) persistVersionState.update { it + 1 }
     }
 
     private fun NostrEvent.isNewerThan(other: Entry): Boolean =

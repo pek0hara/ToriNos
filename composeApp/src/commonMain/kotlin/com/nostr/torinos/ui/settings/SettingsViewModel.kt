@@ -65,7 +65,11 @@ class SettingsViewModel : SafeViewModel() {
             _state.update { it.copy(accounts = accounts) }
             if (accounts.isNotEmpty()) {
                 val pubkeys = accounts.mapTo(linkedSetOf()) { it.pubkeyHex }
-                _state.update { it.copy(profiles = ProfileRepository.getCached(pubkeys)) }
+                val cached = ProfileRepository.getCached(pubkeys)
+                com.nostr.torinos.util.persistentCacheLog {
+                    "accounts=${pubkeys.size} cachedProfiles=${cached.size} withPicture=${cached.values.count { it.picture != null }}"
+                }
+                _state.update { it.copy(profiles = cached) }
                 ProfileRepository.ensureProfiles(
                     pubkeys,
                     ProfileFetchPolicy.CacheFirst(15 * 60 * 1_000L),

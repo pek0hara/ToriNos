@@ -2283,6 +2283,25 @@ class FeedControllerAsyncRegressionTest {
     }
 
     @Test
+    fun historyPageSyncsEngagementRetentionInOneBatch() = runTest {
+        val gateway = FakeGateway()
+        val store = EngagementStore()
+        val controller = FeedController(computeDispatcher = Dispatchers.Unconfined, scope = backgroundScope,
+            subscriptions = gateway, engagementStore = store)
+        runCurrent()
+        val page = gateway.feedFetchSessions.single()
+        val before = store.revision()
+        repeat(300) { page.event(event("batch-$it", 1_000L - it)) }
+        page.complete()
+        runCurrent()
+        // 1件ごとに保持を同期すると300回進む。受信分と確定分のまとまりごとの同期で済む（engagement-fetch-redesign §13）。
+        val syncs = store.revision() - before
+        assertTrue(syncs <= 2, "retention synced $syncs times")
+        assertTrue(store.snapshot("batch-0") != null && store.snapshot("batch-299") != null)
+        controller.close()
+    }
+
+    @Test
     fun liveEventsAfterLocalLimitAreTrimmedInBatches() = runTest {
         val gateway = FakeGateway()
         val store = object : FeedHistoryStore(softLimit = 1_000, liveTrimSlack = 5) {

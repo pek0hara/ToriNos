@@ -102,6 +102,26 @@ class ZapSenderTest {
     }
 
     @Test
+    fun recipientForReportsTheAddressActuallyUsed() = runTest {
+        val fake = Fake(this)
+        // lud16 が壊れていて lud06 で送る場合、表示も lud06 の宛先にする（壊れた lud16 の文字を出さない）。
+        fake.profile = NostrProfile(lud16 = "broken", lud06 = encodeLnurl("https://example.com/.well-known/lnurlp/alice"))
+
+        val recipient = fake.sender.recipientFor(target)
+
+        assertEquals("LNURL（example.com）", recipient.address.label)
+        assertEquals(zapEndpoint, recipient.endpoint)
+    }
+
+    @Test
+    fun recipientForUsesTheProfileUsedForSending() = runTest {
+        val fake = Fake(this)
+        fake.profile = NostrProfile(lud16 = "Alice@Example.com")
+
+        assertEquals("alice@example.com", fake.sender.recipientFor(target).address.label)
+    }
+
+    @Test
     fun unconfirmedAfterTimeoutButForegroundExtends() = runTest {
         val fake = Fake(this)
         runCurrent()

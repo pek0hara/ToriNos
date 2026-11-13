@@ -10,7 +10,6 @@ import com.nostr.torinos.network.Nip05Repository
 import com.nostr.torinos.network.Nip05Status
 import com.nostr.torinos.network.ImageUploader
 import com.nostr.torinos.network.NostrRepository
-import com.nostr.torinos.network.ProfileFetchPolicy
 import com.nostr.torinos.network.ProfileRepository
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -23,7 +22,13 @@ import kotlinx.serialization.json.put
 
 /** 既存のプロフィールの読み込み。読み込む前に保存すると、空欄で今のプロフィールを上書きしてしまう。 */
 enum class ProfileLoadState {
+    /** キャッシュもなく、取得を待っている。入力も保存もできない。 */
     Loading,
+    /**
+     * キャッシュの内容で入力できる状態にして、裏で最新を取り直している。
+     * 取り直しが届いたら、触っていない欄だけ最新に差し替える。保存は取り直しの完了を待ってから送る。
+     */
+    Refreshing,
     Loaded,
     /** 見つからなかった（初めてのアカウント、またはリレーから取れなかった）。入力した内容だけで保存する。 */
     NotFound,
@@ -52,6 +57,61 @@ data class EditProfileState(
             loadState = if (loadExistingProfile) ProfileLoadState.Loading else ProfileLoadState.NotFound,
         )
     }
+}
+
+/** kind 0 のうち編集画面で持ち回す項目。取り直しの差し替えで、開いた時点の値と比べるのに使う。 */
+internal data class ProfileFields(
+    val name: String = "",
+    val displayName: String = "",
+    val about: String = "",
+    val picture: String = "",
+    val banner: String = "",
+    val nip05: String = "",
+    val lud16: String = "",
+    val lud06: String = "",
+) {
+    companion object {
+        fun from(profile: NostrProfile) = ProfileFields(
+            name = profile.name.orEmpty(),
+            displayName = profile.displayName.orEmpty(),
+            about = profile.about.orEmpty(),
+            picture = profile.picture.orEmpty(),
+            banner = profile.banner.orEmpty(),
+            nip05 = profile.nip05.orEmpty(),
+            lud16 = profile.lud16.orEmpty(),
+            lud06 = profile.lud06.orEmpty(),
+        )
+    }
+}
+
+internal fun EditProfileState.withFields(fields: ProfileFields): EditProfileState = copy(
+    name = fields.name,
+    displayName = fields.displayName,
+    about = fields.about,
+    picture = fields.picture,
+    banner = fields.banner,
+    nip05 = fields.nip05,
+    lud16 = fields.lud16,
+    lud06 = fields.lud06,
+)
+
+/**
+ * キャッシュ [base] で開いたあとに届いた最新 [fresh] を当てる。開いてから変えていない欄だけ最新にし、
+ * 変えた欄（入力・画像のアップロード）はそのまま残す。他のクライアントで変えた値を古い値で上書きしないため。
+ */
+internal fun EditProfileState.mergeFresh(base: ProfileFields, fresh: ProfileFields): EditProfileState {
+    fun pick(current: String, base: String, fresh: String) = if (current == base) fresh else current
+    return copy(
+        name = pick(name, base.name, fresh.name),
+        displayName = pick(displayName, base.displayName, fresh.displayName),
+        about = pick(about, base.about, fresh.about),
+        picture = pick(picture, base.picture, fresh.picture),
+        banner = pick(banner, base.banner, fresh.banner),
+        nip05 = pick(nip05, base.nip05, fresh.nip05),
+        lud16 = pick(lud16, base.lud16, fresh.lud16),
+        lud06 = fresh.lud06,
+        loadState = ProfileLoadState.Loaded,
+    )
 }
 
 /** 設定画面で1つずつ変える項目（画像の URL・NIP-05 は「プロフィールの詳細」、Lightning アドレスは「Zap」）。編集シートには出さない。 */
@@ -107,42 +167,32 @@ class EditProfileViewModel(
         if (loadExistingProfile) reload()
     }
 
-    /** 自分の今のプロフィールを読み込み直す。読み込み終わるまでは保存できない。 */
+    /**
+     * 自分の今のプロフィールを読み込み直す。キャッシュがあればすぐその内容で入力できるようにし、
+     * 最新の取り直しは裏で待つ（全リレーの応答を待つので、遅いリレーがあると数秒かかる）。
+     */
     fun reload() {
         // 読み込み中なら、その結果が最新なので重ねて取りに行かない（開いた直後の init と画面側の呼び出しが重なるため）。
         if (loadJob?.isActive == true) return
-        _state.value = _state.value.copy(loadState = ProfileLoadState.Loading, error = null)
+        val pubkey = accountSession?.pubkey
+        // 外から表示中のプロフィールを渡せると古い内容で上書きする入口になるため、キャッシュからだけ埋める。
+        val base = pubkey?.let(ProfileRepository::getCached)?.let(ProfileFields::from)
+        _state.value = if (base != null) {
+            _state.value.withFields(base).copy(loadState = ProfileLoadState.Refreshing, error = null)
+        } else {
+            _state.value.copy(loadState = ProfileLoadState.Loading, error = null)
+        }
         loadJob = launch {
-            val pubkey = accountSession?.pubkey
-            val profile = pubkey?.let {
-                ProfileRepository.awaitProfiles(
-                    setOf(it),
-                    ProfileFetchPolicy.CacheFirst(15 * 60 * 1_000L),
-                    timeoutMillis = 10_000L,
-                )[it]
-            }
-            if (profile == null) {
-                _state.value = _state.value.copy(loadState = ProfileLoadState.NotFound)
-            } else {
-                initFrom(profile)
+            // 保存すると kind 0 を丸ごと置き換えるので、キャッシュがあっても取り直しの完了を待つ
+            // （他のクライアントで変えた Lightning アドレスなどを古い値で上書きしないように）。
+            val profile = pubkey?.let { ProfileRepository.awaitFresh(it, maxAgeMillis = 0L, timeoutMillis = 10_000L) }
+            val current = _state.value
+            _state.value = when {
+                profile == null -> current.copy(loadState = ProfileLoadState.NotFound)
+                base == null -> current.withFields(ProfileFields.from(profile)).copy(loadState = ProfileLoadState.Loaded)
+                else -> current.mergeFresh(base = base, fresh = ProfileFields.from(profile))
             }
         }
-    }
-
-    // 外から表示中のプロフィールを渡せると、古い内容で上書きする入口になるため、読み込み結果からだけ使う。
-    private fun initFrom(profile: NostrProfile) {
-        _state.value = _state.value.copy(
-            name = profile.name ?: "",
-            displayName = profile.displayName ?: "",
-            about = profile.about ?: "",
-            picture = profile.picture ?: "",
-            banner = profile.banner ?: "",
-            nip05 = profile.nip05 ?: "",
-            lud16 = profile.lud16 ?: "",
-            lud06 = profile.lud06 ?: "",
-            error = null,
-            loadState = ProfileLoadState.Loaded,
-        )
     }
 
     fun onNameChange(v: String) { _state.value = _state.value.copy(name = v, error = null) }
@@ -195,6 +245,12 @@ class EditProfileViewModel(
         }
         _state.value = _state.value.copy(isSaving = true, error = null)
         launch {
+            // キャッシュで開いて取り直し中なら、最新を当て終わってから送る。
+            loadJob?.join()
+            profileSaveBlocker(_state.value)?.let { reason ->
+                _state.value = _state.value.copy(isSaving = false, error = reason)
+                return@launch
+            }
             val signer = accountSession?.signer ?: run {
                 _state.value = _state.value.copy(isSaving = false, error = "秘密鍵が設定されていません")
                 return@launch

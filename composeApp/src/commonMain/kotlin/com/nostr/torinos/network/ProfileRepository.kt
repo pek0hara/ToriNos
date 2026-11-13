@@ -16,10 +16,12 @@ import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import com.nostr.torinos.util.withLock
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.random.Random
 import kotlin.time.Clock
@@ -55,12 +57,14 @@ object ProfileRepository {
         relayHint: String? = null,
     ) {
         val now = Clock.System.now().toEpochMilliseconds()
+        val entries = ProfileCache.snapshotEntries()
         val requested = selectPubkeysToFetch(
             pubkeys = pubkeys,
-            entries = ProfileCache.snapshotEntries(),
+            entries = entries,
             policy = policy,
             now = now,
         )
+        recordCacheUse(pubkeys, entries)
         if (requested.isNotEmpty()) {
             ProfileFetchCoordinator.request(
                 pubkeys = requested,
@@ -68,6 +72,23 @@ object ProfileRepository {
                 force = policy is ProfileFetchPolicy.ForceRefresh,
             )
         }
+    }
+
+    // 実機確認用: 表示のために求められたプロフィールが、キャッシュにあったか(古くても表示はできる)。
+    private val cacheUseLock = com.nostr.torinos.util.SynchronousLock()
+    private var cacheUseRequested = 0
+    private var cacheUseHit = 0
+
+    private fun recordCacheUse(pubkeys: Set<String>, entries: Map<String, ProfileCache.Entry>) {
+        val hits = pubkeys.count { it in entries }
+        val (requested, hit) = cacheUseLock.withLock {
+            val before = cacheUseRequested / 100
+            cacheUseRequested += pubkeys.size
+            cacheUseHit += hits
+            if (cacheUseRequested / 100 == before && cacheUseRequested > pubkeys.size) return
+            cacheUseRequested to cacheUseHit
+        }
+        com.nostr.torinos.util.persistentCacheLog { "profile use requested=$requested cached=$hit" }
     }
 
     suspend fun refresh(pubkey: String, relayHint: String? = null) {
@@ -86,6 +107,22 @@ object ProfileRepository {
             observe(pubkeys).first { profiles -> profiles.keys.containsAll(pubkeys) }
         }
         return getCached(pubkeys)
+    }
+
+    /**
+     * [pubkey] のプロフィールを、取得日時が [maxAgeMillis] より古ければ取り直し、その取得が終わるまで待って返す。
+     * [awaitProfiles] はキャッシュにあれば取り直しを待たずに返すため、古い値では困るとき（Zap の受け取り先など）に使う。
+     * 取得が [timeoutMillis] で終わらなければ、その時点のキャッシュを返す。
+     */
+    suspend fun awaitFresh(
+        pubkey: String,
+        maxAgeMillis: Long,
+        relayHint: String? = null,
+        timeoutMillis: Long = AWAIT_TIMEOUT_MS,
+    ): NostrProfile? {
+        ensureProfiles(setOf(pubkey), ProfileFetchPolicy.CacheFirst(maxAgeMillis), relayHint)
+        withTimeoutOrNull(timeoutMillis) { ProfileFetchCoordinator.awaitSettled(pubkey) }
+        return getCached(pubkey)
     }
 
     /** NIP-50対応リレーでユーザーを検索し、受信したkind:0を通常キャッシュにも保存する。 */
@@ -169,6 +206,17 @@ private object ProfileFetchCoordinator {
     private val blockedUntil = mutableMapOf<String, Long>()
     private var flushJob: Job? = null
     private var subscriptionSerial = 0L
+    /** 取得待ち・取得中の pubkey（[pending] と [inFlight]）。[mutex] の中で書き換えたら [publishBusyLocked] で更新する。 */
+    private val busy = MutableStateFlow<Set<String>>(emptySet())
+
+    private fun publishBusyLocked() {
+        busy.value = pending.keys + inFlight
+    }
+
+    /** [pubkey] の取得待ち・取得中（全リレーへの広げ直しも含む）が終わるまで待つ。何も頼んでいなければすぐ戻る。 */
+    suspend fun awaitSettled(pubkey: String) {
+        busy.first { pubkey !in it }
+    }
 
     suspend fun request(pubkeys: Set<String>, relayHint: String?, force: Boolean) {
         if (pubkeys.isEmpty()) return
@@ -183,6 +231,7 @@ private object ProfileFetchCoordinator {
                     pending[pubkey] = relayHint
                 }
             }
+            publishBusyLocked()
             scheduleFlushLocked()
         }
     }
@@ -198,7 +247,10 @@ private object ProfileFetchCoordinator {
     private suspend fun flush() {
         val batch = mutex.withLock {
             flushJob = null
-            takeBatchLocked().also { scheduleFlushLocked() }
+            takeBatchLocked().also {
+                publishBusyLocked()
+                scheduleFlushLocked()
+            }
         } ?: return
         fetch(batch)
     }
@@ -330,6 +382,7 @@ private object ProfileFetchCoordinator {
                     }
                 }
             }
+            publishBusyLocked()
             scheduleFlushLocked()
         }
     }

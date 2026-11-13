@@ -68,6 +68,50 @@ class NostrProfileTest {
         assertNull(makeEvent("").toProfile())
     }
 
+    @Test
+    fun toProfile_wrongTypedLud16_onlyThatFieldIsDropped() {
+        // NIP-01 の置き換えでは新しい版が有効。型の違う項目のために版ごと捨てると、前の版（古い受け取り先）が残る。
+        listOf(
+            "[\"a@a.example\",\"b@b.example\"]",
+            "123",
+            "false",
+            "{\"a\":\"b\"}",
+        ).forEach { value ->
+            val profile = makeEvent("""{"name":"alice","about":"bio","lud16":$value}""").toProfile()
+            assertEquals("alice", profile?.name, value)
+            assertEquals("bio", profile?.about, value)
+            assertNull(profile?.lud16, value)
+        }
+    }
+
+    @Test
+    fun toProfile_wrongTypedName_keepsOtherFields() {
+        val profile = makeEvent("""{"name":123,"display_name":["x"],"about":"bio","lud16":"a@example.com"}""").toProfile()
+        assertNull(profile?.name)
+        assertNull(profile?.displayName)
+        assertEquals("bio", profile?.about)
+        assertEquals("a@example.com", profile?.lud16)
+    }
+
+    @Test
+    fun toProfile_nullFieldIsAbsent() {
+        val profile = makeEvent("""{"name":"alice","lud16":null}""").toProfile()
+        assertEquals("alice", profile?.name)
+        assertNull(profile?.lud16)
+    }
+
+    @Test
+    fun toProfile_nonObjectJson_returnsNull() {
+        listOf("[]", "\"alice\"", "123", "null").forEach { assertNull(makeEvent(it).toProfile(), it) }
+    }
+
+    @Test
+    fun toProfile_customEmojisComeOnlyFromTags() {
+        val event = makeEvent("""{"name":"alice","customEmojis":{"x":"https://evil.example/x.png"}}""")
+            .copy(tags = listOf(listOf("emoji", "wave", "https://example.com/wave.png")))
+        assertEquals(mapOf("wave" to "https://example.com/wave.png"), event.toProfile()?.customEmojis)
+    }
+
     // ---- bestName ----
 
     @Test

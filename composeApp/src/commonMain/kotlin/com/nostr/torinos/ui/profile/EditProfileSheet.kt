@@ -160,7 +160,8 @@ private fun EditProfileSheetContent(
     val keyboardController = LocalSoftwareKeyboardController.current
     val displayNameFocus = remember { FocusRequester() }
     val aboutFocus = remember { FocusRequester() }
-    // 読み込みが終わる前に打った内容は、読み込んだプロフィールで上書きされるため、終わるまで入力させない。
+    // キャッシュもなく読み込み中のときは、打った内容が読み込んだプロフィールで上書きされるため入力させない。
+    // キャッシュで開いたとき（取り直し中）は入力でき、取り直しは触っていない欄だけに当たる。
     val editable = state.loadState != ProfileLoadState.Loading && !state.isSaving
     val canPickImage = editable && !state.isUploadingImage
 
@@ -228,7 +229,7 @@ private fun EditProfileSheetContent(
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.error,
                 )
-                ProfileLoadState.Loaded -> Unit
+                ProfileLoadState.Refreshing, ProfileLoadState.Loaded -> Unit
             }
 
             ProfileImagesPreview(

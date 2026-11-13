@@ -85,6 +85,7 @@ internal class RelayFeedHistoryCoordinator(
             relays[url]?.openJob?.cancel()
             relays.remove(url)?.let { relay ->
                 relay.retryJob?.cancel()
+                relay.graceJob?.cancel()
                 relay.session?.let { session -> scope.launch { session.close() } }
             }
         }
@@ -146,7 +147,18 @@ internal class RelayFeedHistoryCoordinator(
         generation++
         foregroundLoading = true
         publishState()
-        candidates.forEach { requestRelay(it, "loadMore") }
+        // 前のページで猶予を過ぎたリレーは、最初から境界の決定に入れず待たない。
+        // 全リレーが遅れたことがあるなら外さない。外すと深く遡ったリレーだけで表示が進むため。
+        val waitForLate = candidates.all { relays[it]?.late == true }
+        candidates.forEach { url ->
+            requestRelay(url, "loadMore")
+            val relay = relays[url] ?: return@forEach
+            if (relay.opening || relay.session != null) relay.graceJob = scope.launch { delay(settleDelayMillis) }
+            if (relay.late && !waitForLate && (relay.opening || relay.session != null)) {
+                relay.lagging = true
+                feedTraceLog { "$idPrefix ${url.shortRelay()} は前のページで遅れたため待たない" }
+            }
+        }
     }
 
     /**
@@ -173,6 +185,7 @@ internal class RelayFeedHistoryCoordinator(
             relay.opening = false
             relay.page = null
             relay.lagging = false
+            relay.graceJob?.cancel()
             relay.requestToken++
         }
         publishState()
@@ -224,6 +237,7 @@ internal class RelayFeedHistoryCoordinator(
         relays.values.forEach { relay ->
             relay.openJob?.cancel()
             relay.retryJob?.cancel()
+            relay.graceJob?.cancel()
             relay.session?.let { session -> scope.launch { session.close() } }
         }
         relays.clear()
@@ -262,6 +276,8 @@ internal class RelayFeedHistoryCoordinator(
         relay.retryJob = null
         relay.opening = true
         relay.page = Page(requested)
+        relay.graceJob?.cancel()
+        relay.graceJob = null
         val token = relay.requestToken
         val requestId = ++requestSequence
         val filters = requested.map { requestedFilter ->
@@ -318,6 +334,12 @@ internal class RelayFeedHistoryCoordinator(
             when (signal) {
                 is SubscriptionSignal.Event -> handleEvent(url, relay, signal)
                 is SubscriptionSignal.Eose -> if (signal.relayUrl == url) {
+                    // 遅れたかどうかは、表示が待っている「もっと読む」のページで判定する。追いつき取得は誰も待っていない。
+                    relay.graceJob?.let { grace ->
+                        relay.late = !grace.isActive
+                        grace.cancel()
+                        relay.graceJob = null
+                    }
                     if (commitPage(url, relay) is FeedPageCommitResult.Committed) {
                         relay.page?.let { advancePage(relay, it) }
                     }
@@ -390,6 +412,7 @@ internal class RelayFeedHistoryCoordinator(
         collectors.remove(url)
         relay.session = null
         relay.lagging = false
+        relay.graceJob?.cancel()
         val page = relay.page
         val commit = commitPage(url, relay)
         relay.page = null
@@ -411,6 +434,7 @@ internal class RelayFeedHistoryCoordinator(
             relay.closedDisposition = null
             advancePage(relay, page)
         } else if (!storageFailure) {
+            relay.late = true
             scheduleRetry(url, relay, page)
         }
         if (relays.values.none { it.session != null || it.opening }) {
@@ -649,6 +673,10 @@ internal class RelayFeedHistoryCoordinator(
         var nextFilterIndex: Int = 0,
         /** 猶予を過ぎても応答がなく、表示境界の決定から外している。 */
         var lagging: Boolean = false,
+        /** 直前の取得で猶予内に応答しなかった。次のページでは待たない。 */
+        var late: Boolean = false,
+        /** 「もっと読む」の取得開始から猶予の間だけ動く。応答時に動いていれば猶予内に応答した。 */
+        var graceJob: Job? = null,
         /** 一時停止で中断した取得を、再開時に取り直す。 */
         var needsResume: Boolean = false,
         var resumeWithBackoff: Boolean = false,

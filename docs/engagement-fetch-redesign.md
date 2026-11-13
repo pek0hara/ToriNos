@@ -524,3 +524,59 @@ relay-jp は公開上限8に対し7件目で `too many concurrent REQs` を返�
 - 実機確認で、ポスト詳細（ナビゲーションメニュー内）から端末の戻るキーで戻れないことがあった。画面左上の ← では戻れる。
   今回の変更との関係は未確認（戻る処理は別の未コミットの変更がある）。
 
+
+## 13. 追跡と反映の一括化（2026-11-06）
+
+### 13.1 見つかった問題
+
+`FeedControllerAsyncRegressionTest.largeSameSecondPageCanBeBrowsedAcrossStoredWindows`（同じ秒の投稿3,840件を1ページで受け取る）が、
+iOSシミュレータで13秒前後かかり、ときどき`runTest`の実時間の上限（60秒）を超えて失敗していた。計測すると、ほぼ全時間がページ受信中の
+`scheduleEngagementFetch`で使われていた。
+
+| 処理 | 1,280件 | 2,560件 | 3,840件 |
+| --- | --- | --- | --- |
+| `syncEngagementRetention` | 0.4秒 | 1.6秒 | 3.6秒 |
+| `projectEngagement` | 1.1秒 | 4.4秒 | 9.5秒 |
+
+件数が2倍で時間が約4倍になり、どちらも件数の2乗に比例する。
+
+- **保持の同期**: 投稿を1件追跡するたびに、追跡中の全IDの集合を作り直して`EngagementStore.retain`へ渡し、ストアは前回の集合と全件で差分を取る。
+- **表示への反映**: `UiState`の付随情報は約15個の読み取り専用Mapで、`Map + (key to value)`と`Map - key`は毎回Map全体を複製する
+  （キーが存在しない`-`でも複製する）。投稿1件ごとにこれを全Mapで行う。
+
+大量の複製でメモリ確保とGCが増え、GCの負担が実行環境の状態で変わるため、実行時間が13秒から75秒まで揺れていた。
+テストに限らず、実アプリでも大きなページの受信や、多数の投稿の付随情報がまとめて届いたとき（`engagementStore.changes`で変化した
+投稿×保持中の投稿の複製）に同じ処理が走る。
+
+### 13.2 方針
+
+1. **追跡をまとめる**: `scheduleEngagementFetch`は投稿IDを待ち行列へ入れるだけにする。待ち行列は次のどちらかで1回にまとめて処理する。
+   - ページの確定（`commitHistoryPage`）の最後
+   - それ以外（ライブ受信・リポスト対象・返信先）は、次のディスパッチで1回だけ動く処理
+   
+   処理では、全IDを`EngagementFetcher.track`へ渡し、`syncEngagementRetention`を1回、`projectEngagement`を新しく追跡した全IDで1回呼ぶ。
+2. **反映を一括で行う**: `projectEngagement(targetIds)`は、各投稿の導出結果を先に計算し、付随情報のMapをそれぞれ1回だけ可変の複製にしてから
+   全投稿分を書き込み、最後に`UiState`を1回作る。1件の場合も同じ経路を使う。
+3. 追跡をやめる投稿（`forgetEngagementHistory`）と全体のリセットでは、待ち行列からも外す。
+
+これで1ページの処理は件数に比例する。追跡の開始がディスパッチ1回分遅れることがあるが、取得自体も`EngagementFetcher`側で集約しているため、
+表示上の差はない。
+
+### 13.3 対象外
+
+- `ThreadController.projectEngagement`も1件ずつ`UiState`を作り直しているが、詳細画面の投稿数は数十〜数百件なので今回は変えない。
+- `EngagementStore.retain`の差分計算自体は全件比較のままにする。呼び出しが処理単位ごとの1回になるため、件数に比例する。
+
+### 13.4 テスト
+
+- 一括の反映が、1件ずつ順に反映した結果と一致する（付随情報あり・なし・追跡外の混在）。`FeedEngagementProjectionTest`
+- 1ページ300件の受信で、保持の同期（`EngagementStore.revision`の進み）が2回以内にまとまる。`historyPageSyncsEngagementRetentionInOneBatch`
+- 既存の大きなページのテストが、上限から十分に離れた時間で終わる。
+
+### 13.5 実装結果
+
+- `scheduleEngagementFetch`は待ち行列へ入れるだけにし、`flushEngagementTargets`で追跡・保持の同期・反映を1回にまとめた。
+  ページの確定時に直接呼び、それ以外は次のディスパッチで1回動く。`forgetEngagementHistory`とリセットで待ち行列から外す。
+- `withProjectedEngagements`と`FeedEngagementMaps`で、付随情報のMapを1回だけ複製してまとめて書き込む。
+  1件用の`withProjectedEngagement`・`withEngagement`も同じ経路を使う。
+- `largeSameSecondPageCanBeBrowsedAcrossStoredWindows`はiOSシミュレータで13秒前後から1.0秒になった。

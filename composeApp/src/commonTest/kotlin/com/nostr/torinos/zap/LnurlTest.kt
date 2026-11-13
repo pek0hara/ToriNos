@@ -51,6 +51,16 @@ class LightningAddressTest {
     }
 
     @Test
+    fun recipientLabelShowsTheAddressActuallyUsed() {
+        // シートに出す文字は、送り先を決めたのと同じ項目から作る。
+        assertEquals("alice@example.com", NostrProfile(lud16 = " Alice@Example.com ").zapRecipientAddress()?.label)
+        val lud06 = encodeLnurl("https://other.example/pay")
+        assertEquals("LNURL（other.example）", NostrProfile(lud16 = "broken", lud06 = lud06).zapRecipientAddress()?.label)
+        assertEquals("LNURL（other.example）", NostrProfile(lud06 = lud06).zapRecipientAddress()?.label)
+        assertEquals("bob@example.com", NostrProfile(lud16 = "bob@example.com", lud06 = lud06).zapRecipientAddress()?.label)
+    }
+
+    @Test
     fun profileJsonReadsLightningFields() {
         val event = com.nostr.torinos.model.NostrEvent("i", "p", 0, 0, emptyList(),
             """{"name":"a","lud16":"a@example.com","lud06":"lnurl1x"}""", "s")

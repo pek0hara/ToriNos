@@ -10,8 +10,13 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.WindowInsetsSides
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.only
+import androidx.compose.foundation.layout.safeDrawing
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
@@ -38,14 +43,25 @@ internal fun AppScaffold(
     content: @Composable (PaddingValues) -> Unit,
 ) {
     val scaffold: @Composable () -> Unit = {
-        Scaffold(
-            contentWindowInsets = contentWindowInsets,
-            containerColor = containerColor,
-            snackbarHost = snackbarHost,
-            floatingActionButton = floatingActionButton,
-            bottomBar = bottomBar,
-            content = content,
-        )
+        Box(Modifier.fillMaxSize()) {
+            Scaffold(
+                contentWindowInsets = contentWindowInsets,
+                containerColor = containerColor,
+                floatingActionButton = floatingActionButton,
+                bottomBar = bottomBar,
+                content = content,
+            )
+            // 共通通知は上部に重ね、下部メニューや投稿ボタンの位置に依存させない。
+            Box(
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .fillMaxWidth()
+                    .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Top + WindowInsetsSides.Horizontal)),
+                contentAlignment = Alignment.TopCenter,
+            ) {
+                snackbarHost()
+            }
+        }
     }
     if (!LocalIsWideLayout.current) {
         scaffold()

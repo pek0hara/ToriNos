@@ -147,6 +147,113 @@ class ProfileCacheTest {
         assertEquals("2000", ProfileCache.get("bounded-profile-2000")?.picture)
     }
 
+    @Test
+    fun pinnedProfilesAreNotEvicted() {
+        ProfileCache.setPinnedPubkeys(setOf("bounded-profile-0"))
+        repeat(2_001) { index ->
+            ProfileCache.putEvent(
+                profileEvent("bounded-profile-$index", createdAt = index.toLong(), picture = "$index"),
+                fetchedAt = index.toLong(),
+            )
+        }
+
+        assertEquals(2_000, ProfileCache.snapshotEntries().size)
+        assertEquals("0", ProfileCache.get("bounded-profile-0")?.picture)
+        assertNull(ProfileCache.get("bounded-profile-1"))
+    }
+
+    @Test
+    fun optimisticEditDropsSourceEventOfPreviousProfile() {
+        val event = profileEvent("profile-cache-optimistic-event", createdAt = 10, picture = "old")
+        ProfileCache.putEvent(event)
+
+        ProfileCache.putOptimistic(event.pubkey, NostrProfile(picture = "edited"))
+
+        assertNull(ProfileCache.getEntry(event.pubkey)?.event)
+    }
+
+    @Test
+    fun optimisticUpdateWithSameProfileKeepsEntryForPersistence() {
+        // プロフィール画面は表示中のプロフィールをそのまま渡す。編集ではないので保存対象から外さない。
+        val event = profileEvent("profile-cache-same-optimistic", createdAt = 10, picture = "same")
+        ProfileCache.putEvent(event, fetchedAt = 1_000)
+        val version = ProfileCache.persistVersion.value
+
+        ProfileCache.putOptimistic(event.pubkey, ProfileCache.get(event.pubkey)!!)
+
+        assertEquals(event, ProfileCache.getEntry(event.pubkey)?.event)
+        assertEquals(1_000, ProfileCache.getEntry(event.pubkey)?.fetchedAt)
+        assertEquals(version, ProfileCache.persistVersion.value)
+    }
+
+    @Test
+    fun entryKeepsSourceEventForPersistence() {
+        val event = profileEvent("profile-cache-event-test", createdAt = 10, picture = "kept")
+        ProfileCache.putEvent(event, fetchedAt = 1_000)
+
+        assertEquals(event, ProfileCache.getEntry(event.pubkey)?.event)
+    }
+
+    @Test
+    fun restore_addsMissingProfilesWithStoredFetchedAt() {
+        val event = profileEvent("profile-cache-restore-test", createdAt = 10, picture = "restored")
+
+        ProfileCache.restore(listOf(event to 1_234L))
+
+        assertEquals("restored", ProfileCache.get(event.pubkey)?.picture)
+        assertEquals(1_234, ProfileCache.getEntry(event.pubkey)?.fetchedAt)
+    }
+
+    @Test
+    fun restore_doesNotReplaceNewerOrOptimisticProfiles() {
+        val newer = profileEvent("restore-newer", createdAt = 20, picture = "relay")
+        ProfileCache.putEvent(newer, fetchedAt = 5_000)
+        ProfileCache.putOptimistic("restore-optimistic", NostrProfile(picture = "edited"))
+
+        ProfileCache.restore(
+            listOf(
+                profileEvent("restore-newer", createdAt = 10, picture = "stored") to 9_000L,
+                profileEvent("restore-optimistic", createdAt = 10, picture = "stored") to 9_000L,
+            ),
+        )
+
+        assertEquals("relay", ProfileCache.get("restore-newer")?.picture)
+        assertEquals(5_000, ProfileCache.getEntry("restore-newer")?.fetchedAt)
+        assertEquals("edited", ProfileCache.get("restore-optimistic")?.picture)
+    }
+
+    @Test
+    fun restore_replacesOlderProfileButKeepsNewerFetchedAt() {
+        ProfileCache.putEvent(profileEvent("restore-older", createdAt = 10, picture = "relay"), fetchedAt = 5_000)
+
+        ProfileCache.restore(listOf(profileEvent("restore-older", createdAt = 20, picture = "stored") to 1_000L))
+
+        assertEquals("stored", ProfileCache.get("restore-older")?.picture)
+        assertEquals(5_000, ProfileCache.getEntry("restore-older")?.fetchedAt)
+    }
+
+    @Test
+    fun newerEventWithWrongTypedLud16_replacesOlderLightningAddress() {
+        val pubkey = "profile-cache-broken-lud16-test"
+        ProfileCache.putEvent(rawProfileEvent(pubkey, createdAt = 100, content = """{"name":"old","lud16":"old@a.example"}"""))
+        ProfileCache.putEvent(rawProfileEvent(pubkey, createdAt = 200, content = """{"name":"new","lud16":["a@a.example","b@b.example"]}"""))
+
+        val profile = ProfileCache.get(pubkey)
+        assertEquals("new", profile?.name)
+        assertNull(profile?.lud16)
+        assertEquals("$pubkey-200", ProfileCache.getEntry(pubkey)?.eventId)
+    }
+
+    private fun rawProfileEvent(pubkey: String, createdAt: Long, content: String) = NostrEvent(
+        id = "$pubkey-$createdAt",
+        pubkey = pubkey,
+        createdAt = createdAt,
+        kind = 0,
+        tags = emptyList(),
+        content = content,
+        sig = "",
+    )
+
     private fun profileEvent(
         pubkey: String,
         createdAt: Long,

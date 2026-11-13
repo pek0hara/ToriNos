@@ -95,6 +95,7 @@ class AccountSession internal constructor(
     internal val badgeRepository = com.nostr.torinos.badge.BadgeRepository(
         scope = resources.scope,
         readRelays = { relayStore.enabledRelayUrlsSnapshot().toSet() },
+        eventStore = com.nostr.torinos.badge.AppBadgeEventStore,
     )
     internal val badges = com.nostr.torinos.badge.AccountBadgeStore(
         pubkey = pubkey, sessionId = sessionId, signer = signer, scope = resources.scope,

@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Groups
 import androidx.compose.material.icons.filled.AccessTime
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ExpandLess
@@ -30,6 +31,8 @@ import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
@@ -91,6 +94,8 @@ internal fun StatusComposerSheet(
     initialStatuses: Map<String, StatusComposerValue> = emptyMap(),
     categorySelectionEnabled: Boolean = true,
     onDelete: ((String) -> Unit)? = null,
+    /** 全員のステータスを並べた画面を開く。マイプロフィールから開いたときだけ渡す（一覧の上で開いたときは不要）。 */
+    onOpenStatusList: (() -> Unit)? = null,
 ) {
     DismissKeyboardOnLeave()
     val initialCategoryOption = StatusCategoryOption.forIdentifier(initialStatusTag)
@@ -280,6 +285,24 @@ internal fun StatusComposerSheet(
                             )
                         } else {
                             Text(resolvedActionLabel)
+                        }
+                    }
+                }
+                // 一覧への入口は、絵文字セットのボタンと同じく右上に小さく置く。
+                if (onOpenStatusList != null) {
+                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                        TextButton(
+                            onClick = onOpenStatusList,
+                            enabled = !isPublishing,
+                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Groups,
+                                contentDescription = null,
+                                modifier = Modifier.size(16.dp),
+                            )
+                            Spacer(modifier = Modifier.size(4.dp))
+                            Text("みんなのステータス", style = MaterialTheme.typography.labelMedium)
                         }
                     }
                 }

@@ -35,7 +35,7 @@ internal fun BadgeHost(session: AccountSession?, content: @Composable () -> Unit
     // Ingest and recomputation run per received event, so keep them off the main thread.
     val anonymous = remember(session) {
         if (session == null) BadgeRepository(CoroutineScope(SupervisorJob() + Dispatchers.Default),
-            readRelays = { RelayStore.enabledRelayUrlsSnapshot().toSet() }) else null
+            readRelays = { RelayStore.enabledRelayUrlsSnapshot().toSet() }, eventStore = AppBadgeEventStore) else null
     }
     DisposableEffect(anonymous) { onDispose { anonymous?.close() } }
     CompositionLocalProvider(LocalBadgeRepository provides (session?.badgeRepository ?: anonymous), content = content)
@@ -140,7 +140,7 @@ internal fun BadgeDetailDialog(
         onDismissRequest = onDismiss,
         text = {
             Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(16.dp)) {
-                BadgeDetailContent(badge, issuer, onIssuerClick = { onDismiss(); onUserClick(it) })
+                BadgeDetailContent(badge, issuer, onUserClick = { onDismiss(); onUserClick(it) })
                 action?.invoke()
             }
         }, confirmButton = { TextButton(onClick = onDismiss) { Text("閉じる") } },

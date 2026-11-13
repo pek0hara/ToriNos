@@ -23,6 +23,18 @@ internal inline fun cacheTraceLog(message: () -> String) {
     }
 }
 
+/**
+ * trueにすると端末保存のキャッシュ(プロフィール・バッジ)の読み込み・書き込み・利用状況を、
+ * プロセス起動からの経過ミリ秒つきでログ出力する。実機確認用。
+ */
+private const val ENABLE_PERSISTENT_CACHE_LOGS = true
+
+internal inline fun persistentCacheLog(message: () -> String) {
+    if (ENABLE_PERSISTENT_CACHE_LOGS) {
+        platformLog("[PersistCache] +${StartupTrace.elapsedMillis()}ms ${message()}")
+    }
+}
+
 /** trueにするとジャーナルの取得計画・取得結果・状態の変化をログ出力する。動作確認用。 */
 private const val ENABLE_JOURNAL_TRACE_LOGS = true
 

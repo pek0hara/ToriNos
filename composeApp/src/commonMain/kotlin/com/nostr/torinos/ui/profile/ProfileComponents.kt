@@ -30,7 +30,7 @@ import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.AddPhotoAlternate
 import androidx.compose.material.icons.filled.Edit
-import androidx.compose.material.icons.filled.Sms
+import androidx.compose.material.icons.filled.Today
 import androidx.compose.material.icons.filled.FileDownload
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.AlertDialog
@@ -258,6 +258,10 @@ internal fun ProfileHeader(
     onEditProfile: (() -> Unit)? = null,
     generalStatus: ProfileGeneralStatus? = null,
     onEditGeneralStatus: (() -> Unit)? = null,
+    /** 他人のステータス行を押したときに、全員のステータスを並べた画面を開く。自分の行は編集になる。 */
+    onOpenStatusList: (() -> Unit)? = null,
+    /** 他人のジャーナルを開く。自分のプロフィールの「プロフィールを編集」と同じ位置に小さく置く。 */
+    onOpenJournal: (() -> Unit)? = null,
     showBackButton: Boolean = true,
     onBannerHeightChanged: (Int) -> Unit = {},
 ) {
@@ -525,7 +529,13 @@ internal fun ProfileHeader(
                 }
             }
             // 自己紹介が空のときの入口は「プロフィールを編集」に任せる（同じ役割のリンクが並ばないように）。
-            profile?.about?.takeIf { it.isNotBlank() }?.let { about ->
+            // 他人のジャーナルへのリンク。自己紹介に「もっと見る」が出るときはその右に並べ、出ないときは下に1行で置く。
+            val journalLink: (@Composable () -> Unit)? = onOpenJournal?.takeIf { !isOwnProfile }?.let { open ->
+                { ProfileJournalLink(onClick = open) }
+            }
+            var aboutShowsToggle by remember(pubkey) { mutableStateOf(false) }
+            val about = profile?.about?.takeIf { it.isNotBlank() }
+            if (about != null) {
                 ProfileAboutText(
                     about = about,
                     customEmojis = profile.customEmojis,
@@ -533,20 +543,32 @@ internal fun ProfileHeader(
                     isOwnProfile = isOwnProfile,
                     onUserClick = onUserClick,
                     onEditAbout = onEditAbout,
+                    toggleRowTrailing = journalLink,
+                    onToggleShownChange = { aboutShowsToggle = it },
                 )
             }
-            generalStatus?.takeIf { it.content.isNotBlank() }?.let { status ->
+            val visibleStatus = generalStatus?.takeIf { it.content.isNotBlank() }
+            if (visibleStatus != null) {
                 ProfileGeneralStatusText(
-                    status = status,
+                    status = visibleStatus,
                     isOwnProfile = isOwnProfile,
                     onEditGeneralStatus = onEditGeneralStatus,
+                    onOpenStatusList = onOpenStatusList.takeIf { !isOwnProfile },
                 )
+            } else if (isOwnProfile && onEditGeneralStatus != null) {
+                // 未設定でも行を出し、プロフィールからそのまま書き始められるようにする。
+                ProfileGeneralStatusPlaceholder(onEditGeneralStatus = onEditGeneralStatus)
             }
             if (isOwnProfile && onEditProfile != null) {
                 Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
                     TextButton(onClick = onEditProfile) {
                         Text("プロフィールを編集", style = MaterialTheme.typography.bodySmall)
                     }
+                }
+            }
+            if (journalLink != null && !(about != null && aboutShowsToggle)) {
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                    journalLink()
                 }
             }
         }
@@ -564,12 +586,21 @@ private fun ProfileGeneralStatusText(
     status: ProfileGeneralStatus,
     isOwnProfile: Boolean,
     onEditGeneralStatus: (() -> Unit)?,
+    onOpenStatusList: (() -> Unit)? = null,
 ) {
     var expanded by remember(status.content) { mutableStateOf(false) }
     var hasOverflow by remember(status.content) { mutableStateOf(false) }
 
     Row(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier
+            .fillMaxWidth()
+            .then(
+                if (onOpenStatusList != null) {
+                    Modifier.clickable(onClickLabel = "みんなのステータスを見る", onClick = onOpenStatusList)
+                } else {
+                    Modifier
+                },
+            ),
         horizontalArrangement = Arrangement.spacedBy(4.dp),
         verticalAlignment = Alignment.Top,
     ) {
@@ -609,12 +640,44 @@ private fun ProfileGeneralStatusText(
         if (isOwnProfile && onEditGeneralStatus != null) {
             IconButton(onClick = onEditGeneralStatus, modifier = Modifier.size(28.dp)) {
                 Icon(
-                    Icons.Default.Sms,
+                    Icons.Default.Edit,
                     contentDescription = "ステータスを編集",
                     modifier = Modifier.size(14.dp),
                     tint = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
+        }
+    }
+}
+
+/** 自分のステータスが未設定のときに、設定済みの行と同じ位置に出す入口。 */
+@Composable
+private fun ProfileGeneralStatusPlaceholder(onEditGeneralStatus: () -> Unit) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClickLabel = "ステータスを設定", onClick = onEditGeneralStatus),
+        horizontalArrangement = Arrangement.spacedBy(4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            text = "💬",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Text(
+            text = "ステータスを設定",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.outline,
+            modifier = Modifier.weight(1f),
+        )
+        Box(modifier = Modifier.size(28.dp), contentAlignment = Alignment.Center) {
+            Icon(
+                Icons.Default.Edit,
+                contentDescription = null,
+                modifier = Modifier.size(14.dp),
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
         }
     }
 }
@@ -627,9 +690,14 @@ private fun ProfileAboutText(
     isOwnProfile: Boolean,
     onUserClick: (String) -> Unit,
     onEditAbout: (() -> Unit)?,
+    /** 「もっと見る / 閉じる」と同じ行の右端に置くもの。その行が出ないときは置かない（呼び出し側で別に置く）。 */
+    toggleRowTrailing: (@Composable () -> Unit)? = null,
+    onToggleShownChange: (Boolean) -> Unit = {},
 ) {
     var expanded by remember(about) { mutableStateOf(false) }
     var hasOverflow by remember(about) { mutableStateOf(false) }
+    val showsToggle = hasOverflow || expanded
+    LaunchedEffect(showsToggle) { onToggleShownChange(showsToggle) }
 
     Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
         Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.Top) {
@@ -658,17 +726,37 @@ private fun ProfileAboutText(
                 }
             }
         }
-        if (hasOverflow || expanded) {
-            TextButton(
-                onClick = { expanded = !expanded },
-                contentPadding = androidx.compose.foundation.layout.PaddingValues(0.dp),
-            ) {
-                Text(
-                    text = if (expanded) "閉じる" else "もっと見る",
-                    style = MaterialTheme.typography.labelSmall,
-                )
+        if (showsToggle) {
+            Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                TextButton(
+                    onClick = { expanded = !expanded },
+                    contentPadding = androidx.compose.foundation.layout.PaddingValues(0.dp),
+                ) {
+                    Text(
+                        text = if (expanded) "閉じる" else "もっと見る",
+                        style = MaterialTheme.typography.labelSmall,
+                    )
+                }
+                if (toggleRowTrailing != null) {
+                    androidx.compose.foundation.layout.Spacer(modifier = Modifier.weight(1f))
+                    toggleRowTrailing()
+                }
             }
         }
+    }
+}
+
+/** 他人のジャーナルを開くリンク。自分のプロフィールの「プロフィールを編集」と同じ大きさにそろえる。 */
+@Composable
+private fun ProfileJournalLink(onClick: () -> Unit) {
+    TextButton(onClick = onClick) {
+        Icon(
+            Icons.Default.Today,
+            contentDescription = null,
+            modifier = Modifier.size(16.dp),
+        )
+        androidx.compose.foundation.layout.Spacer(modifier = Modifier.size(4.dp))
+        Text("ジャーナルを見る", style = MaterialTheme.typography.bodySmall)
     }
 }
 

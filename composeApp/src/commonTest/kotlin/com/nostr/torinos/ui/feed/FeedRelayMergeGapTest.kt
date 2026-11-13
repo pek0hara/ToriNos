@@ -40,6 +40,8 @@ class FeedRelayMergeGapTest {
     private val sparseEvents = (0 until 40).map { event("a-$it", newest - it * 300L) }
     private val denseEvents = (0 until 100).map { event("b-$it", newest - 5 - it * 10L) }
     private val truth = (sparseEvents + denseEvents).sortedByDescending { it.createdAt }
+    /** relay-b と同じ時刻に投稿があるリレー。どちらも「もっと読む」の問い合わせ先になる。 */
+    private val otherDenseEvents = (0 until 100).map { event("c-$it", newest - 5 - it * 10L) }
 
     @Test
     fun loadingToTheEndShowsEveryEventFromEveryRelay() = runTest {
@@ -187,6 +189,95 @@ class FeedRelayMergeGapTest {
         val missing = truth.filter { it.createdAt >= oldestShown && it.id !in shownIds }
         assertEquals(emptyList(), missing.map { it.id }, "後からつながったリレーが表示済みの範囲を埋めていない")
         controller.close()
+    }
+
+    @Test
+    fun relaySlowOnThePreviousPageDoesNotDelayTheNextPage() = runTest {
+        val relays = SimulatedRelays(mapOf("relay-b" to denseEvents, "relay-c" to otherDenseEvents))
+        val controller = FeedController(computeDispatcher = Dispatchers.Unconfined, scope = backgroundScope, subscriptions = relays)
+        settle(relays)
+        makeRelayLate(controller, relays, "relay-c")
+        val shownBefore = controller.state.value.events.size
+
+        // relay-c は前のページで猶予を過ぎて応答した。今回も応答しないが、待たずに表示する
+        relays.held += "relay-c"
+        controller.loadMore()
+        runCurrent()
+        relays.serveFeedFetches()
+        runCurrent()
+        advanceTimeBy(100)
+        runCurrent()
+
+        assertTrue(
+            controller.state.value.events.size > shownBefore,
+            "前のページで遅れたリレーを、次のページでも猶予いっぱい待っている",
+        )
+        controller.close()
+    }
+
+    @Test
+    fun relayThatAnsweredInTimeAgainIsWaitedFor() = runTest {
+        val relays = SimulatedRelays(mapOf("relay-b" to denseEvents, "relay-c" to otherDenseEvents))
+        val controller = FeedController(computeDispatcher = Dispatchers.Unconfined, scope = backgroundScope, subscriptions = relays)
+        settle(relays)
+        makeRelayLate(controller, relays, "relay-c")
+        // 次のページでは猶予内に応答した
+        controller.loadMore()
+        settle(relays)
+        val shownBefore = controller.state.value.events.size
+
+        relays.held += "relay-c"
+        controller.loadMore()
+        runCurrent()
+        relays.serveFeedFetches()
+        runCurrent()
+        advanceTimeBy(100)
+        runCurrent()
+
+        assertEquals(
+            shownBefore,
+            controller.state.value.events.size,
+            "猶予内に応答するようになったリレーを待たずに表示している",
+        )
+        controller.close()
+    }
+
+    @Test
+    fun whenEveryRelayWasLateTheyAreStillWaitedFor() = runTest {
+        val relays = SimulatedRelays(mapOf("relay-b" to denseEvents, "relay-c" to otherDenseEvents))
+        val controller = FeedController(computeDispatcher = Dispatchers.Unconfined, scope = backgroundScope, subscriptions = relays)
+        settle(relays)
+        makeRelayLate(controller, relays, "relay-b", "relay-c")
+        val shownBefore = controller.state.value.events.size
+
+        // 全リレーが遅れたことがあるなら、どれかを待たないと深く遡ったリレーだけで表示が進んでしまう
+        relays.held += "relay-c"
+        controller.loadMore()
+        runCurrent()
+        relays.serveFeedFetches()
+        runCurrent()
+        advanceTimeBy(100)
+        runCurrent()
+
+        assertEquals(
+            shownBefore,
+            controller.state.value.events.size,
+            "全リレーが遅れたことがあるとき、応答待ちのリレーを待たずに表示している",
+        )
+        controller.close()
+    }
+
+    /** 次のページで [late] のリレーが猶予を過ぎてから応答する。 */
+    private fun TestScope.makeRelayLate(controller: FeedController, relays: SimulatedRelays, vararg late: String) {
+        relays.held += late
+        controller.loadMore()
+        runCurrent()
+        relays.serveFeedFetches()
+        runCurrent()
+        advanceTimeBy(3_000)
+        runCurrent()
+        relays.held -= late.toSet()
+        settle(relays)
     }
 
     @Test

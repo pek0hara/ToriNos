@@ -868,6 +868,9 @@ internal fun AppSessionCoordinator(
                                             nav.navigate(UserJournalRoute(drawerDestination.pubkey))
                                         }
                                     },
+                                    onOpenStatusList = {
+                                        closeProfileDrawerAndThen { nav.navigate(StatusPageRoute) { launchSingleTop = true } }
+                                    },
                                     longBackgroundResetRequest = feedLongBackgroundResetRequest,
                                 )
                             }
@@ -1148,13 +1151,17 @@ internal fun AppSessionCoordinator(
                 contentWindowInsets = WindowInsets(0),
                 containerColor = MaterialTheme.colorScheme.background,
                 snackbarHost = {
-                    SnackbarHost(snackbarHostState) { data ->
+                    SnackbarHost(
+                        hostState = snackbarHostState,
+                    ) { data ->
                         val failedRelays = (data.visuals as? PublishResultSnackbarVisuals)?.failedRelays.orEmpty()
                         Snackbar(
-                            modifier = Modifier.clickable(enabled = failedRelays.isNotEmpty()) {
-                                publishFailureDialogRelays = failedRelays
-                                data.dismiss()
-                            },
+                            modifier = Modifier
+                                .padding(horizontal = 12.dp, vertical = 8.dp)
+                                .clickable(enabled = failedRelays.isNotEmpty()) {
+                                    publishFailureDialogRelays = failedRelays
+                                    data.dismiss()
+                                },
                         ) {
                             Text(data.visuals.message)
                         }
@@ -1738,6 +1745,7 @@ internal fun AppSessionCoordinator(
                             onOpenReposts = { eventId ->
                                 nav.navigate(ThreadRoute(eventId, "reposts"))
                             },
+                            onOpenStatusList = { nav.navigate(StatusPageRoute) { launchSingleTop = true } },
                             onOpenJournal = if (!isOwnRouteProfile) {
                                 {
                                     nav.navigate(UserJournalRoute(route.pubkey))

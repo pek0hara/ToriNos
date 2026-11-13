@@ -37,6 +37,9 @@ sealed interface ZapEvent {
     data class Message(val text: String) : ZapEvent
 }
 
+/** 送る相手の受け取り先と、その LNURL-pay の応答。表示と送信で同じものを使う。 */
+data class ZapRecipient(val address: ZapRecipientAddress, val endpoint: PayEndpoint)
+
 /** 送信に使う外の機能。テストで差し替える。 */
 internal class ZapSenderDependencies(
     val sign: suspend (content: String, kind: Int, tags: List<List<String>>) -> NostrEvent,
@@ -86,10 +89,13 @@ class ZapSender internal constructor(
         _progress.update { if (value == null) it - eventId else it + (eventId to value) }
     }
 
-    /** 受け取り先の応答（詳細シートで額の範囲とコメントの上限を出すため）。 */
-    suspend fun endpointFor(target: ZapTarget): PayEndpoint {
+    /**
+     * 送り先の受け取り先と応答（詳細シートで宛先・額の範囲・コメントの上限を出すため）。
+     * 送るときと同じプロフィール・同じ決め方なので、画面の宛先と実際の送り先が食い違わない。
+     */
+    suspend fun recipientFor(target: ZapTarget): ZapRecipient {
         val address = deps.profileOf(target.authorPubkey)?.zapRecipientAddress() ?: throw ZapException(NO_ADDRESS_MESSAGE)
-        return deps.endpointOf(address.url)
+        return ZapRecipient(address, deps.endpointOf(address.url))
     }
 
     fun isRunning(eventId: String): Boolean = eventId in _progress.value
@@ -138,7 +144,7 @@ class ZapSender internal constructor(
     private suspend fun run(target: ZapTarget, amountSats: Long, comment: String, allowPlainPayment: Boolean) {
         val eventId = target.eventId
         try {
-            val endpoint = endpointFor(target)
+            val endpoint = recipientFor(target).endpoint
             if (!endpoint.allowsNostr && !allowPlainPayment) throw ZapException(PLAIN_PAYMENT_MESSAGE)
             val amountMsats = amountSats * 1_000
             if (!endpoint.accepts(amountMsats)) {

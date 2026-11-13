@@ -253,7 +253,7 @@ fun NoteTimeline(
         snapshotFlow {
             val layoutInfo = timelineListState.layoutInfo
             val lastVisible = layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: -1
-            lastVisible >= layoutInfo.totalItemsCount - 3
+            lastVisible >= layoutInfo.totalItemsCount - LoadMoreAheadCount
         }
             .distinctUntilChanged()
             .filter { it }
@@ -397,8 +397,9 @@ fun NoteTimeline(
                     TextButton(onClick = onLoadMoreExplicitly) { Text("さらに読み込む") }
                 }
             }
-            if (state.storageFailure || state.localHistoryLimitReached || state.stalledRelayCount > 0 ||
-                state.pendingGapCount > 0 || state.coverageGapCount > 0) {
+            // 読み込み中は進捗表示だけにする。取得が終われば解消することが多く、先に出すと止まって見える。
+            if (!state.isLoadingMore && (state.storageFailure || state.localHistoryLimitReached ||
+                    state.stalledRelayCount > 0 || state.pendingGapCount > 0 || state.coverageGapCount > 0)) {
                 item(key = "feed-history-status") {
                     androidx.compose.foundation.layout.Column(Modifier.padding(16.dp)) {
                         if (state.storageFailure) Text("履歴を保存できませんでした")
@@ -502,6 +503,12 @@ private fun NewPostsButton(
         }
     }
 }
+
+/**
+ * 末尾まで残りこの件数になったら続きを読み込む。1ページ（30件）の3分の1ほど手前で始め、
+ * 読み終える前に次のページを届けて、末尾で待たされないようにする。
+ */
+private const val LoadMoreAheadCount = 10
 
 /** 直近の可視投稿より後ろ、何件先までサムネイル1枚目をプリフェッチするか。 */
 private const val ImagePrefetchAheadCount = 3

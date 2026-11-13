@@ -87,7 +87,9 @@ internal class AccountBadgeStore(
             val restored = json.decodeFromString<BadgeSavedState>(text)
             require(listOfNotNull(restored.latest, restored.pending).all { it.pubkey == pubkey && it.isBadgeProfile() && validate(it) }) { "バッジの保存データを検証できませんでした" }
             saved = restored
-            repository.ingest(listOfNotNull(saved.latest, saved.pending))
+            repository.ingest(listOfNotNull(saved.latest))
+            // A pending selection has not reached any relay yet; other accounts must not see it.
+            repository.ingest(listOfNotNull(saved.pending), share = false)
         }
         initialized = true
         publishState()
@@ -200,7 +202,7 @@ internal class AccountBadgeStore(
                 ensureActive()
                 val next = BadgeSavedState(latest = event, pending = event, pendingRelays = writableRelays())
                 persist(next)
-                repository.ingest(listOf(event))
+                repository.ingest(listOf(event), share = false)
                 publishState()
             }
             // Local persistence completes the edit; network work belongs to the account, not the sheet.

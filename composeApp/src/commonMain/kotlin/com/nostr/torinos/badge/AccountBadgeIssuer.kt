@@ -146,7 +146,8 @@ internal class AccountBadgeIssuer(
                 }
             }
             mergeLocked(saved.outbox.map { it.event })
-            repository.ingest(saved.outbox.map { it.event })
+            // Outbox events may not have reached any relay yet; other accounts must not see them.
+            repository.ingest(saved.outbox.map { it.event }, share = false)
         }
         initialized = true
         publishStateLocked(if (unreadable) UNREADABLE_OUTBOX_MESSAGE else syncMessage())
@@ -364,7 +365,7 @@ internal class AccountBadgeIssuer(
             mergeLocked(events.map { it.first })
             publishStateLocked()
         }
-        repository.ingest(events.map { it.first })
+        repository.ingest(events.map { it.first }, share = false)
         scope.launch { try { flush() } catch (e: CancellationException) { throw e } catch (e: Exception) { showError(e) } }
         return true
     }

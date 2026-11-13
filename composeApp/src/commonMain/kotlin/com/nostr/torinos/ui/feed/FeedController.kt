@@ -175,6 +175,9 @@ internal class FeedController(
     private val feedStateRevision get() = statePublisher.revision
     private val pendingTimelineEvents = linkedMapOf<String, NostrEvent>()
     private var timelineBatchJob: Job? = null
+    // 付随情報を追跡し始める投稿。1件ごとに保持の同期と表示の反映を行うと件数の2乗になるので、まとめて処理する。
+    private val pendingEngagementTargets = linkedSetOf<String>()
+    private var engagementFlushJob: Job? = null
     private var closed = false
 
     private val instanceKey = nextInstanceKey()
@@ -638,6 +641,9 @@ internal class FeedController(
         refreshIndicatorTimeoutJob = null
         initialFeedSlowJob?.cancel()
         initialFeedSlowJob = null
+        engagementFlushJob?.cancel()
+        engagementFlushJob = null
+        pendingEngagementTargets.clear()
         engagementFetcher.reset(this)
 
         pendingTimelineEvents.clear()
@@ -1017,6 +1023,8 @@ internal class FeedController(
                 }
                 // 保持へ移したので、以後は保持中の投稿として付随情報が残る。
                 stored.forEach { uncommittedHistoryEventIds.remove(it.event.id) }
+                // ページ単位で追跡を始める。次のディスパッチを待たずに表示へ反映する。
+                flushEngagementTargets()
                 FeedPageCommitResult.Committed(visibleAdded = visibleAdded, added = added)
             }
         }
@@ -1609,14 +1617,33 @@ internal class FeedController(
         engagementStore.retain(this, engagementFetcher.trackedBy(this).toSet())
     }
 
+    /**
+     * 付随情報の追跡を予約する。追跡の開始・保持の同期・表示への反映は、ページの確定時か
+     * 次のディスパッチで、予約された投稿をまとめて1回だけ行う（engagement-fetch-redesign §13）。
+     */
     private fun scheduleEngagementFetch(eventId: String) {
-        if (!engagementFetcher.track(this, eventId)) return
+        if (closed) return
+        pendingEngagementTargets += eventId
+        if (engagementFlushJob?.isActive == true) return
+        engagementFlushJob = launch {
+            engagementFlushJob = null
+            flushEngagementTargets()
+        }
+    }
+
+    private fun flushEngagementTargets() {
+        if (closed || pendingEngagementTargets.isEmpty()) return
+        val requested = pendingEngagementTargets.toList()
+        pendingEngagementTargets.clear()
+        val tracked = requested.filter { engagementFetcher.track(this, it) }
+        if (tracked.isEmpty()) return
         syncEngagementRetention()
-        projectEngagement(listOf(eventId))
+        projectEngagement(tracked)
     }
 
     /** 投稿がフィードから完全に消えるとき、付随情報の追跡と表示も合わせて外す。 */
     private fun forgetEngagementHistory(eventId: String) {
+        pendingEngagementTargets.remove(eventId)
         uncommittedHistoryEventIds.remove(eventId)
         engagementFetcher.forget(this, eventId)
         syncEngagementRetention()
@@ -1632,18 +1659,17 @@ internal class FeedController(
         val relayScope = relayUrl?.let(::setOf)
         val own = ownPubkey
         val pubkeys = linkedSetOf<String>()
-        updateFeedState(immediate = false) { state ->
-            targetIds.distinct().fold(state) { acc, targetId ->
-                if (!engagementFetcher.isTrackedBy(this, targetId)) {
-                    acc.withoutEngagement(targetId)
-                } else {
-                    val engagement = (engagementStore.snapshot(targetId) ?: TargetEngagement()).scopedTo(relayScope)
-                    (engagement.reactions.values + engagement.reposts.values + engagement.replies.values +
-                        engagement.quotes.values).mapTo(pubkeys) { it.pubkey }
-                    acc.withProjectedEngagement(targetId, engagement, own, pendingOperations.operations(targetId), relayScope)
-                }
+        val targets = targetIds.distinct().map { targetId ->
+            if (!engagementFetcher.isTrackedBy(this, targetId)) {
+                EngagementTarget(targetId, engagement = null, pending = emptyMap())
+            } else {
+                val engagement = (engagementStore.snapshot(targetId) ?: TargetEngagement()).scopedTo(relayScope)
+                (engagement.reactions.values + engagement.reposts.values + engagement.replies.values +
+                    engagement.quotes.values).mapTo(pubkeys) { it.pubkey }
+                EngagementTarget(targetId, engagement, pendingOperations.operations(targetId))
             }
         }
+        updateFeedState(immediate = false) { state -> state.withProjectedEngagements(targets, own, relayScope) }
         // 他の画面が先に受信したイベントはこのフィードの購読には届かないので、出す人のプロフィールをここで求める。
         pubkeys.forEach(::scheduleProfileFetch)
     }
@@ -1804,22 +1830,13 @@ internal fun FeedViewModel.UiState.noteEngagement(eventId: String): NoteEngageme
 private fun FeedViewModel.UiState.withEngagement(
     eventId: String,
     engagement: NoteEngagementState,
-): FeedViewModel.UiState = copy(
-    reactionCounts = reactionCounts + (eventId to engagement.reactionCount),
-    likeReactionCounts = likeReactionCounts + (eventId to engagement.likeReactionCount),
-    customReactions = customReactions.putListOrRemove(eventId, engagement.customReactions),
-    unicodeReactions = unicodeReactions.putListOrRemove(eventId, engagement.unicodeReactions),
-    likedReactions = likedReactions.putOrRemove(eventId, engagement.ownLikeEventId),
-    ownEmojiReactionEventIds = ownEmojiReactionEventIds.putMapOrRemove(
-        eventId,
-        engagement.ownEmojiReactionEventIds,
-    ),
-    repostCounts = repostCounts + (eventId to engagement.repostCount),
-    repostedEvents = repostedEvents.putOrRemove(eventId, engagement.ownRepostEventId),
-    pendingEngagementOperations = pendingEngagementOperations.putMapOrRemove(
-        eventId,
-        engagement.pendingOperations,
-    ),
+): FeedViewModel.UiState = FeedEngagementMaps(this).also { it.putDisplay(eventId, engagement) }.applyTo(this)
+
+/** 付随情報を反映する投稿。[engagement]がnullなら追跡していないので表示から外す。 */
+internal data class EngagementTarget(
+    val eventId: String,
+    val engagement: TargetEngagement?,
+    val pending: Map<EngagementSlot, PendingEngagementOperation>,
 )
 
 /**
@@ -1832,53 +1849,107 @@ internal fun FeedViewModel.UiState.withProjectedEngagement(
     ownPubkey: String?,
     pending: Map<EngagementSlot, PendingEngagementOperation>,
     relayScope: Set<String>? = null,
+): FeedViewModel.UiState = withProjectedEngagements(listOf(EngagementTarget(eventId, engagement, pending)), ownPubkey, relayScope)
+
+/**
+ * 複数の投稿の付随情報をまとめて反映する。各Mapの複製は1回だけにし、件数に比例する時間で済ませる
+ * （読み取り専用Mapの `+` / `-` は毎回全体を複製するため、1件ずつ反映すると件数の2乗になる）。
+ */
+internal fun FeedViewModel.UiState.withProjectedEngagements(
+    targets: Collection<EngagementTarget>,
+    ownPubkey: String?,
+    relayScope: Set<String>? = null,
 ): FeedViewModel.UiState {
-    val projected = com.nostr.torinos.engagement.projectEngagement(engagement, ownPubkey,
-        com.nostr.torinos.engagement.EngagementViewScope(relayUrls = relayScope), pending)
-    val scoped = projected.events
-    val display = projected.state
+    if (targets.isEmpty()) return this
+    val maps = FeedEngagementMaps(this)
+    val scope = com.nostr.torinos.engagement.EngagementViewScope(relayUrls = relayScope)
     fun Map<String, NostrEvent>.ordered() = values.sortedWith(compareBy<NostrEvent> { it.createdAt }.thenBy { it.id })
-    val reposts = scoped.reposts.ordered()
-    val quotes = scoped.quotes.ordered()
-    return withEngagement(eventId, display).copy(
-        reactionEvents = reactionEvents.putListOrRemove(eventId, scoped.reactions.ordered()),
-        replyCounts = replyCounts + (eventId to projected.replyCount),
-        replies = replies.putListOrRemove(eventId, scoped.replies.ordered()),
-        repostEvents = repostEvents.putListOrRemove(eventId, reposts),
-        quoteRepostEvents = quoteRepostEvents.putListOrRemove(eventId, quotes),
-        repostPubkeys = repostPubkeys.putListOrRemove(eventId, (reposts + quotes).map { it.pubkey }.distinct()),
+    targets.forEach { target ->
+        val engagement = target.engagement ?: return@forEach maps.remove(target.eventId)
+        val projected = com.nostr.torinos.engagement.projectEngagement(engagement, ownPubkey, scope, target.pending)
+        val scoped = projected.events
+        val reposts = scoped.reposts.ordered()
+        val quotes = scoped.quotes.ordered()
+        maps.putDisplay(target.eventId, projected.state)
+        maps.reactionEvents.putListOrRemove(target.eventId, scoped.reactions.ordered())
+        maps.replyCounts[target.eventId] = projected.replyCount
+        maps.replies.putListOrRemove(target.eventId, scoped.replies.ordered())
+        maps.repostEvents.putListOrRemove(target.eventId, reposts)
+        maps.quoteRepostEvents.putListOrRemove(target.eventId, quotes)
+        maps.repostPubkeys.putListOrRemove(target.eventId, (reposts + quotes).map { it.pubkey }.distinct())
+    }
+    return maps.applyTo(this)
+}
+
+/** [FeedViewModel.UiState]の付随情報のMapを1回だけ可変に複製し、まとめて書き換えてから戻す。 */
+private class FeedEngagementMaps(state: FeedViewModel.UiState) {
+    val reactionCounts = state.reactionCounts.toMutableMap()
+    val likeReactionCounts = state.likeReactionCounts.toMutableMap()
+    val customReactions = state.customReactions.toMutableMap()
+    val unicodeReactions = state.unicodeReactions.toMutableMap()
+    val reactionEvents = state.reactionEvents.toMutableMap()
+    val likedReactions = state.likedReactions.toMutableMap()
+    val ownEmojiReactionEventIds = state.ownEmojiReactionEventIds.toMutableMap()
+    val replyCounts = state.replyCounts.toMutableMap()
+    val replies = state.replies.toMutableMap()
+    val repostCounts = state.repostCounts.toMutableMap()
+    val repostEvents = state.repostEvents.toMutableMap()
+    val quoteRepostEvents = state.quoteRepostEvents.toMutableMap()
+    val repostPubkeys = state.repostPubkeys.toMutableMap()
+    val repostedEvents = state.repostedEvents.toMutableMap()
+    val pendingEngagementOperations = state.pendingEngagementOperations.toMutableMap()
+
+    fun putDisplay(eventId: String, engagement: NoteEngagementState) {
+        reactionCounts[eventId] = engagement.reactionCount
+        likeReactionCounts[eventId] = engagement.likeReactionCount
+        customReactions.putListOrRemove(eventId, engagement.customReactions)
+        unicodeReactions.putListOrRemove(eventId, engagement.unicodeReactions)
+        likedReactions.putOrRemove(eventId, engagement.ownLikeEventId)
+        ownEmojiReactionEventIds.putMapOrRemove(eventId, engagement.ownEmojiReactionEventIds)
+        repostCounts[eventId] = engagement.repostCount
+        repostedEvents.putOrRemove(eventId, engagement.ownRepostEventId)
+        pendingEngagementOperations.putMapOrRemove(eventId, engagement.pendingOperations)
+    }
+
+    /** 追跡をやめた投稿の付随情報を表示から外す。 */
+    fun remove(eventId: String) {
+        listOf(
+            reactionCounts, likeReactionCounts, customReactions, unicodeReactions, reactionEvents, likedReactions,
+            ownEmojiReactionEventIds, replyCounts, replies, repostCounts, repostEvents, quoteRepostEvents,
+            repostPubkeys, repostedEvents, pendingEngagementOperations,
+        ).forEach { it.remove(eventId) }
+    }
+
+    fun applyTo(state: FeedViewModel.UiState): FeedViewModel.UiState = state.copy(
+        reactionCounts = reactionCounts,
+        likeReactionCounts = likeReactionCounts,
+        customReactions = customReactions,
+        unicodeReactions = unicodeReactions,
+        reactionEvents = reactionEvents,
+        likedReactions = likedReactions,
+        ownEmojiReactionEventIds = ownEmojiReactionEventIds,
+        replyCounts = replyCounts,
+        replies = replies,
+        repostCounts = repostCounts,
+        repostEvents = repostEvents,
+        quoteRepostEvents = quoteRepostEvents,
+        repostPubkeys = repostPubkeys,
+        repostedEvents = repostedEvents,
+        pendingEngagementOperations = pendingEngagementOperations,
     )
 }
 
-/** 追跡をやめた投稿の付随情報を表示から外す。 */
-private fun FeedViewModel.UiState.withoutEngagement(eventId: String): FeedViewModel.UiState = copy(
-    reactionCounts = reactionCounts - eventId,
-    likeReactionCounts = likeReactionCounts - eventId,
-    customReactions = customReactions - eventId,
-    unicodeReactions = unicodeReactions - eventId,
-    reactionEvents = reactionEvents - eventId,
-    likedReactions = likedReactions - eventId,
-    ownEmojiReactionEventIds = ownEmojiReactionEventIds - eventId,
-    replyCounts = replyCounts - eventId,
-    replies = replies - eventId,
-    repostCounts = repostCounts - eventId,
-    repostEvents = repostEvents - eventId,
-    quoteRepostEvents = quoteRepostEvents - eventId,
-    repostPubkeys = repostPubkeys - eventId,
-    repostedEvents = repostedEvents - eventId,
-    pendingEngagementOperations = pendingEngagementOperations - eventId,
-)
+private fun <K, V> MutableMap<K, V>.putOrRemove(key: K, value: V?) {
+    if (value == null) remove(key) else put(key, value)
+}
 
-private fun <K, V> Map<K, V>.putOrRemove(key: K, value: V?): Map<K, V> =
-    if (value == null) this - key else this + (key to value)
+private fun <K, V> MutableMap<K, List<V>>.putListOrRemove(key: K, value: List<V>) {
+    if (value.isEmpty()) remove(key) else put(key, value)
+}
 
-private fun <K, V> Map<K, List<V>>.putListOrRemove(key: K, value: List<V>): Map<K, List<V>> =
-    if (value.isEmpty()) this - key else this + (key to value)
-
-private fun <K, K2, V2> Map<K, Map<K2, V2>>.putMapOrRemove(
-    key: K,
-    value: Map<K2, V2>,
-): Map<K, Map<K2, V2>> = if (value.isEmpty()) this - key else this + (key to value)
+private fun <K, K2, V2> MutableMap<K, Map<K2, V2>>.putMapOrRemove(key: K, value: Map<K2, V2>) {
+    if (value.isEmpty()) remove(key) else put(key, value)
+}
 
 private data class PendingRepostTarget(
     val repostedAt: Long,

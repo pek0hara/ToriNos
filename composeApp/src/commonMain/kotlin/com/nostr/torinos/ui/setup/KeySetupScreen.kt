@@ -179,14 +179,14 @@ fun KeySetupScreen(
                     title = "Nostr とは",
                     body = "• Nostrは、特定の会社に依存しないSNSの仕組み（ルール）です\n• アカウントは「鍵」で管理され、どのアプリでも同じIDで使えます\n• 投稿は複数のサーバーに分散して保存され、消えにくいのが特徴です",
                 )
-                Spacer(modifier = Modifier.height(24.dp))
+                Spacer(modifier = Modifier.height(16.dp))
                 Text(
                     text = "ToriNos でポストするには、あなたのアカウントになる鍵が必要です。",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     textAlign = TextAlign.Center,
                 )
-                Spacer(modifier = Modifier.height(24.dp))
+                Spacer(modifier = Modifier.height(16.dp))
 
                 val loggedOutAccounts = storedAccounts.filter { it.isLoggedOut }
                 if (generatedInfo == null && loggedOutAccounts.isNotEmpty()) {
@@ -294,25 +294,33 @@ fun KeySetupScreen(
                 }
             }
 
-            if (generatedInfo == null) {
-                if (!showImportForm) {
-                    Spacer(modifier = Modifier.height(24.dp))
-                    HorizontalDivider()
-                    Spacer(modifier = Modifier.height(24.dp))
+            if (generatedInfo == null && !showImportForm) {
+                // ---- 既存鍵インポート（入力欄は押してから開く） ----
+                Spacer(modifier = Modifier.height(12.dp))
+                Button(
+                    onClick = {
+                        error = null
+                        showImportForm = true
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Text("すでに持っている鍵で始める")
                 }
 
-                if (!showImportForm) {
-                    ExternalSignerLoginSection(
-                        busy = externalLoginBusy,
-                        error = externalLoginError,
-                        onLogin = { save -> runAfterUsageConsent { startExternalLogin(save) } },
-                        // 接続した後に同意を断られると、署名器に接続だけが残るので、開く前に同意を求める。
-                        onOpenNip46 = { runAfterUsageConsent { showNip46Login = true } },
-                    )
-                    Spacer(modifier = Modifier.height(16.dp))
-                }
+                // ---- その他（秘密鍵を渡さないログイン） ----
+                Spacer(modifier = Modifier.height(20.dp))
+                HorizontalDivider()
+                Spacer(modifier = Modifier.height(16.dp))
+                ExternalSignerLoginSection(
+                    busy = externalLoginBusy,
+                    error = externalLoginError,
+                    onLogin = { save -> runAfterUsageConsent { startExternalLogin(save) } },
+                    // 接続した後に同意を断られると、署名器に接続だけが残るので、開く前に同意を求める。
+                    onOpenNip46 = { runAfterUsageConsent { showNip46Login = true } },
+                )
+            }
 
-                // ---- 既存鍵インポート ----
+            if (generatedInfo == null && showImportForm) {
                 Surface(
                     modifier = Modifier.fillMaxWidth(),
                     color = MaterialTheme.colorScheme.surface,
@@ -333,17 +341,7 @@ fun KeySetupScreen(
                             )
                         }
                         Spacer(modifier = Modifier.height(8.dp))
-                        if (!showImportForm) {
-                            Button(
-                                onClick = {
-                                    error = null
-                                    showImportForm = true
-                                },
-                                modifier = Modifier.fillMaxWidth(),
-                            ) {
-                                Text("すでに持っている鍵で始める")
-                            }
-                        } else {
+                        run {
                             PrivateKeyInputField(
                                 value = importKey,
                                 onValueChange = { importKey = it.trim(); error = null },

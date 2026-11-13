@@ -4,6 +4,8 @@ import com.nostr.torinos.emoji.customEmojiMap
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 
 @Serializable
 data class NostrProfile(
@@ -25,14 +27,29 @@ data class NostrProfile(
             ?: name?.takeIf { it.isNotBlank() }
 }
 
-private val profileJson = Json { ignoreUnknownKeys = true }
-
-/** kind:0 イベントの content から NostrProfile をパース */
-fun NostrEvent.toProfile(): NostrProfile? = try {
-    profileJson.decodeFromString<NostrProfile>(content).copy(
+/**
+ * kind:0 イベントの content から NostrProfile をパース。content が JSON オブジェクトでなければ null。
+ *
+ * 項目ごとに読み、文字列でない項目（配列・数値など）だけを「なし」にする。版ごと捨てると、NIP-01 で置き換えられた
+ * 前の版がキャッシュに残り、古い Lightning アドレスへ Zap を送ったり、名前が出なくなったりするため。
+ */
+fun NostrEvent.toProfile(): NostrProfile? {
+    val fields = try {
+        Json.parseToJsonElement(content) as? JsonObject
+    } catch (_: Exception) {
+        null
+    } ?: return null
+    fun text(key: String): String? = (fields[key] as? JsonPrimitive)?.takeIf { it.isString }?.content
+    return NostrProfile(
+        name = text("name"),
+        displayName = text("display_name"),
+        picture = text("picture"),
+        banner = text("banner"),
+        about = text("about"),
+        nip05 = text("nip05"),
+        lud16 = text("lud16"),
+        lud06 = text("lud06"),
         customEmojis = tags.customEmojiMap(),
     )
-} catch (_: Exception) {
-    null
 }
 

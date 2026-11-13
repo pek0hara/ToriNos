@@ -36,13 +36,16 @@ import com.nostr.torinos.ui.profile.AvatarCircle
 import com.nostr.torinos.zap.MAX_ZAP_AMOUNT_SATS
 import com.nostr.torinos.zap.PayEndpoint
 import com.nostr.torinos.zap.ZapException
+import com.nostr.torinos.zap.ZapRecipient
 import com.nostr.torinos.zap.ZapSettingsStore
 import com.nostr.torinos.zap.ZapTarget
 import kotlinx.coroutines.CancellationException
 
 private sealed interface EndpointState {
     data object Loading : EndpointState
-    data class Ready(val endpoint: PayEndpoint) : EndpointState
+    data class Ready(val recipient: ZapRecipient) : EndpointState {
+        val endpoint: PayEndpoint get() = recipient.endpoint
+    }
     data class Failed(val message: String) : EndpointState
 }
 
@@ -66,7 +69,7 @@ internal fun ZapSheet(
 
     LaunchedEffect(target.authorPubkey) {
         endpointState = try {
-            EndpointState.Ready(session.zaps.endpointFor(target))
+            EndpointState.Ready(session.zaps.recipientFor(target))
         } catch (e: CancellationException) {
             throw e
         } catch (e: ZapException) {
@@ -102,7 +105,9 @@ internal fun ZapSheet(
                 AvatarCircle(target.authorPubkey, profile?.bestName, profile?.picture, size = 36)
                 Column {
                     Text(profile?.bestName ?: target.authorPubkey.take(12), style = MaterialTheme.typography.bodyLarge)
-                    (profile?.lud16 ?: profile?.lud06?.let { "LNURL" })?.let {
+                    // 宛先は送るときと同じ決め方で出す。カードのプロフィールの lud16 をそのまま出すと、
+                    // lud16 が壊れていて lud06 で送る場合や、送る前に取り直して変わった場合に、実際の送り先と食い違う。
+                    (endpointState as? EndpointState.Ready)?.recipient?.address?.label?.let {
                         Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                 }

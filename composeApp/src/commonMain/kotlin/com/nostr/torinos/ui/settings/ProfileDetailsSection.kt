@@ -193,10 +193,19 @@ private fun ProfileDetailEditSheet(
         wasUploading = state.isUploadingImage
     }
 
+    // キャッシュで開いたときはその値で埋め、取り直しで値が変わったら、まだ触っていなければ最新にする。
+    var initialText by remember(field) { mutableStateOf<String?>(null) }
     LaunchedEffect(state.loadState) {
-        if (!initialized && state.loadState == ProfileLoadState.Loaded) {
-            text = state.profileDetail(field)
+        val usable = state.loadState == ProfileLoadState.Refreshing || state.loadState == ProfileLoadState.Loaded
+        if (!usable) return@LaunchedEffect
+        val latest = state.profileDetail(field)
+        if (!initialized) {
+            text = latest
+            initialText = latest
             initialized = true
+        } else if (text == initialText) {
+            text = latest
+            initialText = latest
         }
     }
     LaunchedEffect(state.saved) {
@@ -207,7 +216,9 @@ private fun ProfileDetailEditSheet(
     }
 
     // 今のプロフィールを読めたときだけ保存できる。読めないまま1項目だけで保存すると、名前や自己紹介が消えてしまう。
-    val editable = initialized && state.loadState == ProfileLoadState.Loaded && !state.isSaving
+    val editable = initialized &&
+        (state.loadState == ProfileLoadState.Loaded || state.loadState == ProfileLoadState.Refreshing) &&
+        !state.isSaving
     // 保存中・アップロード中は閉じない。アップロード中に閉じると、終わった URL が保存前なのに一覧へ出てしまう。
     val isBusy = state.isSaving || state.isUploadingImage
     val isBusyNow by rememberUpdatedState(isBusy)
@@ -260,7 +271,7 @@ private fun ProfileDetailEditSheet(
                     )
                     TextButton(onClick = viewModel::reload) { Text("もう一度読み込む") }
                 }
-                ProfileLoadState.Loaded -> Unit
+                ProfileLoadState.Refreshing, ProfileLoadState.Loaded -> Unit
             }
 
             if (isImageField) {

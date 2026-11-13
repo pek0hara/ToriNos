@@ -2,12 +2,9 @@ package com.nostr.torinos.ui.profile
 
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.foundation.lazy.LazyListState
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Sms
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.PrimaryTabRow
 import androidx.compose.material3.Scaffold
@@ -23,10 +20,8 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.runtime.collectAsState
-import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.LifecycleStartEffect
 import com.nostr.torinos.account.accountSessionViewModel
-import com.nostr.torinos.ui.components.AppFloatingActionButton
 import com.nostr.torinos.ui.components.NoteTimeline
 import com.nostr.torinos.ui.feed.FeedViewModel
 import com.nostr.torinos.ui.status.StatusComposerSheet
@@ -128,17 +123,6 @@ fun MyProfileScreen(
     Scaffold(
         modifier = Modifier.fillMaxSize(),
         contentWindowInsets = WindowInsets(0),
-        floatingActionButton = {
-            AppFloatingActionButton(
-                // 自分のステータスの編集はヘッダーのステータス表示から行う。
-                onClick = onOpenStatus,
-                icon = Icons.Default.Sms,
-                contentDescription = "ステータスを見る",
-                modifier = Modifier
-                    .navigationBarsPadding()
-                    .padding(bottom = 8.dp),
-            )
-        },
     ) { padding ->
         if (showProfileEdit) {
             EditProfileSheet(
@@ -176,6 +160,11 @@ fun MyProfileScreen(
                 onSubmit = viewModel::publishStatus,
                 onDelete = state.generalStatus?.let {
                     { _: String -> viewModel.deleteGeneralStatus() }
+                },
+                onOpenStatusList = {
+                    showStatusEdit = false
+                    viewModel.clearGeneralStatusError()
+                    onOpenStatus()
                 },
             )
         }

@@ -6,8 +6,6 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -35,48 +33,45 @@ internal fun ExternalSignerLoginSection(
     LaunchedEffect(Unit) {
         nip07Available = runCatching { AccountLogin.isNip07Available() }.getOrDefault(false)
     }
-    Surface(
+    Column(
         modifier = Modifier.fillMaxWidth(),
-        color = MaterialTheme.colorScheme.surface,
-        contentColor = MaterialTheme.colorScheme.onSurface,
-        shape = MaterialTheme.shapes.medium,
+        verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        Column(
-            modifier = Modifier.padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            Text(text = "秘密鍵を渡さずにログイン", style = MaterialTheme.typography.titleSmall)
-            Text(
-                text = "署名は拡張機能や署名アプリが行い、ToriNos には秘密鍵を保存しません。",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            if (isWebPlatform) {
-                Button(
-                    onClick = { onLogin { AccountLogin.saveNip07Account() } },
-                    enabled = nip07Available && !busy,
-                    modifier = Modifier.fillMaxWidth(),
-                ) {
-                    Text("ブラウザ拡張でログイン（NIP-07）")
-                }
-                if (!nip07Available) {
-                    Text(
-                        text = "nos2x や Alby などの Nostr 拡張機能を入れると使えます。",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-            }
-            OutlinedButton(
-                onClick = onOpenNip46,
-                enabled = !busy,
+        Text(
+            text = "秘密鍵を渡さずにログイン",
+            style = MaterialTheme.typography.titleSmall,
+            color = MaterialTheme.colorScheme.onSurface,
+        )
+        Text(
+            text = "署名は拡張機能や署名アプリが行い、ToriNos には秘密鍵を保存しません。",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        if (isWebPlatform) {
+            Button(
+                onClick = { onLogin { AccountLogin.saveNip07Account() } },
+                enabled = nip07Available && !busy,
                 modifier = Modifier.fillMaxWidth(),
             ) {
-                Text("リモート署名でログイン（NIP-46）")
+                Text("ブラウザ拡張でログイン（NIP-07）")
             }
-            error?.let {
-                Text(text = it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+            if (!nip07Available) {
+                Text(
+                    text = "nos2x や Alby などの Nostr 拡張機能を入れると使えます。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
             }
+        }
+        Button(
+            onClick = onOpenNip46,
+            enabled = !busy,
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Text("リモート署名でログイン（NIP-46）")
+        }
+        error?.let {
+            Text(text = it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
         }
     }
 }
