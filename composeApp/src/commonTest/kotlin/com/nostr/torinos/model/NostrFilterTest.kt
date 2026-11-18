@@ -11,6 +11,21 @@ class NostrFilterTest {
     // ---- buildReqMessage ----
 
     @Test
+    fun groupTagFilterIsSentAsHashH() {
+        val msg = buildReqMessage("s", NostrFilter(kinds = listOf(9), hTags = listOf("g1")))
+        assertTrue(msg.contains(""""#h":["g1"]"""), msg)
+    }
+
+    @Test
+    fun groupTagFilterMatchesOnlyThatGroup() {
+        val filter = NostrFilter(hTags = listOf("g1"))
+        val inGroup = NostrEvent("1", "p", 1, 9, listOf(listOf("h", "g1")), "", "s")
+        val otherGroup = NostrEvent("2", "p", 1, 9, listOf(listOf("h", "g2")), "", "s")
+        assertTrue(filter.matches(inGroup))
+        assertFalse(filter.matches(otherGroup))
+    }
+
+    @Test
     fun buildReqMessage_format() {
         val filter = NostrFilter(kinds = listOf(1))
         val msg = buildReqMessage("sub1", filter)

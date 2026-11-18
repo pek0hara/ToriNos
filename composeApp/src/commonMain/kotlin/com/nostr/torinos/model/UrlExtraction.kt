@@ -112,9 +112,12 @@ fun truncateTextPreservingWebUrlsAndCustomEmojis(
     if (countTextWithCustomEmojis(text, customEmojiShortcodes) <= maxLength) return text
 
     val rawLimit = findRawEndForCustomEmojiLength(text, maxLength, customEmojiShortcodes)
-    val end = extractWebUrlMatches(text)
-        .firstOrNull { match -> match.start < rawLimit && rawLimit < match.endExclusive }
-        ?.endExclusive
+    // URL とグループへのリンク（naddr・buzz://）は途中で切らない。切ると開けなくなる。
+    val protectedRanges = extractWebUrlMatches(text).map { it.start until it.endExclusive } +
+        com.nostr.torinos.chat.extractGroupLinks(text).map { it.start until it.endExclusive }
+    val end = protectedRanges
+        .firstOrNull { range -> range.first < rawLimit && rawLimit <= range.last }
+        ?.let { it.last + 1 }
         ?: rawLimit
 
     return text.take(end).trimEnd() + ellipsis

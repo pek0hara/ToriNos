@@ -13,6 +13,7 @@
 - [`refactor-details/README.md`](./refactor-details/README.md) — 全体レビューで選定した7箇所の詳細設計（責務・型・処理フロー・競合対策・移行手順・テスト、主要経路を実装・移行済み）
 
 - [`nip-compatibility-design.md`](./nip-compatibility-design.md) — 下書きのNIP-37互換、リポストのkindと取得先、リアクションとBech32検証の共通規則
+- [`nip29-buzz-design.md`](./nip29-buzz-design.md) — チャットタブ（NIP-29）の設計。標準NIP-29の共通部分を先に作り、Buzzコミュニティ固有の参加・認証・表示を後から足す段階構成とUI（段階1〜4を実装済み、実機確認は未実施）
 
 - [`account-session-viewmodel-architecture.md`](./account-session-viewmodel-architecture.md) — アカウント切り替え時の状態所有権とライフサイクル
 - [`subscription-architecture-design.md`](./subscription-architecture-design.md) — Nostr購読セッション、リレー別状態管理、フィードのエンゲージメント履歴取得と送信キュー

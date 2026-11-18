@@ -167,6 +167,43 @@ object ProfileRepository {
         ProfileCache.putOptimistic(pubkey, profile)
     }
 
+    /** 自分で署名して送った kind:0 を、元イベントごと手元の最新として持つ（Buzz への送り直しに使う）。 */
+    fun recordPublished(event: NostrEvent) {
+        if (event.kind == PROFILE_KIND) ProfileCache.putEvent(event)
+    }
+
+    /** 手元で最新の kind:0 イベント（署名済みのまま送り直せる）。 */
+    fun latestEvent(pubkey: String): NostrEvent? = ProfileCache.latestEvent(pubkey)
+
+    /**
+     * [relayUrl] だけに [pubkey] の kind:0 を聞く。Buzz のコミュニティのリレーにある版を確かめるのに使う。
+     * 受け取った版はキャッシュにも入れる（Buzz のアプリで編集された新しい版を取りこぼさない）。
+     * 認証が要るリレーでは、呼ぶ側が接続を常時接続の側に置いておく。
+     */
+    internal suspend fun fetchFromRelay(
+        pubkey: String,
+        relayUrl: String,
+        timeoutMillis: Long = RELAY_CHECK_TIMEOUT_MS,
+    ): RelayProfileCheck {
+        val result = fetchFiniteEvents(
+            SubscriptionSpec(
+                id = "profile-at-${Random.nextLong().toULong().toString(16)}",
+                filters = listOf(NostrFilter(kinds = listOf(PROFILE_KIND), authors = listOf(pubkey), limit = 1)),
+                target = RelayTarget.Explicit(setOf(relayUrl)),
+                behavior = SubscriptionBehavior.Fetch(timeoutMillis),
+                replayCachedEvents = false,
+            ),
+        )
+        if (result.relays[relayUrl]?.outcome != RelayOutcome.Eose) return RelayProfileCheck.Unanswered
+        val latest = result.events
+            .filter { it.kind == PROFILE_KIND && it.pubkey == pubkey }
+            .maxWithOrNull(compareBy<NostrEvent> { it.createdAt }.thenByDescending { it.id })
+        latest?.let(ProfileCache::putEvent)
+        return RelayProfileCheck.Answered(latest)
+    }
+
+    private const val RELAY_CHECK_TIMEOUT_MS = 10_000L
+
     private const val PROFILE_KIND = 0
     private const val AWAIT_TIMEOUT_MS = 8_500L
     private const val SEARCH_TIMEOUT_MS = 8_000L
@@ -304,6 +341,11 @@ private object ProfileFetchCoordinator {
                 null
             }
             progressive = primaryRelays != null
+            val target = profileFetchTarget(
+                relayHint = batch.relayHint,
+                primaryRelays = primaryRelays,
+                extraRelays = ProfileExtraRelays.current(),
+            )
             session = NostrRepository.openSubscription(
                 SubscriptionSpec(
                     id = batch.subscriptionId,
@@ -314,9 +356,7 @@ private object ProfileFetchCoordinator {
                             limit = batch.pubkeys.size,
                         ),
                     ),
-                    target = batch.relayHint?.let(RelayTarget::Single)
-                        ?: primaryRelays?.let(RelayTarget::Explicit)
-                        ?: RelayTarget.AllEnabled,
+                    target = target,
                     behavior = SubscriptionBehavior.Fetch(
                         if (progressive) PRIMARY_FETCH_TIMEOUT_MS else FETCH_TIMEOUT_MS,
                     ),
@@ -398,6 +438,55 @@ private object ProfileFetchCoordinator {
     private const val FAILURE_COOLDOWN_MS = 5_000L
 }
 
+/**
+ * kind 0 を問い合わせる先。リレー指定 → 先頭の少数リレー(段階取得) → 全リレー の順に決める。
+ *
+ * [extraRelays](Buzz のコミュニティなど、利用者の kind 0 をそこにしか置かないリレー)へは、そのリレーを指定した
+ * 取得(グループの画面からの取得)でだけ聞く。全リレーへの取得には加えない。加えると、フィードで見かけた人の
+ * 問い合わせが認証済みの身元でコミュニティへ伝わり、そのリレーが答えない間は全体の取得が失敗扱いになる。
+ */
+internal fun profileFetchTarget(
+    relayHint: String?,
+    primaryRelays: Set<String>?,
+    extraRelays: Set<String>,
+): RelayTarget = when {
+    // Single は設定済みのリレーに限られ、Buzz のリレーは落ちてしまう。Buzz のリレーは明示して聞く。
+    relayHint != null && relayHint in extraRelays -> RelayTarget.Explicit(setOf(relayHint))
+    relayHint != null -> RelayTarget.Single(relayHint)
+    primaryRelays != null -> RelayTarget.Explicit(primaryRelays)
+    else -> RelayTarget.AllEnabled
+}
+
+/**
+ * 通常のリレー設定には入っていないが、指定されればプロフィール(kind 0)を聞きに行くリレー。
+ * いまのアカウントの Buzz コミュニティを [ChatAccount][com.nostr.torinos.chat.ChatAccount] が登録する。
+ * 認証が要るリレーなので、認証を許したアカウントが持ち主のときだけ使う。
+ */
+object ProfileExtraRelays {
+    private val lock = com.nostr.torinos.util.SynchronousLock()
+    private var owner: Any? = null
+    private var relays: Set<String> = emptySet()
+
+    fun set(owner: Any, relays: Set<String>) {
+        lock.withLock {
+            this.owner = owner
+            this.relays = relays
+        }
+    }
+
+    /** [owner] が今の持ち主のときだけ消す(切り替え後の古いアカウントの後片付けで消さない)。 */
+    fun clear(owner: Any) {
+        lock.withLock {
+            if (this.owner === owner) {
+                this.owner = null
+                relays = emptySet()
+            }
+        }
+    }
+
+    fun current(): Set<String> = lock.withLock { relays }
+}
+
 internal fun profileFallbackPubkeys(
     requestedPubkeys: Set<String>,
     receivedPubkeys: Set<String>,
@@ -423,3 +512,24 @@ internal fun useProgressiveProfileFetch(relayHint: String?, escalated: Boolean, 
  */
 internal fun profilePrimaryRelays(allRelays: Collection<String>, count: Int): Set<String>? =
     if (allRelays.size <= count) null else allRelays.take(count).toCollection(linkedSetOf())
+
+/** 1つのリレーに kind:0 を聞いた結果。 */
+internal sealed interface RelayProfileCheck {
+    /** EOSE まで答えた。[event] が null ならそのリレーには無い。 */
+    data class Answered(val event: NostrEvent?) : RelayProfileCheck
+    /** 答えなかった（認証できない、時間切れなど）。無いのか分からないので送り直さない。 */
+    data object Unanswered : RelayProfileCheck
+}
+
+/**
+ * リレーへ送り直すべき kind:0 を返す。リレーが答え、手元の版の方が新しい（またはリレーに無い）ときだけ送る。
+ * 同じ作成日時なら NIP-01 の規則（ID が小さい方が新しい）で比べる。リレーの方が新しいときは送らない。
+ */
+internal fun profileEventToResend(local: NostrEvent?, check: RelayProfileCheck): NostrEvent? {
+    if (local == null || local.kind != 0 || check !is RelayProfileCheck.Answered) return null
+    val remote = check.event ?: return local
+    if (remote.pubkey != local.pubkey) return null
+    val localIsNewer = local.createdAt > remote.createdAt ||
+        (local.createdAt == remote.createdAt && local.id < remote.id)
+    return local.takeIf { localIsNewer }
+}

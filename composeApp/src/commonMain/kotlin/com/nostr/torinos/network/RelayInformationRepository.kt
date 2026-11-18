@@ -23,6 +23,8 @@ data class RelayInformation(
     val icon: String? = null,
     val description: String? = null,
     val pubkey: String? = null,
+    /** リレー自身の鍵（NIP-11 `self`）。NIP-29 のグループ情報の署名者。 */
+    val self: String? = null,
     val contact: String? = null,
     @SerialName("supported_nips")
     val supportedNips: List<Int> = emptyList(),
@@ -38,6 +40,12 @@ data class RelayInformation(
     @SerialName("language_tags")
     val languageTags: List<String> = emptyList(),
     val tags: List<String> = emptyList(),
+    /** Buzz などの独自拡張（例: `buzz-gif`）。 */
+    @SerialName("supported_extensions")
+    val supportedExtensions: List<String> = emptyList(),
+    /** 外部 ID 連携（NIP-FI）が必須か（Buzz）。 */
+    @SerialName("requires_nip_fi")
+    val requiresNipFi: Boolean? = null,
 )
 
 @Serializable

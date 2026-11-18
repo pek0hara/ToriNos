@@ -2,6 +2,7 @@ package com.nostr.torinos.ui.service
 
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Article
+import androidx.compose.material.icons.filled.Groups
 import androidx.compose.material.icons.filled.EmojiEmotions
 import androidx.compose.material.icons.filled.Forum
 import androidx.compose.material.icons.filled.Sms
@@ -14,6 +15,8 @@ enum class ServiceTab(val label: String, val icon: ImageVector) {
     Channels("チャンネル", Icons.Default.Forum),
     Status("ステータス", Icons.Default.Sms),
     Emojis("絵文字", Icons.Default.EmojiEmotions),
+    /** NIP-29 のグループ。 */
+    Chat("チャット", Icons.Default.Groups),
 }
 
 /** サービス画面のヘッダー下端。サービスの切り替えはフッターで行う。 */

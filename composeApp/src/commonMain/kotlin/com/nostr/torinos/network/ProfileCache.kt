@@ -188,6 +188,11 @@ object ProfileCache {
         entriesByPubkey[pubkey]?.profile
     }
 
+    /** 手元で最新の kind:0 イベント。楽観更新だけで元イベントが無ければ null。 */
+    fun latestEvent(pubkey: String): NostrEvent? = lock.withLock {
+        entriesByPubkey[pubkey]?.event
+    }
+
     fun getAll(pubkeys: Collection<String>): Map<String, NostrProfile> = lock.withLock {
         pubkeys.mapNotNull { pubkey ->
             entriesByPubkey[pubkey]?.profile?.let { pubkey to it }

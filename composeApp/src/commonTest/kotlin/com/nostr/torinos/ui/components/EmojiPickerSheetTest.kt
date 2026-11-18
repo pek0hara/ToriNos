@@ -83,4 +83,39 @@ class EmojiPickerSheetTest {
         assertEquals(listOf("お気に入り"), emojiPickerSections("", EmojiPickerFilter.Favorites,
             emptyList(), emptyList(), emptyList(), emptyList()).map { it.title })
     }
+
+    @Test
+    fun communitySectionComesFirstAndHasItsOwnFilter() {
+        val wave = ReactionOption.Custom("wave", "https://buzz.example/media/w.png")
+        val favorite = ReactionOption.Custom("fav", "https://example.com/fav.png")
+        val titles = emojiPickerSections("", EmojiPickerFilter.All, listOf(favorite), emptyList(), emptyList(), emptyList(),
+            community = EmojiPickerSection("このコミュニティ", listOf(wave)))
+            .map { it.title }
+        assertEquals(listOf("このコミュニティ", "お気に入り") + STANDARD_EMOJI_CATEGORIES.map { it.label }, titles)
+        assertEquals(listOf("このコミュニティ"), emojiPickerSections("", EmojiPickerFilter.Community, listOf(favorite), emptyList(),
+            emptyList(), emptyList(), community = EmojiPickerSection("このコミュニティ", listOf(wave))).map { it.title })
+    }
+
+    @Test
+    fun searchFindsCommunityEmojisFirst() {
+        val wave = ReactionOption.Custom("wave_party", "https://buzz.example/media/w.png")
+        val mine = ReactionOption.Custom("party", "https://example.com/p.png")
+        val sections = emojiPickerSections("party", EmojiPickerFilter.All, emptyList(), emptyList(), emptyList(), listOf(mine),
+            community = EmojiPickerSection("このコミュニティ", listOf(wave)))
+        assertEquals(listOf(wave, mine), sections.single().options.take(2))
+    }
+
+    @Test
+    fun unsendableOptionsAreHiddenEverywhere() {
+        val japanese = ReactionOption.Custom("ぱーてぃ", "https://example.com/p.png")
+        val ok = ReactionOption.Custom("party", "https://example.com/ok.png")
+        val sendable: (ReactionOption) -> Boolean = { it !is ReactionOption.Custom || it.shortcode.all { c -> c.code < 128 } }
+        val all = emojiPickerSections("", EmojiPickerFilter.All, listOf(japanese, ok), listOf(japanese), listOf(japanese), emptyList(),
+            isSendable = sendable)
+        assertEquals(listOf("お気に入り"), all.map { it.title }.filterNot { t -> STANDARD_EMOJI_CATEGORIES.any { it.label == t } })
+        assertEquals(listOf<ReactionOption>(ok), all.first().options)
+        val search = emojiPickerSections("ぱー", EmojiPickerFilter.All, emptyList(), emptyList(), emptyList(), listOf(japanese),
+            isSendable = sendable)
+        assertEquals(emptyList(), search.single().options)
+    }
 }

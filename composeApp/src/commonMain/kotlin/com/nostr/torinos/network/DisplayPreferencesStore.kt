@@ -47,6 +47,19 @@ object DisplayPreferencesStore {
     private val _footerConfig = MutableStateFlow(FooterConfig.Default)
     internal val footerConfig: StateFlow<FooterConfig> = _footerConfig.asStateFlow()
 
+    /** 保存したフッター設定を読み終えたか。起動時の画面（フッターの一番左）はこれを待って決める。 */
+    private val _footerConfigLoaded = MutableStateFlow(false)
+    internal val footerConfigLoaded: StateFlow<Boolean> = _footerConfigLoaded.asStateFlow()
+
+    /** 起動時の画面へ移る処理を、プロセスで1度だけにする（アカウント切り替えや画面の作り直しでは移らない）。 */
+    private var startScreenApplied = false
+
+    internal fun consumeStartScreenRequest(): Boolean {
+        if (startScreenApplied) return false
+        startScreenApplied = true
+        return true
+    }
+
     init {
         scope.launch {
             _showImagePreviews.value = LocalSettingsStorage.getString(ImagePreviewKey)
@@ -57,6 +70,7 @@ object DisplayPreferencesStore {
                 ?.toBoolean() ?: defaultUseFooterComposer
             _fontScale.value = AppFontScale.fromStorage(LocalSettingsStorage.getString(FontScaleKey))
             _footerConfig.value = FooterConfig.parse(LocalSettingsStorage.getString(FooterItemsKey))
+            _footerConfigLoaded.value = true
         }
     }
 

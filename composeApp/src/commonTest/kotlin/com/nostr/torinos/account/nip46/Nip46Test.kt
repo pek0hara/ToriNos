@@ -138,6 +138,14 @@ class Nip46Test {
     }
 
     @Test
+    fun permissionsCoverChatKinds() {
+        // グループへ送る kind、参加中の一覧(10009)、Blossom の認証(24242)。
+        (com.nostr.torinos.chat.GROUP_PUBLISHABLE_KINDS + com.nostr.torinos.chat.BUZZ_COMMAND_KINDS + listOf(10009, 24242)).forEach { kind ->
+            assertTrue(kind in NIP46_SIGNED_KINDS, "kind $kind")
+        }
+    }
+
+    @Test
     fun bunkerLoginSendsTheSecretAndReturnsTheUserPubkey() = runTest {
         val remote = FakeRemote()
         val connected = Nip46Login.connectBunker(

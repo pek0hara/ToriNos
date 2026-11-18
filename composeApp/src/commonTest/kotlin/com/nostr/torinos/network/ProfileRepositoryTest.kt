@@ -122,4 +122,41 @@ class ProfileRepositoryTest {
         assertFalse(useProgressiveProfileFetch(relayHint = "wss://example.com", escalated = false, anyCached = false))
         assertFalse(useProgressiveProfileFetch(relayHint = null, escalated = true, anyCached = false))
     }
+
+    @Test
+    fun extraProfileRelaysAreAskedOnlyWhenNamed() {
+        val buzz = setOf("wss://buzz.example")
+        // 全リレーへの取得には加えない(フィードで見かけた人の問い合わせを、認証済みのコミュニティへ送らない)。
+        assertEquals(
+            RelayTarget.AllEnabled,
+            profileFetchTarget(relayHint = null, primaryRelays = null, extraRelays = buzz),
+        )
+        // 先頭の少数リレーへの段階取得はそのまま。
+        assertEquals(
+            RelayTarget.Explicit(setOf("wss://a.example")),
+            profileFetchTarget(relayHint = null, primaryRelays = setOf("wss://a.example"), extraRelays = buzz),
+        )
+        // Single は設定済みのリレーにしか届かない。Buzz のリレーの指定は、そのリレーへ確実に聞く。
+        assertEquals(
+            RelayTarget.Explicit(setOf("wss://buzz.example")),
+            profileFetchTarget(relayHint = "wss://buzz.example", primaryRelays = null, extraRelays = buzz),
+        )
+        // それ以外のリレー指定は従来どおり(設定済みのリレーだけ)。
+        assertEquals(
+            RelayTarget.Single("wss://other.example"),
+            profileFetchTarget(relayHint = "wss://other.example", primaryRelays = null, extraRelays = buzz),
+        )
+    }
+
+    @Test
+    fun extraProfileRelaysFollowTheCurrentOwner() {
+        val owner = Any()
+        ProfileExtraRelays.set(owner, setOf("wss://buzz.example"))
+        assertEquals(setOf("wss://buzz.example"), ProfileExtraRelays.current())
+        // 別のアカウントの後片付けで消さない。
+        ProfileExtraRelays.clear(Any())
+        assertEquals(setOf("wss://buzz.example"), ProfileExtraRelays.current())
+        ProfileExtraRelays.clear(owner)
+        assertEquals(emptySet(), ProfileExtraRelays.current())
+    }
 }

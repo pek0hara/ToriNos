@@ -1,7 +1,7 @@
 package com.nostr.torinos
 
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Home
+import androidx.compose.material.icons.filled.Public
 import androidx.compose.material.icons.filled.Today
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.unit.Dp
@@ -19,16 +19,33 @@ internal enum class FooterItem(
     val serviceTab: ServiceTab? = null,
     val defaultVisible: Boolean = true,
 ) {
-    Home("home", "ホーム", Icons.Default.Home),
+    /** 保存値の互換のため [storageId] は旧名の home のまま。 */
+    Feed("home", "フィード", Icons.Default.Public),
     Journal("journal", "ジャーナル", Icons.Default.Today),
     Articles("articles", ServiceTab.Articles.label, ServiceTab.Articles.icon, ServiceTab.Articles),
     Channels("channels", ServiceTab.Channels.label, ServiceTab.Channels.icon, ServiceTab.Channels),
     Status("status", ServiceTab.Status.label, ServiceTab.Status.icon, ServiceTab.Status, defaultVisible = false),
     Emojis("emojis", ServiceTab.Emojis.label, ServiceTab.Emojis.icon, ServiceTab.Emojis, defaultVisible = false),
+    /**
+     * 既定で出す。招待リンクを持ってきた人が、参加する場所(チャットタブの参加シート)を見つけられるようにする。
+     * 利用者が隠しても、グループのリンクを開いたときは表示に戻す（[FooterConfig.show]）。
+     */
+    Chat("chat", ServiceTab.Chat.label, ServiceTab.Chat.icon, ServiceTab.Chat),
     ;
 
-    /** ホームは起動時の画面と最上位の Back の戻り先なので、隠せない。 */
-    val canHide: Boolean get() = this != Home
+    /**
+     * フィードは隠せない。サービスのタブを全部隠したときや、URLから開いた画面の戻り先になるため。
+     * 起動時の画面と最上位の Back の戻り先は、フッターの一番左の項目（[FooterConfig.startItem]）。
+     */
+    val canHide: Boolean get() = this != Feed
+
+    /** この項目を選んだときのナビゲーションのルート。サービスのタブは "services" の中で切り替える。 */
+    val route: String
+        get() = when (this) {
+            Feed -> "feed"
+            Journal -> "journal"
+            else -> "services"
+        }
 
     companion object {
         fun fromStorageId(id: String): FooterItem? = entries.firstOrNull { it.storageId == id }
@@ -42,6 +59,9 @@ internal data class FooterConfig(
 ) {
     val visibleItems: List<FooterItem> get() = order.filter { it !in hidden }
 
+    /** 起動時に開き、最上位の Back で戻る項目。フッターの一番左。フィードは隠せないので空にはならない。 */
+    val startItem: FooterItem get() = visibleItems.firstOrNull() ?: FooterItem.Feed
+
     /** サービス画面で切り替えられるタブ。フッターと同じ順に並ぶ。 */
     val serviceTabs: List<ServiceTab> get() = visibleItems.mapNotNull { it.serviceTab }
 
@@ -52,6 +72,9 @@ internal data class FooterConfig(
         item in hidden -> copy(hidden = hidden - item)
         else -> copy(hidden = hidden + item)
     }
+
+    /** [item] を表示にする。表示中なら変えない。 */
+    fun show(item: FooterItem): FooterConfig = if (item in hidden) copy(hidden = hidden - item) else this
 
     /** [item] を [delta] 方向の隣と入れ替える。端を越える移動は無視する。 */
     fun move(item: FooterItem, delta: Int): FooterConfig {
@@ -75,7 +98,7 @@ internal data class FooterConfig(
 
         /**
          * 未知のIDと重複は無視する。保存値にない項目（後から追加した機能）は、既定の順で末尾に既定の表示状態で足す。
-         * ホームは常に表示にする。
+         * フィードは常に表示にする。
          */
         fun parse(stored: String?): FooterConfig {
             val order = mutableListOf<FooterItem>()

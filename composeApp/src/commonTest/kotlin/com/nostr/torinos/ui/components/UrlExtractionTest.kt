@@ -97,4 +97,12 @@ class UrlExtractionTest {
             truncateTextPreservingWebUrlsAndCustomEmojis("a:torinos:bc", 2, setOf("torinos")),
         )
     }
+
+    @Test
+    fun truncationKeepsGroupLinksWhole() {
+        val naddr = com.nostr.torinos.model.encodeNaddr(39000, "c".repeat(64), "g1", listOf("wss://g.example"))
+        val text = "参加してね nostr:$naddr ほかの文"
+        val truncated = truncateTextPreservingWebUrlsAndCustomEmojis(text, maxLength = 20, customEmojiShortcodes = emptySet())
+        assertEquals("参加してね nostr:$naddr…", truncated)
+    }
 }

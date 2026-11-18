@@ -102,7 +102,7 @@ private fun FooterItemRow(
         if (item.canHide) {
             Switch(checked = visible, onCheckedChange = { onToggleVisible() })
         } else {
-            // ホームは常に表示する。無効表示にするとダークテーマでオフに見えるので、操作できないオンとして描く。
+            // フィードは常に表示する。無効表示にするとダークテーマでオフに見えるので、操作できないオンとして描く。
             Switch(
                 checked = true,
                 onCheckedChange = null,

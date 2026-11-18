@@ -65,5 +65,5 @@ private fun mergeFilters(filters: List<NostrFilter>): List<NostrFilter> =
 
 private fun NostrFilter.hasEmptyValue(): Boolean = listOfNotNull(
     ids, authors, eTags, rootEventTags, parentKindTags, rootKindTags, qTags, pTags,
-    rootPubkeyTags, aTags, rootAddressTags, dTags, tTags,
+    rootPubkeyTags, aTags, rootAddressTags, dTags, tTags, hTags,
 ).any { values -> values.any { it.isEmpty() } }

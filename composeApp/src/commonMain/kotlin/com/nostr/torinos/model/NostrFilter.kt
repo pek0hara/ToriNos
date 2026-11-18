@@ -24,6 +24,8 @@ data class NostrFilter(
     @SerialName("#A") val rootAddressTags: List<String>? = null,
     @SerialName("#d") val dTags: List<String>? = null,
     @SerialName("#t") val tTags: List<String>? = null,
+    /** NIP-29 のグループ。 */
+    @SerialName("#h") val hTags: List<String>? = null,
     val search: String? = null,
 )
 
@@ -45,7 +47,8 @@ fun NostrFilter.matches(event: NostrEvent): Boolean {
         event.hasTagIn("a", aTags) &&
         event.hasTagIn("A", rootAddressTags) &&
         event.hasTagIn("d", dTags) &&
-        event.hasTagIn("t", tTags)
+        event.hasTagIn("t", tTags) &&
+        event.hasTagIn("h", hTags)
 }
 
 private fun NostrEvent.hasTagIn(name: String, values: List<String>?): Boolean =

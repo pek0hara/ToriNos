@@ -78,6 +78,56 @@ class AccountSession internal constructor(
         catch (e: Throwable) { _inputFrozen.value = false; throw e }
     }
     val relayStore = AccountRelayStore(this)
+    /** チャット（NIP-29）。最初に使うときに作り、セッションの終了で NIP-42 の署名器を外す。 */
+    internal val chat by lazy {
+        com.nostr.torinos.chat.ChatAccount(resources.scope, pubkey, signer, extraAuthRelays = { dm.dmRelays.value }).also { account ->
+            resources.onClose(account::close)
+        }
+    }
+    /** NIP-17 の DM の受信箱（docs/dm-feature-design.md §8.4.4）。開封した内容はメモリーにだけ持つ。 */
+    internal val dm: com.nostr.torinos.dm.DmInbox by lazy {
+        com.nostr.torinos.dm.DmInbox(
+            scope = resources.scope,
+            signer = signer,
+            readRelays = { relayStore.enabledRelayUrlsSnapshot().toSet() },
+            follows = followRepository.followedPubkeys,
+            muted = muteStore.mutedPubkeys,
+            fetcher = com.nostr.torinos.dm.DmEventFetcher { relays, filters, onEvent ->
+                // NIP-42 の署名器を登録してから読む（DM リレーの多くは認証を求める）。
+                chat.awaitReady()
+                com.nostr.torinos.network.fetchFiniteEvents(
+                    com.nostr.torinos.network.SubscriptionSpec(
+                        id = "dm-" + kotlin.random.Random.nextLong().toULong().toString(16),
+                        filters = filters,
+                        target = com.nostr.torinos.network.RelayTarget.Explicit(relays),
+                        behavior = com.nostr.torinos.network.SubscriptionBehavior.Fetch(timeoutMillis = 10_000),
+                        replayCachedEvents = false,
+                    ),
+                    onEvent = { _, event -> onEvent(event) },
+                ).events
+            },
+            settings = com.nostr.torinos.dm.LocalDmSettings,
+            // 相手の DM リレーは利用者のリレー設定に無いことが多いので、一時接続で送る。read 専用の設定には縛られない。
+            publisher = com.nostr.torinos.dm.DmPublisher { event, relays ->
+                com.nostr.torinos.network.NostrRepository.publishToRelaysWithResult(
+                    event, relays, awaitAcceptance = true, respectRelayWritePolicy = false,
+                ).succeededRelays
+            },
+            // 相手の kind 10050 は、相手の NIP-65 の書き込みリレーにも探しに行く（端末に控えがあるときだけ）。
+            peerHintRelays = { peer ->
+                com.nostr.torinos.network.RelayListEventCache.getOrLoad(peer)?.tags.orEmpty()
+                    .let { tags -> com.nostr.torinos.network.relayEntriesFromTags(tags) }
+                    .filter { it.write }
+                    .map { it.url }
+                    .toSet()
+            },
+        ).also { inbox ->
+            // DM リレーが分かったら、チャレンジを受けたまま待っている接続でいま認証する。
+            resources.scope.launch {
+                inbox.dmRelays.collect { urls -> urls.forEach(com.nostr.torinos.network.NostrRepository::onRelayAuthPolicyChanged) }
+            }
+        }
+    }
     internal val channelPublications by lazy {
         com.nostr.torinos.ui.channel.ChannelPublicationService(
             scope = resources.scope, signer = signer, canStart = { resources.lease.isActive },
@@ -186,6 +236,13 @@ class AccountSession internal constructor(
         emojiPreferenceSync.start()
         badges.start()
         badgeIssuer.start()
+        // 自分の鍵なら、起動時から DM を受信してフッターに未読を出す。外部 signer はチャットタブを開いたとき（§8.4.4）。
+        if (signer.method == SignerMethod.PrivateKey) {
+            resources.scope.launch {
+                relayStore.isLoaded.first { it }
+                dm.start()
+            }
+        }
     }
 
     /** アプリが前面に戻ったとき。 */
@@ -195,6 +252,7 @@ class AccountSession internal constructor(
         zaps.onAppForeground()
         badges.onForeground()
         badgeIssuer.onForeground()
+        dm.refreshIfStarted()
     }
 
     internal fun onClose(action: () -> Unit) {

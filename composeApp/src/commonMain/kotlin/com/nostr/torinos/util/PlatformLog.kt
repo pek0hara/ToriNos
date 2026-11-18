@@ -57,6 +57,18 @@ internal inline fun signerTraceLog(message: () -> String) {
     }
 }
 
+/**
+ * trueにすると Buzz の入力中（kind 20002）の送受信をログ出力する。動作確認用。
+ * 送らなかった理由、リレーの応答、受け取った入力中と表示したかを出す。鍵・本文は出さない。
+ */
+internal const val isTypingTraceEnabled = false
+
+internal inline fun typingTraceLog(message: () -> String) {
+    if (isTypingTraceEnabled) {
+        platformLog("[Typing] ${message()}")
+    }
+}
+
 /** trueにすると購読ごと・リレーごとの通信の流れ（REQ/件数/EOSE/CLOSED/完了）をログ出力する。動作確認用。 */
 internal const val isFetchTraceEnabled = false
 

@@ -68,6 +68,7 @@ import androidx.compose.runtime.collectAsState
 import coil3.compose.LocalPlatformContext
 import coil3.compose.SubcomposeAsyncImage
 import coil3.request.ImageRequest
+import coil3.network.httpHeaders
 import coil3.request.crossfade
 import com.nostr.torinos.crypto.hexToNpub
 import com.nostr.torinos.model.NostrProfile
@@ -1056,7 +1057,15 @@ internal fun ProfileRelayListDialog(
 }
 
 @Composable
-internal fun AvatarCircle(pubkey: String, name: String?, pictureUrl: String? = null, size: Int = 38, modifier: Modifier = Modifier) {
+internal fun AvatarCircle(
+    pubkey: String,
+    name: String?,
+    pictureUrl: String? = null,
+    size: Int = 38,
+    modifier: Modifier = Modifier,
+    /** 認証が要るアイコン(Buzz のメディアなど)のヘッダー。 */
+    headers: Map<String, String> = emptyMap(),
+) {
     val letter = name?.firstOrNull()?.uppercaseChar()
         ?: pubkey.firstOrNull()?.uppercaseChar()
         ?: '?'
@@ -1082,6 +1091,11 @@ internal fun AvatarCircle(pubkey: String, name: String?, pictureUrl: String? = n
             model = ImageRequest.Builder(LocalPlatformContext.current)
                 .data(pictureUrl)
                 .crossfade(true)
+                .apply {
+                    if (headers.isNotEmpty()) {
+                        httpHeaders(coil3.network.NetworkHeaders.Builder().apply { headers.forEach { (k, v) -> set(k, v) } }.build())
+                    }
+                }
                 .build(),
             contentDescription = null,
             contentScale = ContentScale.Crop,

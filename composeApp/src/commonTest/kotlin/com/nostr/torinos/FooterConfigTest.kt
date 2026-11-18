@@ -10,19 +10,44 @@ import kotlin.test.assertTrue
 
 class FooterConfigTest {
     private val defaultOrder = listOf(
-        FooterItem.Home,
+        FooterItem.Feed,
         FooterItem.Journal,
         FooterItem.Articles,
         FooterItem.Channels,
         FooterItem.Status,
         FooterItem.Emojis,
+        FooterItem.Chat,
     )
 
     @Test
-    fun defaultShowsHomeJournalArticlesAndChannels() {
+    fun chatIsShownByDefault() {
+        // 招待リンクを持ってきた人が参加の場所を見つけられるよう、最初から出す。
+        assertTrue(FooterConfig.Default.isVisible(FooterItem.Chat))
+        assertEquals(ServiceTab.Chat, FooterConfig.Default.serviceTabs.last())
+    }
+
+    @Test
+    fun chatHiddenByTheUserStaysHiddenAndCanBeShownAgain() {
+        val hidden = FooterConfig.parse("home,journal,articles,channels,!status,!emojis,!chat")
+        assertFalse(hidden.isVisible(FooterItem.Chat))
+        val shown = hidden.show(FooterItem.Chat)
+        assertTrue(shown.isVisible(FooterItem.Chat))
+        assertEquals(shown, shown.show(FooterItem.Chat))
+    }
+
+    @Test
+    fun storedConfigFromBeforeChatShowsChat() {
+        // チャットが無かった版の保存値には chat が無い。既定どおり表示にする。
+        val config = FooterConfig.parse("home,!journal,articles,channels,!status,!emojis")
+        assertTrue(config.isVisible(FooterItem.Chat))
+        assertFalse(config.isVisible(FooterItem.Journal))
+    }
+
+    @Test
+    fun defaultShowsHomeJournalArticlesChannelsAndChat() {
         assertEquals(defaultOrder, FooterConfig.Default.order)
         assertEquals(
-            listOf(FooterItem.Home, FooterItem.Journal, FooterItem.Articles, FooterItem.Channels),
+            listOf(FooterItem.Feed, FooterItem.Journal, FooterItem.Articles, FooterItem.Channels, FooterItem.Chat),
             FooterConfig.Default.visibleItems,
         )
         assertEquals(setOf(FooterItem.Status, FooterItem.Emojis), FooterConfig.Default.hidden)
@@ -35,11 +60,12 @@ class FooterConfigTest {
         assertEquals(
             listOf(
                 FooterItem.Channels,
-                FooterItem.Home,
+                FooterItem.Feed,
                 FooterItem.Journal,
                 FooterItem.Articles,
                 FooterItem.Status,
                 FooterItem.Emojis,
+                FooterItem.Chat,
             ),
             config.order,
         )
@@ -58,18 +84,19 @@ class FooterConfigTest {
     fun serializeRoundTripsOrderAndHiddenItems() {
         val config = FooterConfig(
             order = listOf(
-                FooterItem.Home,
+                FooterItem.Feed,
                 FooterItem.Articles,
                 FooterItem.Journal,
                 FooterItem.Channels,
                 FooterItem.Status,
                 FooterItem.Emojis,
+                FooterItem.Chat,
             ),
-            hidden = setOf(FooterItem.Journal),
+            hidden = setOf(FooterItem.Journal, FooterItem.Chat),
         )
         val stored = config.serialize()
 
-        assertEquals("home,articles,!journal,channels,status,emojis", stored)
+        assertEquals("home,articles,!journal,channels,status,emojis,!chat", stored)
         assertEquals(config, FooterConfig.parse(stored))
     }
 
@@ -88,20 +115,22 @@ class FooterConfigTest {
             listOf(
                 FooterItem.Emojis,
                 FooterItem.Status,
-                FooterItem.Home,
+                FooterItem.Feed,
                 FooterItem.Journal,
                 FooterItem.Articles,
                 FooterItem.Channels,
+                FooterItem.Chat,
             ),
             config.order,
         )
-        assertEquals(emptySet<FooterItem>(), config.hidden)
+        // 保存値に無い項目は既定の表示状態で足す(チャットは既定で表示)。
+        assertEquals(emptySet(), config.hidden)
     }
 
     @Test
     fun homeIsAlwaysVisible() {
-        assertTrue(FooterConfig.parse("!home,journal").isVisible(FooterItem.Home))
-        assertEquals(FooterConfig.Default, FooterConfig.Default.toggleVisible(FooterItem.Home))
+        assertTrue(FooterConfig.parse("!home,journal").isVisible(FooterItem.Feed))
+        assertEquals(FooterConfig.Default, FooterConfig.Default.toggleVisible(FooterItem.Feed))
     }
 
     @Test
@@ -109,7 +138,7 @@ class FooterConfigTest {
         val hidden = FooterConfig.Default.toggleVisible(FooterItem.Channels)
 
         assertFalse(hidden.isVisible(FooterItem.Channels))
-        assertEquals(listOf(FooterItem.Home, FooterItem.Journal, FooterItem.Articles), hidden.visibleItems)
+        assertEquals(listOf(FooterItem.Feed, FooterItem.Journal, FooterItem.Articles, FooterItem.Chat), hidden.visibleItems)
         assertEquals(FooterConfig.Default, hidden.toggleVisible(FooterItem.Channels))
 
         val shown = FooterConfig.Default.toggleVisible(FooterItem.Emojis)
@@ -121,18 +150,19 @@ class FooterConfigTest {
         val movedUp = FooterConfig.Default.move(FooterItem.Articles, -1)
         assertEquals(
             listOf(
-                FooterItem.Home,
+                FooterItem.Feed,
                 FooterItem.Articles,
                 FooterItem.Journal,
                 FooterItem.Channels,
                 FooterItem.Status,
                 FooterItem.Emojis,
+                FooterItem.Chat,
             ),
             movedUp.order,
         )
         assertEquals(FooterConfig.Default, movedUp.move(FooterItem.Articles, 1))
-        assertEquals(FooterConfig.Default, FooterConfig.Default.move(FooterItem.Home, -1))
-        assertEquals(FooterConfig.Default, FooterConfig.Default.move(FooterItem.Emojis, 1))
+        assertEquals(FooterConfig.Default, FooterConfig.Default.move(FooterItem.Feed, -1))
+        assertEquals(FooterConfig.Default, FooterConfig.Default.move(FooterItem.Chat, 1))
     }
 
     @Test
@@ -147,7 +177,7 @@ class FooterConfigTest {
     fun servicePagesFollowFooterOrderWithoutHiddenItems() {
         val config = FooterConfig(
             order = listOf(
-                FooterItem.Home,
+                FooterItem.Feed,
                 FooterItem.Status,
                 FooterItem.Journal,
                 FooterItem.Articles,
@@ -200,5 +230,28 @@ class FooterConfigTest {
     fun singleOrNoItemFillsTheBar() {
         assertEquals(360.dp, footerItemLayout(maxWidth = 360.dp, itemCount = 1).itemWidth)
         assertFalse(footerItemLayout(maxWidth = 360.dp, itemCount = 0).scrollable)
+    }
+
+    @Test
+    fun feedKeepsTheStoredIdOfFormerHome() {
+        // 旧名「ホーム」の保存値をそのまま読めるようにする。
+        assertEquals(FooterItem.Feed, FooterItem.fromStorageId("home"))
+        assertEquals("フィード", FooterItem.Feed.label)
+        assertFalse(FooterItem.Feed.canHide)
+    }
+
+    @Test
+    fun startItemIsTheLeftmostVisibleItem() {
+        assertEquals(FooterItem.Feed, FooterConfig.Default.startItem)
+        assertEquals(FooterItem.Journal, FooterConfig.parse("journal,home,articles").startItem)
+        // 隠した項目は飛ばす。
+        assertEquals(FooterItem.Channels, FooterConfig.parse("!articles,channels,home,journal").startItem)
+    }
+
+    @Test
+    fun routeOfEachItem() {
+        assertEquals("feed", FooterItem.Feed.route)
+        assertEquals("journal", FooterItem.Journal.route)
+        assertEquals("services", FooterItem.Chat.route)
     }
 }

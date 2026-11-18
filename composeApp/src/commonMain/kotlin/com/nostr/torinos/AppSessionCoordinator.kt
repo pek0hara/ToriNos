@@ -156,6 +156,13 @@ import kotlin.time.Clock
 
 // 型安全なルート定義（パラメータ付き画面）
 @Serializable data class ChannelRoute(val channelId: String)
+/** NIP-29 のグループのチャット画面。 */
+@Serializable data class GroupChatRoute(val relayUrl: String, val groupId: String)
+@Serializable data class DmConversationRoute(val conversationKey: String)
+/** NIP-29 のスレッド（Buzz のスレッド、フォーラムの投稿、kind 11）。 */
+@Serializable data class GroupThreadRoute(val relayUrl: String, val groupId: String, val rootId: String)
+/** NIP-29 のフォーラム（Buzz の forum チャンネル、kind 11 のグループ）。 */
+@Serializable data class GroupForumRoute(val relayUrl: String, val groupId: String)
 @Serializable data class ProfileRoute(val pubkey: String)
 @Serializable data class UserJournalRoute(val pubkey: String)
 @Serializable data class ArticleRoute(val pubkey: String, val identifier: String)
@@ -289,6 +296,8 @@ internal fun AppSessionCoordinator(
         val followingFeedListState = remember { LazyListState() }
         val globalFeedListState = remember { LazyListState() }
         var currentServiceTab by remember { mutableStateOf(ServiceTab.Articles) }
+        /** 通常の投稿などから開いたグループへのリンク。チャットタブが受け取って消す。 */
+        var pendingGroupLink by remember { mutableStateOf<String?>(null) }
         val footerConfig by DisplayPreferencesStore.footerConfig.collectAsState()
         // 記事タブの絞り込み。リレー切り替えでは維持し、アカウント切り替えとアプリ再起動で既定値へ戻る。
         var articleAuthorFilter by remember { mutableStateOf(ArticleAuthorFilter.Following) }
@@ -418,11 +427,65 @@ internal fun AppSessionCoordinator(
             }
         }
 
+        // 閉じる操作は、その画面がスタックの一番上にあるときだけ行う。
+        // 退出は送信を待ってから閉じるので、待つ間に戻る操作をすると2回戻り、スタックが空になって真っ白になっていた。
+        // RESUMED で見ると、開くフェード中に届いたフォーラムへの置き換えを取りこぼすので、一番上かどうかで見る。
+        fun groupNavigation(entry: androidx.navigation.NavBackStackEntry): com.nostr.torinos.ui.chat.GroupNavigation {
+            fun isShowing() = nav.currentBackStackEntry?.id == entry.id
+            return com.nostr.torinos.ui.chat.GroupNavigation(
+                onBack = { if (isShowing()) nav.popBackStack() },
+                onUserClick = ::openProfileDrawer,
+                onOpenGroup = { ref -> nav.navigate(GroupChatRoute(ref.relayUrl, ref.groupId)) },
+                onOpenThread = { ref, rootId -> nav.navigate(GroupThreadRoute(ref.relayUrl, ref.groupId, rootId)) },
+                onReplaceWithForum = { ref ->
+                    if (isShowing()) {
+                        nav.popBackStack()
+                        nav.navigate(GroupForumRoute(ref.relayUrl, ref.groupId))
+                    }
+                },
+            )
+        }
+
+
         fun selectServiceTab(tab: ServiceTab) {
             currentServiceTab = tab
             if (currentRoute == "services") return
             selectFooterRoute("services")
         }
+
+        // 通常の投稿などにあるグループへのリンク。チャットタブを表示にして、そこで開く。
+        // 渡す関数は作り直さない（変わるたびに、リンクを表示している画面が全部作り直されるため）。
+        val latestGroupLinkAction = androidx.compose.runtime.rememberUpdatedState<(String) -> Unit> { link ->
+            DisplayPreferencesStore.setFooterConfig(DisplayPreferencesStore.footerConfig.value.show(FooterItem.Chat))
+            pendingGroupLink = link
+            // フッターの切り替えと同じ導線で移る（今のタブに積んだ画面を閉じ、タブのスタックを壊さない）。
+            selectServiceTab(ServiceTab.Chat)
+        }
+        val groupLinkHandler: (String) -> Unit = remember { { link -> latestGroupLinkAction.value(link) } }
+
+        // フッターの項目を選んだのと同じ導線で移る。ジャーナルは鍵が無ければ移らない（起動直後に鍵設定を出さない）。
+        val latestOpenFooterItem = androidx.compose.runtime.rememberUpdatedState<(FooterItem) -> Unit> { item ->
+            when (item) {
+                FooterItem.Feed -> selectFooterRoute("feed")
+                FooterItem.Journal -> if (ownPubkey != null) selectFooterRoute("journal")
+                else -> selectServiceTab(checkNotNull(item.serviceTab))
+            }
+        }
+
+        // 起動時はフッターの一番左の項目を開く。グラフの起点はフィードなので、保存したフッター設定を読んでから移る。
+        // プロセスで1度だけ行い、読み込み前に利用者が別の画面へ移っていたら何もしない。
+        // Web 版は URL の # で起動時の画面が決まり、その反映が window の load 後になるため対象にしない。
+        LaunchedEffect(Unit) {
+            if (isWebPlatform) return@LaunchedEffect
+            DisplayPreferencesStore.footerConfigLoaded.first { it }
+            if (!DisplayPreferencesStore.consumeStartScreenRequest()) return@LaunchedEffect
+            val start = DisplayPreferencesStore.footerConfig.value.startItem
+            if (start == FooterItem.Feed) return@LaunchedEffect
+            val entry = nav.currentBackStackEntryFlow.first()
+            if (entry.destination.route != "feed" || nav.previousBackStackEntry != null) return@LaunchedEffect
+            latestOpenFooterItem.value(start)
+        }
+
 
         fun requestRelaySettings() {
             relaySettingsNavigationRequest++
@@ -606,6 +669,10 @@ internal fun AppSessionCoordinator(
         val bottomBarRoutes = setOf("feed", "services", "channels", "status", "journal")
         val routeName = currentRoute?.substringBefore("/")
         val isChannelRoute = routeName?.endsWith("ChannelRoute") == true
+        val isGroupChatRoute = routeName?.let {
+            it.endsWith("GroupChatRoute") || it.endsWith("GroupThreadRoute") || it.endsWith("GroupForumRoute") ||
+                it.endsWith("DmConversationRoute")
+        } == true
         val threadRoute = if (routeName?.endsWith("ThreadRoute") == true) {
             runCatching { backStackEntry?.toRoute<ThreadRoute>() }.getOrNull()
         } else {
@@ -682,18 +749,23 @@ internal fun AppSessionCoordinator(
             }
         }
 
-        // タブの最上位でのBackはすぐにアプリを閉じない。ジャーナルとコンテンツはホームへ戻し、
-        // ホームでは案内を出して、続けてもう一度Backしたときだけシステムに任せて閉じる。
+        // タブの最上位でのBackはすぐにアプリを閉じない。ほかのタブはフッターの一番左の項目へ戻し、
+        // 一番左の項目では案内を出して、続けてもう一度Backしたときだけシステムに任せて閉じる。
         // 簡易投稿欄やドロワーのBackを優先させるため、それらより先に登録する。
         var isExitArmed by remember { mutableStateOf(false) }
         var exitArmJob by remember { mutableStateOf<Job?>(null) }
         val isTopLevelRoute = (currentRoute == "feed" || currentRoute == "journal" || currentRoute == "services") &&
             nav.previousBackStackEntry == null
+        val startItem = footerConfig.startItem
+        // 鍵が無いとジャーナルは開けないので、そのときはフィードを戻り先にする。
+        val backHomeItem = if (startItem == FooterItem.Journal && ownPubkey == null) FooterItem.Feed else startItem
+        val isOnBackHome = currentRoute == backHomeItem.route &&
+            (backHomeItem.serviceTab == null || resolveServiceTab(currentServiceTab, footerConfig.serviceTabs) == backHomeItem.serviceTab)
         TopLevelBackHandler(
-            enabled = isTopLevelRoute && !(currentRoute == "feed" && isExitArmed),
+            enabled = isTopLevelRoute && !(isOnBackHome && isExitArmed),
         ) {
-            if (currentRoute != "feed") {
-                navigateFeedTab()
+            if (!isOnBackHome) {
+                latestOpenFooterItem.value(backHomeItem)
                 return@TopLevelBackHandler
             }
             isExitArmed = true
@@ -1070,22 +1142,27 @@ internal fun AppSessionCoordinator(
             val isServiceRoute = currentRoute == "services" ||
                 currentRoute == "channels" ||
                 isChannelRoute ||
+                isGroupChatRoute ||
                 isChannelThreadRoute ||
                 currentRoute == "status"
             // チャンネル詳細は通知などサービス外から開くこともあるので、ルートからチャンネルを選択中とする。
-            val activeServiceTab = if (isChannelRoute || isChannelThreadRoute) ServiceTab.Channels else currentServiceTab
+            val activeServiceTab = when {
+                isChannelRoute || isChannelThreadRoute -> ServiceTab.Channels
+                isGroupChatRoute -> ServiceTab.Chat
+                else -> currentServiceTab
+            }
             // ボトムバーとNavigationRailで同じ導線を、設定の並び順で共有する。
             val footerDestinations = footerConfig.visibleItems.map { item ->
                 MainDestination(
                     icon = item.icon,
                     label = item.label,
                     selected = when (item) {
-                        FooterItem.Home -> currentRoute == "feed"
+                        FooterItem.Feed -> currentRoute == "feed"
                         FooterItem.Journal -> currentRoute == "journal"
                         else -> isServiceRoute && activeServiceTab == item.serviceTab
                     },
                     onClick = when (item) {
-                        FooterItem.Home -> {
+                        FooterItem.Feed -> {
                             {
                                 if (currentRoute == "feed") {
                                     feedChromeState.collapseFraction = 0f
@@ -1175,7 +1252,10 @@ internal fun AppSessionCoordinator(
                             "feed", "journal" -> when (composer.presentation) {
                                 ComposerPresentation.Hidden -> if (currentRoute == "feed") Box(
                                     modifier = Modifier.graphicsLayer {
-                                        translationY = bottomBarHeightPx * activeFeedChromeCollapseFraction()
+                                        // 下へスクロールして下部バーが隠れるのに合わせ、FAB も画面の外まで下げる。
+                                        // バーの高さだけだと FAB が残り、最後の投稿の操作ボタンに被る。
+                                        val hideDistance = bottomBarHeightPx + size.height + FabHideMargin.toPx()
+                                        translationY = hideDistance * activeFeedChromeCollapseFraction()
                                     },
                                 ) {
                                     PostFloatingActionButton(
@@ -1276,6 +1356,9 @@ internal fun AppSessionCoordinator(
             ) {
                 // 各画面の戻るは dropUnlessResumed で包む。閉じるアニメーション中の画面にも
                 // タップが届くため、戻るの直後に同じ位置を押すと2回戻ってスタックが空になり、真っ白になる。
+                androidx.compose.runtime.CompositionLocalProvider(
+                    com.nostr.torinos.ui.components.LocalGroupLinkHandler provides groupLinkHandler,
+                ) {
                 AppNavigationGraph(
                     navController = nav,
                     modifier = Modifier.weight(1f),
@@ -1319,11 +1402,14 @@ internal fun AppSessionCoordinator(
                         )
                     }
                     composable("services") {
-                        // コンテンツの切り替えは、ホームやジャーナルへのタブ切り替えと同じフェードにする。
+                        // コンテンツの切り替えは、フィードやジャーナルへのタブ切り替えと同じフェードにする。
                         // 左右スワイプでは切り替えない（本文の横スクロールやフィードのスワイプと揃えて混同を避ける）。
-                        val servicePages = footerConfig.serviceTabs
+                        // リンクから開くときは、フッターの設定がまだ反映されていなくてもチャットタブを開けるようにする。
+                        val servicePages = footerConfig.serviceTabs.let { pages ->
+                            if (pendingGroupLink != null && ServiceTab.Chat !in pages) pages + ServiceTab.Chat else pages
+                        }
                         // 非表示にしたコンテンツや URL から開いたコンテンツは、表示中の最初のコンテンツに寄せる。
-                        // 1つも表示していなければホームへ移る。
+                        // 1つも表示していなければフィードへ移る。
                         val resolvedServiceTab = resolveServiceTab(currentServiceTab, servicePages)
                         LaunchedEffect(resolvedServiceTab, currentServiceTab) {
                             when (resolvedServiceTab) {
@@ -1358,6 +1444,28 @@ internal fun AppSessionCoordinator(
                                                     onOpenRelaySettings = ::requestRelaySettings,
                                                 )
                                             },
+                                        )
+                                    }
+                                    ServiceTab.Chat -> {
+                                        com.nostr.torinos.ui.chat.ChatTabScreen(
+                                            ownPubkey = ownPubkey,
+                                            ownProfile = ownProfile,
+                                            onOpenProfile = { requestOwnProfile() },
+                                            onOpenSettings = { openSettings() },
+                                            onOpenGroup = { ref, layout ->
+                                                if (layout == com.nostr.torinos.chat.GroupLayout.Forum) {
+                                                    nav.navigate(GroupForumRoute(ref.relayUrl, ref.groupId))
+                                                } else {
+                                                    nav.navigate(GroupChatRoute(ref.relayUrl, ref.groupId))
+                                                }
+                                            },
+                                            onGroupJoined = {
+                                                DisplayPreferencesStore.setFooterConfig(footerConfig.show(FooterItem.Chat))
+                                            },
+                                            pendingLink = pendingGroupLink,
+                                            onPendingLinkConsumed = { pendingGroupLink = null },
+                                            onOpenThread = { ref, rootId -> nav.navigate(GroupThreadRoute(ref.relayUrl, ref.groupId, rootId)) },
+                                            onOpenDm = { key -> nav.navigate(DmConversationRoute(key)) },
                                         )
                                     }
                                     ServiceTab.Channels -> {
@@ -1442,7 +1550,7 @@ internal fun AppSessionCoordinator(
                             onUserClick = ::openProfileDrawer,
                             onOpenRelaySettings = ::requestRelaySettings,
                             onOpenSettings = { openSettings() },
-                            // URL（#status-page）から直接開いたときは戻り先がないので、ホームへ移る。
+                            // URL（#status-page）から直接開いたときは戻り先がないので、フィードへ移る。
                             onBack = dropUnlessResumed {
                                 if (nav.previousBackStackEntry != null) nav.popBackStack() else selectFooterRoute("feed")
                             },
@@ -1565,6 +1673,35 @@ internal fun AppSessionCoordinator(
                             onOpenRelaySettings = {
                                 requestRelaySettings()
                             },
+                        )
+                    }
+                    composable<GroupChatRoute> { backStack ->
+                        val route = backStack.toRoute<GroupChatRoute>()
+                        com.nostr.torinos.ui.chat.GroupChatScreen(
+                            ref = com.nostr.torinos.chat.GroupRef(route.relayUrl, route.groupId),
+                            navigation = groupNavigation(backStack),
+                        )
+                    }
+                    composable<DmConversationRoute> { backStack ->
+                        val route = backStack.toRoute<DmConversationRoute>()
+                        com.nostr.torinos.ui.chat.DmConversationScreen(
+                            conversationKey = route.conversationKey,
+                            onBack = { nav.popBackStack() },
+                        )
+                    }
+                    composable<GroupThreadRoute> { backStack ->
+                        val route = backStack.toRoute<GroupThreadRoute>()
+                        com.nostr.torinos.ui.chat.GroupThreadScreen(
+                            ref = com.nostr.torinos.chat.GroupRef(route.relayUrl, route.groupId),
+                            rootId = route.rootId,
+                            navigation = groupNavigation(backStack),
+                        )
+                    }
+                    composable<GroupForumRoute> { backStack ->
+                        val route = backStack.toRoute<GroupForumRoute>()
+                        com.nostr.torinos.ui.chat.GroupForumScreen(
+                            ref = com.nostr.torinos.chat.GroupRef(route.relayUrl, route.groupId),
+                            navigation = groupNavigation(backStack),
                         )
                     }
                     composable<ChannelRoute> { backStack ->
@@ -1772,6 +1909,7 @@ internal fun AppSessionCoordinator(
                         )
                     }
                 }
+                }
             }
             }
         }
@@ -1906,6 +2044,9 @@ private fun PublishFailureDialog(
         },
     )
 }
+
+/** FAB を隠すときに、画面下端の余白（Scaffold が FAB の下に空ける 16dp）も越えて下げる量。 */
+private val FabHideMargin = 16.dp
 
 @Composable
 private fun PostFloatingActionButton(

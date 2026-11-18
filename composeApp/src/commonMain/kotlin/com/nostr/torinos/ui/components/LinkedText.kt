@@ -32,6 +32,12 @@ import com.nostr.torinos.model.NostrProfile
 import com.nostr.torinos.model.extractNpubReferences
 import kotlin.math.roundToInt
 
+/**
+ * 本文中のグループへのリンク（kind 39000 の naddr、`buzz://`）を開く処理。チャットタブを用意した画面だけが与える。
+ * null の間は、これらのリンクを普通の文字として表示する。
+ */
+val LocalGroupLinkHandler = androidx.compose.runtime.compositionLocalOf<((String) -> Unit)?> { null }
+
 private val hashtagTextRegex = Regex("""(?<![\p{L}\p{N}_])#[\p{L}\p{N}_]+""")
 
 /** テキスト内のURLをクリッカブルリンクにして表示する。登録済みカスタム絵文字(:shortcode:)はインライン画像に置換する */
@@ -69,8 +75,16 @@ fun LinkedText(
     )
     val includeProfiles = onProfileClick != null
     val includeHashtags = onHashtagClick != null
-    val links = remember(text, includeProfiles, includeHashtags, enableWebLinks) {
-        buildList {
+    val groupLinkHandler = LocalGroupLinkHandler.current
+    val includeGroups = groupLinkHandler != null
+    val links = remember(text, includeProfiles, includeHashtags, enableWebLinks, includeGroups) {
+        val groupLinks = if (includeGroups) {
+            com.nostr.torinos.chat.extractGroupLinks(text).map { TextLink.Group(it.start, it.endExclusive, it.uri) }
+        } else {
+            emptyList()
+        }
+        fun overlapsGroup(start: Int, end: Int) = groupLinks.any { start < it.endExclusive && end > it.start }
+        groupLinks + buildList {
             if (enableWebLinks) {
                 extractClickableUriMatches(text).forEach { match ->
                     add(TextLink.Uri(match.start, match.endExclusive, match.uri, match.text))
@@ -87,7 +101,7 @@ fun LinkedText(
                     add(TextLink.Hashtag(match.range.first, match.range.last + 1, tag))
                 }
             }
-        }.sortedBy { it.start }
+        }.filterNot { overlapsGroup(it.start, it.endExclusive) }.sortedBy { it.start }
     }
 
     val emojiSegments = remember(text, emojiMap) {
@@ -114,7 +128,7 @@ fun LinkedText(
         .joinToString(separator = "|") { link ->
             profiles[link.pubkey]?.bestName?.takeIf { it.isNotBlank() }.orEmpty()
         }
-    val annotated = remember(text, links, emojiSegments, unregisteredEmojiSegments, profileLabelKey, linkColor, onProfileClick, onHashtagClick) {
+    val annotated = remember(text, links, emojiSegments, unregisteredEmojiSegments, profileLabelKey, linkColor, onProfileClick, onHashtagClick, groupLinkHandler) {
         buildAnnotatedString {
             val allSegments: List<Segment> = (
                 links.map { Segment.Link(it) } +
@@ -147,6 +161,17 @@ fun LinkedText(
                                 ),
                             )
                             append("@$label")
+                            pop()
+                        }
+                        is TextLink.Group -> {
+                            pushLink(
+                                LinkAnnotation.Clickable(
+                                    tag = "group:${link.uri}",
+                                    styles = linkStyle,
+                                    linkInteractionListener = { groupLinkHandler?.invoke(link.uri) },
+                                ),
+                            )
+                            append(if (link.uri.startsWith("buzz://", ignoreCase = true)) "💬 Buzz のメッセージ" else "💬 グループへのリンク")
                             pop()
                         }
                         is TextLink.Hashtag -> {
@@ -318,6 +343,7 @@ private sealed class TextLink(
     class Uri(start: Int, endExclusive: Int, val uri: String, val text: String) : TextLink(start, endExclusive)
     class Profile(start: Int, endExclusive: Int, val pubkey: String) : TextLink(start, endExclusive)
     class Hashtag(start: Int, endExclusive: Int, val tag: String) : TextLink(start, endExclusive)
+    class Group(start: Int, endExclusive: Int, val uri: String) : TextLink(start, endExclusive)
 }
 
 private fun String.shortPubkey(): String = take(8) + "…" + takeLast(8)

@@ -453,7 +453,7 @@ private fun ChannelRow(
     onDetailClick: () -> Unit = {},
 ) {
     val activityTime = item.lastActivityAt ?: item.event.createdAt
-    val timeText = relativeTime(activityTime)
+    val timeText = com.nostr.torinos.ui.chat.chatRelativeTime(activityTime)
     var menuExpanded by remember(item.event.id) { mutableStateOf(false) }
 
     Row(
@@ -583,18 +583,6 @@ private fun ChannelRow(
                 }
             }
         }
-    }
-}
-
-private fun relativeTime(epochSeconds: Long): String {
-    val now = Clock.System.now().epochSeconds
-    val diff = now - epochSeconds
-    return when {
-        diff < 60L -> "たった今"
-        diff < 3600L -> "${diff / 60L}分前"
-        diff < 86400L -> "${diff / 3600L}時間前"
-        diff < 86400L * 30L -> "${diff / 86400L}日前"
-        else -> "${diff / (86400L * 30L)}ヶ月前"
     }
 }
 

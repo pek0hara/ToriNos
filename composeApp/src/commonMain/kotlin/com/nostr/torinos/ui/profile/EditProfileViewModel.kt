@@ -185,7 +185,17 @@ class EditProfileViewModel(
         loadJob = launch {
             // 保存すると kind 0 を丸ごと置き換えるので、キャッシュがあっても取り直しの完了を待つ
             // （他のクライアントで変えた Lightning アドレスなどを古い値で上書きしないように）。
-            val profile = pubkey?.let { ProfileRepository.awaitFresh(it, maxAgeMillis = 0L, timeoutMillis = 10_000L) }
+            // Buzz のアプリで編集した版はコミュニティのリレーにしか無いので、そちらにも聞いてから新しい方を使う。
+            val profile = pubkey?.let {
+                kotlinx.coroutines.coroutineScope {
+                    val fromCommunities = launch {
+                        kotlinx.coroutines.withTimeoutOrNull(10_000L) { accountSession.chat.refreshOwnProfileFromCommunities() }
+                    }
+                    ProfileRepository.awaitFresh(it, maxAgeMillis = 0L, timeoutMillis = 10_000L)
+                    fromCommunities.join()
+                    ProfileRepository.getCached(it)
+                }
+            }
             val current = _state.value
             _state.value = when {
                 profile == null -> current.copy(loadState = ProfileLoadState.NotFound)
@@ -280,6 +290,8 @@ class EditProfileViewModel(
                     tags = emojiTags,
                 )
                 NostrRepository.publish(event)
+                // Buzz のコミュニティは自分のリレーの kind 0 しか見ないので、そちらにも送る。
+                accountSession.chat.publishProfileToBuzzCommunities(event)
                 event
             }.onSuccess {
                 val customEmojis = emojiTags.customEmojiMap()
@@ -295,6 +307,8 @@ class EditProfileViewModel(
                     customEmojis = customEmojis,
                 )
                 ProfileRepository.applyOptimistic(it.pubkey, savedProfile)
+                // 元イベントごと持っておき、あとで Buzz のリレーの版が古ければこれを送り直す。
+                ProfileRepository.recordPublished(it)
                 _state.value = _state.value.copy(isSaving = false, saved = true, savedProfile = savedProfile)
             }.onFailure { e ->
                 _state.value = _state.value.copy(isSaving = false, error = e.message ?: "保存に失敗しました")

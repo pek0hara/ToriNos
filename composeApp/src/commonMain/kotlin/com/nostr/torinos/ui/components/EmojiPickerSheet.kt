@@ -87,12 +87,15 @@ internal sealed interface EmojiPickerFilter {
     data object All : EmojiPickerFilter
     data object Favorites : EmojiPickerFilter
     data object Custom : EmojiPickerFilter
+    /** グループのコミュニティの絵文字（Buzz）。 */
+    data object Community : EmojiPickerFilter
     data class Category(val category: StandardEmojiCategory) : EmojiPickerFilter
 }
 
 /**
  * 表示するセクション。検索語（正規化済み）があれば絞り込みより優先して検索結果だけを出す。
- * 「すべて」はお気に入り → 最近使った項目 → カスタム絵文字 → 標準カテゴリの順で、空のセクションは出さない。
+ * 「すべて」は（グループなら）コミュニティ → お気に入り → 最近使った項目 → カスタム絵文字 → 標準カテゴリの順で、
+ * 空のセクションは出さない。[isSendable] を満たさない項目はどこにも出さない（グループのリレーが拒否するもの）。
  */
 internal fun emojiPickerSections(
     query: String,
@@ -101,6 +104,28 @@ internal fun emojiPickerSections(
     recent: List<ReactionOption>,
     custom: List<ReactionOption>,
     searchableCustom: List<ReactionOption.Custom>,
+    community: EmojiPickerSection? = null,
+    isSendable: (ReactionOption) -> Boolean = { true },
+): List<EmojiPickerSection> =
+    unfilteredEmojiPickerSections(query, filter, favorites, recent, custom, searchableCustom, community)
+        .map { section -> section.copy(options = section.options.filter(isSendable)) }
+        .let { sections ->
+            if (query.isNotBlank() || filter != EmojiPickerFilter.All) {
+                sections
+            } else {
+                val standardTitles = STANDARD_EMOJI_CATEGORIES.map { it.label }.toSet()
+                sections.filter { it.options.isNotEmpty() || it.title in standardTitles }
+            }
+        }
+
+private fun unfilteredEmojiPickerSections(
+    query: String,
+    filter: EmojiPickerFilter,
+    favorites: List<ReactionOption>,
+    recent: List<ReactionOption>,
+    custom: List<ReactionOption>,
+    searchableCustom: List<ReactionOption.Custom>,
+    community: EmojiPickerSection?,
 ): List<EmojiPickerSection> {
     if (query.isNotBlank()) {
         val unicodeMatches = STANDARD_EMOJI_CATEGORIES.flatMap { category ->
@@ -110,14 +135,18 @@ internal fun emojiPickerSections(
                     EMOJI_SEARCH_KEYWORDS[emoji].orEmpty().any { query in it }
             }
         }.distinct().map { ReactionOption.Unicode(it) }
+        val communityMatches = community?.options.orEmpty()
+            .filter { it is ReactionOption.Custom && query in it.shortcode.lowercase() }
         val customMatches = searchableCustom.filter { query in it.shortcode.lowercase() }
-        return listOf(EmojiPickerSection("検索結果", customMatches + unicodeMatches))
+        return listOf(EmojiPickerSection("検索結果", (communityMatches + customMatches + unicodeMatches).distinctBy { it.key }))
     }
     return when (filter) {
         EmojiPickerFilter.Custom -> listOf(EmojiPickerSection("カスタム絵文字", custom))
+        EmojiPickerFilter.Community -> listOfNotNull(community)
         EmojiPickerFilter.Favorites -> listOf(EmojiPickerSection("お気に入り", favorites))
         is EmojiPickerFilter.Category -> listOf(filter.category.toSection())
-        EmojiPickerFilter.All -> listOf(
+        EmojiPickerFilter.All -> listOfNotNull(
+            community,
             EmojiPickerSection("お気に入り", favorites),
             EmojiPickerSection("最近使った項目", recent),
             EmojiPickerSection("カスタム絵文字", custom),
@@ -141,6 +170,10 @@ internal fun StandardEmojiPickerSheet(
     showEmojiSetsButton: Boolean = true,
     /** リアクション用に開くときだけ渡す。投稿欄からは渡さない。 */
     defaultReactionMode: DefaultReactionPickerMode? = null,
+    /** グループ（Buzz）で開くときのコミュニティの絵文字。フィードからは渡さない。 */
+    community: CommunityEmojiPickerSource? = null,
+    /** 送れる項目か。グループのリレーが拒否するものを出さない。フィードからは渡さない。 */
+    isSendable: (ReactionOption) -> Boolean = { true },
 ) {
     DismissKeyboardOnLeave()
     val accountSession = LocalAccountSession.current
@@ -200,8 +233,13 @@ internal fun StandardEmojiPickerSheet(
     val favoriteOptions = remember(emojiPreferences, favoriteEmojis) {
         favoriteEmojis.map { emojiPreferences.toReactionOption(it) }
     }
+    val communitySection = remember(community?.emojis) {
+        community?.let { source ->
+            EmojiPickerSection(COMMUNITY_SECTION_TITLE, source.emojis.map { ReactionOption.Custom(it.shortcode, it.imageUrl) })
+        }
+    }
     val visibleSections = remember(
-        normalizedQuery, filter, customOptions, favoriteOptions, recentOptions, searchableCustomOptions,
+        normalizedQuery, filter, customOptions, favoriteOptions, recentOptions, searchableCustomOptions, communitySection, isSendable,
     ) {
         emojiPickerSections(
             query = normalizedQuery,
@@ -210,6 +248,8 @@ internal fun StandardEmojiPickerSheet(
             recent = recentOptions,
             custom = customOptions,
             searchableCustom = searchableCustomOptions,
+            community = communitySection,
+            isSendable = isSendable,
         )
     }
 
@@ -268,6 +308,9 @@ internal fun StandardEmojiPickerSheet(
                 shape = RoundedCornerShape(14.dp),
             )
             Spacer(modifier = Modifier.height(10.dp))
+            if (community != null && normalizedQuery.isBlank() && filter in setOf(EmojiPickerFilter.All, EmojiPickerFilter.Community)) {
+                CommunityEmojiStatus(community)
+            }
 
             LazyVerticalGrid(
                 columns = GridCells.Adaptive(minSize = 42.dp),
@@ -357,6 +400,15 @@ internal fun StandardEmojiPickerSheet(
                     selected = filter == EmojiPickerFilter.Favorites,
                     onClick = { select(EmojiPickerFilter.Favorites) },
                 )
+                if (community != null) {
+                    EmojiCategoryButton(
+                        icon = "🏠",
+                        customImageUrl = community.emojis.firstOrNull()?.imageUrl,
+                        label = COMMUNITY_SECTION_TITLE,
+                        selected = filter == EmojiPickerFilter.Community,
+                        onClick = { select(EmojiPickerFilter.Community) },
+                    )
+                }
                 EmojiCategoryButton(
                     icon = "✦",
                     customImageUrl = savedCustomEmojis.firstOrNull()?.imageUrl,
@@ -376,6 +428,44 @@ internal fun StandardEmojiPickerSheet(
 
             Spacer(modifier = Modifier.height(8.dp))
         }
+    }
+}
+
+private const val COMMUNITY_SECTION_TITLE = "このコミュニティ"
+
+/** グループのコミュニティの絵文字（Buzz の kind 30030 `buzz:custom-emoji` の和集合）。 */
+internal data class CommunityEmojiPickerSource(
+    val emojis: List<CustomEmoji>,
+    val isLoading: Boolean,
+    /** 一度も読めていない。 */
+    val failed: Boolean,
+    /** 一覧が上限で切れているかもしれない。 */
+    val truncated: Boolean,
+    val onRetry: () -> Unit,
+)
+
+/** コミュニティの絵文字の読み込み中・失敗の表示。読めた一覧があればそれを出したまま、何も出さない。 */
+@Composable
+private fun CommunityEmojiStatus(source: CommunityEmojiPickerSource) {
+    val text = when {
+        source.failed -> "コミュニティの絵文字を読み込めませんでした"
+        source.isLoading && source.emojis.isEmpty() -> "コミュニティの絵文字を読み込み中…"
+        source.truncated -> "コミュニティの絵文字が多いため、一部だけ表示しています"
+        else -> return
+    }
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(bottom = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        if (source.isLoading) CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+        Text(
+            text = text,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.weight(1f),
+        )
+        if (source.failed && !source.isLoading) TextButton(onClick = source.onRetry) { Text("再試行") }
     }
 }
 
@@ -488,10 +578,10 @@ internal fun ReactionOptionIcon(
     when (option) {
         null -> Text(text = "❤️", fontSize = emojiSize)
         is ReactionOption.Unicode -> Text(text = option.value, fontSize = emojiSize)
-        is ReactionOption.Custom -> NetworkImage(
+        is ReactionOption.Custom -> CustomEmojiImage(
             url = option.imageUrl,
+            shortcode = option.shortcode,
             contentDescription = null,
-            contentScale = ContentScale.Fit,
             maxDecodeSizePx = maxDecodeSizePx,
             modifier = Modifier.size(imageSize),
         )
@@ -533,6 +623,7 @@ private fun EmojiCategoryButton(
 ) {
     val density = LocalDensity.current
     val decodeSizePx = remember(density) { with(density) { 24.dp.roundToPx() } }
+    val customImageHeaders = customImageUrl?.let { LocalEmojiImageHeaders.current(it) }
     Box(
         modifier = Modifier
             .size(38.dp)
@@ -551,12 +642,13 @@ private fun EmojiCategoryButton(
                 modifier = Modifier.size(24.dp),
                 tint = MaterialTheme.colorScheme.onSurfaceVariant,
             )
-        } else if (customImageUrl != null) {
+        } else if (customImageUrl != null && customImageHeaders != null) {
             NetworkImage(
                 url = customImageUrl,
                 contentDescription = null,
                 contentScale = ContentScale.Fit,
                 maxDecodeSizePx = decodeSizePx,
+                headers = customImageHeaders,
                 modifier = Modifier.size(24.dp),
             )
         } else {

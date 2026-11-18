@@ -192,6 +192,12 @@ fun SettingsScreen(
                     HorizontalDivider()
                 }
             }
+            if (ownPubkey != null && hasAccountSession) {
+                item {
+                    ChatSettingsSection(ownPubkey = ownPubkey)
+                    HorizontalDivider()
+                }
+            }
             item {
                 SettingsLinkSection("絵文字", "カスタム絵文字", onCustomEmojiClick)
                 HorizontalDivider()
