@@ -42,3 +42,6 @@ fastlane/README.md
 # Local Copilot/Claude settings
 .claude/settings.local.json
 fastlane/play-service-account.json
+
+# store listing assets (contain unpublished device captures)
+output/
