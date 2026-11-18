@@ -52,6 +52,8 @@ data class RelayPublishResult(
     val succeededRelays: Set<String>,
     val failedRelays: Map<String, String>,
     val rejectedRelays: Set<String> = emptySet(),
+    /** 受理したリレーが OK に付けたメッセージ（受理を待ったときだけ）。Buzz の命令の結果や `duplicate:` が入る。 */
+    val acceptedMessages: Map<String, String> = emptyMap(),
 ) {
     val successCount: Int get() = succeededRelays.size
     val failureCount: Int get() = failedRelays.size
@@ -59,6 +61,13 @@ data class RelayPublishResult(
 }
 
 internal class RelayRejectedException(message: String) : IllegalStateException(message)
+
+/**
+ * `auth-required:` で拒否された送信を、NIP-42 で認証してから1回だけ送り直すか。
+ * 認証を許したリレー（参加中のグループ、自分の DM リレーなど）だけ。それ以外には公開鍵を知らせない。
+ */
+internal fun shouldRetryPublishAfterAuth(rejection: String, awaitAcceptance: Boolean, canAuthenticate: Boolean): Boolean =
+    awaitAcceptance && canAuthenticate && rejection.startsWith("auth-required:")
 
 /** OK false の応答。rate-limited は時間をおけば受理されうるので、拒否ではなく一時的な失敗として扱う。 */
 private fun relayRejection(message: String): IllegalStateException {
@@ -78,6 +87,11 @@ internal fun RelayTarget.urls(enabledRelayUrls: List<String>): List<String> = wh
     is RelayTarget.Single -> listOf(url).filter { it in enabledRelayUrls }
     is RelayTarget.Explicit -> normalizeRelayUrls(urls, limit = Int.MAX_VALUE)
 }
+
+/** `auth-required:` のあと、認証の結果を待つ上限。チャレンジを送らないリレーで待ち続けない。 */
+private const val AUTH_WAIT_TIMEOUT_MS = 20_000L
+/** 署名器の承認を待つ上限。 */
+private const val AUTH_WAIT_MAX_MS = 180_000L
 
 object NostrRepository {
     private val scope = CoroutineScope(
@@ -118,12 +132,28 @@ object NostrRepository {
     private val slotsFreedRelays get() = subscriptionRegistry.slotsFreedRelays
     /** リレーごとに購読を開いた順。購読IDのない超過の通知を受けたとき、拒否された購読を選ぶのに使う。 */
     private val openOrder get() = subscriptionRegistry.openOrder
+    private val relayAuth = RelayAuthCoordinator(scope) { url, generation, event ->
+        stateMutex.withLock { activeRelays[url]?.relay }?.sendAuthAndAwaitOk(event, generation)
+    }
+    /** NIP-42 の認証状態（リレーごと）。 */
+    val relayAuthStates: StateFlow<Map<String, RelayAuthState>> get() = relayAuth.states
     private val activeRelayCount = MutableStateFlow(0)
     private val _relayConnectionStates = MutableStateFlow<Map<String, RelayConnectionState>>(emptyMap())
     val relayConnectionStates: StateFlow<Map<String, RelayConnectionState>> =
         _relayConnectionStates.asStateFlow()
 
     init {
+        scope.launch {
+            relayAuth.results.collect { result ->
+                try {
+                    handleRelayAuthResult(result)
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Throwable) {
+                    appLog("[NostrRepository] auth result error for ${result.relayUrl}: ${e::class.simpleName}: ${e.message}")
+                }
+            }
+        }
         scope.launch {
             try {
                 RelayStore.relays.collect { urls ->
@@ -151,6 +181,8 @@ object NostrRepository {
     }
 
     private fun createActiveRelayHandle(relay: NostrRelay): ActiveRelayHandle {
+        // 前の接続の認証状態を持ち越さない（接続プールから外れたときに onDisconnected が来ないことがある）。
+        relayAuth.onDisconnected(relay.url)
         // 同時購読数の上限をリレー情報から得る。届くまでは控えめな既定値で開く。
         scope.launch {
             val limitation = RelayInformationRepository.fetch(relay.url).getOrNull()?.limitation
@@ -193,6 +225,9 @@ object NostrRepository {
                         // 切断の瞬間は検知が遅れうるため、最後に受信した時刻を控えめな起点にする。
                         val disconnectedAt = relayLastMessageAt[relay.url] ?: nowEpochSeconds()
                         activeSubscriptions.flatMap { (subId, record) ->
+                            // 認証待ちは接続ごと。新しい接続では REQ を送り直し、改めて認証を待つ。
+                            record.awaitingAuthRelays.remove(relay.url)
+                            record.authRetriedRelays.remove(relay.url)
                             record.relayStates[relay.url]?.let { state ->
                                 record.relayStates[relay.url] =
                                     SubscriptionStateMachine.onDisconnected(state, generation, disconnectedAt)
@@ -216,6 +251,8 @@ object NostrRepository {
             relay.connectionState.collect { connectionState ->
                 stateMutex.withLock {
                     if (activeRelays[relay.url]?.relay === relay) {
+                        // 同じ URL の新しい接続の認証状態を、古い接続の切断で消さない。
+                        if (connectionState == RelayConnectionState.Disconnected) relayAuth.onDisconnected(relay.url)
                         _relayConnectionStates.update { states ->
                             states + (relay.url to connectionState)
                         }
@@ -457,6 +494,8 @@ object NostrRepository {
         var fetchToComplete: SubscriptionSessionImpl? = null
         var retry: RetryRequest? = null
         var emitToLegacyBus = true
+        var authChallenge: Pair<Long, String>? = null
+        var authWaitTimeout: Pair<String, Long>? = null
 
         stateMutex.withLock {
             relayLastMessageAt[relayUrl] = nowEpochSeconds()
@@ -474,6 +513,10 @@ object NostrRepository {
                     }
                 }
                 is RelayMessage.Unknown -> FetchTrace.notice(relayUrl, message.raw)
+                is RelayMessage.Auth -> {
+                    val generation = activeRelays[relayUrl]?.relay?.connectedGeneration()
+                    if (generation != null) authChallenge = generation to message.challenge
+                }
                 else -> Unit
             }
             if (subscriptionId != null && record != null && state != null) {
@@ -528,27 +571,50 @@ object NostrRepository {
                         )
                         record.relayStates[relayUrl] = next
                         if (RelaySubscriptionSlots.occupies(state)) slotsFreedRelays += relayUrl
-                        // 有限取得はこのリレーでの応答が終わったので、再接続しても送り直さない。
-                        if (record.behavior is SubscriptionBehavior.Fetch) {
-                            finishFetchOnRelayLocked(subscriptionId, record, relayUrl, next)
-                        }
-                        record.session?.let {
-                            signals += it to SubscriptionSignal.Closed(
-                                relayUrl = relayUrl,
-                                reason = message.message,
-                                retry = classification.disposition,
-                            )
-                        }
-                        record.fetchOutcomes[relayUrl] = RelayOutcome.Closed(message.message, classification.disposition)
-                        if (record.shouldCompleteFetchLocked()) {
-                            record.fetchCompletionScheduled = true
-                            fetchToComplete = record.session
-                        } else if (
-                            // 配信中の購読は回数で諦めず、間隔を延ばして再開を試み続ける。
-                            record.behavior is SubscriptionBehavior.Live &&
-                            classification.disposition == RetryDisposition.RetryWithBackoff
-                        ) {
-                            retry = RetryRequest(subscriptionId, relayUrl, next.refusalCount)
+                        val generation = relayConnectionGenerations[relayUrl]
+                        val authDecision = decideAuthClosed(
+                            disposition = classification.disposition,
+                            canAuthenticate = relayAuth.canAuthenticate(relayUrl),
+                            authenticatedNow = generation?.let { relayAuth.isAuthenticated(relayUrl, it) } == true,
+                            authFailedNow = generation?.let { relayAuth.isFailed(relayUrl, it) } == true,
+                            alreadyRetried = relayUrl in record.authRetriedRelays,
+                        )
+                        when (authDecision) {
+                            AuthClosedDecision.RetryNow -> {
+                                record.authRetriedRelays += relayUrl
+                                record.relayStates[relayUrl] = SubscriptionStateMachine.prepareRetry(next)
+                                commands = reconcileSubscriptionLocked(subscriptionId, record, onlyRelayUrl = relayUrl)
+                            }
+                            // 認証の結果を待つ。取得の完了や失敗の知らせはまだ出さない（[handleRelayAuthResult]）。
+                            // チャレンジが来ないリレーもあるので、待つ時間は区切る。
+                            AuthClosedDecision.AwaitAuth -> {
+                                record.awaitingAuthRelays += relayUrl
+                                if (generation != null) authWaitTimeout = relayUrl to generation
+                            }
+                            AuthClosedDecision.NotAuth -> {
+                                // 有限取得はこのリレーでの応答が終わったので、再接続しても送り直さない。
+                                if (record.behavior is SubscriptionBehavior.Fetch) {
+                                    finishFetchOnRelayLocked(subscriptionId, record, relayUrl, next)
+                                }
+                                record.session?.let {
+                                    signals += it to SubscriptionSignal.Closed(
+                                        relayUrl = relayUrl,
+                                        reason = message.message,
+                                        retry = classification.disposition,
+                                    )
+                                }
+                                record.fetchOutcomes[relayUrl] = RelayOutcome.Closed(message.message, classification.disposition)
+                                if (record.shouldCompleteFetchLocked()) {
+                                    record.fetchCompletionScheduled = true
+                                    fetchToComplete = record.session
+                                } else if (
+                                    // 配信中の購読は回数で諦めず、間隔を延ばして再開を試み続ける。
+                                    record.behavior is SubscriptionBehavior.Live &&
+                                    classification.disposition == RetryDisposition.RetryWithBackoff
+                                ) {
+                                    retry = RetryRequest(subscriptionId, relayUrl, next.refusalCount)
+                                }
+                            }
                         }
                     }
                     else -> Unit
@@ -557,6 +623,24 @@ object NostrRepository {
             commands = commands + drainFreedSlotsLocked()
         }
 
+        authChallenge?.let { (generation, challenge) -> relayAuth.onChallenge(relayUrl, generation, challenge) }
+        authWaitTimeout?.let { (url, generation) ->
+            scope.launch {
+                // 署名器の承認待ち（認証中）なら待ち続ける。チャレンジが来ない・認証が始まらないときだけ諦める。
+                var waited = 0L
+                while (true) {
+                    delay(AUTH_WAIT_TIMEOUT_MS)
+                    waited += AUTH_WAIT_TIMEOUT_MS
+                    when (authWaitVerdict(relayAuth.states.value[url], generation, waited, AUTH_WAIT_MAX_MS)) {
+                        AuthWaitVerdict.Done -> return@launch
+                        AuthWaitVerdict.KeepWaiting -> continue
+                        AuthWaitVerdict.GiveUp -> break
+                    }
+                }
+                // 接続が替わっていれば、handleRelayAuthResult が世代で捨てる。
+                handleRelayAuthResult(RelayAuthResult.Failed(url, generation, "認証されませんでした"))
+            }
+        }
         signals.forEach { (session, signal) -> session.emit(signal) }
         sendSubscriptionCommands(commands)
         if (emitToLegacyBus) bus.emit(RelayEnvelope(relayUrl, message))
@@ -574,6 +658,125 @@ object NostrRepository {
             }
         }
         fetchToComplete?.let { completeFetch(it, timedOut = false) }
+    }
+
+    /**
+     * 認証の結果で、`auth-required:` を待っていた購読を進める。成功ならその接続で送り直し、
+     * 失敗なら待たずに CLOSED として扱う（有限取得はこのリレーで終わる）。
+     */
+    private suspend fun handleRelayAuthResult(result: RelayAuthResult) {
+        val relayUrl = result.relayUrl
+        val signals = mutableListOf<Pair<SubscriptionSessionImpl, SubscriptionSignal>>()
+        val fetchesToComplete = mutableListOf<SubscriptionSessionImpl>()
+        val commands = stateMutex.withLock {
+            if (relayConnectionGenerations[relayUrl] != result.generation) return@withLock emptyList()
+            val commands = mutableListOf<SubscriptionWireCommand>()
+            activeSubscriptions.forEach { (subscriptionId, record) ->
+                if (!record.awaitingAuthRelays.remove(relayUrl)) return@forEach
+                val state = record.relayStates[relayUrl] ?: return@forEach
+                when (result) {
+                    is RelayAuthResult.Succeeded -> {
+                        record.authRetriedRelays += relayUrl
+                        record.relayStates[relayUrl] = SubscriptionStateMachine.prepareRetry(state)
+                        commands += reconcileSubscriptionLocked(subscriptionId, record, onlyRelayUrl = relayUrl)
+                    }
+                    is RelayAuthResult.Failed -> {
+                        val reason = "auth-required: ${result.reason}"
+                        if (record.behavior is SubscriptionBehavior.Fetch) {
+                            finishFetchOnRelayLocked(subscriptionId, record, relayUrl, state)?.let(commands::add)
+                        }
+                        record.session?.let {
+                            signals += it to SubscriptionSignal.Closed(relayUrl, reason, RetryDisposition.RetryAfterAuth)
+                        }
+                        record.fetchOutcomes[relayUrl] = RelayOutcome.Closed(reason, RetryDisposition.RetryAfterAuth)
+                        if (record.shouldCompleteFetchLocked()) {
+                            record.fetchCompletionScheduled = true
+                            record.session?.let(fetchesToComplete::add)
+                        }
+                    }
+                }
+            }
+            commands + drainFreedSlotsLocked()
+        }
+        signals.forEach { (session, signal) -> session.emit(signal) }
+        sendSubscriptionCommands(commands)
+        fetchesToComplete.forEach { completeFetch(it, timedOut = false) }
+    }
+
+    private val relayAuthOwnerMutex = Mutex()
+    private var relayAuthOwner: Any? = null
+
+    /**
+     * アカウントの NIP-42 署名器を登録する。[allowed] が許すリレーだけ認証する。
+     * 前のアカウントで認証済みだった接続は張り直す（別の身元で読み続けないため）。
+     * [owner] は登録した側。後から別の登録があれば、古い owner の [uninstallRelayAuth] は何もしない。
+     */
+    suspend fun installRelayAuth(owner: Any, pubkey: String, signer: RelayAuthSigner, allowed: (String) -> Boolean) {
+        val stale = relayAuthOwnerMutex.withLock {
+            relayAuthOwner = owner
+            relayAuth.install(pubkey, signer, allowed)
+        }
+        reconnectRelays(stale)
+    }
+
+    /** [owner] の登録を外す。セッション終了時に呼ぶので待たない。 */
+    fun uninstallRelayAuth(owner: Any) {
+        scope.launch {
+            val stale = relayAuthOwnerMutex.withLock {
+                if (relayAuthOwner !== owner) return@launch
+                relayAuthOwner = null
+                relayAuth.uninstall()
+            }
+            reconnectRelays(stale)
+        }
+    }
+
+    /**
+     * [relayUrl] の今の接続が認証済みになるまで待つ。認証されなければ false。
+     * 前の接続の状態（認証済み・失敗）は見ない。今の接続の世代の結果だけで決める。
+     */
+    suspend fun awaitRelayAuthenticated(relayUrl: String, timeoutMillis: Long): Boolean =
+        withTimeoutOrNull(timeoutMillis) {
+            var authenticated = false
+            relayAuth.states.first { states ->
+                val generation = stateMutex.withLock { relayConnectionGenerations[relayUrl] }
+                val state = states[relayUrl]
+                if (generation == null || state == null || state.generation != generation) return@first false
+                when (state) {
+                    is RelayAuthState.Authenticated -> { authenticated = true; true }
+                    is RelayAuthState.Failed -> true
+                    else -> false
+                }
+            }
+            authenticated
+        } ?: false
+
+    /** 画面の破棄（onCleared）など、待てない場所から購読を閉じる。 */
+    fun closeSessionInBackground(session: SubscriptionSession) {
+        scope.launch { session.close() }
+    }
+
+    /** 認証の許可リストが変わった。チャレンジを受けたまま待っているリレーなら、いま認証する。 */
+    fun onRelayAuthPolicyChanged(relayUrl: String) {
+        relayAuth.onPolicyChanged(relayUrl)
+    }
+
+    /** 許可リストから外れたリレーに認証済みの接続が残っていれば、張り直して身元を捨てる。 */
+    suspend fun dropRelayAuthIfDisallowed(relayUrl: String) {
+        if (relayAuth.canAuthenticate(relayUrl)) return
+        val state = relayAuth.states.value[relayUrl]
+        if (state is RelayAuthState.Authenticated || state is RelayAuthState.Authenticating) {
+            reconnectRelays(setOf(relayUrl))
+        }
+    }
+
+    private suspend fun reconnectRelays(urls: Set<String>) {
+        if (urls.isEmpty()) return
+        val relays = stateMutex.withLock { urls.mapNotNull { activeRelays[it]?.relay } }
+        relays.forEach { relay ->
+            networkTraceLog { "[Repo] reconnecting ${relay.url} to drop its NIP-42 identity" }
+            relay.reconnect(scope) { stateMutex.withLock { activeRelays[relay.url]?.relay === relay } }
+        }
     }
 
     private suspend fun retryClosedSubscription(request: RetryRequest) {
@@ -1065,12 +1268,14 @@ object NostrRepository {
         val results = targets.map { url ->
             async {
                 url to runCatching {
+                    var okMessage = ""
                     val activeRelay = stateMutex.withLock { activeRelays[url]?.relay }
                     if (activeRelay != null) {
                         check(withTimeoutOrNull(PUBLISH_TIMEOUT_MS) {
                             if (awaitAcceptance) {
                                 val response = activeRelay.sendEventAndAwaitOk(message, event.id)
                                 if (!response.accepted) throw relayRejection(response.message)
+                                okMessage = response.message
                             } else {
                                 activeRelay.sendAndAwait(message)
                             }
@@ -1088,6 +1293,7 @@ object NostrRepository {
                                 if (awaitAcceptance) {
                                     val response = relay.sendEventAndAwaitOk(message, event.id)
                                     if (!response.accepted) throw relayRejection(response.message)
+                                    okMessage = response.message
                                 } else {
                                     relay.sendAndAwait(message)
                                 }
@@ -1096,6 +1302,16 @@ object NostrRepository {
                         } finally {
                             relay.disconnect()
                         }
+                    }
+                    okMessage
+                }.recoverCatching { error ->
+                    // 一時接続では NIP-42 に応答しないので、管理している接続で認証してから送り直す。
+                    if (error is RelayRejectedException &&
+                        shouldRetryPublishAfterAuth(error.message.orEmpty(), awaitAcceptance, relayAuth.canAuthenticate(url))
+                    ) {
+                        publishAfterAuth(url, event, message)
+                    } else {
+                        throw error
                     }
                 }.onFailure { error ->
                     appLog("[Repo] publish failed for $url: ${error::class.simpleName}: ${error.message}")
@@ -1106,6 +1322,7 @@ object NostrRepository {
         RelayPublishResult(
             rejectedRelays = rejectedTargets.toSet() + results.filter { it.second.exceptionOrNull() is RelayRejectedException }.map { it.first },
             succeededRelays = results.filter { it.second.isSuccess }.mapTo(linkedSetOf()) { it.first },
+            acceptedMessages = results.mapNotNull { (url, result) -> result.getOrNull()?.takeIf { it.isNotEmpty() }?.let { url to it } }.toMap(),
             failedRelays = buildMap {
                 rejectedTargets.forEach { url ->
                     put(url, "NIP-65でread専用に設定されています")
@@ -1117,6 +1334,33 @@ object NostrRepository {
                 }
             },
         )
+    }
+
+    /**
+     * [url] に管理している接続を短い購読で保ち、NIP-42 の認証を待ってから [event] を送り、受理を待つ。
+     * 認証できなければ `auth-required:` の拒否として失敗する。
+     */
+    private suspend fun publishAfterAuth(url: String, event: NostrEvent, message: String): String {
+        val holder = openSubscription(
+            SubscriptionSpec(
+                id = "pubauth-" + kotlin.random.Random.nextLong().toULong().toString(16),
+                filters = listOf(NostrFilter(ids = listOf(event.id), limit = 1)),
+                target = RelayTarget.Explicit(setOf(url)),
+                behavior = SubscriptionBehavior.Live,
+                replayCachedEvents = false,
+            ),
+        )
+        try {
+            if (!awaitRelayAuthenticated(url, AUTH_WAIT_TIMEOUT_MS)) throw RelayRejectedException("auth-required: 認証できませんでした")
+            val relay = stateMutex.withLock { activeRelays[url]?.relay } ?: error("接続がありません")
+            val response = withTimeoutOrNull(PUBLISH_TIMEOUT_MS) { relay.sendEventAndAwaitOk(message, event.id) }
+                ?: error("送信がタイムアウトしました")
+            if (!response.accepted) throw relayRejection(response.message)
+            appLog("[Repo] publish accepted after auth for $url")
+            return response.message
+        } finally {
+            holder.close()
+        }
     }
 
     /**

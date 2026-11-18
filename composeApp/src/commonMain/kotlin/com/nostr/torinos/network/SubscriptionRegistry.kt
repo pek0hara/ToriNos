@@ -98,6 +98,10 @@ internal data class ActiveSubscriptionRecord(
     var fetchCompleted: Boolean = false,
     /** キャッシュを流し終えるまでは、接続できないリレーで取得を終えない（[NostrRepository.openSubscription]）。 */
     var unavailableSweepEnabled: Boolean = false,
+    /** `auth-required:` で閉じられ、NIP-42 の認証が済むのを待っているリレー。 */
+    val awaitingAuthRelays: MutableSet<String> = mutableSetOf(),
+    /** 認証のあとに送り直したリレー（接続ごと）。もう一度 `auth-required:` なら確定する。 */
+    val authRetriedRelays: MutableSet<String> = mutableSetOf(),
 ) {
     fun shouldCompleteFetchLocked(): Boolean {
         val expected = fetchExpectedRelays ?: return false

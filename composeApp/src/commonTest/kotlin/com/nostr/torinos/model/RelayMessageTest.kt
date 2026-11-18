@@ -77,10 +77,31 @@ class RelayMessageTest {
 
     @Test
     fun parse_unknownType_returnsUnknown() {
-        val raw = """["AUTH","challenge-token"]"""
+        val raw = """["COUNT","sub",{"count":3}]"""
         val parsed = parseRelayMessage(raw)
         assertIs<RelayMessage.Unknown>(parsed)
         assertEquals(raw, parsed.raw)
+    }
+
+    @Test
+    fun parse_authChallenge_returnsAuth() {
+        val parsed = parseRelayMessage("""["AUTH","challenge-token"]""")
+        assertIs<RelayMessage.Auth>(parsed)
+        assertEquals("challenge-token", parsed.challenge)
+    }
+
+    @Test
+    fun parse_authWithoutStringChallenge_returnsUnknown() {
+        assertIs<RelayMessage.Unknown>(parseRelayMessage("""["AUTH"]"""))
+        assertIs<RelayMessage.Unknown>(parseRelayMessage("""["AUTH",{"id":"x"}]"""))
+    }
+
+    @Test
+    fun buildAuthMessage_wrapsSignedEvent() {
+        val event = NostrEvent("id1", "pk", 1, 22242, listOf(listOf("challenge", "c")), "", "sig")
+        val raw = buildAuthMessage(event)
+        assertTrue(raw.startsWith("""["AUTH",{"""), raw)
+        assertTrue(""""kind":22242""" in raw, raw)
     }
 
     @Test

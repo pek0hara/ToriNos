@@ -1,6 +1,8 @@
 package com.nostr.torinos.network
 
+import com.nostr.torinos.model.NostrEvent
 import com.nostr.torinos.model.RelayMessage
+import com.nostr.torinos.model.buildAuthMessage
 import com.nostr.torinos.model.parseRelayMessage
 import com.nostr.torinos.util.appLog
 import com.nostr.torinos.util.logException
@@ -16,6 +18,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -26,6 +29,7 @@ import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import com.nostr.torinos.util.SynchronousLock
 import com.nostr.torinos.util.StartupTrace
 import com.nostr.torinos.util.withLock
@@ -65,9 +69,11 @@ class NostrRelay(
     private val okWaitersMutex = Mutex()
     private val sendSignal = Channel<Unit>(Channel.CONFLATED)
     private var job: Job? = null
+    /** [job] の付け替え（接続・切断・つなぎ直し）を1つずつ行う。 */
+    private val jobLock = SynchronousLock()
 
-    fun connect(scope: CoroutineScope) {
-        if (job?.isActive == true) return
+    fun connect(scope: CoroutineScope) = jobLock.withLock {
+        if (job?.isActive == true) return@withLock
         _connectionState.value = RelayConnectionState.Connecting
         job = scope.launch(relayConnectionDispatcher) {
             try {
@@ -208,6 +214,33 @@ class NostrRelay(
         }
     }
 
+    /**
+     * NIP-42 の認証イベントを [generation] の接続で送り、OK を待つ。接続が切れた・別の接続になったときは null。
+     * 認証は接続に結びつくので、切断中に溜めて次の接続で送ることはしない。
+     */
+    suspend fun sendAuthAndAwaitOk(event: NostrEvent, generation: Long, timeoutMillis: Long = 15_000): RelayMessage.Ok? {
+        val response = CompletableDeferred<RelayMessage.Ok>()
+        okWaitersMutex.withLock { okWaiters.getOrPut(event.id) { mutableListOf() }.add(response) }
+        val written = CompletableDeferred<Unit>()
+        // 待っている REQ より先に送る。REQ が認証前に着いて拒否されるのを減らす。
+        val pending = buildPendingMessage(buildAuthMessage(event), written).copy(isPriority = true, session = generation)
+        try {
+            val accepted = outboxLock.withLock { outbox.offerForSession(pending, generation) }
+            if (!accepted) return null
+            sendSignal.trySend(Unit)
+            return withTimeoutOrNull(timeoutMillis) { response.await() }
+                ?.takeIf { connectedGeneration() == generation }
+        } finally {
+            outboxLock.withLock { outbox.remove(pending) }
+            okWaitersMutex.withLock {
+                okWaiters[event.id]?.let { waiters ->
+                    waiters.remove(response)
+                    if (waiters.isEmpty()) okWaiters.remove(event.id)
+                }
+            }
+        }
+    }
+
     private fun enqueue(pending: PendingMessage) {
         val accepted = outboxLock.withLock {
             if (pending.key != null) {
@@ -221,9 +254,26 @@ class NostrRelay(
         if (accepted) sendSignal.trySend(Unit)
     }
 
+    /**
+     * 今の接続を閉じ終えてから、つなぎ直す。NIP-42 の認証を捨てるときに使う。
+     * 閉じ終えるまでに [disconnect] や別の [connect] があった、または [stillWanted] が false なら、つなぎ直さない。
+     */
+    suspend fun reconnect(scope: CoroutineScope, stillWanted: suspend () -> Boolean = { true }) {
+        val previous = jobLock.withLock { job } ?: return
+        previous.cancelAndJoin()
+        val shouldConnect = jobLock.withLock {
+            if (job !== previous) return@withLock false
+            job = null
+            true
+        }
+        if (shouldConnect && stillWanted()) connect(scope)
+    }
+
     fun disconnect() {
-        job?.cancel()
-        job = null
+        jobLock.withLock {
+            job?.cancel()
+            job = null
+        }
         healthTracker.reset()
         _connectionState.value = RelayConnectionState.Disconnected
     }
@@ -301,6 +351,13 @@ internal class RelayOutbox {
     }
 
     fun offer(message: PendingMessage) = pending.enqueue(message)
+
+    /** [generation] の接続の間だけ送るメッセージ（NIP-42 の AUTH）。切断で捨てる。 */
+    fun offerForSession(message: PendingMessage, generation: Long): Boolean {
+        if (session == null || generation != session) return false
+        pending.enqueue(message.copy(session = generation))
+        return true
+    }
 
     fun next(): PendingMessage? {
         while (pending.isNotEmpty()) {

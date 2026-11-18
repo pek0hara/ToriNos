@@ -16,7 +16,18 @@ sealed class RelayMessage {
     data class Closed(val subscriptionId: String, val message: String) : RelayMessage()
     data class Ok(val eventId: String, val accepted: Boolean, val message: String) : RelayMessage()
     data class Notice(val message: String) : RelayMessage()
+    /** NIP-42 のチャレンジ。 */
+    data class Auth(val challenge: String) : RelayMessage()
     data class Unknown(val raw: String) : RelayMessage()
+}
+
+/** NIP-42 の ["AUTH", <署名済み kind 22242>] メッセージを構築する。 */
+fun buildAuthMessage(event: NostrEvent): String {
+    val array = buildJsonArray {
+        add(kotlinx.serialization.json.JsonPrimitive("AUTH"))
+        add(json.encodeToJsonElement(event))
+    }
+    return json.encodeToString(kotlinx.serialization.json.JsonArray.serializer(), array)
 }
 
 /** ["EVENT", <event>] メッセージを構築 */
@@ -53,6 +64,10 @@ fun parseRelayMessage(raw: String): RelayMessage = try {
             message = array.getOrNull(3)?.jsonPrimitive?.content ?: "",
         )
         "NOTICE" -> RelayMessage.Notice(array[1].jsonPrimitive.content)
+        "AUTH" -> {
+            val challenge = array.getOrNull(1) as? kotlinx.serialization.json.JsonPrimitive
+            if (challenge != null && challenge.isString) RelayMessage.Auth(challenge.content) else RelayMessage.Unknown(raw)
+        }
         else -> RelayMessage.Unknown(raw)
     }
 } catch (_: Exception) {

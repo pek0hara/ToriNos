@@ -22,6 +22,31 @@ class NostrRelayTest {
     }
 
     @Test
+    fun authIsSentOnlyOnItsOwnConnectionAndBeforePendingRequests() {
+        val outbox = RelayOutbox()
+        assertFalse(outbox.offerForSession(buildPendingMessage(AUTH), generation = 0))
+        val session = outbox.openSession()
+        assertTrue(outbox.offerControl(REQ_A, generation = session))
+
+        assertFalse(outbox.offerForSession(buildPendingMessage(AUTH), generation = session - 1))
+        assertTrue(outbox.offerForSession(buildPendingMessage(AUTH).copy(isPriority = true), generation = session))
+
+        assertEquals(listOf(AUTH, REQ_A), outbox.drain())
+    }
+
+    @Test
+    fun authIsDiscardedOnDisconnect() {
+        val outbox = RelayOutbox()
+        val first = outbox.openSession()
+        assertTrue(outbox.offerForSession(buildPendingMessage(AUTH), generation = first))
+
+        outbox.closeSession()
+        outbox.openSession()
+
+        assertEquals(emptyList(), outbox.drain())
+    }
+
+    @Test
     fun requestDecidedBeforeConnectingIsNotQueued() {
         val outbox = RelayOutbox()
 
@@ -99,5 +124,6 @@ class NostrRelayTest {
         const val REQ_A = """["REQ","a",{}]"""
         const val REQ_B = """["REQ","b",{}]"""
         const val EVENT = """["EVENT",{"id":"x"}]"""
+        const val AUTH = """["AUTH",{"id":"auth"}]"""
     }
 }
