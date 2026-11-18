@@ -1,5 +1,10 @@
 package com.nostr.torinos.ui.relay
 
+import com.nostr.torinos.ui.components.ActionDropdownMenu
+import com.nostr.torinos.ui.components.ActionDropdownMenuItem
+import com.nostr.torinos.ui.components.ActionDropdownMenuDivider
+import androidx.compose.material.icons.outlined.Info
+import androidx.compose.material.icons.outlined.RemoveCircleOutline
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -38,8 +43,6 @@ import androidx.compose.material.icons.outlined.People
 import androidx.compose.material3.BottomSheetDefaults
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -673,22 +676,16 @@ private fun RelayRowMenu(
         IconButton(onClick = { expanded = true }) {
             Icon(Icons.Default.MoreVert, contentDescription = "その他の操作")
         }
-        DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
-            DropdownMenuItem(
-                text = { Text("リレー情報") },
-                onClick = {
-                    expanded = false
-                    onShowInformation()
-                },
-            )
-            DropdownMenuItem(
-                text = { Text("使用をやめる", color = MaterialTheme.colorScheme.error) },
-                enabled = enabled,
-                onClick = {
-                    expanded = false
-                    onDisable()
-                },
-            )
+        ActionDropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+            ActionDropdownMenuItem("リレー情報", Icons.Outlined.Info, onClick = {
+                expanded = false
+                onShowInformation()
+            })
+            ActionDropdownMenuDivider()
+            ActionDropdownMenuItem("使用をやめる", Icons.Outlined.RemoveCircleOutline, destructive = true, enabled = enabled, onClick = {
+                expanded = false
+                onDisable()
+            })
         }
     }
 }

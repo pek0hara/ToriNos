@@ -1,11 +1,14 @@
 package com.nostr.torinos.ui.article
 
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.DataObject
+import androidx.compose.material.icons.outlined.FormatQuote
+import com.nostr.torinos.ui.components.ActionDropdownMenu
+import com.nostr.torinos.ui.components.ActionDropdownMenuItem
 import androidx.compose.material.icons.filled.Favorite
-import androidx.compose.material.icons.filled.MailOutline
+import androidx.compose.material.icons.filled.FavoriteBorder
+import androidx.compose.material.icons.outlined.ChatBubbleOutline
 import androidx.compose.material.icons.filled.MoreVert
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.IconButton
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -170,23 +173,17 @@ private fun ArticleCardMenu(article: ArticleItem, onShareToFeed: (() -> Unit)?) 
                 tint = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
-        DropdownMenu(expanded = showMenu, onDismissRequest = { showMenu = false }) {
-            DropdownMenuItem(
-                text = { Text("データを表示") },
-                onClick = {
-                    showMenu = false
-                    showData = true
-                },
-            )
+        ActionDropdownMenu(expanded = showMenu, onDismissRequest = { showMenu = false }) {
             if (onShareToFeed != null) {
-                DropdownMenuItem(
-                    text = { Text("投稿フィードに共有") },
-                    onClick = {
-                        showMenu = false
-                        onShareToFeed()
-                    },
-                )
+                ActionDropdownMenuItem("投稿フィードに共有", Icons.Outlined.FormatQuote, onClick = {
+                    showMenu = false
+                    onShareToFeed()
+                })
             }
+            ActionDropdownMenuItem("データを表示", Icons.Outlined.DataObject, onClick = {
+                showMenu = false
+                showData = true
+            })
         }
     }
     if (showData) {
@@ -264,7 +261,7 @@ private fun ArticleCardEngagement(engagement: StateFlow<ArticleEngagementSummary
                         is ReactionOption.Unicode -> Text(text = option.value, fontSize = 12.sp, maxLines = 1)
                     }
                     else -> Icon(
-                        Icons.Default.Favorite,
+                        if (own == OwnArticleReaction.Like) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
                         contentDescription = null,
                         tint = if (own == OwnArticleReaction.Like) OwnReactionTint else MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.size(14.dp),
@@ -279,7 +276,7 @@ private fun ArticleCardEngagement(engagement: StateFlow<ArticleEngagementSummary
                 horizontalArrangement = Arrangement.spacedBy(3.dp),
             ) {
                 Icon(
-                    Icons.Default.MailOutline,
+                    Icons.Outlined.ChatBubbleOutline,
                     contentDescription = null,
                     tint = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.size(14.dp),

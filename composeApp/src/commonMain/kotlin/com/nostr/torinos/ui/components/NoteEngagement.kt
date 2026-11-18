@@ -28,7 +28,6 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.Add
-import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -626,7 +625,6 @@ internal fun QuickReactionMenu(
     onOpenStandardEmojiPicker: () -> Unit,
 ) {
     val accountSession = LocalAccountSession.current
-    val openCustomEmoji = LocalCustomEmojiNavigator.current
     val emojiPreferences = rememberEmojiPreferences()
     val recentOptions = remember(emojiPreferences) {
         emojiPreferences.recent
@@ -635,63 +633,86 @@ internal fun QuickReactionMenu(
             .take(16)
     }
 
-    DropdownMenu(
+    ActionDropdownMenu(
         expanded = expanded,
         onDismissRequest = onDismiss,
+        modifier = Modifier,
     ) {
-        Column(
-            modifier = Modifier
-                .widthIn(min = 280.dp, max = 320.dp)
-                .padding(horizontal = 12.dp, vertical = 8.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                // 右上の「絵文字セット」と1行に並べる。文字サイズを大きくしても折り返さないよう短くし、1行に収める。
-                Text(
-                    text = "最近使った",
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.weight(1f),
-                )
-                EmojiSetsButton(
-                    onClick = {
-                        onDismiss()
-                        openCustomEmoji(CustomEmojiOpenRequest.of(""))
-                    },
-                )
-            }
-            if (recentOptions.isEmpty()) {
-                Text(
-                    text = "まだありません",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            } else {
-                Row(
-                    modifier = Modifier.horizontalScroll(rememberScrollState()),
-                    horizontalArrangement = Arrangement.spacedBy(4.dp),
-                ) {
-                    recentOptions.forEach { option ->
-                        ReactionPickerTile(
-                            option = option,
-                            selected = option.key in selectedReactionKeys,
-                            onClick = {
-                                accountSession.recordReactionUse(option)
-                                onSelect(option)
-                            },
-                        )
-                    }
+        QuickReactionContent(
+            options = recentOptions,
+            selectedReactionKeys = selectedReactionKeys,
+            onDismiss = onDismiss,
+            onSelect = { option ->
+                accountSession.recordReactionUse(option)
+                onSelect(option)
+            },
+            onOpenStandardEmojiPicker = onOpenStandardEmojiPicker,
+        )
+    }
+}
+
+/**
+ * リアクションのプルダウンの中身（「最近使った」の並び、絵文字セット、絵文字を選ぶ）。
+ * フィードの［＋］のメニューと、チャットのメッセージの長押しメニューで使う。
+ */
+@Composable
+internal fun QuickReactionContent(
+    options: List<ReactionOption>,
+    selectedReactionKeys: Set<String>,
+    onDismiss: () -> Unit,
+    onSelect: (ReactionOption) -> Unit,
+    onOpenStandardEmojiPicker: () -> Unit,
+) {
+    val openCustomEmoji = LocalCustomEmojiNavigator.current
+    Column(
+        modifier = Modifier
+            .widthIn(min = 280.dp, max = 320.dp)
+            .padding(horizontal = 12.dp, vertical = 8.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            // 右上の「絵文字セット」と1行に並べる。文字サイズを大きくしても折り返さないよう短くし、1行に収める。
+            Text(
+                text = "最近使った",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f),
+            )
+            EmojiSetsButton(
+                onClick = {
+                    onDismiss()
+                    openCustomEmoji(CustomEmojiOpenRequest.of(""))
+                },
+            )
+        }
+        if (options.isEmpty()) {
+            Text(
+                text = "まだありません",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        } else {
+            Row(
+                modifier = Modifier.horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                options.forEach { option ->
+                    ReactionPickerTile(
+                        option = option,
+                        selected = option.key in selectedReactionKeys,
+                        onClick = { onSelect(option) },
+                    )
                 }
             }
+        }
 
-            TextButton(
-                onClick = onOpenStandardEmojiPicker,
-                modifier = Modifier.fillMaxWidth(),
-            ) {
-                Text("絵文字を選ぶ")
-            }
+        TextButton(
+            onClick = onOpenStandardEmojiPicker,
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Text("絵文字を選ぶ")
         }
     }
 }
@@ -732,10 +753,10 @@ internal fun ReactionPickerTile(
                     this.contentDescription = option.value
                 },
             )
-            is ReactionOption.Custom -> NetworkImage(
+            is ReactionOption.Custom -> CustomEmojiImage(
                 url = option.imageUrl,
+                shortcode = option.shortcode,
                 contentDescription = ":${option.shortcode}:",
-                contentScale = ContentScale.Fit,
                 modifier = Modifier.size(26.dp),
             )
         }
@@ -818,8 +839,9 @@ fun EngagementCount(
             },
             contentAlignment = Alignment.Center,
         ) {
+            // 0件は数字を出さない。反応のある投稿が目立つようにするため。枠の幅は残し、件数が届いてもアイコンが動かないようにする。
             Text(
-                text = countText,
+                text = if (count > 0) countText else "",
                 style = MaterialTheme.typography.labelLarge,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.offset(y = (-1).dp),

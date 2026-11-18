@@ -1,5 +1,7 @@
 package com.nostr.torinos.ui.article
 
+import com.nostr.torinos.ui.components.HeaderDropdownMenu
+import com.nostr.torinos.ui.components.HeaderDropdownMenuItem
 import com.nostr.torinos.ui.theme.appSp
 import com.nostr.torinos.model.MATOMETR_TOPIC
 import com.nostr.torinos.model.ArticleItem
@@ -9,8 +11,6 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.getValue
-import androidx.compose.material3.DropdownMenuItem
-import androidx.compose.material3.DropdownMenu
 import androidx.compose.material.icons.filled.ArrowDropDown
 
 import androidx.compose.foundation.background
@@ -164,13 +164,11 @@ private fun ArticleTagSelector(
                 }
             }
         }
-        DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+        HeaderDropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
             candidates.forEach { tag ->
-                DropdownMenuItem(
-                    text = { Text("#$tag", maxLines = 1, overflow = TextOverflow.Ellipsis) },
-                    trailingIcon = if (tag.equals(topic, ignoreCase = true)) {
-                        { Icon(Icons.Default.Check, contentDescription = "選択中", modifier = Modifier.size(18.dp)) }
-                    } else null,
+                HeaderDropdownMenuItem(
+                    label = "#$tag",
+                    selected = tag.equals(topic, ignoreCase = true),
                     onClick = { expanded = false; onSelect(tag) },
                 )
             }

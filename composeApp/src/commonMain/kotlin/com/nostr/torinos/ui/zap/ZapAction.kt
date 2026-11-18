@@ -1,5 +1,6 @@
 package com.nostr.torinos.ui.zap
 
+import com.nostr.torinos.ui.components.ActionDropdownMenu
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -11,7 +12,6 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -183,7 +183,7 @@ private fun ZapAmountPopup(
     onCustomize: () -> Unit,
 ) {
     val amounts by ZapSettingsStore.amounts.collectAsState()
-    DropdownMenu(expanded = expanded, onDismissRequest = onDismiss) {
+    ActionDropdownMenu(expanded = expanded, onDismissRequest = onDismiss, modifier = Modifier) {
         Row(modifier = Modifier.padding(horizontal = 4.dp), horizontalArrangement = Arrangement.spacedBy(0.dp)) {
             amounts.forEach { sats ->
                 TextButton(onClick = { onSelect(sats) }) { Text("⚡${formatSats(sats)}") }

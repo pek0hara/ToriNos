@@ -1,5 +1,10 @@
 package com.nostr.torinos.ui.article
 
+import com.nostr.torinos.ui.components.ActionDropdownMenu
+import com.nostr.torinos.ui.components.ActionDropdownMenuItem
+import com.nostr.torinos.ui.components.ActionDropdownMenuDivider
+import androidx.compose.material.icons.outlined.Edit
+import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -207,9 +212,10 @@ internal fun formatDraftUpdatedAt(
                 IconButton(onClick = { menuExpanded = true }, modifier = Modifier.size(36.dp)) {
                     Icon(Icons.Default.MoreVert, contentDescription = "下書きメニュー", modifier = Modifier.size(20.dp))
                 }
-                DropdownMenu(expanded = menuExpanded, onDismissRequest = { menuExpanded = false }) {
-                    DropdownMenuItem(text = { Text("開く") }, onClick = { menuExpanded = false; onOpen() })
-                    DropdownMenuItem(text = { Text("削除", color = MaterialTheme.colorScheme.error) }, onClick = { menuExpanded = false; onDelete() })
+                ActionDropdownMenu(expanded = menuExpanded, onDismissRequest = { menuExpanded = false }) {
+                    ActionDropdownMenuItem("開く", Icons.Outlined.Edit, onClick = { menuExpanded = false; onOpen() })
+                    ActionDropdownMenuDivider()
+                    ActionDropdownMenuItem("削除", Icons.Outlined.Delete, destructive = true, onClick = { menuExpanded = false; onDelete() })
                 }
             }
         }

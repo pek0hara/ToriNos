@@ -139,7 +139,8 @@ private fun bottomBarLabelFontSize(labels: List<String>, itemWidth: Dp): TextUni
 }
 
 private const val BottomBarLabelFontSize = 11
-private val BottomBarLabelHorizontalPadding = 2.dp
+/** 隣のラベルと接して1語に見えないよう、項目の間に最低12dpの隙間を残す。 */
+private val BottomBarLabelHorizontalPadding = 6.dp
 
 @Composable
 private fun AppBottomBarItem(destination: MainDestination, labelFontSize: TextUnit, modifier: Modifier) {

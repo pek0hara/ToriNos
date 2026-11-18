@@ -1,5 +1,9 @@
 package com.nostr.torinos.ui.article
 
+import com.nostr.torinos.ui.components.ActionDropdownMenu
+import com.nostr.torinos.ui.components.ActionDropdownMenuItem
+import com.nostr.torinos.ui.components.ActionDropdownMenuDivider
+import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.border
@@ -14,7 +18,6 @@ import androidx.compose.material.icons.filled.SwapVert
 import androidx.compose.material.icons.filled.VerticalAlignBottom
 import androidx.compose.material.icons.filled.VerticalAlignTop
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.graphics.Color
@@ -43,8 +46,6 @@ import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.OpenInFull
 import androidx.compose.material.icons.filled.Title
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -223,19 +224,15 @@ internal fun MatometrReferenceCard(
                 IconButton(onClick = { menuExpanded = true }, enabled = enabled) {
                     Icon(Icons.Default.MoreVert, contentDescription = "引用${index + 1}の操作")
                 }
-                DropdownMenu(expanded = menuExpanded, onDismissRequest = { menuExpanded = false }) {
-                    DropdownMenuItem(text = { Text("先頭へ移動") }, enabled = index > 0,
-                        leadingIcon = { Icon(Icons.Default.VerticalAlignTop, contentDescription = null) },
+                ActionDropdownMenu(expanded = menuExpanded, onDismissRequest = { menuExpanded = false }) {
+                    ActionDropdownMenuItem("先頭へ移動", Icons.Default.VerticalAlignTop, enabled = index > 0,
                         onClick = { menuExpanded = false; onMoveTo(0) })
-                    DropdownMenuItem(text = { Text("末尾へ移動") }, enabled = index < count - 1,
-                        leadingIcon = { Icon(Icons.Default.VerticalAlignBottom, contentDescription = null) },
+                    ActionDropdownMenuItem("末尾へ移動", Icons.Default.VerticalAlignBottom, enabled = index < count - 1,
                         onClick = { menuExpanded = false; onMoveTo(count - 1) })
-                    DropdownMenuItem(text = { Text("位置を指定して移動…") }, enabled = count > 1,
-                        leadingIcon = { Icon(Icons.Default.SwapVert, contentDescription = null) },
+                    ActionDropdownMenuItem("位置を指定して移動…", Icons.Default.SwapVert, enabled = count > 1,
                         onClick = { menuExpanded = false; askPosition = true })
-                    HorizontalDivider()
-                    DropdownMenuItem(text = { Text("削除", color = MaterialTheme.colorScheme.error) },
-                        leadingIcon = { Icon(Icons.Default.Delete, contentDescription = null, tint = MaterialTheme.colorScheme.error) },
+                    ActionDropdownMenuDivider()
+                    ActionDropdownMenuItem("削除", Icons.Outlined.Delete, destructive = true,
                         onClick = { menuExpanded = false; onRemove() })
                 }
             }

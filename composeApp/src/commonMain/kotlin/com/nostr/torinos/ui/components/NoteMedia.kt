@@ -22,6 +22,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
+import androidx.compose.foundation.border
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -97,6 +98,11 @@ internal fun firstImagePreviewRequest(context: PlatformContext, images: List<Med
 internal fun ImagePreviewGrid(
     images: List<MediaMetadata>,
     singleImageMaxHeight: Dp = 400.dp,
+    /**
+     * 1枚の画像が高さの上限で縮むとき、幅を揃えて上下を切り取る。引用カードのように枠の中へ置くとき、
+     * 右側だけ空いて枠と揃わないのを防ぐ。全体はタップで開く画面で見られる。
+     */
+    fillWidthWhenHeightCapped: Boolean = false,
     onImageClick: (List<String>, Int) -> Unit,
 ) {
     val imageUrls = images.map { it.url }
@@ -113,14 +119,16 @@ internal fun ImagePreviewGrid(
             // 縦横比が分かればそちらで当たり判定を測り直す。ずれたままだと空白部分までタップ可能になる。
             var measuredAspectRatio by remember(media.url) { mutableStateOf<Float?>(null) }
             val aspectRatio = measuredAspectRatio ?: declaredAspectRatio ?: (16f / 9f)
+            val heightCapped = maxWidth / aspectRatio > singleImageMaxHeight
+            val cropToWidth = fillWidthWhenHeightCapped && heightCapped
             val imageHeight = minOf(maxWidth / aspectRatio, singleImageMaxHeight)
-            val imageWidth = minOf(imageHeight * aspectRatio, maxWidth)
+            val imageWidth = if (cropToWidth) maxWidth else minOf(imageHeight * aspectRatio, maxWidth)
             NetworkImage(
                 url = previewUrls.first(),
                 contentDescription = images.first().alt,
                 blurHash = images.first().blurhash,
-                contentScale = ContentScale.Fit,
-                alignment = Alignment.CenterStart,
+                contentScale = if (cropToWidth) ContentScale.Crop else ContentScale.Fit,
+                alignment = if (cropToWidth) Alignment.Center else Alignment.CenterStart,
                 maxDecodeSizePx = TimelineImageMaxDecodeSizePx,
                 filterQuality = FilterQuality.Low,
                 animate = false,
@@ -129,9 +137,12 @@ internal fun ImagePreviewGrid(
                         measuredAspectRatio = size.width / size.height
                     }
                 },
+                // 複数枚の並びやリンクカードと同じく角を丸める。暗い画面で白い画像が浮かないよう細い枠も付ける。
                 modifier = Modifier
                     .height(imageHeight)
                     .width(imageWidth)
+                    .clip(TimelineImageGridShape)
+                    .border(1.dp, MaterialTheme.colorScheme.outlineVariant, TimelineImageGridShape)
                     .clickable { onImageClick(imageUrls, 0) },
             )
         }
@@ -275,6 +286,8 @@ internal fun ExpandedImageDialog(
     imageUrls: List<String>,
     initialIndex: Int,
     onDismiss: () -> Unit,
+    /** 画像ごとの読み込みヘッダー（Buzz の `/media/` など、認証が要る画像）。 */
+    headers: Map<String, Map<String, String>> = emptyMap(),
 ) {
     val pagerState = rememberPagerState(
         initialPage = initialIndex,
@@ -325,6 +338,7 @@ internal fun ExpandedImageDialog(
                         contentDescription = null,
                         contentScale = ContentScale.Fit,
                         filterQuality = FilterQuality.High,
+                        headers = headers[imageUrls[page]].orEmpty(),
                         modifier = Modifier
                             .fillMaxSize()
                             .padding(16.dp)

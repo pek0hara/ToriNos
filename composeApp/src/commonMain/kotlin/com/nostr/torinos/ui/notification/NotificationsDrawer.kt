@@ -35,7 +35,7 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.EmojiEvents
 import androidx.compose.material.icons.filled.Favorite
-import androidx.compose.material.icons.filled.MailOutline
+import androidx.compose.material.icons.outlined.ChatBubbleOutline
 import androidx.compose.material.icons.filled.PersonAdd
 import androidx.compose.material.icons.filled.Repeat
 import androidx.compose.material3.CircularProgressIndicator
@@ -462,7 +462,7 @@ private fun notificationAccent(type: NotificationType): Color = when (type) {
 }
 
 private fun notificationIcon(type: NotificationType): ImageVector = when (type) {
-    NotificationType.Reply -> Icons.Default.MailOutline
+    NotificationType.Reply -> Icons.Outlined.ChatBubbleOutline
     NotificationType.Repost -> Icons.Default.Repeat
     NotificationType.Like -> Icons.Default.Favorite
     NotificationType.Follow -> Icons.Default.PersonAdd

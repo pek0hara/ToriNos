@@ -119,7 +119,8 @@ internal fun QuotePreview(
                         fallback = event.shortPubkey,
                         style = MaterialTheme.typography.labelSmall,
                         fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.primary,
+                        // 投稿カードの名前と同じく、青はリンクに譲る。
+                        color = MaterialTheme.colorScheme.onSurface,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                         modifier = Modifier
@@ -158,6 +159,7 @@ internal fun QuotePreview(
                     ImagePreviewGrid(
                         images = parsedContent.images,
                         singleImageMaxHeight = 180.dp,
+                        fillWidthWhenHeightCapped = true,
                         onImageClick = onImageClick,
                     )
                 } else {
@@ -224,11 +226,29 @@ internal fun CollapsibleNoteText(
         },
     )
     if (shouldShowToggle) {
-        TextButton(onClick = { expanded = !expanded }) {
-            Text(if (expanded) "閉じる" else "もっと見る")
-        }
+        InlineTextAction(
+            label = if (expanded) "閉じる" else "もっと見る",
+            onClick = { expanded = !expanded },
+        )
     }
 }
 
 internal const val CollapsedTextCharacterLimit = 140
 internal const val CollapsedTextMaxVisibleLines = 9
+
+/**
+ * 本文の左端に揃えて置く、文字だけのボタン（「もっと見る」など）。
+ * TextButton は左右の余白と最小幅 58dp を持ち、短い文字は中央に寄るため、本文の左端と揃わない。
+ */
+@Composable
+internal fun InlineTextAction(label: String, onClick: () -> Unit) {
+    Text(
+        text = label,
+        style = MaterialTheme.typography.labelLarge,
+        color = MaterialTheme.colorScheme.primary,
+        modifier = Modifier
+            .clip(MaterialTheme.shapes.small)
+            .clickable(role = androidx.compose.ui.semantics.Role.Button, onClick = onClick)
+            .padding(vertical = 10.dp),
+    )
+}

@@ -1,6 +1,13 @@
 package com.nostr.torinos.ui.components
 
+import androidx.compose.foundation.layout.Box
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.runtime.State
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.derivedStateOf
@@ -75,3 +82,40 @@ data class CustomEmojiOpenRequest(
 
 /** カスタム絵文字の設定画面を開く。アプリのナビゲーションが提供する。 */
 val LocalCustomEmojiNavigator = compositionLocalOf<(CustomEmojiOpenRequest) -> Unit> { {} }
+
+/**
+ * カスタム絵文字の画像を読むときのヘッダー（URL → ヘッダー）。null を返す URL は読まずに `:shortcode:` の文字を出す
+ * （Buzz の `/media/` で、署名の許可待ち・失敗のもの）。既定はそのまま読む。グループの画面が差し替える。
+ */
+val LocalEmojiImageHeaders = compositionLocalOf<(String) -> Map<String, String>?> { { emptyMap() } }
+
+/** リアクションやピッカーのカスタム絵文字の画像。[LocalEmojiImageHeaders] に従って認証を付ける。 */
+@Composable
+internal fun CustomEmojiImage(
+    url: String,
+    shortcode: String,
+    contentDescription: String?,
+    modifier: Modifier = Modifier,
+    maxDecodeSizePx: Int? = null,
+) {
+    val headers = LocalEmojiImageHeaders.current(url)
+    if (headers == null) {
+        Box(modifier, contentAlignment = Alignment.Center) {
+            Text(
+                text = ":${normalizeShortcode(shortcode)}:",
+                style = MaterialTheme.typography.labelSmall,
+                maxLines = 1,
+                overflow = TextOverflow.Clip,
+            )
+        }
+        return
+    }
+    NetworkImage(
+        url = url,
+        contentDescription = contentDescription,
+        contentScale = ContentScale.Fit,
+        maxDecodeSizePx = maxDecodeSizePx,
+        headers = headers,
+        modifier = modifier,
+    )
+}

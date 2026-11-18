@@ -25,11 +25,18 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Reply
 import androidx.compose.material.icons.filled.Favorite
-import androidx.compose.material.icons.filled.MailOutline
+import androidx.compose.material.icons.filled.FavoriteBorder
+import androidx.compose.material.icons.outlined.ChatBubbleOutline
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Repeat
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material.icons.automirrored.outlined.PlaylistAdd
+import androidx.compose.material.icons.outlined.Block
+import androidx.compose.material.icons.outlined.ContentCopy
+import androidx.compose.material.icons.outlined.DataObject
+import androidx.compose.material.icons.outlined.Delete
+import androidx.compose.material.icons.outlined.Flag
+import androidx.compose.material.icons.outlined.FormatQuote
+import androidx.compose.material.icons.outlined.VisibilityOff
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -274,7 +281,8 @@ internal fun NoteCardContent(
                                 fallback = event.shortPubkey,
                                 style = MaterialTheme.typography.labelLarge,
                                 fontWeight = FontWeight.Bold,
-                                color = MaterialTheme.colorScheme.primary,
+                                // 青はリンクと操作できる部分に絞る。名前は本文と同じ色の太字で見分ける。
+                                color = MaterialTheme.colorScheme.onSurface,
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis,
                                 modifier = Modifier.clickable { onUserClick(event.pubkey) },
@@ -299,86 +307,66 @@ internal fun NoteCardContent(
                                     tint = MaterialTheme.colorScheme.onSurfaceVariant,
                                 )
                             }
-                            DropdownMenu(
+                            val closeMenu = { showMenu = false }
+                            val showModerationGroup = (isOwnPost && onDelete != null) || onHide != null ||
+                                (!isOwnPost && (isMuted || onMute != null || onReport != null))
+                            ActionDropdownMenu(
                                 expanded = showMenu,
-                                onDismissRequest = { showMenu = false },
+                                onDismissRequest = closeMenu,
                             ) {
-                                DropdownMenuItem(
-                                    text = { Text("データを表示") },
-                                    onClick = {
-                                        showMenu = false
-                                        showDetails = true
-                                    },
-                                )
-                                DropdownMenuItem(
-                                    text = { Text("本文をコピー") },
-                                    onClick = {
-                                        showMenu = false
-                                        coroutineScope.launch {
-                                            clipboard.setPlainText(event.content)
-                                        }
-                                    },
-                                )
+                                // よく使う操作
+                                if (onQuote != null) {
+                                    ActionDropdownMenuItem("投稿を引用", Icons.Outlined.FormatQuote, onClick = {
+                                        closeMenu()
+                                        onQuote(event)
+                                    })
+                                }
+                                ActionDropdownMenuItem("本文をコピー", Icons.Outlined.ContentCopy, onClick = {
+                                    closeMenu()
+                                    coroutineScope.launch { clipboard.setPlainText(event.content) }
+                                })
                                 if (event.canSelectForMatometr() && matometrSession != null) {
-                                    DropdownMenuItem(text = { Text("まとめに追加") }, onClick = {
-                                        showMenu = false
+                                    ActionDropdownMenuItem("まとめに追加", Icons.AutoMirrored.Outlined.PlaylistAdd, onClick = {
+                                        closeMenu()
                                         matometrSession.matometrSelection.toggle(event)
                                     })
                                 }
-                                if (onQuote != null) {
-                                    DropdownMenuItem(
-                                        text = { Text("投稿を引用") },
-                                        onClick = {
-                                            showMenu = false
-                                            onQuote(event)
-                                        },
-                                    )
-                                }
-                                if (isOwnPost && onDelete != null) {
-                                    DropdownMenuItem(
-                                        text = { Text("削除", color = MaterialTheme.colorScheme.error) },
-                                        onClick = {
-                                            showMenu = false
-                                            onDelete()
-                                        },
-                                    )
-                                }
+                                ActionDropdownMenuItem("データを表示", Icons.Outlined.DataObject, onClick = {
+                                    closeMenu()
+                                    showDetails = true
+                                })
+                                // 表示の制御・ブロック・通報・削除は誤操作しにくいよう末尾にまとめる
+                                if (showModerationGroup) ActionDropdownMenuDivider()
                                 if (onHide != null) {
-                                    DropdownMenuItem(
-                                        text = { Text("このメッセージを非表示") },
-                                        onClick = {
-                                            showMenu = false
-                                            onHide()
-                                        },
-                                    )
+                                    ActionDropdownMenuItem("このメッセージを非表示", Icons.Outlined.VisibilityOff, onClick = {
+                                        closeMenu()
+                                        onHide()
+                                    })
                                 }
                                 if (!isOwnPost) {
                                     if (isMuted) {
-                                        DropdownMenuItem(
-                                            text = { Text("ブロックを解除") },
-                                            onClick = {
-                                                showMenu = false
-                                                onUnmute?.invoke()
-                                            },
-                                        )
+                                        ActionDropdownMenuItem("ブロックを解除", Icons.Outlined.Block, onClick = {
+                                            closeMenu()
+                                            onUnmute?.invoke()
+                                        })
                                     } else if (onMute != null) {
-                                        DropdownMenuItem(
-                                            text = { Text("ユーザーをブロック") },
-                                            onClick = {
-                                                showMenu = false
-                                                onMute()
-                                            },
-                                        )
+                                        ActionDropdownMenuItem("ユーザーをブロック", Icons.Outlined.Block, onClick = {
+                                            closeMenu()
+                                            onMute()
+                                        })
                                     }
                                     if (onReport != null) {
-                                        DropdownMenuItem(
-                                            text = { Text("通報", color = MaterialTheme.colorScheme.error) },
-                                            onClick = {
-                                                showMenu = false
-                                                showReportDialog = true
-                                            },
-                                        )
+                                        ActionDropdownMenuItem("通報", Icons.Outlined.Flag, destructive = true, onClick = {
+                                            closeMenu()
+                                            showReportDialog = true
+                                        })
                                     }
+                                }
+                                if (isOwnPost && onDelete != null) {
+                                    ActionDropdownMenuItem("削除", Icons.Outlined.Delete, destructive = true, onClick = {
+                                        closeMenu()
+                                        onDelete()
+                                    })
                                 }
                             }
                         }
@@ -475,7 +463,10 @@ internal fun NoteCardContent(
                     Spacer(modifier = Modifier.height(8.dp))
                     QuotedArticleCard(reference)
                 }
-                quotedEvents.forEach { quote ->
+                // 引用を並べる投稿（ランキングなど）で1件が画面を占めないよう、最初の数件だけ出して残りは畳む。
+                var showAllQuotes by remember(event.id) { mutableStateOf(false) }
+                val visibleQuotes = if (showAllQuotes) quotedEvents else quotedEvents.take(CollapsedQuoteCount)
+                visibleQuotes.forEach { quote ->
                     Spacer(modifier = Modifier.height(8.dp))
                     QuotePreview(
                         event = quote.event,
@@ -485,6 +476,13 @@ internal fun NoteCardContent(
                         onNoteClick = onQuotedNoteClick,
                         showImagePreview = showImagePreviews,
                         hostEventId = event.id,
+                    )
+                }
+                val hiddenQuoteCount = quotedEvents.size - visibleQuotes.size
+                if (hiddenQuoteCount > 0) {
+                    InlineTextAction(
+                        label = "他${hiddenQuoteCount}件の引用を表示",
+                        onClick = { showAllQuotes = true },
                     )
                 }
             }
@@ -530,7 +528,7 @@ internal fun NoteCardContent(
                     horizontalArrangement = Arrangement.spacedBy(12.dp),
                 ) {
                     EngagementCount(
-                        icon = Icons.Default.MailOutline,
+                        icon = Icons.Outlined.ChatBubbleOutline,
                         contentDescription = "返信",
                         count = replyCount,
                         countText = if (replyCount > 0) {
@@ -577,7 +575,8 @@ internal fun NoteCardContent(
                     )
                     Box {
                         EngagementCount(
-                            icon = Icons.Default.Favorite,
+                            // 自分がまだ反応していない間は輪郭だけにして、押した状態と見分けられるようにする。
+                            icon = if (hasOwnReaction) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
                             reaction = ownEmojiReaction.takeUnless { isLiked },
                             contentDescription = when {
                                 isLiked -> "いいねを解除"
@@ -690,3 +689,6 @@ private fun AvatarBadges(
 ) {
     com.nostr.torinos.badge.AvatarBadgeGrid(badgesState.value, onBadge, onList)
 }
+
+/** 投稿カードで最初から表示する引用の件数。 */
+private const val CollapsedQuoteCount = 2

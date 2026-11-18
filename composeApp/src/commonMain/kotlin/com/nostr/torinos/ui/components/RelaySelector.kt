@@ -1,19 +1,22 @@
 package com.nostr.torinos.ui.components
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.Check
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -27,6 +30,9 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
@@ -59,78 +65,88 @@ fun RelaySelector(
             ?.takeIf(String::isNotEmpty)
     }
 
-    Row(
-        modifier = modifier,
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.Start,
-    ) {
-        Column(modifier = Modifier.weight(1f, fill = false)) {
-            Text(
-                text = providedRelayName
-                    ?: fetchedRelayName
-                    ?: selectedRelayUrl?.relayDisplayName()
-                    ?: "—",
-                fontSize = selectedRelayNameFontSize,
-                // 下にURLを重ねても60dpのバーに収まるよう、タイトル用の高い行間を引き継がない。
-                lineHeight = selectedRelayNameFontSize * 1.25f,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
-            if (showSelectedRelayUrl && selectedRelayUrl != null) {
+    Box(modifier = modifier) {
+        Row(
+            modifier = Modifier
+                .clip(RoundedCornerShape(12.dp))
+                .clickable(role = Role.Button, onClickLabel = "リレー切り替え") { expanded = true }
+                .heightIn(min = 48.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.Start,
+        ) {
+            Column(modifier = Modifier.weight(1f, fill = false)) {
                 Text(
-                    text = selectedRelayUrl,
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    text = providedRelayName
+                        ?: fetchedRelayName
+                        ?: selectedRelayUrl?.relayDisplayName()
+                        ?: "—",
+                    fontSize = selectedRelayNameFontSize,
+                    // 下にURLを重ねても60dpのバーに収まるよう、タイトル用の高い行間を引き継がない。
+                    lineHeight = selectedRelayNameFontSize * 1.25f,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
+                if (showSelectedRelayUrl && selectedRelayUrl != null) {
+                    Text(
+                        text = selectedRelayUrl,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+            }
+            Box(
+                modifier = Modifier.size(40.dp),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(Icons.Default.ArrowDropDown, contentDescription = null)
             }
         }
-        IconButton(onClick = { expanded = true }) {
-            Icon(
-                Icons.Default.ArrowDropDown,
-                contentDescription = "リレー切り替え",
+
+        HeaderDropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+            menuDescription?.let {
+                Text(
+                    it,
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            if (relays.isEmpty()) {
+                Text(
+                    "リレーがありません",
+                    modifier = Modifier.padding(16.dp),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            relays.distinct().forEach { url ->
+                val state = relayConnectionStates[url] ?: RelayConnectionState.Disconnected
+                HeaderDropdownMenuItem(
+                    label = url.relayDisplayName(),
+                    selected = url == selectedRelayUrl,
+                    leadingIcon = { RelayConnectionDot(state) },
+                    onClick = {
+                        expanded = false
+                        onRelaySelected(url)
+                    },
+                )
+            }
+            HorizontalDivider(
+                modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
+                color = MaterialTheme.colorScheme.outlineVariant,
             )
-        }
-        DropdownMenu(
-            expanded = expanded,
-            onDismissRequest = { expanded = false },
-        ) {
-            menuDescription?.let { description ->
-                DropdownMenuItem(text = { Text(description, style = MaterialTheme.typography.bodySmall) },
-                    onClick = {}, enabled = false)
-            }
-            DropdownMenuItem(
-                text = { Text("リレー設定") },
+            HeaderDropdownMenuItem(
+                label = "リレー設定",
+                leadingIcon = {
+                    Icon(Icons.Default.Settings, contentDescription = null, modifier = Modifier.size(18.dp))
+                },
                 onClick = {
                     expanded = false
                     onOpenRelaySettings()
                 },
             )
-            relays.forEach { url ->
-                DropdownMenuItem(
-                    text = {
-                        Row(
-                            horizontalArrangement = Arrangement.spacedBy(8.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            RelayConnectionDot(
-                                state = relayConnectionStates[url] ?: RelayConnectionState.Disconnected,
-                            )
-                            Text(url.relayDisplayName())
-                        }
-                    },
-                    onClick = {
-                        onRelaySelected(url)
-                        expanded = false
-                    },
-                    trailingIcon = if (url == selectedRelayUrl) {
-                        { Icon(Icons.Default.Check, contentDescription = null) }
-                    } else {
-                        null
-                    },
-                )
-            }
         }
     }
 }
@@ -145,6 +161,13 @@ private fun RelayConnectionDot(state: RelayConnectionState) {
     Box(
         modifier = Modifier
             .size(8.dp)
+            .semantics {
+                contentDescription = when (state) {
+                    RelayConnectionState.Connected -> "接続済み"
+                    RelayConnectionState.Connecting -> "接続中"
+                    RelayConnectionState.Disconnected -> "未接続"
+                }
+            }
             .clip(CircleShape)
             .background(color),
     )

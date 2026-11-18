@@ -18,7 +18,7 @@ import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Favorite
-import androidx.compose.material.icons.filled.MailOutline
+import androidx.compose.material.icons.outlined.ChatBubbleOutline
 import androidx.compose.material.icons.filled.Repeat
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
@@ -115,7 +115,7 @@ private fun ReactionRow(
         MyProfileReactionType.Like -> Color(0xFFE17055)
     }
     val icon = when (item.type) {
-        MyProfileReactionType.Reply -> Icons.Default.MailOutline
+        MyProfileReactionType.Reply -> Icons.Outlined.ChatBubbleOutline
         MyProfileReactionType.Repost -> Icons.Default.Repeat
         MyProfileReactionType.Like -> Icons.Default.Favorite
     }

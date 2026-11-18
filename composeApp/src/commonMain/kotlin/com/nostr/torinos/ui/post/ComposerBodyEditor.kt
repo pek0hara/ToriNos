@@ -1,5 +1,9 @@
 package com.nostr.torinos.ui.post
 
+import com.nostr.torinos.ui.components.ActionDropdownMenu
+import com.nostr.torinos.ui.components.ActionDropdownMenuItem
+import androidx.compose.material.icons.outlined.Image
+import androidx.compose.material.icons.outlined.ContentPaste
 import com.nostr.torinos.model.*
 
 import androidx.compose.foundation.background
@@ -33,8 +37,6 @@ import androidx.compose.material.icons.filled.Public
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -302,7 +304,7 @@ internal fun ColumnScope.ComposerBodyEditor(
                     Spacer(modifier = Modifier.size(3.dp))
                     Text("画像", maxLines = 1, style = MaterialTheme.typography.labelSmall)
                 }
-                DropdownMenu(
+                ActionDropdownMenu(
                     expanded = showImageSourceMenu,
                     onDismissRequest = { showImageSourceMenu = false },
                     properties = PopupProperties(
@@ -312,22 +314,14 @@ internal fun ColumnScope.ComposerBodyEditor(
                         dismissOnClickOutside = false,
                     ),
                 ) {
-                    DropdownMenuItem(
-                        text = { Text("写真から選択") },
-                        leadingIcon = { Icon(Icons.Default.Image, contentDescription = null) },
-                        onClick = {
-                            showImageSourceMenu = false
-                            onPickImage()
-                        },
-                    )
-                    DropdownMenuItem(
-                        text = { Text("クリップボードから貼り付け") },
-                        leadingIcon = { Icon(Icons.Default.ContentPaste, contentDescription = null) },
-                        onClick = {
-                            showImageSourceMenu = false
-                            onPasteImage()
-                        },
-                    )
+                    ActionDropdownMenuItem("写真から選択", Icons.Outlined.Image, onClick = {
+                        showImageSourceMenu = false
+                        onPickImage()
+                    })
+                    ActionDropdownMenuItem("クリップボードから貼り付け", Icons.Outlined.ContentPaste, onClick = {
+                        showImageSourceMenu = false
+                        onPasteImage()
+                    })
                 }
             }
             TextButton(

@@ -1,5 +1,12 @@
 package com.nostr.torinos.ui.article
 
+import com.nostr.torinos.ui.components.AppTab
+import com.nostr.torinos.ui.components.ActionDropdownMenu
+import com.nostr.torinos.ui.components.ActionDropdownMenuItem
+import com.nostr.torinos.ui.components.ActionDropdownMenuDivider
+import androidx.compose.material.icons.outlined.Save
+import androidx.compose.material.icons.automirrored.outlined.Article
+import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.ui.semantics.Role
 import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.layout.Arrangement
@@ -31,8 +38,6 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.AddPhotoAlternate
 import androidx.compose.material.icons.filled.MoreVert
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LifecycleEventEffect
 import androidx.compose.material.icons.filled.Image
@@ -48,7 +53,6 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.PrimaryTabRow
 import androidx.compose.material3.Scaffold
-import androidx.compose.material3.Tab
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -218,15 +222,16 @@ fun ArticleEditorScreen(
                         Box {
                             var menuExpanded by remember { mutableStateOf(false) }
                             IconButton(onClick = { menuExpanded = true }) { Icon(Icons.Default.MoreVert, contentDescription = "その他") }
-                            DropdownMenu(expanded = menuExpanded, onDismissRequest = { menuExpanded = false }) {
+                            ActionDropdownMenu(expanded = menuExpanded, onDismissRequest = { menuExpanded = false }) {
                                 val menuEnabled = !state.frozen && !state.isPublishing
-                                DropdownMenuItem(text = { Text("今すぐ保存") }, enabled = menuEnabled,
+                                ActionDropdownMenuItem("今すぐ保存", Icons.Outlined.Save, enabled = menuEnabled,
                                     onClick = { menuExpanded = false; editorViewModel.saveNow() })
                                 if (state.draft?.isMatometr == true && state.draft?.references?.isEmpty() == true) {
-                                    DropdownMenuItem(text = { Text("通常記事に変更") }, enabled = menuEnabled,
+                                    ActionDropdownMenuItem("通常記事に変更", Icons.AutoMirrored.Outlined.Article, enabled = menuEnabled,
                                         onClick = { menuExpanded = false; editorViewModel.useRegularArticle() })
                                 }
-                                DropdownMenuItem(text = { Text("入力を破棄") }, enabled = menuEnabled,
+                                ActionDropdownMenuDivider()
+                                ActionDropdownMenuItem("入力を破棄", Icons.Outlined.Delete, destructive = true, enabled = menuEnabled,
                                     onClick = { menuExpanded = false; showDiscardConfirmation = true })
                             }
                         }
@@ -234,10 +239,10 @@ fun ArticleEditorScreen(
                 )
                 PrimaryTabRow(selectedTabIndex = selectedTab.ordinal) {
                     ArticleEditorTab.entries.forEach { tab ->
-                        Tab(
+                        AppTab(
                             selected = selectedTab == tab,
                             onClick = { selectedTab = tab },
-                            text = { Text(tab.label) },
+                            label = tab.label,
                         )
                     }
                 }

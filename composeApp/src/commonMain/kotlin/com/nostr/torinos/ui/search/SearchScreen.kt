@@ -1,5 +1,6 @@
 package com.nostr.torinos.ui.search
 
+import com.nostr.torinos.ui.components.AppTab
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -26,7 +27,6 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.PrimaryTabRow
 import androidx.compose.material3.Scaffold
-import androidx.compose.material3.Tab
 import androidx.compose.material3.Text
 import com.nostr.torinos.ui.components.AppTopBar
 import androidx.compose.runtime.Composable
@@ -219,15 +219,17 @@ internal fun SearchContent(
                 containerColor = headerBackgroundColor,
                 contentColor = headerContentColor,
             ) {
-                Tab(
+                AppTab(
                     selected = selectedTab == SearchTab.Posts,
                     onClick = { actions.onSelectTab(SearchTab.Posts) },
-                    text = { Text("ポスト") },
+                    label = "ポスト",
+                    selectedContentColor = headerContentColor,
                 )
-                Tab(
+                AppTab(
                     selected = selectedTab == SearchTab.Users,
                     onClick = { actions.onSelectTab(SearchTab.Users) },
-                    text = { Text("ユーザー") },
+                    label = "ユーザー",
+                    selectedContentColor = headerContentColor,
                 )
             }
 

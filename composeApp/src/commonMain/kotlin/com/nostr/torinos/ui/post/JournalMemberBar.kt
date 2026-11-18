@@ -1,5 +1,8 @@
 package com.nostr.torinos.ui.post
 
+import com.nostr.torinos.ui.components.ActionDropdownMenu
+import com.nostr.torinos.ui.components.ActionDropdownMenuItem
+import androidx.compose.material.icons.outlined.PersonRemove
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.clickable
@@ -25,8 +28,6 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -184,14 +185,11 @@ private fun JournalMemberChip(
                 )
             }
         }
-        DropdownMenu(expanded = showMenu, onDismissRequest = { showMenu = false }) {
-            DropdownMenuItem(
-                text = { Text("ジャーナルから外す") },
-                onClick = {
-                    showMenu = false
-                    onRemove()
-                },
-            )
+        ActionDropdownMenu(expanded = showMenu, onDismissRequest = { showMenu = false }) {
+            ActionDropdownMenuItem("ジャーナルから外す", Icons.Outlined.PersonRemove, onClick = {
+                showMenu = false
+                onRemove()
+            })
         }
     }
 }

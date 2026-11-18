@@ -22,6 +22,8 @@ import coil3.compose.AsyncImage
 import coil3.compose.AsyncImagePainter
 import coil3.compose.LocalPlatformContext
 import coil3.request.ImageRequest
+import coil3.network.NetworkHeaders
+import coil3.network.httpHeaders
 import coil3.request.crossfade
 import coil3.request.transformations
 import coil3.size.Precision
@@ -39,10 +41,14 @@ fun buildNetworkImageRequest(
     contentScale: ContentScale = ContentScale.Fit,
     maxDecodeSizePx: Int? = null,
     animate: Boolean = true,
+    headers: Map<String, String> = emptyMap(),
 ): ImageRequest = ImageRequest.Builder(context)
     .data(url)
     .crossfade(false)
     .apply {
+        if (headers.isNotEmpty()) {
+            httpHeaders(NetworkHeaders.Builder().apply { headers.forEach { (name, value) -> set(name, value) } }.build())
+        }
         if (maxDecodeSizePx != null) {
             size(maxDecodeSizePx)
             precision(Precision.INEXACT)
@@ -67,10 +73,12 @@ fun NetworkImage(
     blurHash: String? = null,
     onSuccessSize: ((androidx.compose.ui.geometry.Size) -> Unit)? = null,
     onError: ((AsyncImagePainter.State.Error) -> Unit)? = null,
+    /** 認証が要る画像（Buzz のメディアなど）のヘッダー。 */
+    headers: Map<String, String> = emptyMap(),
 ) {
     val context = LocalPlatformContext.current
-    val model = remember(context, url, contentScale, maxDecodeSizePx, animate) {
-        buildNetworkImageRequest(context, url, contentScale, maxDecodeSizePx, animate)
+    val model = remember(context, url, contentScale, maxDecodeSizePx, animate, headers) {
+        buildNetworkImageRequest(context, url, contentScale, maxDecodeSizePx, animate, headers)
     }
     val onSuccess: ((AsyncImagePainter.State.Success) -> Unit)? = onSuccessSize?.let { report ->
         { state -> report(state.painter.intrinsicSize) }

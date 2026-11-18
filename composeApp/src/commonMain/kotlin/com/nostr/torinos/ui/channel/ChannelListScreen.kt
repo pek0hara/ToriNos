@@ -1,5 +1,11 @@
 package com.nostr.torinos.ui.channel
 
+import com.nostr.torinos.ui.components.ActionDropdownMenu
+import com.nostr.torinos.ui.components.ActionDropdownMenuItem
+import com.nostr.torinos.ui.components.ActionDropdownMenuDivider
+import androidx.compose.material.icons.outlined.Info
+import androidx.compose.material.icons.outlined.CleaningServices
+import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -28,8 +34,6 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -530,32 +534,24 @@ private fun ChannelRow(
                         modifier = Modifier.size(20.dp),
                     )
                 }
-                DropdownMenu(
+                ActionDropdownMenu(
                     expanded = menuExpanded,
                     onDismissRequest = { menuExpanded = false },
                 ) {
-                    DropdownMenuItem(
-                        text = { Text("チャンネル詳細") },
-                        onClick = {
-                            menuExpanded = false
-                            onDetailClick()
-                        },
-                    )
-                    DropdownMenuItem(
-                        text = { Text("キャッシュを削除") },
-                        onClick = {
-                            menuExpanded = false
-                            onCacheDeleteClick()
-                        },
-                    )
+                    ActionDropdownMenuItem("チャンネル詳細", Icons.Outlined.Info, onClick = {
+                        menuExpanded = false
+                        onDetailClick()
+                    })
+                    ActionDropdownMenuItem("キャッシュを削除", Icons.Outlined.CleaningServices, onClick = {
+                        menuExpanded = false
+                        onCacheDeleteClick()
+                    })
                     if (onChannelDeleteClick != null) {
-                        DropdownMenuItem(
-                            text = { Text("チャンネルを削除") },
-                            onClick = {
-                                menuExpanded = false
-                                onChannelDeleteClick()
-                            },
-                        )
+                        ActionDropdownMenuDivider()
+                        ActionDropdownMenuItem("チャンネルを削除", Icons.Outlined.Delete, destructive = true, onClick = {
+                            menuExpanded = false
+                            onChannelDeleteClick()
+                        })
                     }
                 }
             }

@@ -1,5 +1,6 @@
 package com.nostr.torinos.ui.profile
 
+import com.nostr.torinos.ui.components.AppTab
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
@@ -8,7 +9,6 @@ import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.PrimaryTabRow
 import androidx.compose.material3.Scaffold
-import androidx.compose.material3.Tab
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -211,10 +211,10 @@ fun MyProfileScreen(
             item {
                 PrimaryTabRow(selectedTabIndex = selectedTab.ordinal) {
                     ProfileTimelineTab.entries.forEach { tab ->
-                        Tab(
+                        AppTab(
                             selected = selectedTab == tab,
                             onClick = { selectedTabName = tab.name },
-                            text = { Text(tab.label) },
+                            label = tab.label,
                         )
                     }
                 }

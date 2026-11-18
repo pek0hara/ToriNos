@@ -1,5 +1,7 @@
 package com.nostr.torinos.ui.status
 
+import com.nostr.torinos.ui.components.HeaderDropdownMenu
+import com.nostr.torinos.ui.components.HeaderDropdownMenuItem
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -26,8 +28,6 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DatePicker
 import androidx.compose.material3.DatePickerDialog
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
@@ -394,26 +394,14 @@ internal fun StatusComposerSheet(
                                 },
                                 enabled = !isPublishing,
                             )
-                            DropdownMenu(
+                            HeaderDropdownMenu(
                                 expanded = showExpirationOptions,
                                 onDismissRequest = { showExpirationOptions = false },
-                                properties = PopupProperties(
-                                    focusable = true,
-                                    dismissOnBackPress = true,
-                                    dismissOnClickOutside = true,
-                                ),
                             ) {
                                 StatusExpirationOption.entries.forEach { option ->
-                                    DropdownMenuItem(
-                                        text = {
-                                            Text(
-                                                if (selectedExpirationOption == option) {
-                                                    "✓ ${option.label}"
-                                                } else {
-                                                    option.label
-                                                },
-                                            )
-                                        },
+                                    HeaderDropdownMenuItem(
+                                        label = option.label,
+                                        selected = selectedExpirationOption == option,
                                         onClick = {
                                             selectedExpirationOption = option
                                             showExpirationOptions = false

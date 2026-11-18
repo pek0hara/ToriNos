@@ -1,7 +1,11 @@
 package com.nostr.torinos.ui.feed
 
+import com.nostr.torinos.ui.components.AppTab
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.ui.semantics.Role
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -18,11 +22,12 @@ import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowDropDown
-import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.Search
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.HorizontalDivider
+import com.nostr.torinos.ui.components.HeaderDropdownMenu
+import com.nostr.torinos.ui.components.HeaderDropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -30,9 +35,9 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.PrimaryTabRow
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
-import androidx.compose.material3.Tab
 import androidx.compose.material3.Text
 import com.nostr.torinos.ui.components.AppTopBar
+import com.nostr.torinos.ui.components.HeaderSelectorButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -376,82 +381,71 @@ fun FeedScreen(
                 AppTopBar(
                     title = {
                         if (canSelectAllRelays) {
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.Start,
-                            ) {
-                                Column(modifier = Modifier.weight(1f, fill = false)) {
-                                    Text(
-                                        text = topBarTitle,
-                                        // 他の画面のリレー名と同じく、通常の投稿の本文と同じ大きさにする。
-                                        fontSize = MaterialTheme.typography.bodyMedium.fontSize,
-                                        // 下にリレー数を重ねても60dpのバーに収まるよう、タイトル用の高い行間を引き継がない。
-                                        lineHeight = MaterialTheme.typography.bodyMedium.fontSize * 1.25f,
-                                        color = feedContentColor,
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis,
-                                    )
-                                    if (followingFeedMode == FollowingFeedMode.Following) {
+                            Box {
+                                HeaderSelectorButton(onClickLabel = "フィードメニュー", onClick = { showRelayMenu = true }) {
+                                    Column(modifier = Modifier.weight(1f, fill = false)) {
                                         Text(
-                                            text = "${relays.size}リレー",
-                                            style = MaterialTheme.typography.labelSmall,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            text = topBarTitle,
+                                            // 他の画面のリレー名と同じく、通常の投稿の本文と同じ大きさにする。
+                                            fontSize = MaterialTheme.typography.bodyMedium.fontSize,
+                                            // 下にリレー数を重ねても60dpのバーに収まるよう、タイトル用の高い行間を引き継がない。
+                                            lineHeight = MaterialTheme.typography.bodyMedium.fontSize * 1.25f,
+                                            color = feedContentColor,
                                             maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis,
+                                        )
+                                        if (followingFeedMode == FollowingFeedMode.Following) {
+                                            Text(
+                                                text = "${relays.size}リレー",
+                                                style = MaterialTheme.typography.labelSmall,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                                maxLines = 1,
+                                            )
+                                        }
+                                    }
+                                    Box(modifier = Modifier.size(40.dp), contentAlignment = Alignment.Center) {
+                                        Icon(
+                                            Icons.Default.ArrowDropDown,
+                                            contentDescription = null,
+                                            tint = feedContentColor,
                                         )
                                     }
                                 }
-                                IconButton(onClick = { showRelayMenu = true }) {
-                                    Icon(
-                                        Icons.Default.ArrowDropDown,
-                                        contentDescription = "フィードメニュー",
-                                        tint = feedContentColor,
-                                    )
-                                }
-                                DropdownMenu(
+                                HeaderDropdownMenu(
                                     expanded = showRelayMenu,
                                     onDismissRequest = { showRelayMenu = false },
                                 ) {
-                                    DropdownMenuItem(
-                                        text = { Text("すべてのリレー") },
+                                    HeaderDropdownMenuItem(
+                                        label = "すべてのリレー",
+                                        selected = followingFeedMode == FollowingFeedMode.Following && selectedFeedRelayUrl == null,
                                         onClick = {
                                             followingFeedMode = FollowingFeedMode.Following
                                             RelayStore.setSelectedFollowingRelayUrl(null)
                                             showRelayMenu = false
                                         },
-                                        trailingIcon = if (
-                                            followingFeedMode == FollowingFeedMode.Following &&
-                                            selectedFeedRelayUrl == null
-                                        ) {
-                                            {
-                                                Icon(
-                                                    Icons.Default.Check,
-                                                    contentDescription = null,
-                                                )
-                                            }
-                                        } else null,
                                     )
-                                    DropdownMenuItem(
-                                        text = { Text("リレー設定") },
-                                        onClick = {
-                                            showRelayMenu = false
-                                            onOpenRelaySettings()
-                                        },
-                                    )
-                                    DropdownMenuItem(
-                                        text = { Text("ミュートフィード") },
+                                    HeaderDropdownMenuItem(
+                                        label = "ミュートフィード",
+                                        selected = followingFeedMode == FollowingFeedMode.Muted,
                                         onClick = {
                                             followingFeedMode = FollowingFeedMode.Muted
                                             RelayStore.setSelectedFollowingRelayUrl(null)
                                             showRelayMenu = false
                                         },
-                                        trailingIcon = if (followingFeedMode == FollowingFeedMode.Muted) {
-                                            {
-                                                Icon(
-                                                    Icons.Default.Check,
-                                                    contentDescription = null,
-                                                )
-                                            }
-                                        } else null,
+                                    )
+                                    HorizontalDivider(
+                                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
+                                        color = MaterialTheme.colorScheme.outlineVariant,
+                                    )
+                                    HeaderDropdownMenuItem(
+                                        label = "リレー設定",
+                                        leadingIcon = {
+                                            Icon(Icons.Default.Settings, contentDescription = null, modifier = Modifier.size(18.dp))
+                                        },
+                                        onClick = {
+                                            showRelayMenu = false
+                                            onOpenRelaySettings()
+                                        },
                                     )
                                 }
                             }
@@ -641,10 +635,11 @@ private fun FeedTabRow(
         contentColor = MaterialTheme.colorScheme.onBackground,
     ) {
         tabs.forEach { tab ->
-            Tab(
+            AppTab(
                 selected = selectedTab == tab,
                 onClick = { onTabSelected(tab) },
-                text = { Text(tab.label) },
+                label = tab.label,
+                selectedContentColor = MaterialTheme.colorScheme.onBackground,
             )
         }
     }

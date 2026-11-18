@@ -10,7 +10,7 @@ import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Favorite
-import androidx.compose.material.icons.filled.MailOutline
+import androidx.compose.material.icons.outlined.ChatBubbleOutline
 import androidx.compose.material.icons.filled.NorthEast
 import androidx.compose.material.icons.filled.PostAdd
 import androidx.compose.material.icons.filled.Repeat
@@ -43,7 +43,7 @@ private val JournalActivityKind.icon: ImageVector
     get() = when (this) {
         JournalActivityKind.Post -> Icons.Default.PostAdd
         JournalActivityKind.Repost -> Icons.Default.Repeat
-        JournalActivityKind.Reply -> Icons.Default.MailOutline
+        JournalActivityKind.Reply -> Icons.Outlined.ChatBubbleOutline
         JournalActivityKind.Like, JournalActivityKind.ReceivedLike -> Icons.Default.Favorite
     }
 

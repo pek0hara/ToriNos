@@ -29,6 +29,8 @@ internal val LocalMatometrSelectionEnabled = staticCompositionLocalOf { false }
     val session = LocalAccountSession.current ?: return
     val coordinator = session.matometrSelection
     val state by coordinator.state.collectAsState()
+    // 選択はメニューの「まとめに追加」から始める。選択中の投稿があるか、選択バーを開いている間だけ出す。
+    if (state.posts.isEmpty() && !state.active) return
     IconButton(onClick = { if (state.active) coordinator.hide() else coordinator.start() }, enabled = !state.busy) {
         Icon(Icons.Default.Checklist, contentDescription = if (state.active) "まとめ選択を閉じる" else "投稿を選んでまとめる")
     }

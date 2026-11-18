@@ -1,7 +1,18 @@
 package com.nostr.torinos.ui.components
 
 import com.nostr.torinos.ui.theme.appSp
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.indication
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.RowScope
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.ripple
+import androidx.compose.runtime.remember
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.semantics.Role
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
@@ -71,6 +82,40 @@ fun AppTopBar(
                 titleContentColor = contentColor,
                 actionIconContentColor = contentColor,
             ),
+        )
+    }
+}
+
+/**
+ * ヘッダーのタイトル位置に置く、押して切り替えメニューを開くボタン（名前と補足の2行＋▼）。
+ * 押したときの波紋だけを角丸にし、文字は切り取らない。
+ * 行全体を角丸で切り取ると、2行目が下端に接するため、左下の角で「p」などの下に伸びる部分が欠ける。
+ */
+@Composable
+fun HeaderSelectorButton(
+    onClickLabel: String,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    content: @Composable RowScope.() -> Unit,
+) {
+    val interactionSource = remember { MutableInteractionSource() }
+    Box(modifier = modifier) {
+        Box(
+            Modifier
+                .matchParentSize()
+                .clip(RoundedCornerShape(12.dp))
+                .indication(interactionSource, ripple()),
+        )
+        Row(
+            modifier = Modifier.clickable(
+                interactionSource = interactionSource,
+                indication = null,
+                role = Role.Button,
+                onClickLabel = onClickLabel,
+                onClick = onClick,
+            ),
+            verticalAlignment = Alignment.CenterVertically,
+            content = content,
         )
     }
 }

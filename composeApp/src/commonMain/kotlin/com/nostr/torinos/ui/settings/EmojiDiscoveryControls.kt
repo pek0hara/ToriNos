@@ -1,5 +1,7 @@
 package com.nostr.torinos.ui.settings
 
+import com.nostr.torinos.ui.components.HeaderDropdownMenu
+import com.nostr.torinos.ui.components.HeaderDropdownMenuItem
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -8,8 +10,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Search
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LocalContentColor
@@ -50,9 +50,9 @@ internal fun EmojiDiscoveryControls(
             horizontalArrangement = Arrangement.SpaceBetween) {
             Column {
                 TextButton(onClick = { expanded = true }) { Text("${sort.label} ▾") }
-                DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+                HeaderDropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
                     EmojiSetSort.entries.forEach { option ->
-                        DropdownMenuItem(text = { Text(option.label) }, onClick = {
+                        HeaderDropdownMenuItem(label = option.label, selected = option == sort, onClick = {
                             expanded = false; onSort(option)
                         })
                     }
