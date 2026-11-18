@@ -5,7 +5,9 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.asPaddingValues
+import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.material.icons.Icons
@@ -27,6 +29,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
@@ -34,6 +37,7 @@ import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.input.TextFieldValue
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.nostr.torinos.model.ReactionOption
 
@@ -66,6 +70,13 @@ internal fun shouldHideKeyboardOnFocusChange(
     wasFocused: Boolean,
     isFocused: Boolean,
 ): Boolean = dismissKeyboardOnFocusLoss && wasFocused && !isFocused
+
+/** 入力欄の下に取るホームインジケーター分の余白。キーボード表示中はキーボードの直上に置くので取らない。 */
+internal fun navigationBarsBottomPadding(
+    applyNavigationBarsPadding: Boolean,
+    softwareKeyboardVisible: Boolean,
+    navigationBarsBottom: Dp,
+): Dp = if (applyNavigationBarsPadding && !softwareKeyboardVisible) navigationBarsBottom else 0.dp
 
 /** [maxLength] が null なら無制限。超える入力は受け付けない。 */
 internal fun isWithinMaxLength(length: Int, maxLength: Int?): Boolean =
@@ -138,6 +149,10 @@ fun AppMessageComposer(
             keyboardController?.show()
         }
     }
+    // ホームインジケーター分の余白。navigationBarsPadding() をキーボードの開閉で付け外しすると、
+    // iOSではキーボードを閉じた後に付け直しても余白が0のまま戻らない(シミュレータで実測)ので、
+    // 値を読んで普通の余白として付ける。
+    val navigationBarsBottom = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
     Surface(
         modifier = modifier.fillMaxWidth(),
         tonalElevation = 3.dp,
@@ -147,12 +162,12 @@ fun AppMessageComposer(
                 .fillMaxWidth()
                 // ホームインジケーター分の余白は背景色の内側に取り、キーボード表示中は取らない
                 // （キーボードの直上に入力欄を置き、間に隙間を作らない）。
-                .then(
-                    if (applyNavigationBarsPadding && !softwareKeyboardVisible) {
-                        Modifier.navigationBarsPadding()
-                    } else {
-                        Modifier
-                    },
+                .padding(
+                    bottom = navigationBarsBottomPadding(
+                        applyNavigationBarsPadding = applyNavigationBarsPadding,
+                        softwareKeyboardVisible = softwareKeyboardVisible,
+                        navigationBarsBottom = navigationBarsBottom,
+                    ),
                 )
                 .padding(horizontal = 12.dp, vertical = 8.dp),
             verticalArrangement = Arrangement.spacedBy(6.dp),
@@ -204,7 +219,7 @@ fun AppMessageComposer(
                             wasTextFocused = focus.isFocused
                             onFocusChanged?.invoke(focus.isFocused)
                         },
-                    placeholder = { Text(placeholder) },
+                    placeholder = { Text(placeholder, maxLines = 1, overflow = TextOverflow.Ellipsis) },
                     enabled = enabled && (keepFocusWhileSending || !isSending),
                     readOnly = keepFocusWhileSending && isSending,
                     minLines = 1,

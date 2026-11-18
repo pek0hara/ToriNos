@@ -1,6 +1,7 @@
 package com.nostr.torinos.ui.components
 
 import androidx.compose.runtime.Composable
+import androidx.compose.ui.Modifier
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -49,3 +50,5 @@ internal actual fun rememberSoftwareKeyboardVisible(): Boolean {
     }
     return visible
 }
+
+actual fun Modifier.keyboardAvoidingPadding(): Modifier = this

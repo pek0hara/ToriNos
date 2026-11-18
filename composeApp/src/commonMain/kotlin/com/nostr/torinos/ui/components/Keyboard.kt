@@ -5,6 +5,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.ui.Modifier
 
 @Composable
 fun rememberDismissKeyboard(): () -> Unit {
@@ -64,3 +65,12 @@ internal expect fun dismissPlatformKeyboard()
  */
 @Composable
 internal expect fun rememberSoftwareKeyboardVisible(): Boolean
+
+/**
+ * 画面の下端に入力欄を置く画面で、キーボードの高さだけ中身を持ち上げる。
+ *
+ * Android は edge-to-edge なのでウィンドウは縮まず、キーボードの高さは `WindowInsets.ime` で届く。
+ * 付けないと入力欄がキーボードの下に隠れる。iOS はキーボード分だけ画面全体が縮むので何もしない
+ * (付けると二重に持ち上がる)。Web も今までどおり何もしない。
+ */
+expect fun Modifier.keyboardAvoidingPadding(): Modifier
