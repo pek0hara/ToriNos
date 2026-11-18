@@ -131,7 +131,8 @@ fun LinkedText(
                     is Segment.Link -> when (val link = segment.link) {
                         is TextLink.Uri -> {
                             pushLink(LinkAnnotation.Url(url = link.uri, styles = linkStyle))
-                            append(link.text)
+                            // 本文では短くして読めるようにする。開く先は元の URL のまま。
+                            append(shortenUrlForDisplay(link.text))
                             pop()
                         }
                         is TextLink.Profile -> {
