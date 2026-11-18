@@ -6,6 +6,7 @@ import com.nostr.torinos.model.NostrEvent
 import com.nostr.torinos.model.NostrFilter
 import com.nostr.torinos.model.matches
 import com.nostr.torinos.network.RelayFetchVerdict
+import com.nostr.torinos.network.RelayLimits
 import com.nostr.torinos.network.RelayRetryPolicy
 import com.nostr.torinos.network.RelayTarget
 import com.nostr.torinos.network.RetryDisposition
@@ -55,6 +56,13 @@ internal class RelayFeedHistoryCoordinator(
     private val arbiter: RelayFetchArbiter = RelayFetchArbiter(),
     private val canRequest: () -> Boolean = { true },
     private val maxFailures: Int = Int.MAX_VALUE,
+    /**
+     * 初回の状態（空・失敗）を決めるとき、これだけ続けて失敗したリレーは待たない。取得の再試行は続ける。
+     * 応答しないリレーが1つあるだけで、空のフィードが読み込み中のままになるのを防ぐ。
+     */
+    private val settleAfterFailures: Int = INITIAL_SETTLE_FAILURES,
+    /** リレーが1つのフィルターで返す最大件数（NIP-11 の max_limit）。分からなければ null。 */
+    private val relayMaxLimit: (String) -> Int? = RelayLimits::maxLimit,
     /** この時刻以降を表示してよい。値は単調に古くなり、変わったときだけ通知する。 */
     private val onReveal: (Long) -> Unit = {},
     /** 境界は変わらないが、ページ完了で受信済みイベントを画面へ確定させる。 */
@@ -341,7 +349,7 @@ internal class RelayFeedHistoryCoordinator(
                         relay.graceJob = null
                     }
                     if (commitPage(url, relay) is FeedPageCommitResult.Committed) {
-                        relay.page?.let { advancePage(relay, it) }
+                        relay.page?.let { advancePage(url, relay, it) }
                     }
                     scheduleSettle()
                     stopWaitingForFailedRelays()
@@ -388,17 +396,23 @@ internal class RelayFeedHistoryCoordinator(
             catch (_: Throwable) { FeedPageCommitResult.Failed }
         page.commit = result
         page.visibleAdded = (result as? FeedPageCommitResult.Committed)?.visibleAdded ?: 0
+        page.newlyStored = (result as? FeedPageCommitResult.Committed)?.newlyStored ?: 0
         if (result == FeedPageCommitResult.Failed) storageFailure = true
         return result
     }
 
-    private fun advancePage(relay: RelayState, page: Page) {
+    private fun advancePage(url: String, relay: RelayState, page: Page) {
         if (page.advanced) return
         page.advanced = true
         relay.hasCompletedInitialPage = true
+        val knownMaxLimit = relayMaxLimit(url)
         page.requested.forEach { requested ->
-            advanceCursor(relay.cursors[requested.index], requested,
-                page.events[requested.index].orEmpty().values.map { it.createdAt })
+            val cursor = relay.cursors[requested.index]
+            advanceCursor(cursor, requested,
+                page.events[requested.index].orEmpty().values.map { it.createdAt }, knownMaxLimit)
+            // 次の until が since より前なら、範囲は取りきっている。必ず空になる REQ を送らない。
+            val since = baseFilters[requested.index].since
+            if (since != null && !cursor.exhausted && (cursor.until ?: Long.MAX_VALUE) < since) cursor.exhausted = true
         }
     }
 
@@ -432,7 +446,7 @@ internal class RelayFeedHistoryCoordinator(
         if (succeeded && page != null) {
             relay.failureCount = 0
             relay.closedDisposition = null
-            advancePage(relay, page)
+            advancePage(url, relay, page)
         } else if (!storageFailure) {
             relay.late = true
             scheduleRetry(url, relay, page)
@@ -449,15 +463,24 @@ internal class RelayFeedHistoryCoordinator(
         // 追いつきは数ページまでにし、残りは「もっと読む」に合わせて進める。
         val behindRevealed = floor != null && relay.coverage() > floor &&
             relay.catchUpPages < MAX_CATCH_UP_PAGES
-        val skipInvisible = succeeded && revealsHistory && page?.visibleAdded == 0 && relay.hasMore()
+        val nothingVisible = succeeded && revealsHistory && page?.visibleAdded == 0 && relay.hasMore()
+        // 受信済みの投稿だけのページ（境界秒の取り直しや、他のリレーと同じ範囲）は「隠れた投稿だけのページ」
+        // ではない。自動継続の上限には数えない。
+        val duplicateOnly = nothingVisible && page?.newlyStored == 0 && page.events.values.any { it.isNotEmpty() }
+        val skipInvisible = nothingVisible && !duplicateOnly
+        // 要求数に満たない重複ページ（境界秒の取り直し）は、その先に新しい投稿がありうるので続きを取る。
+        // 満杯の重複ページは他のリレーと同じ範囲を返しただけなので、先読みせず「もっと読む」に任せる。
+        val skipDuplicate = duplicateOnly && relay.catchUpPages < MAX_CATCH_UP_PAGES &&
+            page?.requested?.any { requested -> page.events[requested.index].orEmpty().size < requested.limit } == true
         if (skipInvisible) emptyVisiblePages++ else if (page?.visibleAdded != 0) emptyVisiblePages = 0
         if (skipInvisible && emptyVisiblePages >= MAX_EMPTY_VISIBLE_PAGES) requiresExplicitLoadMore = true
-        if (succeeded && relay.hasMore() && (autoContinue || behindRevealed ||
+        if (succeeded && relay.hasMore() && (autoContinue || behindRevealed || skipDuplicate ||
                 (skipInvisible && !requiresExplicitLoadMore))) {
             if (!autoContinue) relay.catchUpPages++
             val reason = when {
                 autoContinue -> "autoContinue"
                 behindRevealed -> "catchUp#${relay.catchUpPages}"
+                skipDuplicate -> "skipDuplicate#${relay.catchUpPages}"
                 else -> "skipInvisible#$emptyVisiblePages"
             }
             requestRelay(url, reason)
@@ -473,20 +496,23 @@ internal class RelayFeedHistoryCoordinator(
         cursor: FilterCursor,
         requested: RequestedFilter,
         timestamps: Collection<Long>,
+        knownMaxLimit: Int?,
     ) {
         if (timestamps.isEmpty()) {
             cursor.exhausted = true
             return
         }
         val oldest = timestamps.minOrNull() ?: return
-        // 判定には今回より前に観測した最大件数を使う。
-        val largestPrevious = cursor.largestPage
+        // リレーの返却上限の見積もり。NIP-11 の値がなければ、今回より前に観測した最大件数を使う。
+        // 1件しか持たないリレーの1件を上限と見誤らないよう、観測値には下限を設ける。
+        val relayCap = knownMaxLimit ?: maxOf(cursor.largestPage, MIN_ASSUMED_RELAY_CAP)
         cursor.largestPage = maxOf(cursor.largestPage, timestamps.size)
         if (requested.until != null && oldest == requested.until) {
             when {
-                // このリレーはより多く返せると分かっているので、境界秒は取りきっている。
-                // 履歴の末尾で既知の境界秒だけが返る場合も、ここで前の秒へ進む。
-                timestamps.size < requested.limit && timestamps.size < largestPrevious -> {
+                // until はその秒以前のすべてを指す。返却上限より少ないなら、リレーは持っている分を
+                // すべて返しているので、境界秒は取りきっている。履歴の末尾で既知の境界秒だけが返る場合も、
+                // ここで前の秒へ進む。
+                timestamps.size < requested.limit && timestamps.size < relayCap -> {
                     if (oldest == 0L) {
                         cursor.exhausted = true
                         return
@@ -643,7 +669,8 @@ internal class RelayFeedHistoryCoordinator(
                 relayCount = relays.size,
                 successfulInitialRelayCount = relays.values.count { it.hasCompletedInitialPage },
                 isInitialFetchSettled = relays.isNotEmpty() && relays.values.all { relay ->
-                    relay.hasCompletedInitialPage || relay.suppressed || relay.failureCount >= maxFailures || storageFailure
+                    relay.hasCompletedInitialPage || relay.suppressed || storageFailure ||
+                        relay.failureCount >= minOf(maxFailures, settleAfterFailures)
                 },
                 stalledRelayCount = relays.values.count { it.retryJob != null || it.suppressed || it.failureCount > 0 },
                 awaitingAuthRelayCount = relays.values.count { it.closedDisposition == RetryDisposition.RetryAfterAuth },
@@ -703,6 +730,8 @@ internal class RelayFeedHistoryCoordinator(
         val requested: List<RequestedFilter>,
         val events: MutableMap<Int, LinkedHashMap<String, NostrEvent>> = mutableMapOf(),
         var visibleAdded: Int = 0,
+        /** このページで初めて保存した件数。0 なら重複だけ（または空）のページ。 */
+        var newlyStored: Int = 0,
         var overflowed: Boolean = false,
         var commit: FeedPageCommitResult? = null,
         var advanced: Boolean = false,
@@ -712,6 +741,9 @@ internal class RelayFeedHistoryCoordinator(
         const val DEFAULT_PAGE_SIZE = 30
         const val MAX_EMPTY_VISIBLE_PAGES = 5
         const val MAX_COVERAGE_GAPS = 64
+        /** 返却上限をこれより小さくしているリレーはないものとして扱う。 */
+        const val MIN_ASSUMED_RELAY_CAP = 10
+        const val INITIAL_SETTLE_FAILURES = 2
         /** 諦める回数は[maxFailures]で決めるため、待ち時間だけを使う。 */
         val RETRY_POLICY = RelayRetryPolicy.history()
         const val MAX_CATCH_UP_PAGES = 3

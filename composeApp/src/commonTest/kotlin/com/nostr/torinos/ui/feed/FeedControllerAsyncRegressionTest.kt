@@ -513,7 +513,8 @@ class FeedControllerAsyncRegressionTest {
         val firstPage = gateway.fetchSessions.single()
         val historyFloor = firstPage.filters.map { it.until }.distinct().single()
         assertTrue(historyFloor != null)
-        assertTrue(gateway.liveSessions.single().filters.all { it.since == historyFloor })
+        // ライブは時計のずれを拾うため、基準時刻の少し前から購読する。
+        assertTrue(gateway.liveSessions.single().filters.all { it.since == historyFloor - 60 })
 
         repeat(30) { index ->
             firstPage.event(event("post-$index", 100L - index), relay = "relay")
@@ -1614,6 +1615,8 @@ class FeedControllerAsyncRegressionTest {
         val controller = FeedController(
             computeDispatcher = Dispatchers.Unconfined,
             includeRepostsInFeed = true,
+            // テストの投稿は署名を持たないので、埋め込みの検証は通ったものとする。
+            validateEmbeddedEvent = { true },
             scope = backgroundScope,
             subscriptions = gateway,
         )
@@ -2474,6 +2477,356 @@ class FeedControllerAsyncRegressionTest {
         oldPage.complete()
         runCurrent()
         assertFalse(controller.state.value.events.any { it.id == "from-old-scope" })
+        controller.close()
+    }
+
+    @Test
+    fun singleEventRelayReachesHistoryEndWithoutCoverageGap() = runTest {
+        val gateway = FakeGateway()
+        val controller = FeedController(computeDispatcher = Dispatchers.Unconfined, scope = backgroundScope, subscriptions = gateway)
+        runCurrent()
+        val first = gateway.feedFetchSessions.single()
+        first.event(event("only", 100))
+        first.complete()
+        runCurrent()
+        controller.loadMore()
+        runCurrent()
+        // 1件しか持たないリレーは、境界秒の取り直しでも同じ1件を返す。返却上限で切られたわけではない。
+        val boundary = gateway.feedFetchSessions.last()
+        assertEquals(100L, boundary.filters.single().until)
+        boundary.event(event("only", 100))
+        boundary.complete()
+        runCurrent()
+        val older = gateway.feedFetchSessions.last()
+        assertEquals(99L, older.filters.single().until)
+        older.complete()
+        runCurrent()
+        assertEquals(0, controller.state.value.coverageGapCount)
+        assertFalse(controller.state.value.canLoadMore)
+        controller.close()
+    }
+
+    @Test
+    fun sameSecondEventsBelowAssumedRelayCapAreNotRecordedAsCoverageGap() = runTest {
+        val gateway = FakeGateway()
+        val controller = FeedController(computeDispatcher = Dispatchers.Unconfined, scope = backgroundScope, subscriptions = gateway)
+        runCurrent()
+        val first = gateway.feedFetchSessions.single()
+        repeat(5) { first.event(event("same-$it", 100)) }
+        first.complete()
+        runCurrent()
+        controller.loadMore()
+        runCurrent()
+        val boundary = gateway.feedFetchSessions.last()
+        repeat(5) { boundary.event(event("same-$it", 100)) }
+        boundary.complete()
+        runCurrent()
+        assertEquals(99L, gateway.feedFetchSessions.last().filters.single().until)
+        assertEquals(0, controller.state.value.coverageGapCount)
+        controller.close()
+    }
+
+    @Test
+    fun sameSecondEventsAtKnownRelayMaxLimitAreRecordedAsCoverageGap() = runTest {
+        RelayLimits.recordMaxLimit("relay", 5)
+        try {
+            val gateway = FakeGateway()
+            val controller = FeedController(computeDispatcher = Dispatchers.Unconfined, scope = backgroundScope, subscriptions = gateway)
+            runCurrent()
+            val first = gateway.feedFetchSessions.single()
+            repeat(5) { first.event(event("same-$it", 100)) }
+            first.complete()
+            runCurrent()
+            controller.loadMore()
+            runCurrent()
+            val boundary = gateway.feedFetchSessions.last()
+            repeat(5) { boundary.event(event("other-$it", 100)) }
+            boundary.complete()
+            runCurrent()
+            assertEquals(1, controller.state.value.coverageGapCount)
+            controller.close()
+        } finally {
+            RelayLimits.recordMaxLimit("relay", null)
+        }
+    }
+
+    @Test
+    fun resumeWithoutNewPostsFinishesGapSyncWithoutCoverageGap() = runTest {
+        val gateway = FakeGateway()
+        val controller = FeedController(computeDispatcher = Dispatchers.Unconfined, scope = backgroundScope, subscriptions = gateway)
+        runCurrent()
+        val now = Clock.System.now().epochSeconds
+        val first = gateway.feedFetchSessions.single()
+        first.event(event("held", now - 100))
+        first.complete()
+        runCurrent()
+        advanceTimeBy(1_000)
+        runCurrent()
+
+        repeat(2) {
+            controller.stopSubscriptions()
+            runCurrent()
+            controller.startSubscriptions()
+            runCurrent()
+            // 差分取得の since は保持中の最新投稿の時刻を含むので、新着がなければその1件だけが返る。
+            var pages = 0
+            while (pages++ < 6) {
+                val session = gateway.feedFetchSessions.last()
+                if (session.closed || "-sync-" !in session.id) break
+                val filter = session.filters.single()
+                assertEquals(now - 100, filter.since)
+                if ((filter.until ?: 0) >= now - 100) session.event(event("held", now - 100))
+                session.complete()
+                session.closed = true
+                runCurrent()
+            }
+            advanceTimeBy(1_000)
+            runCurrent()
+            assertEquals(0, controller.state.value.coverageGapCount)
+            assertEquals(0, controller.state.value.pendingGapCount)
+        }
+        controller.close()
+    }
+
+    @Test
+    fun duplicateOnlyPagesFromManyRelaysDoNotStopAutoLoadMore() = runTest {
+        val urls = (1..6).map { "relay-$it" }.toSet()
+        val gateway = FakeGateway(urls)
+        val controller = FeedController(computeDispatcher = Dispatchers.Unconfined, scope = backgroundScope, subscriptions = gateway)
+        runCurrent()
+        // どのリレーも同じ投稿を返す。2本目以降は重複だけで、隠れた投稿のページではない。
+        gateway.feedFetchSessions.toList().forEach { session ->
+            val url = (session.target as RelayTarget.Single).url
+            repeat(30) { session.event(event("same-$it", 1_000L - it), relay = url) }
+            session.complete(url)
+            session.closed = true
+            runCurrent()
+        }
+        advanceTimeBy(2_000)
+        runCurrent()
+        assertEquals(30, controller.state.value.events.size)
+        assertFalse(controller.state.value.requiresExplicitLoadMore)
+        val before = gateway.feedFetchSessions.size
+        controller.loadMore(explicit = false)
+        runCurrent()
+        assertTrue(gateway.feedFetchSessions.size > before)
+        controller.close()
+    }
+
+    @Test
+    fun emptyFeedSettlesWhileOneRelayKeepsTimingOut() = runTest {
+        val gateway = FakeGateway(setOf("ok", "dead"))
+        val controller = FeedController(computeDispatcher = Dispatchers.Unconfined, scope = backgroundScope, subscriptions = gateway)
+        runCurrent()
+        gateway.feedFetchSessions.single { (it.target as RelayTarget.Single).url == "ok" }.complete("ok")
+        runCurrent()
+        repeat(2) {
+            val dead = gateway.feedFetchSessions.last { (it.target as RelayTarget.Single).url == "dead" }
+            assertFalse(dead.closed)
+            assertTrue(controller.state.value.isInitialLoad)
+            dead.complete("dead", timedOut = true)
+            dead.closed = true
+            runCurrent()
+            advanceTimeBy(5_000)
+            runCurrent()
+        }
+        assertEquals(FeedViewModel.InitialFeedState.Empty, controller.state.value.initialFeedState)
+        // 状態が決まった後も、応答しないリレーの取得は続ける。
+        val retry = gateway.feedFetchSessions.last { (it.target as RelayTarget.Single).url == "dead" }
+        assertFalse(retry.closed)
+        retry.event(event("late", 100), relay = "dead")
+        retry.complete("dead")
+        runCurrent()
+        advanceTimeBy(2_000)
+        runCurrent()
+        assertEquals(listOf("late"), controller.state.value.events.map { it.id })
+        controller.close()
+    }
+
+    @Test
+    fun initialFeedFailsWhenEveryRelayKeepsTimingOut() = runTest {
+        val gateway = FakeGateway(setOf("dead-1", "dead-2"))
+        val controller = FeedController(computeDispatcher = Dispatchers.Unconfined, scope = backgroundScope, subscriptions = gateway)
+        runCurrent()
+        repeat(2) {
+            gateway.feedFetchSessions.filterNot { it.closed }.forEach { session ->
+                val url = (session.target as RelayTarget.Single).url
+                session.complete(url, timedOut = true)
+                session.closed = true
+            }
+            runCurrent()
+            advanceTimeBy(5_000)
+            runCurrent()
+        }
+        assertEquals(FeedViewModel.InitialFeedState.Failed, controller.state.value.initialFeedState)
+        controller.close()
+    }
+
+    @Test
+    fun liveFeedOverlapsHistoryFloorToCatchClockSkewedPosts() = runTest {
+        val gateway = FakeGateway()
+        val controller = FeedController(computeDispatcher = Dispatchers.Unconfined, scope = backgroundScope, subscriptions = gateway)
+        runCurrent()
+        val page = gateway.feedFetchSessions.single()
+        val live = gateway.liveSessions.first { it.id.startsWith("feed-") }
+        val floor = page.filters.single().until!!
+        assertEquals(floor - 60, live.filters.single().since)
+        // 時計のずれで、購読より少し前の時刻が付いた投稿。履歴の1ページめより後に投稿されたので、ライブでしか届かない。
+        live.event(event("skewed", floor - 30))
+        page.event(event("old", floor - 100))
+        page.complete()
+        runCurrent()
+        advanceTimeBy(2_000)
+        runCurrent()
+        assertEquals(listOf("skewed", "old"), controller.state.value.events.map { it.id })
+        assertEquals(0, controller.state.value.newPostCount)
+        controller.close()
+    }
+
+    @Test
+    fun gapSyncStillRunsAfterLocalHistoryLimitIsReached() = runTest {
+        val gateway = FakeGateway()
+        val store = FeedHistoryStore(softLimit = 10, liveTrimSlack = 5)
+        val controller = FeedController(computeDispatcher = Dispatchers.Unconfined, scope = backgroundScope,
+            subscriptions = gateway, historyStore = store)
+        runCurrent()
+        val now = Clock.System.now().epochSeconds
+        val page = gateway.feedFetchSessions.single()
+        repeat(12) { page.event(event("held-${it.toString().padStart(2, '0')}", now - 1_000 - it)) }
+        page.complete()
+        runCurrent()
+        advanceTimeBy(1_000)
+        runCurrent()
+        assertTrue(controller.state.value.localHistoryLimitReached)
+
+        controller.stopSubscriptions()
+        runCurrent()
+        controller.startSubscriptions()
+        runCurrent()
+        // 上限は過去方向の取得だけを止める。離れていた間の投稿は取りにいく。
+        val sync = gateway.feedFetchSessions.last()
+        assertTrue("-sync-" in sync.id)
+        repeat(6) { sync.event(event("new-$it", now - 10 - it)) }
+        sync.complete()
+        sync.closed = true
+        runCurrent()
+        advanceTimeBy(1_000)
+        runCurrent()
+        assertEquals("new-0", controller.state.value.events.first().id)
+        // 表示中の投稿は削らない。
+        assertEquals(18, controller.state.value.events.size)
+        val before = gateway.feedFetchSessions.count { "-sync-" !in it.id }
+        controller.loadMore()
+        runCurrent()
+        assertEquals(before, gateway.feedFetchSessions.count { "-sync-" !in it.id })
+        controller.close()
+    }
+
+    private fun embeddedRepost(id: String, createdAt: Long, target: NostrEvent, eTag: String? = target.id) = event(
+        id, createdAt, kind = 6, tags = listOfNotNull(eTag?.let { listOf("e", it) }), pubkey = "reposter",
+    ).copy(content = kotlinx.serialization.json.Json.encodeToString(NostrEvent.serializer(), target))
+
+    @Test
+    fun verifiedEmbeddedRepostTargetIsShown() = runTest {
+        val gateway = FakeGateway()
+        val controller = FeedController(computeDispatcher = Dispatchers.Unconfined, scope = backgroundScope,
+            subscriptions = gateway, includeRepostsInFeed = true, validateEmbeddedEvent = { true })
+        runCurrent()
+        val page = gateway.feedFetchSessions.single()
+        page.event(embeddedRepost("repost", 100, event("target", 50, pubkey = "victim")))
+        page.complete()
+        runCurrent()
+        advanceTimeBy(2_000)
+        runCurrent()
+        assertEquals(listOf("target"), controller.state.value.events.map { it.id })
+        assertEquals("reposter", controller.state.value.repostedByPubkeys["target"])
+        assertTrue(gateway.subscribedFilters.none { it.ids == listOf("target") })
+        controller.close()
+    }
+
+    @Test
+    fun forgedEmbeddedRepostTargetIsFetchedByIdInsteadOfShown() = runTest {
+        val gateway = FakeGateway()
+        val controller = FeedController(computeDispatcher = Dispatchers.Unconfined, scope = backgroundScope,
+            subscriptions = gateway, includeRepostsInFeed = true, validateEmbeddedEvent = { false })
+        runCurrent()
+        val page = gateway.feedFetchSessions.single()
+        page.event(embeddedRepost("repost", 100, event("target", 50, pubkey = "victim")))
+        page.complete()
+        runCurrent()
+        advanceTimeBy(2_000)
+        runCurrent()
+        assertTrue(controller.state.value.events.isEmpty())
+        assertTrue(gateway.subscribedFilters.any { it.ids == listOf("target") })
+        controller.close()
+    }
+
+    @Test
+    fun embeddedRepostTargetNotMatchingETagIsFetchedByETag() = runTest {
+        val gateway = FakeGateway()
+        val controller = FeedController(computeDispatcher = Dispatchers.Unconfined, scope = backgroundScope,
+            subscriptions = gateway, includeRepostsInFeed = true, validateEmbeddedEvent = { true })
+        runCurrent()
+        val page = gateway.feedFetchSessions.single()
+        page.event(embeddedRepost("repost", 100, event("other", 50, pubkey = "victim"), eTag = "target"))
+        page.complete()
+        runCurrent()
+        advanceTimeBy(2_000)
+        runCurrent()
+        assertTrue(controller.state.value.events.isEmpty())
+        assertTrue(gateway.subscribedFilters.any { it.ids == listOf("target") })
+        controller.close()
+    }
+
+    @Test
+    fun fullDuplicatePageFromIdenticalRelayDoesNotPrefetchNextPage() = runTest {
+        val gateway = FakeGateway(setOf("relay-a", "relay-b"))
+        val controller = FeedController(computeDispatcher = Dispatchers.Unconfined, scope = backgroundScope, subscriptions = gateway)
+        runCurrent()
+        gateway.feedFetchSessions.toList().forEach { session ->
+            val url = (session.target as RelayTarget.Single).url
+            repeat(30) { session.event(event("same-$it", 1_000L - it), relay = url) }
+            session.complete(url)
+            session.closed = true
+            runCurrent()
+        }
+        advanceTimeBy(2_000)
+        runCurrent()
+        // 後から返したリレーの満杯の重複ページで、次のページを先読みしない。続きは「もっと読む」で取る。
+        assertEquals(2, gateway.feedFetchSessions.size)
+        controller.close()
+    }
+
+    @Test
+    fun gapSyncDoesNotRequestRangeEndingBeforeItsSince() = runTest {
+        val gateway = FakeGateway()
+        val controller = FeedController(computeDispatcher = Dispatchers.Unconfined, scope = backgroundScope, subscriptions = gateway)
+        runCurrent()
+        val now = Clock.System.now().epochSeconds
+        val first = gateway.feedFetchSessions.single()
+        first.event(event("held", now - 100))
+        first.complete()
+        runCurrent()
+        advanceTimeBy(1_000)
+        runCurrent()
+        controller.stopSubscriptions()
+        runCurrent()
+        controller.startSubscriptions()
+        runCurrent()
+        var pages = 0
+        while (pages++ < 6) {
+            val session = gateway.feedFetchSessions.last()
+            if (session.closed || "-sync-" !in session.id) break
+            val filter = session.filters.single()
+            assertTrue((filter.until ?: Long.MAX_VALUE) >= (filter.since ?: Long.MIN_VALUE), "空になる範囲を要求した: $filter")
+            if ((filter.until ?: 0) >= now - 100) session.event(event("held", now - 100))
+            session.complete()
+            session.closed = true
+            runCurrent()
+        }
+        // 1ページめと、境界秒の取り直しの2本で終わる。
+        assertEquals(2, gateway.feedFetchSessions.count { "-sync-" in it.id })
+        assertEquals(0, controller.state.value.pendingGapCount)
         controller.close()
     }
 

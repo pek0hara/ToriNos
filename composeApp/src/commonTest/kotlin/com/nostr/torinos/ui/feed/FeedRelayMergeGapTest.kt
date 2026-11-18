@@ -557,6 +557,7 @@ class FeedRelayMergeGapTest {
         val controller = FeedController(
             computeDispatcher = Dispatchers.Unconfined,
             includeRepostsInFeed = true,
+            validateEmbeddedEvent = { true },
             scope = backgroundScope,
             subscriptions = relays,
         )

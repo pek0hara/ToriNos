@@ -63,11 +63,20 @@ internal open class FeedHistoryStore(val softLimit: Int = 5_000, val liveTrimSla
     }
 
     fun remove(id: String) { events.remove(id) }
+
+    operator fun contains(id: String): Boolean = id in events
 }
 
 internal sealed interface FeedPageCommitResult {
-    /** [added] は保持へ加えた件数、[visibleAdded] はそのうちミュート・NGワードで隠れない件数。 */
-    data class Committed(val visibleAdded: Int, val added: Int = visibleAdded) : FeedPageCommitResult
+    /**
+     * [added] は保持へ加えた件数、[visibleAdded] はそのうちミュート・NGワードで隠れない件数。
+     * [newlyStored] はこのページで初めて保存した件数で、表示しない返信も含む。
+     */
+    data class Committed(
+        val visibleAdded: Int,
+        val added: Int = visibleAdded,
+        val newlyStored: Int = added,
+    ) : FeedPageCommitResult
     data object RejectedStaleScope : FeedPageCommitResult
     data object Failed : FeedPageCommitResult
 }

@@ -11,6 +11,7 @@ import com.nostr.torinos.util.isFeedTraceEnabled
 import com.nostr.torinos.util.isStartupTraceEnabled
 import com.nostr.torinos.ui.feed.FeedViewModel.InitialFeedState
 import com.nostr.torinos.account.AccountSession
+import com.nostr.torinos.crypto.isValidEvent
 import com.nostr.torinos.crypto.isWriteSupported
 import com.nostr.torinos.engagement.EngagementAction
 import com.nostr.torinos.engagement.EngagementOperationId
@@ -148,6 +149,8 @@ internal class FeedController(
     private val engagementStore: EngagementStore = EngagementStore.shared,
     /** 起動からの表示時間を計るときの名前。ホームのフィードだけに付ける。 */
     private val startupTraceName: String? = null,
+    /** リポストに埋め込まれた投稿の検証（ID と署名）。重いので [computeDispatcher] で呼ぶ。 */
+    private val validateEmbeddedEvent: (NostrEvent) -> Boolean = ::isValidEvent,
 ) {
     private val safeCoroutineLauncher = SafeCoroutineLauncher(scope, "FeedController")
     /** フォロー一覧の更新で差し替わる。購読フィルタは都度ここから組み立てる。 */
@@ -245,6 +248,8 @@ internal class FeedController(
      */
     private val uncommittedHistoryEventIds get() = timelineModel.uncommittedHistoryIds
     private val pendingRepostTargets = mutableMapOf<String, PendingRepostTarget>()
+    /** 検証を通った埋め込み投稿の ID。同じ投稿の複数のリポストで検証を繰り返さない。 */
+    private val verifiedEmbeddedEventIds = linkedSetOf<String>()
     private var subscriptionsStarted = false
     private var handledLatestResetRequest = 0
     private var ownPubkey: String? = null
@@ -1001,6 +1006,7 @@ internal class FeedController(
         liveGap: Boolean = false,
     ): FeedPageCommitResult {
         val stored = page.flatMap { (key, events) -> events.map { StoredFeedEvent(it, setOf(url), setOf(key)) } }
+        val newlyStored = stored.mapNotNullTo(mutableSetOf()) { source -> source.event.id.takeIf { it !in historyStore } }.size
         return when (historyStore.commit(pageScope, stored)) {
             FeedStoreCommitResult.RejectedStaleScope -> FeedPageCommitResult.RejectedStaleScope
             // 保存に失敗したページは再試行で同じ投稿を確定し直すので、受信済みの付随情報は残しておく。
@@ -1025,7 +1031,7 @@ internal class FeedController(
                 stored.forEach { uncommittedHistoryEventIds.remove(it.event.id) }
                 // ページ単位で追跡を始める。次のディスパッチを待たずに表示へ反映する。
                 flushEngagementTargets()
-                FeedPageCommitResult.Committed(visibleAdded = visibleAdded, added = added)
+                FeedPageCommitResult.Committed(visibleAdded = visibleAdded, added = added, newlyStored = newlyStored)
             }
         }
     }
@@ -1038,25 +1044,32 @@ internal class FeedController(
             return
         }
         appendFeedEvent(event)
-        if (historyStore.needsLiveTrim) {
-            // 各表示投稿の代表sourceを保護する。多数の同一対象リポストでも保護集合を無制限にしない。
-            // まとめて削るので、届いたばかりで表示待ちの投稿も守る。
-            val displayIds = currentFeedState().events.mapTo(mutableSetOf()) { it.id }
-            pendingTimelineEvents.values.mapTo(displayIds) { sourceDisplayId(it) }
-            displayIds += sourceDisplayId(event)
-            val sources = historyStore.snapshot
-            val protected = sources.groupBy { source -> sourceDisplayId(source.event) }
-                .filterKeys { it in displayIds }.values.mapNotNull { group -> group.maxByOrNull { it.event.createdAt }?.event?.id }.toSet()
-            historyStore.trimLive(protected)
-            val retained = historyStore.snapshot.mapTo(mutableSetOf()) { sourceDisplayId(it.event) }
-            rawEvents.values.toList().filter { it.id !in retained }.forEach { removed ->
-                rawEvents.remove(removed.id)
-                eventSortTimes.remove(removed.id)
-                pendingTimelineEvents.remove(removed.id)
-                forgetEngagementHistory(removed.id)
-            }
-        }
+        trimHeldEventsIfNeeded(justReceived = listOf(event))
         publishHistoryStatus()
+    }
+
+    /**
+     * 新着方向の受信（ライブ・差分取得）で保持上限を余裕分より多く超えたら、古い投稿から上限まで削る。
+     * 表示中・表示待ちの投稿と、[justReceived] は削らない。
+     */
+    private fun trimHeldEventsIfNeeded(justReceived: Collection<NostrEvent>) {
+        if (!historyStore.needsLiveTrim) return
+        // 各表示投稿の代表sourceを保護する。多数の同一対象リポストでも保護集合を無制限にしない。
+        // まとめて削るので、届いたばかりで表示待ちの投稿も守る。
+        val displayIds = currentFeedState().events.mapTo(mutableSetOf()) { it.id }
+        pendingTimelineEvents.values.mapTo(displayIds) { sourceDisplayId(it) }
+        justReceived.mapTo(displayIds) { sourceDisplayId(it) }
+        val sources = historyStore.snapshot
+        val protected = sources.groupBy { source -> sourceDisplayId(source.event) }
+            .filterKeys { it in displayIds }.values.mapNotNull { group -> group.maxByOrNull { it.event.createdAt }?.event?.id }.toSet()
+        historyStore.trimLive(protected)
+        val retained = historyStore.snapshot.mapTo(mutableSetOf()) { sourceDisplayId(it.event) }
+        rawEvents.values.toList().filter { it.id !in retained }.forEach { removed ->
+            rawEvents.remove(removed.id)
+            eventSortTimes.remove(removed.id)
+            pendingTimelineEvents.remove(removed.id)
+            forgetEngagementHistory(removed.id)
+        }
     }
 
     private fun sourceDisplayId(event: NostrEvent): String = if (event.kind == 6) {
@@ -1128,12 +1141,16 @@ internal class FeedController(
             onEvent = ::prepareHistoryEvent,
             onPageCommit = { url, page ->
                 val result = commitHistoryPage(pageScope, url, page, liveGap = isLiveGapRecovery)
-                if (result is FeedPageCommitResult.Committed) sync.addedCount += result.added
+                if (result is FeedPageCommitResult.Committed) {
+                    sync.addedCount += result.added
+                    trimHeldEventsIfNeeded(justReceived = page.values.flatten())
+                }
                 result
             },
             arbiter = fetchArbiter,
-            canRequest = { !historyStore.limitReached },
+            // 保持上限は過去方向の取得だけを止める。新着方向はライブ受信と同じく、取ってから古い分を削る。
             maxFailures = 3,
+            settleAfterFailures = 3,
             onFlush = ::flushPendingTimelineEvents,
             onState = { state ->
                 sync.historyState = state
@@ -1173,7 +1190,7 @@ internal class FeedController(
         val nowSec = Clock.System.now().epochSeconds
         // 復帰時と同じく 24 時間より前は取りに行かない。
         val since = maxOf(
-            signal.interruptedAt - LIVE_RESUME_OVERLAP_SECONDS,
+            signal.interruptedAt - LIVE_OVERLAP_SECONDS,
             nowSec - MAX_GAP_FILL_DURATION_SECONDS,
         ).coerceAtLeast(0L)
         val until = minOf(signal.replayOldestAt, nowSec)
@@ -1260,7 +1277,9 @@ internal class FeedController(
 
     private suspend fun subscribeLiveFeed(since: Long) {
         val ids = subscriptionIds ?: return
-        val filters = feedFilters(since = since)
+        // 端末や投稿者の時計がずれていると、購読の直後に投稿されたものに since より前の時刻が付く。
+        // 少し前から購読して拾う。履歴と重なって届いた分は ID で除く。
+        val filters = feedFilters(since = (since - LIVE_OVERLAP_SECONDS).coerceAtLeast(0L))
         val existing = liveSession
         if (existing != null) {
             trace.log { "live update since=$since" }
@@ -1398,23 +1417,52 @@ internal class FeedController(
         if (!includeRepostsInFeed || receivedRepostEvents.containsKey(repost.id)) return 0
         rememberReceivedEvent(receivedRepostEvents, repost)
         val targetId = repost.tags.lastOrNull { it.firstOrNull() == "e" }?.getOrNull(1)
-        val targetEvent = runCatching {
+        // 埋め込まれた投稿はリポストした人が自由に書ける。e タグと食い違うものは使わない。
+        val embedded = runCatching {
             Json.decodeFromString(NostrEvent.serializer(), repost.content)
-        }.getOrNull()
+        }.getOrNull()?.takeIf { targetId == null || it.id == targetId }
 
-        updateRepostState(repost, targetId ?: targetEvent?.id)
+        updateRepostState(repost, targetId ?: embedded?.id)
 
-        if (targetEvent != null) {
-            canonicalEvents[targetEvent.id] = targetEvent
-            val appended = appendEvent(targetEvent, timelineCreatedAt = repost.createdAt)
-            markRepostedBy(targetEvent.id, repost.pubkey)
-            scheduleProfileFetch(targetEvent.pubkey)
-            scheduleProfileFetch(repost.pubkey)
-            scheduleMentionedProfileFetch(targetEvent.content)
-            scheduleEngagementFetch(targetEvent.id)
-            return appended
+        if (embedded != null && embedded.id in verifiedEmbeddedEventIds) {
+            return appendVerifiedRepostTarget(repost, embedded)
         }
+        if (embedded != null) {
+            // 署名の検証は重いので裏で行い、通ってから一覧に加える。通らなければ ID で取り直す。
+            val scopeGeneration = historyScopeGeneration
+            launch {
+                val valid = withContext(computeDispatcher) { runCatching { validateEmbeddedEvent(embedded) }.getOrDefault(false) }
+                if (closed || scopeGeneration != historyScopeGeneration) return@launch
+                if (valid) {
+                    verifiedEmbeddedEventIds += embedded.id
+                    while (verifiedEmbeddedEventIds.size > MAX_SEEN_IDS) {
+                        verifiedEmbeddedEventIds.remove(verifiedEmbeddedEventIds.first())
+                    }
+                    appendVerifiedRepostTarget(repost, embedded)
+                } else {
+                    trace.count("repost.embeddedRejected")
+                    requestRepostTarget(repost, targetId)
+                }
+            }
+            return 0
+        }
+        requestRepostTarget(repost, targetId)
+        return 0
+    }
 
+    private fun appendVerifiedRepostTarget(repost: NostrEvent, targetEvent: NostrEvent): Int {
+        canonicalEvents[targetEvent.id] = targetEvent
+        val appended = appendEvent(targetEvent, timelineCreatedAt = repost.createdAt)
+        markRepostedBy(targetEvent.id, repost.pubkey)
+        scheduleProfileFetch(targetEvent.pubkey)
+        scheduleProfileFetch(repost.pubkey)
+        scheduleMentionedProfileFetch(targetEvent.content)
+        scheduleEngagementFetch(targetEvent.id)
+        return appended
+    }
+
+    /** 元の投稿が埋め込まれていない（または使えない）リポストの、元の投稿を ID で取りにいく。 */
+    private fun requestRepostTarget(repost: NostrEvent, targetId: String?) {
         if (targetId != null) {
             val current = pendingRepostTargets[targetId]
             if (current == null || repost.createdAt > current.repostedAt) {
@@ -1435,7 +1483,6 @@ internal class FeedController(
                 )
             }
         }
-        return 0
     }
 
     private fun updateRepostState(repost: NostrEvent, targetId: String?) {
@@ -1769,8 +1816,8 @@ internal class FeedController(
         /** 差分取得でこれを超えて新着が増えたら打ち切る。表示上限 (800 件) より十分小さく取る。 */
         private const val MAX_FEED_SYNC_EVENTS = 500
         private const val ALL_RELAYS_SYNC_KEY = ""
-        /** ライブ配信の途切れを取り直すとき、配送遅れの投稿を拾うために遡る秒数。 */
-        private const val LIVE_RESUME_OVERLAP_SECONDS = 60L
+        /** ライブ配信の開始と、途切れの取り直しで、時計のずれや配送遅れの投稿を拾うために遡る秒数。 */
+        private const val LIVE_OVERLAP_SECONDS = 60L
         private const val MAX_HISTORY_PAGE_SIZE = 3_840
         // FeedItemMapperのデフォルトのキャッシュ上限がこの値を下回らないよう、そちらから直接参照する。
         internal const val MAX_TIMELINE_EVENTS = 800

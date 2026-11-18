@@ -410,7 +410,11 @@ fun NoteTimeline(
                         if (state.coverageGapCount > 0) Text("同じ時刻の投稿に未取得の範囲があります")
                         if (state.storageFailure || state.stalledRelayCount > state.awaitingAuthRelayCount ||
                             state.pendingGapCount > 0) {
-                            TextButton(onClick = onRetryHistory, enabled = !state.localHistoryLimitReached) { Text("再試行") }
+                            // 保持上限は過去方向の取得だけを止める。離れていた間の差分の取り直しは上限中でもできる。
+                            TextButton(
+                                onClick = onRetryHistory,
+                                enabled = !state.localHistoryLimitReached || state.pendingGapCount > 0,
+                            ) { Text("再試行") }
                         }
                         if (state.localHistoryLimitReached) {
                             TextButton(onClick = onResetHistory) { Text("履歴をリセット") }

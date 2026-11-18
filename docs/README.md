@@ -20,6 +20,7 @@
 - [`relay-fetch-failure-policy-design.md`](./relay-fetch-failure-policy-design.md) — 有限取得でリレーごとの結果を読む共通の規則（確定・置き換え・取り直し・諦める回数）、遅いリレーを待たない仕組み、ジャーナルへの適用（もらったいいねも選択中のリレーから取る）
 - [`feed-relay-merge-design.md`](./feed-relay-merge-design.md) — フォローフィードのリレー別履歴カーソル、停止リレー分離、復旧マージ
 - [`feed-relay-loading-fix-plan.md`](./feed-relay-loading-fix-plan.md) — 2026-10-03レビューに基づく短いページの終端判定、未取得差分の保持、保存と表示の分離の修正方針（未着手）
+- [`feed-loading-review-fix-design.md`](./feed-loading-review-fix-design.md) — 2026-11-16レビューに基づく、境界秒の誤判定・重複ページの数え方・初回状態の確定・リポスト埋め込みの検証などの修正設計（5〜10章を実装・単体テスト済み、実機確認は未実施）
 - [`feed-scroll-performance-design.md`](./feed-scroll-performance-design.md) — フィードの状態分離、描画軽量化、位置保持、画像・プリフェッチ方針
 - [`feed-chrome-interaction-design.md`](./feed-chrome-interaction-design.md) — フィードヘッダー／ボトムナビのドラッグ、慣性中断、先頭再表示を扱う操作状態機械
 - [`feed-chrome-refactor-design.md`](./feed-chrome-refactor-design.md) — 現行のフィードヘッダー動作を固定したまま分岐を純粋ロジックへ移す段階的リファクタ計画
