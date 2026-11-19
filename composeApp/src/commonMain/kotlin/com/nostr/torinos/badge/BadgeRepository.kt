@@ -252,12 +252,12 @@ internal class BadgeRepository(
         return base + hints
     }
 
-    private suspend fun discoverRelays(pubkeys: Set<String>, base: Set<String>): BadgeFetchResult {
+    private suspend fun discoverRelays(pubkeys: Set<String>, base: Set<String>, interactive: Boolean = false): BadgeFetchResult {
         val now = nowMillis()
         val missing = lock.withLock { pubkeys.filter { now - (relayMetadataFetchedAt[it] ?: Long.MIN_VALUE / 2) >= 300_000L } }
         if (missing.isEmpty()) return BadgeFetchResult(emptyList(), true)
         val result = queries.fetch(listOf(NostrFilter(authors = missing.sorted(), kinds = listOf(10002))), base, 300_000L,
-            onEvent = { ingest(listOf(it)) })
+            onEvent = { ingest(listOf(it)) }, interactive = interactive)
         if (result.complete) lock.withLock { missing.forEach { relayMetadataFetchedAt[it] = now } }
         return result
     }
@@ -562,19 +562,60 @@ internal class BadgeRepository(
         first.await() && more && discovery.complete
     }
 
-    /** Everyone [address] was awarded to, read from the issuer's relays; awards are not kept in the cache. */
-    internal suspend fun awardees(address: BadgeAddress, known: BadgeAwardee? = null, force: Boolean = false): BadgeAwardeesResult {
+    /**
+     * Everyone [address] was awarded to, read from the issuer's relays; awards are not kept in the cache.
+     * Someone is waiting on screen, so the queries skip the queue of background checks, and [onProgress]
+     * receives the recipients known so far (incomplete) as awards arrive, before the deletion check and
+     * relays that are slow to answer, and once more with `checking` when the first query has ended.
+     * The issuer's relay list is looked up alongside the first query.
+     */
+    internal suspend fun awardees(
+        address: BadgeAddress, known: BadgeAwardee? = null, force: Boolean = false,
+        onProgress: (BadgeAwardeesResult) -> Unit = {},
+    ): BadgeAwardeesResult = coroutineScope {
         val base = readRelays()
-        val discovery = discoverRelays(setOf(address.pubkey), base)
-        val relays = relaysFor(setOf(address.pubkey), base = base)
-        val awards = queries.fetch(listOf(NostrFilter(kinds = listOf(8), authors = listOf(address.pubkey),
-            aTags = listOf(address.value), limit = BADGE_AWARDEES_LIMIT)), relays, 60_000L, force)
-        val ids = awards.events.map { it.id }.sorted()
-        val deletions = queries.fetch(ids.chunked(100).map { NostrFilter(kinds = listOf(5), authors = listOf(address.pubkey), eTags = it) },
-            relays, 30_000L, force)
-        val truncated = awards.events.size >= BADGE_AWARDEES_LIMIT
-        return BadgeAwardeesResult(badgeAwardees(address, awards.events + deletions.events, known),
-            complete = awards.complete && deletions.complete && discovery.complete && !truncated, truncated = truncated)
+        val awardFilter = listOf(NostrFilter(kinds = listOf(8), authors = listOf(address.pubkey),
+            aTags = listOf(address.value), limit = BADGE_AWARDEES_LIMIT))
+        val received = linkedMapOf<String, NostrEvent>()
+        val progressLock = SynchronousLock()
+        var reported: List<BadgeAwardee>? = null
+        var checking = false
+        fun report(force: Boolean = false) {
+            val (list, phase) = progressLock.withLock {
+                val list = badgeAwardees(address, received.values.toList(), known)
+                if (!force && list == reported) return
+                reported = list
+                list to checking
+            }
+            onProgress(BadgeAwardeesResult(list, complete = false, checking = phase))
+        }
+        fun receive(event: NostrEvent) {
+            if (progressLock.withLock { received.put(event.id, event) == null }) report()
+        }
+        suspend fun fetchAwards(relays: Set<String>) =
+            queries.fetch(awardFilter, relays, 60_000L, force, onEvent = ::receive, interactive = true)
+        suspend fun fetchDeletions(ids: List<String>, relays: Set<String>) = queries.fetch(ids.sorted().chunked(100).map {
+            NostrFilter(kinds = listOf(5), authors = listOf(address.pubkey), eTags = it)
+        }, relays, 30_000L, force, interactive = true)
+        val discovery = async { discoverRelays(setOf(address.pubkey), base, interactive = true) }
+        val first = relaysFor(setOf(address.pubkey), base = base)
+        val firstAwards = async { fetchAwards(first).also { progressLock.withLock { checking = true }; report(force = true) } }
+        val firstDeletions = async { fetchDeletions(firstAwards.await().events.map { it.id }, first) }
+        val discovered = discovery.await()
+        // Relays named in a relay list found just now are read too, and checked for deletions of every award.
+        val extra = relaysFor(setOf(address.pubkey), base = base) - first
+        val extraAwards = if (extra.isEmpty()) null else fetchAwards(extra)
+        val firstResult = firstAwards.await()
+        val awards = progressLock.withLock { received.values.toList() }
+        val newIds = awards.map { it.id } - firstResult.events.map { it.id }.toSet()
+        val extraDeletions = if (extra.isEmpty() && newIds.isEmpty()) null else fetchDeletions(awards.map { it.id }, first + extra)
+        val deletions = firstDeletions.await()
+        // Each relay is read up to the limit, so reaching it on any query may leave older recipients out.
+        val truncated = firstResult.events.size >= BADGE_AWARDEES_LIMIT || (extraAwards?.events?.size ?: 0) >= BADGE_AWARDEES_LIMIT
+        val complete = firstResult.complete && extraAwards?.complete != false && deletions.complete &&
+            extraDeletions?.complete != false && discovered.complete && !truncated
+        BadgeAwardeesResult(badgeAwardees(address, awards + deletions.events + extraDeletions?.events.orEmpty(), known),
+            complete = complete, truncated = truncated)
     }
 
     private suspend fun fetchDeletions(relevant: List<NostrEvent>, relays: Set<String>, force: Boolean = false): Boolean {

@@ -11,6 +11,7 @@ import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -39,13 +40,16 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.zIndex
 import com.nostr.torinos.account.AccountSession
 import com.nostr.torinos.account.LocalAccountSession
 import com.nostr.torinos.model.NostrProfile
 import com.nostr.torinos.network.ProfileFetchPolicy
 import com.nostr.torinos.network.ProfileRepository
+import com.nostr.torinos.MaxContentWidth
 import com.nostr.torinos.ui.components.formatTimestamp
+import com.nostr.torinos.ui.components.fullScreenDialogProperties
 import com.nostr.torinos.ui.profile.AvatarCircle
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
@@ -613,9 +617,14 @@ private fun SkeletonRow() {
     }
 }
 
-/** Badge, description, issuer, award date and recipients; used by the sheet's detail page and by BadgeDetailDialog. */
+/**
+ * Badge, description, issuer and award date; used by the sheet's detail page and by BadgeDetailDialog.
+ * Recipients are read from relays only when asked for, on their own screen.
+ */
 @Composable
 internal fun BadgeDetailContent(badge: BadgeDisplayItem, issuer: NostrProfile?, onUserClick: (String) -> Unit) {
+    var showAwardees by remember(badge.address) { mutableStateOf(false) }
+    if (showAwardees) BadgeAwardeesScreen(badge, onBack = { showAwardees = false }, onUserClick = onUserClick)
     LaunchedEffect(badge.issuer) { ProfileRepository.ensureProfiles(setOf(badge.issuer), ProfileFetchPolicy.CacheFirst(300_000)) }
     Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(8.dp)) {
         BadgeTile(badge, 112)
@@ -637,71 +646,106 @@ internal fun BadgeDetailContent(badge: BadgeDisplayItem, issuer: NostrProfile?, 
                     Text("授与日時", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.weight(1f))
                     Text(formatTimestamp(badge.awardedAt), style = MaterialTheme.typography.bodyMedium)
                 }
-            }
-        }
-        BadgeAwardeesSection(badge, onUserClick)
-    }
-}
-
-private const val AwardeesPage = 30
-
-/** Everyone the badge was awarded to, loaded when the detail opens; rows are not lazy, so they are shown a page at a time. */
-@Composable
-private fun BadgeAwardeesSection(badge: BadgeDisplayItem, onUserClick: (String) -> Unit) {
-    val repository = LocalBadgeRepository.current ?: return
-    val address = remember(badge.address) { BadgeAddress.parse(badge.address) } ?: return
-    val known = remember(badge) { badge.recipient.takeIf { it.isNotEmpty() }?.let { BadgeAwardee(it, badge.awardedAt, badge.awardId) } }
-    var attempt by remember(badge.address) { mutableIntStateOf(0) }
-    var result by remember(badge.address) { mutableStateOf<BadgeAwardeesResult?>(null) }
-    var loading by remember(badge.address) { mutableStateOf(true) }
-    var shown by remember(badge.address) { mutableIntStateOf(AwardeesPage) }
-    LaunchedEffect(address, attempt) {
-        loading = true
-        try { result = repository.awardees(address, known, force = attempt > 0) }
-        catch (e: CancellationException) { throw e }
-        catch (_: Exception) { result = result ?: BadgeAwardeesResult(listOfNotNull(known), complete = false) }
-        finally { loading = false }
-    }
-    val awardees = result?.awardees ?: listOfNotNull(known)
-    val visible = awardees.take(shown)
-    val profiles = rememberProfiles(remember(visible) { visible.mapTo(mutableSetOf()) { it.pubkey } })
-
-    Column(Modifier.fillMaxWidth().padding(top = 8.dp)) {
-        Row(Modifier.fillMaxWidth().heightIn(min = 40.dp).padding(start = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-            Text("受賞者", style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f))
-            if (result != null || awardees.isNotEmpty()) Text(if (result?.truncated == true) "${awardees.size}人以上" else "${awardees.size}人",
-                style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            if (loading) CircularProgressIndicator(Modifier.padding(start = 8.dp).size(16.dp), strokeWidth = 2.dp)
-            else IconButton(onClick = { attempt++ }) { Icon(Icons.Default.Refresh, contentDescription = "受賞者を再読み込み") }
-        }
-        val current = result
-        if (!loading && current != null && !current.complete) Text(
-            if (current.truncated) "受賞者が多いため、新しい${BADGE_AWARDEES_LIMIT}件の授与まで表示しています"
-            else "一部のリレーから受賞者を取得できていません",
-            style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(horizontal = 4.dp, vertical = 4.dp))
-        if (awardees.isEmpty() && !loading) Text("受賞者を確認できませんでした", style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(horizontal = 4.dp, vertical = 8.dp))
-        if (visible.isNotEmpty()) Surface(shape = RoundedCornerShape(12.dp), color = MaterialTheme.colorScheme.surfaceContainerHigh, modifier = Modifier.fillMaxWidth()) {
-            Column {
-                visible.forEachIndexed { index, awardee ->
-                    if (index > 0) HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-                    val profile = profiles[awardee.pubkey]
-                    Row(Modifier.fillMaxWidth().heightIn(min = 52.dp).clickable { onUserClick(awardee.pubkey) }.padding(start = 12.dp, end = 6.dp),
-                        verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                        AvatarCircle(pubkey = awardee.pubkey, name = profile?.bestName, pictureUrl = profile?.picture, size = 32)
-                        Column(Modifier.weight(1f)) {
-                            Text(profile?.bestName ?: shortPubkey(awardee.pubkey), style = MaterialTheme.typography.bodyMedium,
-                                maxLines = 1, overflow = TextOverflow.Ellipsis)
-                            Text(formatTimestamp(awardee.awardedAt), style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1)
-                        }
+                if (LocalBadgeRepository.current != null && BadgeAddress.parse(badge.address) != null) {
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                    Row(Modifier.fillMaxWidth().heightIn(min = 48.dp).clickable { showAwardees = true }.padding(start = 14.dp, end = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically) {
+                        Text("受賞者", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.weight(1f))
+                        Text("一覧を見る", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.primary)
                         Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                 }
             }
         }
-        if (awardees.size > visible.size) TextButton(onClick = { shown += AwardeesPage }, modifier = Modifier.fillMaxWidth()) {
-            Text("さらに表示（残り${awardees.size - visible.size}人）")
+    }
+}
+
+/** Profiles are fetched in blocks of this many rows, up to the rows scrolled into view. */
+private const val AwardeesProfileBlock = 30
+
+/** Everyone the badge was awarded to, full screen over the sheet or dialog, in the same form as the post sheet. */
+@Composable
+private fun BadgeAwardeesScreen(badge: BadgeDisplayItem, onBack: () -> Unit, onUserClick: (String) -> Unit) {
+    Dialog(onDismissRequest = onBack, properties = fullScreenDialogProperties()) {
+        Box(Modifier.fillMaxSize()) {
+            Box(Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.32f)).clickable(onClick = onBack))
+            Surface(
+                modifier = Modifier.align(Alignment.TopCenter).fillMaxHeight().widthIn(max = MaxContentWidth).fillMaxWidth(),
+                color = MaterialTheme.colorScheme.surface,
+            ) {
+                Column(Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.safeDrawing)) {
+                    BadgeAwardeesList(badge, onBack, onUserClick)
+                }
+            }
+        }
+    }
+}
+
+/**
+ * Recipients appear as awards arrive. The progress bar stops once the first query has ended; the
+ * deletion check and relays from the issuer's relay list continue behind the list and update it.
+ */
+@Composable
+private fun ColumnScope.BadgeAwardeesList(badge: BadgeDisplayItem, onBack: () -> Unit, onUserClick: (String) -> Unit) {
+    val repository = LocalBadgeRepository.current ?: return
+    val address = remember(badge.address) { BadgeAddress.parse(badge.address) } ?: return
+    val known = remember(badge) { badge.recipient.takeIf { it.isNotEmpty() }?.let { BadgeAwardee(it, badge.awardedAt, badge.awardId) } }
+    var attempt by remember { mutableIntStateOf(0) }
+    var result by remember { mutableStateOf<BadgeAwardeesResult?>(null) }
+    // Recipients received so far on the first load; a reload keeps showing the previous result instead.
+    var progress by remember { mutableStateOf<BadgeAwardeesResult?>(null) }
+    var loading by remember { mutableStateOf(true) }
+    LaunchedEffect(address, attempt) {
+        loading = true
+        progress = null
+        try { result = repository.awardees(address, known, force = attempt > 0, onProgress = { progress = it }) }
+        catch (e: CancellationException) { throw e }
+        catch (_: Exception) { result = result ?: BadgeAwardeesResult(progress?.awardees ?: listOfNotNull(known), complete = false) }
+        finally { loading = false }
+    }
+    // A reload shows the new list only once it has as much to show as the first query gives.
+    val current = if (!loading) result ?: progress else progress?.takeIf { result == null || it.checking } ?: result
+    val awardees = current?.awardees ?: listOfNotNull(known)
+    val searching = loading && progress?.checking != true
+    val listState = rememberLazyListState()
+    val profileRows by remember { derivedStateOf {
+        ((listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0) / AwardeesProfileBlock + 1) * AwardeesProfileBlock
+    } }
+    val profiles = rememberProfiles(remember(awardees, profileRows) { awardees.take(profileRows).mapTo(mutableSetOf()) { it.pubkey } })
+
+    BadgeSheetHeader("受賞者", count = awardees.size.takeIf { current != null || it > 0 }, onBack = onBack,
+        onRefresh = if (loading) null else ({ attempt++ }))
+    BadgeSheetProgress(searching)
+    Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        BadgeTile(badge, 24)
+        Text(badge.name, style = MaterialTheme.typography.bodyMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+    }
+    val final = result.takeIf { !loading }
+    if (final != null && !final.complete) Text(
+        if (final.truncated) "受賞者が多いため、新しい${BADGE_AWARDEES_LIMIT}件の授与まで表示しています"
+        else "一部のリレーから受賞者を取得できていません",
+        style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+        modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp))
+    if (awardees.isEmpty()) {
+        if (!searching) BadgeEmptyState("受賞者を確認できませんでした")
+        return
+    }
+    LazyColumn(Modifier.weight(1f).fillMaxWidth(), state = listState, contentPadding = PaddingValues(bottom = 16.dp)) {
+        items(awardees, key = { it.pubkey }) { awardee ->
+            val profile = profiles[awardee.pubkey]
+            Row(Modifier.fillMaxWidth().heightIn(min = 56.dp).clickable { onUserClick(awardee.pubkey) }.padding(start = 16.dp, end = 8.dp),
+                verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                AvatarCircle(pubkey = awardee.pubkey, name = profile?.bestName, pictureUrl = profile?.picture, size = 36)
+                Column(Modifier.weight(1f)) {
+                    Text(profile?.bestName ?: shortPubkey(awardee.pubkey), style = MaterialTheme.typography.bodyMedium,
+                        maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Text(formatTimestamp(awardee.awardedAt), style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1)
+                }
+                Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
         }
     }
 }

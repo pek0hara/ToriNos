@@ -10,12 +10,15 @@ internal data class BadgeAwardee(val pubkey: String, val awardedAt: Long, val aw
 
 /**
  * [complete] means every relay answered and the award limit was not reached; [truncated] that the
- * limit was reached, so older recipients may be missing.
+ * limit was reached, so older recipients may be missing. [checking] marks a progress report sent once
+ * the first query has ended: the list is worth showing as is, while deletions and relays found in the
+ * issuer's relay list are still being checked.
  */
 internal data class BadgeAwardeesResult(
     val awardees: List<BadgeAwardee>,
     val complete: Boolean,
     val truncated: Boolean = false,
+    val checking: Boolean = false,
 )
 
 /**

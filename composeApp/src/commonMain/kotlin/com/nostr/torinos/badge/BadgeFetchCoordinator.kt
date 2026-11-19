@@ -22,6 +22,9 @@ import kotlin.time.Clock
  * Relay coverage is part of the query identity. Complete responses are reusable; partial responses
  * that still carry events are reusable for display but keep `complete = false`, so forced
  * confirmation (e.g. before saving) never treats them as checked.
+ *
+ * An [interactive][fetch] query is one a person is waiting for on screen: it skips the permits that
+ * pace background work and does not join a background query that may still be queued for them.
  */
 internal class BadgeFetchCoordinator(
     private val transport: BadgeTransport,
@@ -46,6 +49,7 @@ internal class BadgeFetchCoordinator(
         force: Boolean = false, onEvent: (NostrEvent) -> Unit = {},
         ttlForFilter: (NostrFilter) -> Long = { ttlMillis },
         forceFilter: (NostrFilter) -> Boolean = { force },
+        interactive: Boolean = false,
     ): BadgeFetchResult {
         if (filters.isEmpty()) return BadgeFetchResult(emptyList(), true)
         val owned = linkedMapOf<Key, CompletableDeferred<BadgeFetchResult>>()
@@ -53,10 +57,11 @@ internal class BadgeFetchCoordinator(
             filters.distinct().map { filter ->
                 val key = Key(filter, relays.toSet())
                 val ttl = ttlForFilter(filter)
-                filter to (running[key] ?: completed[key]?.takeIf {
+                filter to (running[key]?.takeUnless { interactive } ?: completed[key]?.takeIf {
                     !forceFilter(filter) && now() - it.fetchedAt < if (it.result.events.isEmpty()) minOf(ttl, 30_000L) else ttl
                 }?.let { CompletableDeferred(it.result) } ?: CompletableDeferred<BadgeFetchResult>().also {
-                    running[key] = it
+                    // An interactive query runs on its own; background callers keep joining their own query.
+                    if (!interactive || key !in running) running[key] = it
                     owned[key] = it
                 })
             }
@@ -72,14 +77,13 @@ internal class BadgeFetchCoordinator(
                 val permits = if (wireFilters.any { it.kinds?.any { it == 8 || it == 30009 || it == 30008 } == true })
                     referencePermits else confirmationPermits
                 // リレーが受け付けるフィルター数に収め、同じ作成者の定義などは1つのフィルターにまとめる。
-                val result = permits.withPermit {
-                    coroutineScope {
-                        packFilters(wireFilters)
-                            .map { request -> async { transport.fetch(request, relays, onEvent) } }
-                            .awaitAll()
-                            .combined()
-                    }
+                suspend fun send() = coroutineScope {
+                    packFilters(wireFilters)
+                        .map { request -> async { transport.fetch(request, relays, onEvent) } }
+                        .awaitAll()
+                        .combined()
                 }
+                val result = if (interactive) send() else permits.withPermit { send() }
                 mutex.withLock {
                     batch.forEach { (key, deferred) ->
                         val events = result.events.filter { matchesBadgeFilter(it, key.filter) }
@@ -91,7 +95,7 @@ internal class BadgeFetchCoordinator(
                             completed[key] = Cached(response, now())
                             cachedEventCount += response.events.size
                         }
-                        running.remove(key)
+                        if (running[key] === deferred) running.remove(key)
                         deferred.complete(response)
                     }
                     while (completed.size > 5_000 || cachedEventCount > 5_000) {
@@ -106,7 +110,7 @@ internal class BadgeFetchCoordinator(
                     // Another caller owned this query and was cancelled; that must not cancel us.
                     currentCoroutineContext().ensureActive()
                     if (deferred in owned.values) throw e
-                    fetch(listOf(filter), relays, ttlForFilter(filter), forceFilter(filter), onEvent)
+                    fetch(listOf(filter), relays, ttlForFilter(filter), forceFilter(filter), onEvent, interactive = interactive)
                 }
             }
             val events = results.flatMap { it.events }.distinctBy { it.id }
