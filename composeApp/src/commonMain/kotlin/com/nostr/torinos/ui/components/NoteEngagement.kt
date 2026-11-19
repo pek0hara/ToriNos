@@ -381,6 +381,10 @@ internal fun ReactionSummaryRow(
     onEmojiUnreact: ((ReactionOption) -> Unit)?,
     onOpenStandardEmojiPicker: () -> Unit,
     trailing: (@Composable () -> Unit)? = null,
+    // フィードではハートの長押しで同じメニューを開けるので、＋ボタンを出さない。
+    showAddButton: Boolean = true,
+    // 渡されていれば、チップの長押しでそのリアクションをした人を出す（Buzz と同じ一覧）。
+    reactors: ReactorsSource? = null,
 ) {
     val reactionChipColors = reactionChipColors(isSystemInDarkTheme())
     val emojiReactionCount = customReactions.sumOf { it.count } + unicodeReactions.sumOf { it.count }
@@ -389,6 +393,30 @@ internal fun ReactionSummaryRow(
     val hasOwnReaction = isLiked || ownEmojiReactionEventIds.isNotEmpty()
     var showQuickMenu by remember { mutableStateOf(false) }
     val openCustomEmoji = LocalCustomEmojiNavigator.current
+    /** 長押しでリアクションした人を出しているチップ（[ReactionOption.key] か [LikeReactionGroupKey]）。 */
+    var reactorsOpenFor by remember { mutableStateOf<String?>(null) }
+    val reactorsByKey = remember(reactors?.events) {
+        reactors?.events.orEmpty().groupBy { reactionGroupKey(it) }
+            .mapValues { (_, events) -> events.map { it.pubkey }.distinct() }
+    }
+    val openReactors: (String) -> Unit = { key ->
+        // 分かっている分だけでも先に出し、足りない分は取りに行く（届けば一覧が増える）。
+        reactors?.onLoad?.invoke()
+        reactorsOpenFor = key
+    }
+    @Composable
+    fun ReactorsFor(key: String, count: Int, onOpenEmojiSet: (() -> Unit)? = null) {
+        val source = reactors ?: return
+        if (reactorsOpenFor != key) return
+        ReactorsMenu(
+            reactors = reactorsByKey[key].orEmpty(),
+            totalCount = count,
+            onDismiss = { reactorsOpenFor = null },
+            onUserClick = { pubkey -> reactorsOpenFor = null; source.onUserClick(pubkey) },
+            onOpenEmojiSet = onOpenEmojiSet?.let { open -> { reactorsOpenFor = null; open() } },
+            onOpenAll = source.onOpenAll?.let { open -> { reactorsOpenFor = null; open() } },
+        )
+    }
 
     // 行を表示幅以上にして、余裕があれば trailing を右端に、あふれたら並びの最後に続ける。
     androidx.compose.foundation.layout.BoxWithConstraints(Modifier.fillMaxWidth()) {
@@ -403,12 +431,15 @@ internal fun ReactionSummaryRow(
         horizontalArrangement = Arrangement.spacedBy(6.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        if (likeCount > 0) {
+        if (likeCount > 0) Box {
             ReactionChip(
                 selected = isLiked,
                 enabled = !hasOwnReaction || isLiked,
                 contentDescription = "いいね、${likeCount}件",
                 onClick = if (!hasOwnReaction || isLiked) onLike else null,
+                onLongClick = if (reactors != null) {
+                    { openReactors(LikeReactionGroupKey) }
+                } else null,
                 emoji = {
                     Text(
                         text = "❤️",
@@ -420,10 +451,15 @@ internal fun ReactionSummaryRow(
                 },
                 count = likeCount,
             )
+            ReactorsFor(LikeReactionGroupKey, likeCount)
         }
         customReactions.forEach { reaction ->
             val option = ReactionOption.Custom(reaction.shortcode, reaction.imageUrl, reaction.setAddress)
             val selected = ownEmojiReactionEventIds.containsKey(option.key)
+            val openEmojiSet = {
+                openCustomEmoji(CustomEmojiOpenRequest.of(reaction.shortcode, reaction.imageUrl, reaction.setAddress))
+            }
+            Box {
             ReactionChip(
                 selected = selected,
                 enabled = !hasOwnReaction || selected,
@@ -437,8 +473,10 @@ internal fun ReactionSummaryRow(
                         }
                     }
                 } else null,
-                onLongClick = {
-                    openCustomEmoji(CustomEmojiOpenRequest.of(reaction.shortcode, reaction.imageUrl, reaction.setAddress))
+                onLongClick = if (reactors != null) {
+                    { openReactors(option.key) }
+                } else {
+                    openEmojiSet
                 },
                 emoji = {
                     Box(
@@ -455,10 +493,13 @@ internal fun ReactionSummaryRow(
                 },
                 count = reaction.count,
             )
+            ReactorsFor(option.key, reaction.count, onOpenEmojiSet = openEmojiSet)
+            }
         }
         unicodeReactions.forEach { reaction ->
             val option = ReactionOption.Unicode(reaction.content)
             val selected = ownEmojiReactionEventIds.containsKey(option.key)
+            Box {
             ReactionChip(
                 selected = selected,
                 enabled = !hasOwnReaction || selected,
@@ -472,6 +513,9 @@ internal fun ReactionSummaryRow(
                         }
                     }
                 } else null,
+                onLongClick = if (reactors != null) {
+                    { openReactors(option.key) }
+                } else null,
                 emoji = {
                     Text(
                         text = reaction.content,
@@ -484,8 +528,10 @@ internal fun ReactionSummaryRow(
                 },
                 count = reaction.count,
             )
+            ReactorsFor(option.key, reaction.count)
+            }
         }
-        if (onEmojiReact != null && !hasOwnReaction) {
+        if (showAddButton && onEmojiReact != null && !hasOwnReaction) {
             Box {
                 Box(
                     modifier = Modifier
@@ -527,6 +573,17 @@ internal fun ReactionSummaryRow(
     }
     }
 }
+
+/** チップの長押しでリアクションした人を出すための材料。 */
+internal data class ReactorsSource(
+    /** 分かっているリアクション（kind 7）。全部そろっているとは限らない。 */
+    val events: List<NostrEvent>,
+    val onUserClick: (String) -> Unit,
+    /** 長押しで一覧を出すときに、リアクションを取り直す。 */
+    val onLoad: (() -> Unit)? = null,
+    /** 全部は分かっていないとき、一覧の画面を開く。 */
+    val onOpenAll: (() -> Unit)? = null,
+)
 
 @Composable
 internal fun ReactionChip(

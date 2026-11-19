@@ -487,7 +487,10 @@ internal fun NoteCardContent(
                 }
             }
             val client = event.clientName?.takeIf { it.isNotBlank() }
-            if (showReactions || client != null) {
+            // ＋ボタンを出さないので、リアクションが無ければ行ごと省く。
+            val hasReactionChips = showReactions &&
+                (reactionCount > 0 || isLiked || customReactions.isNotEmpty() || unicodeReactions.isNotEmpty())
+            if (hasReactionChips || client != null) {
                 Spacer(modifier = Modifier.height(8.dp))
                 // リアクションの有無にかかわらず行を出し、右端に投稿したクライアントを添える。
                 val via: (@Composable () -> Unit)? = client?.let { name ->
@@ -502,7 +505,7 @@ internal fun NoteCardContent(
                         )
                     }
                 }
-                if (showReactions) {
+                if (hasReactionChips) {
                     ReactionSummaryRow(
                         totalReactionCount = reactionCount,
                         explicitLikeCount = likeReactionCount,
@@ -515,6 +518,13 @@ internal fun NoteCardContent(
                         onEmojiUnreact = onEmojiUnreact,
                         onOpenStandardEmojiPicker = { showStandardEmojiPicker = true },
                         trailing = via,
+                        showAddButton = false,
+                        reactors = ReactorsSource(
+                            events = reactionEvents,
+                            onUserClick = onUserClick,
+                            onLoad = onRefreshReactions,
+                            onOpenAll = onOpenLikes,
+                        ),
                     )
                 } else if (via != null) {
                     Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.CenterEnd) { via() }

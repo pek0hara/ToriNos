@@ -2012,7 +2012,7 @@ private fun GroupReactionChips(message: GroupMessage, canWrite: Boolean, actions
                     }
                 }
                 if (reactorsOpenFor == chipKey) {
-                    ReactorsMenu(
+                    com.nostr.torinos.ui.components.ReactorsMenu(
                         reactors = reaction.reactors,
                         onDismiss = { reactorsOpenFor = null },
                         onUserClick = { pubkey -> reactorsOpenFor = null; actions.onUserClick(pubkey) },
@@ -2055,56 +2055,6 @@ private fun GroupReactionChips(message: GroupMessage, canWrite: Boolean, actions
                         onDismiss = { quickMenuOpen = false },
                         onSelect = { option -> quickMenuOpen = false; actions.onReact(message, option) },
                         onOpenStandardEmojiPicker = { quickMenuOpen = false; actions.onOpenEmojiPicker(message) },
-                    )
-                }
-            }
-        }
-    }
-}
-
-/**
- * リアクションのチップの長押しで出す、そのリアクションをした人の一覧。タップでその人のプロフィールを開く。
- * 自分の絵文字セットの絵文字なら、先頭にセットを開く項目を出す（以前の長押しの動き）。
- */
-@Composable
-private fun ReactorsMenu(
-    reactors: List<String>,
-    onDismiss: () -> Unit,
-    onUserClick: (String) -> Unit,
-    onNeedProfiles: (Set<String>) -> Unit,
-    onOpenEmojiSet: (() -> Unit)?,
-) {
-    val pubkeys = remember(reactors) { reactors.toSet() }
-    LaunchedEffect(pubkeys) { onNeedProfiles(pubkeys) }
-    val profiles by remember(pubkeys) {
-        if (pubkeys.isEmpty()) flowOf(emptyMap()) else ProfileRepository.observe(pubkeys)
-    }.collectAsState(initial = emptyMap())
-    ActionDropdownMenu(expanded = true, onDismissRequest = onDismiss) {
-        if (onOpenEmojiSet != null) {
-            ActionDropdownMenuItem(label = "絵文字セットを開く", icon = Icons.Outlined.EmojiEmotions, onClick = onOpenEmojiSet)
-            HorizontalDivider()
-        }
-        Text(
-            "リアクションした人 ${reactors.size}",
-            style = MaterialTheme.typography.labelMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp),
-        )
-        // 多いときはこの中だけスクロールする（メニュー自体の高さは画面に収まる）。
-        Column(modifier = Modifier.heightIn(max = 320.dp).verticalScroll(rememberScrollState())) {
-            reactors.forEach { pubkey ->
-                val profile = profiles[pubkey]
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    modifier = Modifier.fillMaxWidth().clickable { onUserClick(pubkey) }.padding(horizontal = 16.dp, vertical = 6.dp),
-                ) {
-                    ChatAvatar(pubkey = pubkey, name = profile?.bestName, pictureUrl = profile?.picture, size = 28)
-                    Spacer(Modifier.width(10.dp))
-                    Text(
-                        profile?.bestName ?: (pubkey.take(8) + "…"),
-                        style = MaterialTheme.typography.bodyMedium,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
                     )
                 }
             }
