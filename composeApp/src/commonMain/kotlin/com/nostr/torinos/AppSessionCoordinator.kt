@@ -69,7 +69,6 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.widthIn
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.graphicsLayer
@@ -103,6 +102,7 @@ import com.nostr.torinos.ui.channel.ChannelReplyContextBuilder
 import com.nostr.torinos.ui.channel.channelComposerRelayContext
 import com.nostr.torinos.emoji.EmojiSetAddress
 import com.nostr.torinos.ui.components.CustomEmojiOpenRequest
+import com.nostr.torinos.ui.components.sideDrawerWidth
 import com.nostr.torinos.ui.components.DrawerBackHandler
 import com.nostr.torinos.ui.components.LocalCustomEmojiNavigator
 import com.nostr.torinos.network.RelayPublishResult
@@ -1102,8 +1102,7 @@ internal fun AppSessionCoordinator(
                 ModalDrawerSheet(
                     modifier = Modifier
                         .fillMaxHeight()
-                        .fillMaxWidth(ProfileDrawerWidthFraction)
-                        .then(if (isWideLayout) Modifier.widthIn(max = ProfileDrawerWideMaxWidth) else Modifier),
+                        .sideDrawerWidth(),
                     drawerContainerColor = MaterialTheme.colorScheme.background,
                     windowInsets = WindowInsets(0),
                 ) {
@@ -1191,7 +1190,8 @@ internal fun AppSessionCoordinator(
                 )
             }
             AppScaffold(
-                navigationRail = if (isWideLayout && hasBottomBar) {
+                // Web はページ遷移でレールが出入りすると本文の位置がずれるため、詳細画面でも常に出す。
+                navigationRail = if (isWideLayout && (hasBottomBar || isWebPlatform)) {
                     {
                         NavigationRail(containerColor = MaterialTheme.colorScheme.background) {
                             // 横向きのスマートフォンなど縦が足りないときはスクロールする。
@@ -2098,5 +2098,3 @@ private fun appNavigationRailItemColors() = NavigationRailItemDefaults.colors(
 
 private const val TopLevelExitWindowMillis = 2_000L
 private const val StatusPageRoute = "status-page"
-private const val ProfileDrawerWidthFraction = 0.92f
-private val ProfileDrawerWideMaxWidth = 480.dp
