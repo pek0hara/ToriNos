@@ -332,9 +332,14 @@ fun ChatTabScreen(
                     },
                 )
                 ServiceHeaderDivider()
-                if (state.showsViewToggle) ChatViewToggle(state.view, viewModel::setView)
                 val loading = if (state.showsTimeline) state.timeline.isLoading else state.isLoading
-                if (loading) LinearProgressIndicator(modifier = Modifier.fillMaxWidth().height(2.dp))
+                // 読み込み中の線はタブの上（ヘッダー側）に出す。タブの下に出すと選択中の下線と紛れる。
+                if (state.showsViewToggle) {
+                    if (loading) LinearProgressIndicator(modifier = Modifier.fillMaxWidth().height(2.dp))
+                    ChatViewToggle(state.view, viewModel::setView)
+                } else if (loading) {
+                    LinearProgressIndicator(modifier = Modifier.fillMaxWidth().height(2.dp))
+                }
             }
         },
         floatingActionButton = {

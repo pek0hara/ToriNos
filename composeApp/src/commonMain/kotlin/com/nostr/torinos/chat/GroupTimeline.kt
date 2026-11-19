@@ -39,7 +39,16 @@ data class GroupMessage(
     val sentFromThreadLabel: String? = null,
     /** 本文の `:shortcode:` を画像にするカスタム絵文字（NIP-30 の `emoji` タグ）。shortcode → URL。 */
     val emojis: Map<String, String> = emptyMap(),
-)
+) {
+    /**
+     * 発言を押したときに開くスレッドの元投稿。
+     * Buzz で「スレッドから送信」したコピーは元のスレッド（`buzz:sent-from-thread` の2番目）、それ以外はこの発言。
+     */
+    val openThreadRootId: String
+        get() = event.tags.firstOrNull { it.firstOrNull() == "buzz:sent-from-thread" }
+            ?.getOrNull(1)?.takeIf { HEX64.matches(it) }
+            ?: event.id
+}
 
 data class GroupTimelineSnapshot(
     val messages: List<GroupMessage>,

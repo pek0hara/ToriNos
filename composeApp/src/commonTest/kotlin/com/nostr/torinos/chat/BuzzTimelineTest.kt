@@ -85,6 +85,23 @@ class BuzzTimelineTest {
     }
 
     @Test
+    fun tappingCopySentFromThreadOpensOriginalThread() {
+        val t = timeline()
+        t.add(listOf(
+            ev(1, 9, emptyList(), "plain"),
+            ev(2, 9, listOf(listOf("buzz:sent-from-thread", id(9), "見出し")), "copy"),
+            ev(3, 9, listOf(listOf("buzz:sent-from-thread", "broken", "見出し")), "bad root"),
+        ))
+        val messages = t.snapshot().messages.associateBy { it.body }
+        // 普通の発言はその発言をスレッドの元にする。
+        assertEquals(id(1), messages.getValue("plain").openThreadRootId)
+        // スレッドから送信したコピーは、元のスレッドを開く。
+        assertEquals(id(9), messages.getValue("copy").openThreadRootId)
+        // 元の ID が読めなければ、その発言を開く。
+        assertEquals(id(3), messages.getValue("bad root").openThreadRootId)
+    }
+
+    @Test
     fun standardFlavorKeepsQuoteReplies() {
         val t = GroupTimeline("g", me, GroupFlavor.Standard, relayPubkey = null)
         t.add(listOf(ev(1, 9, emptyList(), "a"), ev(2, 9, listOf(listOf("q", id(1), "", alice)), "b")))

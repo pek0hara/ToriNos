@@ -53,6 +53,7 @@ import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.ui.draw.clip
@@ -472,6 +473,12 @@ private fun GroupRoomScreen(ref: GroupRef, mode: GroupRoomMode, navigation: Grou
                     onLoadOlder = viewModel::loadOlder,
                     canWrite = state.composer == GroupComposerState.Writable,
                     actions = rowActions,
+                    // Buzz のチャンネルでは発言を押すとスレッド（返信）を開く。
+                    onMessageClick = if (state.flavor == GroupFlavor.Buzz) {
+                        { message -> navigation.onOpenThread(ref, message.openThreadRootId) }
+                    } else {
+                        null
+                    },
                     modifier = Modifier.weight(1f),
                 )
                 is GroupRoomMode.Thread -> ThreadList(
@@ -658,6 +665,7 @@ private fun MessageList(
     onLoadOlder: () -> Unit,
     canWrite: Boolean,
     actions: MessageRowActions,
+    onMessageClick: ((GroupMessage) -> Unit)?,
     modifier: Modifier = Modifier,
 ) {
     val listState = rememberLazyListState()
@@ -684,6 +692,7 @@ private fun MessageList(
                     canWrite = canWrite,
                     flavor = flavor,
                     actions = actions,
+                    onClick = onMessageClick?.let { open -> { open(item.message) } },
                 )
             }
         }
@@ -763,6 +772,23 @@ private fun LoadOlderEffect(listState: LazyListState, itemCount: Int, canLoadOld
     }
 }
 
+/**
+ * 一覧の表示域の高さが変わったら（キーボードの出し入れ）、その分だけスクロールして下端の位置を保つ。
+ * 上から並べる一覧は、そのままだとキーボードを出したときに下の方（最新の返信）が隠れる。
+ */
+@Composable
+private fun KeepBottomOnResize(listState: LazyListState) {
+    LaunchedEffect(listState) {
+        var previous = 0
+        snapshotFlow { listState.layoutInfo.viewportSize.height }
+            .collect { height ->
+                val shrunk = previous - height
+                if (previous > 0 && shrunk != 0) listState.scrollBy(shrunk.toFloat())
+                previous = height
+            }
+    }
+}
+
 @Composable
 private fun ThreadList(
     root: GroupMessage?,
@@ -776,7 +802,9 @@ private fun ThreadList(
 ) {
     val today = rememberToday()
     val rows = remember(replies) { messageTimeline(replies) }
-    LazyColumn(modifier = modifier.fillMaxSize().dismissKeyboardOnListTouch(), contentPadding = PaddingValues(vertical = 8.dp)) {
+    val listState = rememberLazyListState()
+    KeepBottomOnResize(listState)
+    LazyColumn(state = listState, modifier = modifier.fillMaxSize().dismissKeyboardOnListTouch(), contentPadding = PaddingValues(vertical = 8.dp)) {
         if (root != null) {
             item(key = "root") {
                 val rootTime = chatDayLabel(chatLocalDate(root.event.createdAt), today) + " " + chatClockTime(root.event.createdAt)
@@ -868,6 +896,8 @@ private fun MessageRow(
     actions: MessageRowActions,
     showThreadLink: Boolean = true,
     timeLabel: String = chatClockTime(message.event.createdAt),
+    /** 発言を押したとき（Buzz のチャンネルではスレッドを開く）。null なら何もしない。 */
+    onClick: (() -> Unit)? = null,
 ) {
     var menuOpen by remember { mutableStateOf(false) }
     if (menuOpen && canWrite) {
@@ -881,7 +911,7 @@ private fun MessageRow(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .combinedClickable(onClick = {}, onLongClick = { menuOpen = true })
+                .combinedClickable(onClickLabel = if (onClick != null) "スレッドを開く" else null, onClick = { onClick?.invoke() }, onLongClick = { menuOpen = true })
                 .padding(start = 12.dp, end = 12.dp, top = if (grouped) 2.dp else 10.dp, bottom = 2.dp),
         ) {
             Box(modifier = Modifier.width(40.dp)) {

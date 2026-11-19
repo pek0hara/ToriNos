@@ -20,9 +20,7 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.SegmentedButton
-import androidx.compose.material3.SegmentedButtonDefaults
-import androidx.compose.material3.SingleChoiceSegmentedButtonRow
+import androidx.compose.material3.PrimaryTabRow
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -42,20 +40,24 @@ import com.nostr.torinos.chat.dmDisplayName
 import com.nostr.torinos.chat.splitTodayEntries
 import com.nostr.torinos.model.NostrProfile
 import com.nostr.torinos.network.ProfileRepository
+import com.nostr.torinos.ui.components.AppTab
 import kotlinx.coroutines.flow.flowOf
 
-/** 「グループ / タイムライン」の切り替え。 */
+/** 「グループ / タイムライン」の切り替え。アプリ内の他のタブと同じ下線タブ（[AppTab]）。 */
 @Composable
 internal fun ChatViewToggle(view: ChatListView, onSelect: (ChatListView) -> Unit) {
     val options = listOf(ChatListView.Groups to "グループ", ChatListView.Timeline to "タイムライン")
-    SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp)) {
-        options.forEachIndexed { index, (option, label) ->
-            SegmentedButton(
+    PrimaryTabRow(
+        selectedTabIndex = options.indexOfFirst { it.first == view }.coerceAtLeast(0),
+        containerColor = MaterialTheme.colorScheme.background,
+        contentColor = MaterialTheme.colorScheme.onBackground,
+    ) {
+        options.forEach { (option, label) ->
+            AppTab(
                 selected = option == view,
                 onClick = { onSelect(option) },
-                shape = SegmentedButtonDefaults.itemShape(index, options.size),
-                icon = {},
-                label = { Text(label, maxLines = 1) },
+                label = label,
+                selectedContentColor = MaterialTheme.colorScheme.onBackground,
             )
         }
     }
