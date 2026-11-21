@@ -150,7 +150,7 @@ private fun PublicGroupCard(entry: PublicGroupEntry, enabled: Boolean, onPick: (
     val forum = entry.metadata.layout == GroupLayout.Forum
     Surface(
         shape = RoundedCornerShape(14.dp),
-        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
+        color = MaterialTheme.colorScheme.surfaceContainerHigh,
         modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)).clickable(enabled = enabled) { onPick(entry.ref) },
     ) {
         Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(12.dp)) {
@@ -222,7 +222,7 @@ private fun SmallTag(text: String) {
 private fun JoinEmptyState(searching: Boolean, enabled: Boolean, onPaste: () -> Unit) {
     Surface(
         shape = RoundedCornerShape(16.dp),
-        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
+        color = MaterialTheme.colorScheme.surfaceContainerHigh,
         modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
     ) {
         Column(

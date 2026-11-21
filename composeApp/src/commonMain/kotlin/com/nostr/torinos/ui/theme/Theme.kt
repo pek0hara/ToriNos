@@ -35,6 +35,14 @@ private val LightColors = lightColorScheme(
     onSurface = Color(0xFF1D2024),
     surfaceVariant = Color(0xFFF2F4F7),
     onSurfaceVariant = Color(0xFF5F6670),
+    // 指定しないと M3 既定の薄紫になり、ボトムシートの背景などに紫がかった色が出る。グレーで揃える。
+    surfaceDim = Color(0xFFE1E4E8),
+    surfaceBright = Color.White,
+    surfaceContainerLowest = Color.White,
+    surfaceContainerLow = Color(0xFFF8F9FB),
+    surfaceContainer = Color(0xFFF2F4F7),
+    surfaceContainerHigh = Color(0xFFECEFF3),
+    surfaceContainerHighest = Color(0xFFE6E9EE),
     outline = Color(0xFF8D949E),
     outlineVariant = Color(0xFFD7DCE2),
 )
