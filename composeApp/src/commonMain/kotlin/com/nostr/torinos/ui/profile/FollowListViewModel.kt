@@ -30,6 +30,7 @@ class FollowListViewModel(
     private val mode: FollowListMode,
     private val ownPubkey: String,
 ) : SafeViewModel() {
+    private val followerCountStore = FollowerCountStore.shared
 
     private val _state = MutableStateFlow(FollowListState())
     val state: StateFlow<FollowListState> = _state.asStateFlow()
@@ -129,9 +130,11 @@ class FollowListViewModel(
 
     private suspend fun loadFollowers() {
         val relayCompletion = CompletableDeferred<Unit>()
+        val followerEventIds = hashSetOf<String>()
         collectorJobs += launch(start = CoroutineStart.UNDISPATCHED) {
             NostrRepository.events(followerSubId).collect { event ->
                 if (event.kind != 3) return@collect
+                followerEventIds.add(event.id)
                 val pubkey = event.pubkey
                 if (knownPubkeys.add(pubkey)) {
                     profileMap[pubkey] = ProfileRepository.getCached(pubkey)
@@ -151,9 +154,18 @@ class FollowListViewModel(
         try {
             NostrRepository.subscribe(
                 followerSubId,
-                NostrFilter(kinds = listOf(3), pTags = listOf(ownPubkey), limit = 1000),
+                NostrFilter(kinds = listOf(3), pTags = listOf(ownPubkey), limit = FOLLOWERS_LIST_LIMIT),
             )
             awaitFollowerRelayCompletion(relayCompletion, FOLLOWERS_LIST_TIMEOUT_MS)
+            // 画面を閉じて中断したときはここに来ない。数えた結果をプロフィールのフォロワー数にも使う。
+            if (shouldRecordFollowerCount(cancelled = false, count = knownPubkeys.size)) {
+                followerCountStore.record(
+                    pubkey = ownPubkey,
+                    count = knownPubkeys.size,
+                    limited = isFollowerCountLimited(followerEventIds.size, FOLLOWERS_LIST_LIMIT),
+                    followers = knownPubkeys.toSet(),
+                )
+            }
         } finally {
             _state.update { it.copy(isLoading = false) }
         }
@@ -264,6 +276,7 @@ class FollowListViewModel(
         private const val PUBLISH_DELAY_MS = 180L
         private const val FOLLOWING_LIST_TIMEOUT_MS = 10_000L
         private const val FOLLOWERS_LIST_TIMEOUT_MS = 10_000L
+        private const val FOLLOWERS_LIST_LIMIT = 1000
         private const val PROFILE_MAX_AGE_MS = 15 * 60 * 1_000L
     }
 }

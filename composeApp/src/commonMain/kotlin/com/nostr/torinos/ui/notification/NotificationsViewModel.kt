@@ -15,6 +15,7 @@ import com.nostr.torinos.network.TargetEventLoader
 import com.nostr.torinos.network.TargetLoadState
 import androidx.lifecycle.viewModelScope
 import com.nostr.torinos.ui.SafeViewModel
+import com.nostr.torinos.ui.profile.FollowerCountStore
 import kotlin.time.Clock
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
@@ -118,6 +119,14 @@ class NotificationsViewModel(
 
     private fun startCollectors() {
         collectorJobs += launch {
+            // 自分のフォロワーを全部数えたら、その人たちを既知フォロワーに足す。
+            // 足さないと、一覧に入っていない古いフォロワーが kind 3 を出し直したときに新規と誤って通知する。
+            FollowerCountStore.shared.completedCounts.collect { completed ->
+                if (completed.pubkey != ownPubkey || !hasStoredFollowerList) return@collect
+                if (knownFollowerPubkeys.addAll(completed.followers)) saveKnownFollowers()
+            }
+        }
+        collectorJobs += launch {
             ProfileRepository.observeChanges().collect { changedPubkeys ->
                 val currentProfiles = _state.value.profiles
                 val targets = pendingPubkeys + currentProfiles.keys
@@ -151,7 +160,9 @@ class NotificationsViewModel(
         val syncStartedAt = Clock.System.now().epochSeconds
         val result = syncCoordinator.sync(
             activityFilters(INITIAL_SYNC_LIMIT),
-            followFilter(ownPubkey, INITIAL_SYNC_LIMIT, followSyncSince(hasStoredFollowerList, followSyncedAt)),
+            followSyncSince(hasStoredFollowerList, followSyncedAt).let { since ->
+                followFilter(ownPubkey, initialFollowSyncLimit(since), since)
+            },
             syncStartedAt,
         )
         delay(AUXILIARY_FETCH_DRAIN_MS)
@@ -259,6 +270,8 @@ class NotificationsViewModel(
         if (!knownFollowerPubkeys.add(event.pubkey)) return
         if (!hasStoredFollowerList) return
         saveKnownFollowers()
+        // ミュート中でもフォロワーには違いないので数には足す。
+        FollowerCountStore.shared.recordNewFollower(ownPubkey)
         if (muteStore?.isMuted(event.pubkey) == true) {
             rememberSeenId(event.id)
             return
@@ -466,4 +479,14 @@ internal fun followSyncSince(hasStoredFollowerList: Boolean, lastSyncedAt: Long?
 }
 
 // リレーへの伝搬遅れやクライアントの時計ずれを吸収する。既知フォロワーは重複排除される。
+/**
+ * 起動時のフォロー取得件数。既知フォロワー一覧をまだ持たない（since なし）ときは基準を作るので多めに取り、
+ * 差分のときは少なくてよい。
+ */
+internal fun initialFollowSyncLimit(since: Long?): Int =
+    if (since == null) FOLLOW_BASELINE_LIMIT else FOLLOW_DELTA_LIMIT
+
+internal const val FOLLOW_BASELINE_LIMIT = 500
+internal const val FOLLOW_DELTA_LIMIT = 100
+
 internal const val FOLLOW_SYNC_OVERLAP_SECONDS = 24 * 60 * 60L

@@ -178,11 +178,12 @@ fun UserProfileScreen(
             item {
                 ProfileStatsRow(
                     followingCount = state.followingCount,
-                    followersCount = state.followersCount,
-                    followersCountSuffix = if (state.isFollowersCountLimited) "+" else "",
-                    isFollowersLoading = state.isFollowersLoading,
+                    followerDisplay = followerStatDisplay(
+                        stored = state.storedFollowerCount,
+                        isLoading = state.isFollowersLoading,
+                        liveCount = state.followersCount,
+                    ),
                     onFetchFollowers = viewModel::loadFollowersCount,
-                    followersFetched = state.followersLoaded,
                     relayCount = state.relayUrls.size,
                     onOpenFollowing = onOpenFollowing,
                     onOpenFollowers = onOpenFollowers,

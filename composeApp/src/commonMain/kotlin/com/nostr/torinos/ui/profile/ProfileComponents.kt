@@ -32,7 +32,6 @@ import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.AddPhotoAlternate
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Today
-import androidx.compose.material.icons.filled.FileDownload
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -921,12 +920,9 @@ private fun String.shortKey(): String =
 @Composable
 internal fun ProfileStatsRow(
     followingCount: Int,
-    followersCount: Int,
+    followerDisplay: FollowerStatDisplay,
+    onFetchFollowers: () -> Unit,
     modifier: Modifier = Modifier,
-    followersCountSuffix: String = "",
-    isFollowersLoading: Boolean = false,
-    onFetchFollowers: (() -> Unit)? = null,
-    followersFetched: Boolean = true,
     relayCount: Int = 0,
     onOpenFollowing: (() -> Unit)? = null,
     onOpenFollowers: (() -> Unit)? = null,
@@ -940,16 +936,17 @@ internal fun ProfileStatsRow(
                 .weight(1f)
                 .then(if (onOpenFollowing != null) Modifier.clickable { onOpenFollowing() } else Modifier),
         )
-        UserStatCell(
-            label = "フォロワー",
-            count = followersCount,
-            countSuffix = followersCountSuffix,
-            isLoading = isFollowersLoading,
-            onFetch = onFetchFollowers,
-            fetched = followersFetched,
+        // 一度も数えていないときは枠のタップで数え、数えた後は一覧を開く。
+        val onFollowersClick: (() -> Unit)? = when (followerDisplay) {
+            FollowerStatDisplay.Unknown -> onFetchFollowers
+            else -> onOpenFollowers
+        }
+        FollowerStatCell(
+            display = followerDisplay,
+            onRefresh = onFetchFollowers,
             modifier = Modifier
                 .weight(1f)
-                .then(if (onOpenFollowers != null) Modifier.clickable { onOpenFollowers() } else Modifier),
+                .then(if (onFollowersClick != null) Modifier.clickable { onFollowersClick() } else Modifier),
         )
         UserStatCell(
             label = "リレー",
@@ -966,35 +963,17 @@ internal fun UserStatCell(
     label: String,
     count: Int,
     modifier: Modifier = Modifier,
-    isLoading: Boolean = false,
-    countSuffix: String = "",
-    onFetch: (() -> Unit)? = null,
-    fetched: Boolean = true,
 ) {
     Column(
-        modifier = modifier.padding(vertical = 12.dp),
+        modifier = modifier.padding(top = 12.dp, bottom = 4.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(2.dp),
     ) {
-        when {
-            isLoading -> CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
-            onFetch != null && !fetched -> IconButton(
-                onClick = onFetch,
-                modifier = Modifier.size(20.dp),
-            ) {
-                Icon(
-                    imageVector = Icons.Default.FileDownload,
-                    contentDescription = "フォロワー数を取得",
-                    modifier = Modifier.size(18.dp),
-                    tint = MaterialTheme.colorScheme.primary,
-                )
-            }
-            else -> Text(
-                text = count.toString() + countSuffix,
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.Bold,
-            )
-        }
+        Text(
+            text = count.toString(),
+            style = MaterialTheme.typography.titleMedium,
+            fontWeight = FontWeight.Bold,
+        )
         Text(
             text = label,
             style = MaterialTheme.typography.labelSmall,

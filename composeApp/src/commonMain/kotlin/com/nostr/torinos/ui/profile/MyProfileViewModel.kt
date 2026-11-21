@@ -23,9 +23,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
-import kotlinx.coroutines.withTimeoutOrNull
 
 data class MyProfileState(
     val profile: NostrProfile? = null,
@@ -33,9 +31,11 @@ data class MyProfileState(
     val relayUrls: List<String> = emptyList(),
     val generalStatus: ProfileGeneralStatus? = null,
     val followingCount: Int = 0,
+    /** 数えている最中に届いたフォロワー数。 */
     val followersCount: Int = 0,
     val isFollowersLoading: Boolean = false,
-    val followersLoaded: Boolean = false,
+    /** 前に数えて保存したフォロワー数。null = まだ数えたことがない。 */
+    val storedFollowerCount: FollowerCountSnapshot? = null,
     val generalStatusPublishState: StatusPublishState = StatusPublishState.Idle,
 )
 
@@ -47,13 +47,10 @@ class MyProfileViewModel(
     val state: StateFlow<MyProfileState> = _state.asStateFlow()
 
     private val subIdKey = ownPubkey.take(16)
-    private val followerSubId = "mp-followers-$subIdKey"
     private val relayListSubId = "mp-relay-list-$subIdKey"
     private val generalStatusSubId = "mp-general-status-$subIdKey"
 
     private val collectorJobs = mutableListOf<Job>()
-    private var followerCollectorJob: Job? = null
-    private var followerEoseJob: Job? = null
     private var linkedProfileObserverJob: Job? = null
     private var generalStatusSnapshot = StatusSnapshot()
     private var hasPublishedRelayList = false
@@ -62,6 +59,14 @@ class MyProfileViewModel(
         signer = accountSession?.signer,
         customEmojis = { accountSession?.customEmojis?.preferences?.value?.available.orEmpty() },
         setAddressOf = { accountSession?.customEmojis?.preferences?.value?.setAddressOf(it) },
+    )
+
+    private val followerCountStore = FollowerCountStore.shared
+    private val followerCountLoader = FollowerCountLoader(
+        pubkey = ownPubkey,
+        subId = "mp-followers-$subIdKey",
+        launch = { block -> launch(block = block) },
+        store = followerCountStore,
     )
 
     init {
@@ -83,6 +88,21 @@ class MyProfileViewModel(
         collectorJobs += launch {
             accountSession?.followRepository?.followedPubkeys?.collect { follows ->
                 _state.update { it.copy(followingCount = follows.size) }
+            }
+        }
+
+        collectorJobs += launch {
+            followerCountLoader.state.collect { load ->
+                _state.update { it.copy(followersCount = load.liveCount, isFollowersLoading = load.isLoading) }
+            }
+        }
+
+        collectorJobs += launch {
+            followerCountStore.counts.collect { counts ->
+                val stored = counts[ownPubkey]
+                if (stored != _state.value.storedFollowerCount) {
+                    _state.update { it.copy(storedFollowerCount = stored) }
+                }
             }
         }
 
@@ -144,33 +164,9 @@ class MyProfileViewModel(
         }
     }
 
+    /** 押されたときだけ数える。保存済みの数があればそれを出したまま数え直す。 */
     fun fetchFollowers() {
-        if (_state.value.isFollowersLoading) return
-        _state.update { it.copy(isFollowersLoading = true, followersCount = 0) }
-        followerCollectorJob?.cancel()
-        followerEoseJob?.cancel()
-        val followerPubkeys = linkedSetOf<String>()
-        followerCollectorJob = launch {
-            NostrRepository.events(followerSubId).collect { event ->
-                if (event.kind != 3) return@collect
-                if (followerPubkeys.add(event.pubkey)) {
-                    _state.update { it.copy(followersCount = followerPubkeys.size) }
-                }
-            }
-        }
-        followerEoseJob = launch {
-            withTimeoutOrNull(10_000) {
-                NostrRepository.eose(followerSubId).first()
-            }
-            _state.update { it.copy(isFollowersLoading = false, followersLoaded = true) }
-        }
-        launch {
-            NostrRepository.close(followerSubId)
-            NostrRepository.subscribe(
-                followerSubId,
-                NostrFilter(kinds = listOf(3), pTags = listOf(ownPubkey), limit = 1000),
-            )
-        }
+        followerCountLoader.start()
     }
 
     /** 編集保存後に UI を即時更新する（リレーの応答を待たない）。 */
@@ -264,10 +260,8 @@ class MyProfileViewModel(
     override fun onCleared() {
         super.onCleared()
         collectorJobs.forEach { it.cancel() }
-        followerCollectorJob?.cancel()
-        followerEoseJob?.cancel()
+        followerCountLoader.close()
         linkedProfileObserverJob?.cancel()
-        NostrRepository.close(followerSubId)
         NostrRepository.close(relayListSubId)
         NostrRepository.close(generalStatusSubId)
     }

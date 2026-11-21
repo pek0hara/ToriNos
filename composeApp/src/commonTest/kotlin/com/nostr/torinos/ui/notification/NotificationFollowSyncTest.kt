@@ -41,4 +41,10 @@ class NotificationFollowSyncTest {
     fun followFilter_withoutSinceFetchesLatest() {
         assertNull(followFilter(ownPubkey = "me", limit = 100, since = null).since)
     }
+
+    @Test
+    fun initialFollowSync_fetchesMoreWhenBuildingTheBaseline() {
+        assertEquals(500, initialFollowSyncLimit(since = null))
+        assertEquals(100, initialFollowSyncLimit(since = 123L))
+    }
 }

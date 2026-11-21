@@ -13,7 +13,6 @@ import com.nostr.torinos.network.ProfileFetchPolicy
 import com.nostr.torinos.network.ProfileRepository
 import com.nostr.torinos.network.RelayListEventCache
 import com.nostr.torinos.status.StatusSnapshot
-import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -33,10 +32,11 @@ data class UserProfileState(
     val followError: String? = null,
     val canFollow: Boolean = false,
     val followingCount: Int = 0,
+    /** 数えている最中に届いたフォロワー数。 */
     val followersCount: Int = 0,
-    val isFollowersCountLimited: Boolean = false,
     val isFollowersLoading: Boolean = false,
-    val followersLoaded: Boolean = false,
+    /** 前に数えて保存したフォロワー数。null = まだ数えたことがない。 */
+    val storedFollowerCount: FollowerCountSnapshot? = null,
 )
 
 class UserProfileViewModel(
@@ -49,19 +49,22 @@ class UserProfileViewModel(
 
     private val shortKey = pubkey.take(16)
     private val followingSubId = "uf-$shortKey"
-    private val followersSubId = "ur-$shortKey"
     private val relayListSubId = "url-$shortKey"
     private val generalStatusSubId = "ugs-$shortKey"
 
     private val collectorJobs = mutableListOf<Job>()
     private var linkedProfileObserverJob: Job? = null
     private var followingCountStarted = false
-    private var followersLoadCompletion: CompletableDeferred<Unit>? = null
     private var generalStatusSnapshot = StatusSnapshot()
     private val linkedProfilePubkeys = linkedSetOf<String>()
-    private val followerPubkeys = linkedSetOf<String>()
-    private val followerEventIds = linkedSetOf<String>()
-    private var receivedFollowerEvents = 0
+    private val followerCountStore = FollowerCountStore.shared
+    private val followerCountLoader = FollowerCountLoader(
+        pubkey = pubkey,
+        subId = "ur-$shortKey",
+        launch = { block -> launch(block = block) },
+        relayUrl = deferredRelayUrl,
+        store = followerCountStore,
+    )
 
     init {
         start()
@@ -171,32 +174,9 @@ class UserProfileViewModel(
         }
     }
 
+    /** 押されたときだけ数える。保存済みの数があればそれを出したまま数え直す。 */
     fun loadFollowersCount() {
-        if (_state.value.isFollowersLoading) return
-        val completion = CompletableDeferred<Unit>()
-        followersLoadCompletion = completion
-        _state.update { it.copy(isFollowersLoading = true) }
-        launch {
-            try {
-                NostrRepository.subscribe(
-                    followersSubId,
-                    NostrFilter(kinds = listOf(3), pTags = listOf(pubkey), limit = FOLLOWERS_FETCH_LIMIT),
-                    relayUrl = deferredRelayUrl,
-                )
-                awaitFollowerRelayCompletion(completion, FOLLOWERS_LOAD_TIMEOUT_MS)
-            } finally {
-                if (followersLoadCompletion === completion) {
-                    followersLoadCompletion = null
-                    _state.update {
-                        it.copy(
-                            isFollowersLoading = false,
-                            followersLoaded = true,
-                            isFollowersCountLimited = receivedFollowerEvents >= FOLLOWERS_FETCH_LIMIT,
-                        )
-                    }
-                }
-            }
-        }
+        followerCountLoader.start()
     }
 
     private fun startCollectors() {
@@ -238,19 +218,17 @@ class UserProfileViewModel(
         }
 
         collectorJobs += launch {
-            NostrRepository.events(followersSubId).collect { event ->
-                if (event.kind != 3) return@collect
-                if (!followerEventIds.add(event.id)) return@collect
-                receivedFollowerEvents++
-                if (followerPubkeys.add(event.pubkey)) {
-                    _state.update { it.copy(followersCount = followerPubkeys.size) }
-                }
+            followerCountLoader.state.collect { load ->
+                _state.update { it.copy(followersCount = load.liveCount, isFollowersLoading = load.isLoading) }
             }
         }
 
         collectorJobs += launch {
-            NostrRepository.eose(followersSubId).collect {
-                followersLoadCompletion?.complete(Unit)
+            followerCountStore.counts.collect { counts ->
+                val stored = counts[pubkey]
+                if (stored != _state.value.storedFollowerCount) {
+                    _state.update { it.copy(storedFollowerCount = stored) }
+                }
             }
         }
     }
@@ -268,11 +246,9 @@ class UserProfileViewModel(
     override fun onCleared() {
         super.onCleared()
         collectorJobs.forEach { it.cancel() }
-        followersLoadCompletion?.cancel()
-        followersLoadCompletion = null
+        followerCountLoader.close()
         linkedProfileObserverJob?.cancel()
         NostrRepository.close(followingSubId)
-        NostrRepository.close(followersSubId)
         NostrRepository.close(relayListSubId)
         NostrRepository.close(generalStatusSubId)
     }
@@ -304,8 +280,6 @@ class UserProfileViewModel(
     }
 
     companion object {
-        private const val FOLLOWERS_FETCH_LIMIT = 500
-        private const val FOLLOWERS_LOAD_TIMEOUT_MS = 10_000L
         private const val LINKED_PROFILE_MAX_AGE_MS = 15 * 60 * 1_000L
     }
 }

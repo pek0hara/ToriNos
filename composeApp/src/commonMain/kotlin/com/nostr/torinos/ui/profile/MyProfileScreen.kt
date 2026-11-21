@@ -196,10 +196,12 @@ fun MyProfileScreen(
             item {
                 ProfileStatsRow(
                     followingCount = state.followingCount,
-                    followersCount = state.followersCount,
-                    isFollowersLoading = state.isFollowersLoading,
+                    followerDisplay = followerStatDisplay(
+                        stored = state.storedFollowerCount,
+                        isLoading = state.isFollowersLoading,
+                        liveCount = state.followersCount,
+                    ),
                     onFetchFollowers = viewModel::fetchFollowers,
-                    followersFetched = state.followersLoaded,
                     relayCount = state.relayUrls.size,
                     onOpenFollowing = onOpenFollowing,
                     onOpenFollowers = onOpenFollowers,
