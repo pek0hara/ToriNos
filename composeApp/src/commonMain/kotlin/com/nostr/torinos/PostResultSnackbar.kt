@@ -9,13 +9,17 @@ import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
 
-/** 投稿の送信結果のスナックバー。失敗したリレーを表示ごとに持ち、続けて投稿しても取り違えない。 */
-internal class PublishResultSnackbarVisuals(result: RelayPublishResult) : SnackbarVisuals {
+/**
+ * 投稿の送信結果のスナックバー。失敗したリレーを表示ごとに持ち、続けて投稿しても取り違えない。
+ * [subject] を渡すと何を送ったかを添える（例: リポスト）。
+ */
+internal class PublishResultSnackbarVisuals(result: RelayPublishResult, subject: String? = null) : SnackbarVisuals {
     val failedRelays: List<String> = result.failedRelays.keys.toList()
-    override val message: String = if (result.failureCount == 0) {
-        "すべてのリレーに送信成功しました。"
-    } else {
-        "送信しました。成功${result.successCount}リレー 失敗${result.failureCount}リレー"
+    override val message: String = when {
+        subject == null && result.failureCount == 0 -> "すべてのリレーに送信成功しました。"
+        subject == null -> "送信しました。成功${result.successCount}リレー 失敗${result.failureCount}リレー"
+        result.failureCount == 0 -> "${subject}をすべてのリレーに送信しました。"
+        else -> "${subject}を送信しました。成功${result.successCount}リレー 失敗${result.failureCount}リレー"
     }
     override val actionLabel: String? = null
     override val withDismissAction: Boolean = false

@@ -262,6 +262,20 @@ internal fun AppSessionCoordinator(
             snackbarHostState.showSnackbar(message)
         }
 
+        // リポストは1タップで送れて誤操作しやすいので、投稿と同じ完了表示を出す。
+        // 失敗したリレーがあればタップで一覧を開ける（投稿と同じ）。
+        LaunchedEffect(accountSession?.pubkey) {
+            val pubkey = accountSession?.pubkey ?: return@LaunchedEffect
+            com.nostr.torinos.engagement.RepostNotices.results.collect { notice ->
+                if (notice.authorPubkey != pubkey) return@collect
+                // 表示は閉じるまで戻らないので、次の知らせを受け取れるよう別に出す。
+                launch {
+                    snackbarHostState.currentSnackbarData?.dismiss()
+                    snackbarHostState.showSnackbar(PublishResultSnackbarVisuals(notice.result, subject = "リポスト"))
+                }
+            }
+        }
+
         val ownPubkey = accountSession?.pubkey
         var ownProfile by remember { mutableStateOf<NostrProfile?>(null) }
         val isAccountLoaded = true

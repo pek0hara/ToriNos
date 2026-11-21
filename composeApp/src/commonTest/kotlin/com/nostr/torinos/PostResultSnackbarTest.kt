@@ -64,4 +64,15 @@ class PostResultSnackbarTest {
         assertEquals(listOf("wss://a.example"), a.failedRelays)
         assertEquals(listOf("wss://b.example"), b.failedRelays)
     }
+
+    @Test
+    fun repostResultSaysItWasARepost() {
+        val ok = PublishResultSnackbarVisuals(first, subject = "リポスト")
+        val partial = PublishResultSnackbarVisuals(all, subject = "リポスト")
+        assertEquals("リポストをすべてのリレーに送信しました。", ok.message)
+        assertEquals("リポストを送信しました。成功1リレー 失敗1リレー", partial.message)
+        assertEquals(listOf("wss://dead.example"), partial.failedRelays)
+        // 投稿の表示は変えない。
+        assertEquals("すべてのリレーに送信成功しました。", PublishResultSnackbarVisuals(first).message)
+    }
 }

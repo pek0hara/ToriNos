@@ -132,6 +132,7 @@ internal fun NoteCardContent(
     var showDetails by remember(event.id) { mutableStateOf(false) }
     var showReportDialog by remember(event.id) { mutableStateOf(false) }
     var showHeartReactionMenu by remember(event.id) { mutableStateOf(false) }
+    var showRepostMenu by remember(event.id) { mutableStateOf(false) }
     var showStandardEmojiPicker by remember(event.id) { mutableStateOf(false) }
     var expandedImageState by remember(event.id) { mutableStateOf<ExpandedImageState?>(null) }
     var expandedEngagement by remember(event.id) { mutableStateOf<ExpandedEngagement?>(null) }
@@ -560,29 +561,58 @@ internal fun NoteCardContent(
                             onOpenReplies
                         },
                     )
-                    EngagementCount(
-                        icon = Icons.Default.Repeat,
-                        contentDescription = "リポスト",
-                        count = repostCount,
-                        countText = if (repostCount > 0) {
-                            "$repostCount${if (expandedEngagement == ExpandedEngagement.Reposts) "⌃" else "⌄"}"
-                        } else {
-                            repostCount.toString()
-                        },
-                        tint = when {
-                            expandedEngagement == ExpandedEngagement.Reposts -> MaterialTheme.colorScheme.primary
-                            isReposted -> Color(0xFF2BAE66)
-                            else -> MaterialTheme.colorScheme.onSurfaceVariant
-                        },
-                        onClick = onRepost,
-                        onCountClick = if (repostCount > 0) {
-                            {
-                                expandedEngagement = expandedEngagement.toggled(ExpandedEngagement.Reposts)
+                    Box {
+                        EngagementCount(
+                            icon = Icons.Default.Repeat,
+                            contentDescription = "リポスト",
+                            count = repostCount,
+                            countText = if (repostCount > 0) {
+                                "$repostCount${if (expandedEngagement == ExpandedEngagement.Reposts) "⌃" else "⌄"}"
+                            } else {
+                                repostCount.toString()
+                            },
+                            tint = when {
+                                expandedEngagement == ExpandedEngagement.Reposts -> MaterialTheme.colorScheme.primary
+                                isReposted -> Color(0xFF2BAE66)
+                                else -> MaterialTheme.colorScheme.onSurfaceVariant
+                            },
+                            onClick = onRepost,
+                            // 長押しでリポストと引用リポストを選べるようにする。
+                            onLongClick = if (onRepost != null && onQuote != null) {
+                                { showRepostMenu = true }
+                            } else {
+                                null
+                            },
+                            onCountClick = if (repostCount > 0) {
+                                {
+                                    expandedEngagement = expandedEngagement.toggled(ExpandedEngagement.Reposts)
+                                }
+                            } else {
+                                onOpenReposts
+                            },
+                        )
+                        ActionDropdownMenu(
+                            expanded = showRepostMenu,
+                            onDismissRequest = { showRepostMenu = false },
+                        ) {
+                            if (onRepost != null) {
+                                ActionDropdownMenuItem(
+                                    if (isReposted) "リポストを取り消す" else "リポスト",
+                                    Icons.Default.Repeat,
+                                    onClick = {
+                                        showRepostMenu = false
+                                        onRepost()
+                                    },
+                                )
                             }
-                        } else {
-                            onOpenReposts
-                        },
-                    )
+                            if (onQuote != null) {
+                                ActionDropdownMenuItem("引用リポスト", Icons.Outlined.FormatQuote, onClick = {
+                                    showRepostMenu = false
+                                    onQuote(event)
+                                })
+                            }
+                        }
+                    }
                     Box {
                         EngagementCount(
                             // 自分がまだ反応していない間は輪郭だけにして、押した状態と見分けられるようにする。
