@@ -101,6 +101,8 @@ fun FeedScreen(
     isAccountLoaded: Boolean = true,
     scrollToTopRequest: Int = 0,
     scrollToTopTargetTab: FeedTab = FeedTab.Following,
+    /** 投稿したばかりの自分の投稿を、開いているタブで見える位置まで出す。 */
+    showPostRequest: ShowPostRequest? = null,
     onCurrentFeedTabChanged: (FeedTab) -> Unit = {},
     requestedFeedTab: FeedTab = FeedTab.Following,
     feedTabChangeRequest: Int = 0,
@@ -547,7 +549,8 @@ fun FeedScreen(
                 when (visibleFeedTabs[page]) {
                     FeedTab.Following -> {
                         val followingAuthors = when (followingFeedMode) {
-                            FollowingFeedMode.Following -> followedPubkeys.sorted()
+                            // 自分の投稿もフォローのフィードに出す（投稿したあと、そこで確かめられるように）。
+                            FollowingFeedMode.Following -> (followedPubkeys + listOfNotNull(ownPubkey)).distinct().sorted()
                             FollowingFeedMode.Muted -> mutedPubkeys.sorted()
                         }
                         if (followingFeedMode == FollowingFeedMode.Following && !isFollowListLoaded) {
@@ -580,6 +583,7 @@ fun FeedScreen(
                                 onOpenReposts = onOpenReposts,
                                 onHashtagClick = { tag -> onOpenSearch("#$tag") },
                                 listState = followingListState,
+                                showPostRequest = showPostRequest.takeIf { visibleFeedTab == FeedTab.Following },
                                 onRefresh = {
                                     if (followingFeedMode == FollowingFeedMode.Following) {
                                         accountSession?.followRepository?.refresh()
@@ -613,6 +617,7 @@ fun FeedScreen(
                             onOpenReposts = onOpenReposts,
                             onHashtagClick = { tag -> onOpenSearch("#$tag") },
                             listState = globalListState,
+                            showPostRequest = showPostRequest.takeIf { visibleFeedTab == FeedTab.Global },
                             isActive = subscriptionFeedTab == FeedTab.Global,
                             longBackgroundResetRequest = longBackgroundResetRequest,
                         )
@@ -668,6 +673,7 @@ private fun FeedTimelinePane(
     onHashtagClick: ((tag: String) -> Unit)?,
     scrollToTopRequest: Int = 0,
     listState: LazyListState? = null,
+    showPostRequest: ShowPostRequest? = null,
     onRefresh: (() -> Unit)? = null,
     isActive: Boolean = true,
     longBackgroundResetRequest: Int = 0,
@@ -756,6 +762,7 @@ private fun FeedTimelinePane(
             onHashtagClick = onHashtagClick,
             scrollToTopRequest = scrollToTopRequest,
             resetToTopRequest = resetToTopRequest,
+            showPostRequest = showPostRequest,
             listState = listState,
             isRefreshing = state.isRefreshing,
             emptyStateDelayMillis = 500L,
@@ -777,6 +784,9 @@ private fun FeedTimelinePane(
         )
     }
 }
+
+/** 投稿したばかりの投稿を一覧で見せる要求。[sequence] は要求ごとに増やす。 */
+data class ShowPostRequest(val sequence: Int, val eventId: String)
 
 enum class FeedTab(val label: String) {
     Following("フォロー"),

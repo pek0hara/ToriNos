@@ -292,6 +292,8 @@ internal fun AppSessionCoordinator(
         var currentFeedTab by remember { mutableStateOf(FeedTab.Following) }
         var feedScrollToTopTargetTab by remember { mutableStateOf(FeedTab.Following) }
         var feedTabChangeRequest by remember { mutableStateOf(0) }
+        // 投稿したばかりの自分の投稿を、フィードの開いているタブで見せる。
+        var feedShowPostRequest by remember { mutableStateOf<com.nostr.torinos.ui.feed.ShowPostRequest?>(null) }
         val feedChromeState = remember { FeedChromeState() }
         var feedLongBackgroundResetRequest by remember { mutableStateOf(0) }
         var backgroundedAtMillis by remember { mutableStateOf<Long?>(null) }
@@ -1402,6 +1404,7 @@ internal fun AppSessionCoordinator(
                             isAccountLoaded = isAccountLoaded,
                             scrollToTopRequest = feedScrollToTopRequest,
                             scrollToTopTargetTab = feedScrollToTopTargetTab,
+                            showPostRequest = feedShowPostRequest,
                             onCurrentFeedTabChanged = { currentFeedTab = it },
                             requestedFeedTab = FeedTab.Global,
                             feedTabChangeRequest = feedTabChangeRequest,
@@ -1962,6 +1965,9 @@ internal fun AppSessionCoordinator(
                 val postedReplyToId = completion.replyToId
                 val postedNoteContext = completion.noteContext
                 scope.launch { showPostCompletionSnackbars(snackbarHostState, completion) }
+                if (postedReplyToId == null && postedNoteContext == NoteContext.Timeline) {
+                    feedShowPostRequest = com.nostr.torinos.ui.feed.ShowPostRequest((feedShowPostRequest?.sequence ?: 0) + 1, eventId)
+                }
                 if (postedReplyToId != null && postedReplyToId == articleCommentParentId) {
                     articleCommentPostedSignal++
                 } else if (postedReplyToId != null) {

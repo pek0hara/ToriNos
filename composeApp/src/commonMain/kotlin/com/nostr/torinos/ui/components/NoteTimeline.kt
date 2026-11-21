@@ -41,6 +41,7 @@ import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
+import kotlinx.coroutines.flow.first
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -96,6 +97,8 @@ fun NoteTimeline(
     emptyText: String = "ポストがありません",
     scrollToTopRequest: Int = 0,
     resetToTopRequest: Int = 0,
+    /** 投稿したばかりの投稿を見える位置まで出す（届くまで待つ）。 */
+    showPostRequest: com.nostr.torinos.ui.feed.ShowPostRequest? = null,
     listState: LazyListState? = null,
     isRefreshing: Boolean = false,
     onRefresh: (() -> Unit)? = null,
@@ -306,6 +309,23 @@ fun NoteTimeline(
             handledScrollToTopRequest = scrollToTopRequest
             timelineListState.animateScrollToItem(0)
         }
+    }
+
+    // 一覧を作ったときにすでにあった要求は扱わない（戻ってきたときに動かない）。
+    var handledShowPostRequest by rememberSaveable { mutableStateOf(showPostRequest?.sequence ?: 0) }
+    val currentState = rememberUpdatedState(state)
+    LaunchedEffect(showPostRequest) {
+        val request = showPostRequest ?: return@LaunchedEffect
+        if (request.sequence <= handledShowPostRequest) return@LaunchedEffect
+        handledShowPostRequest = request.sequence
+        // 先頭へ戻ると、読んでいる間に止めていた新着が一覧に出る。自分の投稿はその中に入る。
+        timelineListState.animateScrollToItem(0)
+        val index = kotlinx.coroutines.withTimeoutOrNull(ShowPostWaitMillis) {
+            snapshotFlow { currentState.value.events.indexOfFirst { it.id == request.eventId } }.first { it >= 0 }
+        } ?: return@LaunchedEffect
+        // 一覧の頭の「新しい履歴を表示」の分をずらす。
+        val leading = if (currentState.value.hasNewerStoredEvents) 1 else 0
+        timelineListState.animateScrollToItem(index + leading)
     }
 
     LaunchedEffect(resetToTopRequest) {
@@ -536,3 +556,6 @@ internal fun prefetchCandidateEvents(
     .drop(lastVisibleIndex + 1)
     .take(aheadCount)
     .filterNot { hasContentWarning(it.tags) }
+
+/** 投稿したばかりの投稿が一覧に届くのを待つ時間。リレーから返ってこなければあきらめる。 */
+private const val ShowPostWaitMillis = 15_000L
