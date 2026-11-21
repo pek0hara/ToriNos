@@ -464,13 +464,8 @@ fun ThreadScreen(
                                         )
                                         HorizontalDivider()
                                     }
+                                    // 引用先はこの画面の投稿そのものなので、カードの中に重ねて出さない。
                                     items(state.quoteReposts, key = { it.id }) { quoteRepost ->
-                                        val quotedRoot = state.root?.let { root ->
-                                            QuotedEvent(
-                                                event = root,
-                                                profile = state.profiles[root.pubkey],
-                                            )
-                                        }
                                         NoteCardHost(
                                             model = NoteCardModel(
                                                 event = quoteRepost,
@@ -492,9 +487,7 @@ fun ThreadScreen(
                                                     ownEmojiReactionEventIds = state.displayOwnEmojiReactionEventIds(quoteRepost.id),
                                                     isReposted = state.isReposted(quoteRepost.id, eventId),
                                                 ),
-                                                references = NoteReferencePresentation(
-                                                    quotedEvents = listOfNotNull(quotedRoot),
-                                                ),
+                                                references = NoteReferencePresentation(),
                                                 policy = NoteCardPolicy(
                                                 ),
                                             ),
