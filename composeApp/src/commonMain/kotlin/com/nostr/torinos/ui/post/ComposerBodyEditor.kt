@@ -168,6 +168,10 @@ internal fun ColumnScope.ComposerBodyEditor(
             .then(textModifier)
             .focusRequester(textFocusRequester)
             .avoidStaleAccessibilityFocus()
+            .imagePasteMenuItem(
+                enabled = !state.isFrozen && !state.isPosting,
+                onPasteImage = onPasteImage,
+            )
             .onFocusChanged {
                 if (it.isFocused) showImageSourceMenu = false
                 onTextFocusChanged(it.isFocused)
