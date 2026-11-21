@@ -381,11 +381,25 @@ internal fun AppSessionCoordinator(
             }
         }
 
+        fun hasBackStackEntry(route: String): Boolean =
+            runCatching { nav.getBackStackEntry(route) }.isSuccess
+
         fun navigateFeedTab() {
             feedChromeState.collapseFraction = 0f
             if (isWebPlatform) {
                 if (currentRoute == "feed") return
-                // URL の #journal から直接起動した場合も、グラフの起点を残してフィードへ戻す。
+                // URL の #services などから直接起動すると、グラフの起点のフィードが下に残る（[feed, services]）。
+                // このとき popUpTo(グラフ) + restoreState で移ると、フィードの保存先に [feed, services] ごと保存して
+                // すぐ復元するため、元の画面に戻ってフィードを開けなかった。フィードのすぐ上の画面から上を保存して取り除く。
+                // popBackStack("feed", inclusive = false) で保存すると保存先がフィードに結び付き、後でフィードへ移ったときに
+                // 取り除いた画面が復元されてしまうので、取り除く画面自身を起点に保存する。
+                val stack = nav.currentBackStack.value
+                val feedIndex = stack.indexOfLast { it.destination.route == "feed" }
+                val aboveFeed = stack.getOrNull(feedIndex + 1)?.destination?.route
+                if (feedIndex >= 0 && aboveFeed != null) {
+                    nav.popBackStack(route = aboveFeed, inclusive = true, saveState = true)
+                    return
+                }
                 nav.navigate("feed") {
                     popUpTo(nav.graph.id) { saveState = true }
                     launchSingleTop = true
@@ -405,9 +419,6 @@ internal fun AppSessionCoordinator(
         fun navigateJournalTab() {
             navigateTopLevelRoute("journal")
         }
-
-        fun hasBackStackEntry(route: String): Boolean =
-            runCatching { nav.getBackStackEntry(route) }.isSuccess
 
         // URL から直接開いたチャンネル画面など、どのタブにも属さない画面は保存せずに閉じてから移動する。
         fun closeOrphanPagesAndNavigate(route: String) {
