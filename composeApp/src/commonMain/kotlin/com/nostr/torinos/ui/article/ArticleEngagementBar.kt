@@ -156,7 +156,7 @@ private fun ArticleLikeButton(
     val canOperate = actions != null && reactions != null && !isPending
     val defaultReactionState = rememberDefaultReaction()
     val onClick: (() -> Unit)? = when {
-        !canOperate || actions == null || reactions == null -> null
+        !canOperate -> null
         reactions.hasOwnReaction && ownEmoji == null && !isLiked -> null
         else -> {
             {
@@ -176,7 +176,7 @@ private fun ArticleLikeButton(
             }
         }
     }
-    val onLongClick: (() -> Unit)? = if (canOperate && reactions?.hasOwnReaction == false) onLongPress else null
+    val onLongClick: (() -> Unit)? = if (canOperate && !reactions.hasOwnReaction) onLongPress else null
     BarPillButton(
         onClick = onClick,
         onLongClick = onLongClick,

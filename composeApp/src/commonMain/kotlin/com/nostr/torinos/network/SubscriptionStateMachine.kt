@@ -144,8 +144,8 @@ internal object SubscriptionStateMachine {
         }
         if (!replaying) return next
         // 同じ種類のフィルターが複数あっても取り違えないよう、条件全体で振り分ける。
-        val filterIndex = state.sentFilters?.indexOfMatching(event!!) ?: 0
-        val oldest = minOf(state.replayOldestByFilter[filterIndex] ?: Long.MAX_VALUE, event!!.createdAt)
+        val filterIndex = state.sentFilters?.indexOfMatching(event) ?: 0
+        val oldest = minOf(state.replayOldestByFilter[filterIndex] ?: Long.MAX_VALUE, event.createdAt)
         return next.copy(replayOldestByFilter = state.replayOldestByFilter + (filterIndex to oldest))
     }
 

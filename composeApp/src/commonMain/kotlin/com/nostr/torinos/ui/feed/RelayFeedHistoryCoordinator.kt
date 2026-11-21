@@ -466,12 +466,12 @@ internal class RelayFeedHistoryCoordinator(
         val nothingVisible = succeeded && revealsHistory && page?.visibleAdded == 0 && relay.hasMore()
         // 受信済みの投稿だけのページ（境界秒の取り直しや、他のリレーと同じ範囲）は「隠れた投稿だけのページ」
         // ではない。自動継続の上限には数えない。
-        val duplicateOnly = nothingVisible && page?.newlyStored == 0 && page.events.values.any { it.isNotEmpty() }
+        val duplicateOnly = nothingVisible && page.newlyStored == 0 && page.events.values.any { it.isNotEmpty() }
         val skipInvisible = nothingVisible && !duplicateOnly
         // 要求数に満たない重複ページ（境界秒の取り直し）は、その先に新しい投稿がありうるので続きを取る。
         // 満杯の重複ページは他のリレーと同じ範囲を返しただけなので、先読みせず「もっと読む」に任せる。
         val skipDuplicate = duplicateOnly && relay.catchUpPages < MAX_CATCH_UP_PAGES &&
-            page?.requested?.any { requested -> page.events[requested.index].orEmpty().size < requested.limit } == true
+            page.requested.any { requested -> page.events[requested.index].orEmpty().size < requested.limit }
         if (skipInvisible) emptyVisiblePages++ else if (page?.visibleAdded != 0) emptyVisiblePages = 0
         if (skipInvisible && emptyVisiblePages >= MAX_EMPTY_VISIBLE_PAGES) requiresExplicitLoadMore = true
         if (succeeded && relay.hasMore() && (autoContinue || behindRevealed || skipDuplicate ||

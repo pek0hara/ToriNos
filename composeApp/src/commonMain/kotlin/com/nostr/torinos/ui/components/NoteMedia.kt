@@ -310,7 +310,7 @@ internal fun ExpandedImageDialog(
             ) { page ->
                 var scale by remember(imageUrls[page]) { mutableStateOf(1f) }
                 var offset by remember(imageUrls[page]) { mutableStateOf(Offset.Zero) }
-                val transformableState = rememberTransformableState { zoomChange, panChange, _ ->
+                val transformableState = rememberTransformableState { _, zoomChange, panChange, _ ->
                     val wasZoomed = scale > 1f
                     val nextScale = (scale * zoomChange).coerceIn(1f, 5f)
                     scale = nextScale

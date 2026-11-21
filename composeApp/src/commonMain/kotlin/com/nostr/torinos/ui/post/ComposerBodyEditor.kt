@@ -486,7 +486,7 @@ private fun PostImagePreviewDialog(
 ) {
     var scale by remember(data) { mutableStateOf(1f) }
     var offset by remember(data) { mutableStateOf(Offset.Zero) }
-    val transformableState = rememberTransformableState { zoomChange, panChange, _ ->
+    val transformableState = rememberTransformableState { _, zoomChange, panChange, _ ->
         val nextScale = (scale * zoomChange).coerceIn(1f, 5f)
         scale = nextScale
         offset = if (nextScale == 1f) {

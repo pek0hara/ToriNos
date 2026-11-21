@@ -56,7 +56,7 @@ internal class BadgeTransport(
                     target = RelayTarget.Explicit(relays), behavior = SubscriptionBehavior.Fetch(10_000),
                     deduplicateEvents = false,
                 ))
-                session!!.collectRecovering { signal ->
+                session.collectRecovering { signal ->
                     when (signal) {
                         is SubscriptionSignal.Event -> {
                             val event = signal.event

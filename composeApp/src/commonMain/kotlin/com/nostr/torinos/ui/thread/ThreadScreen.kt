@@ -235,7 +235,7 @@ fun ThreadScreen(
                             .fillMaxSize(),
                     ) {
                         item {
-                            val root = state.root ?: return@item
+                            val root = state.root
                             val replyParentId = noteContext.replyTargetId(root)
                             NoteCardHost(
                                 model = NoteCardModel(

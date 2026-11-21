@@ -57,7 +57,7 @@ internal suspend fun verifyNip05(
 ): Nip05Status {
     val parsed = parseNip05Address(address) ?: return Nip05Status.InvalidAddress
     return try {
-        val document = Json { ignoreUnknownKeys = true }.decodeFromString<Nip05Document>(fetch(parsed.url))
+        val document = nip05Json.decodeFromString<Nip05Document>(fetch(parsed.url))
         val key = document.names[parsed.name]
         if (key != null && key.matches(Regex("[0-9a-f]{64}")) && key == pubkey) {
             Nip05Status.Verified

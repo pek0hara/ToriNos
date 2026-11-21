@@ -43,7 +43,6 @@ private fun List<MdInline>.plainText(): String = joinToString("") { inline ->
         is MdInline.Code -> inline.text
         is MdInline.Link -> inline.text
         is MdInline.Spoiler -> "(ネタバレ)"
-        else -> ""
     }
 }
 

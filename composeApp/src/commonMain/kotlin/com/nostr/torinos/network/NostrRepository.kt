@@ -817,7 +817,7 @@ object NostrRepository {
             }
             record.fetchCompleted = true
             FetchCompletion(
-                session = record.session ?: return@withLock null,
+                session = session,
                 outcomes = expected.associateWith { record.fetchOutcomes[it] ?: RelayOutcome.TimedOut },
             )
         } ?: return

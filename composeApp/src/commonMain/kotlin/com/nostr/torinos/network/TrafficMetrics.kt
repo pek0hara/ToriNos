@@ -119,7 +119,6 @@ internal object TrafficMetrics {
                 }
                 is RelayMessage.EndOfStoredEvents -> stat.eose++
                 is RelayMessage.Closed -> stat.closed++
-                else -> Unit
             }
             dirty = true
         }

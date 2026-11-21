@@ -32,7 +32,7 @@ internal fun ChatAvatar(
     // URL ごとに作り直す。前の URL の「認証なし」を引き継ぐと、認証の要る画像を認証なしで読みに行って 401 になる。
     var headers by remember(url, needsAuth) { mutableStateOf(if (needsAuth) null else emptyMap<String, String>()) }
     LaunchedEffect(url, needsAuth) {
-        if (needsAuth && account != null && url != null) headers = account.avatarHeaders(url)
+        if (needsAuth) headers = account.avatarHeaders(url)
     }
     AvatarCircle(
         pubkey = pubkey,

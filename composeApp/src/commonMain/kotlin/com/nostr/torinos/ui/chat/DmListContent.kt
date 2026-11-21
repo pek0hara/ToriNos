@@ -148,7 +148,7 @@ private fun DmEmptyState(state: DmInboxState, showJoinHint: Boolean, onJoinGroup
         Text("DM はまだありません", style = MaterialTheme.typography.titleMedium)
         Spacer(Modifier.height(4.dp))
         val detail = when {
-            state.status is DmInboxStatus.Failed -> "DM を開封できませんでした: ${(state.status as DmInboxStatus.Failed).message}"
+            state.status is DmInboxStatus.Failed -> "DM を開封できませんでした: ${state.status.message}"
             state.hasRelayList == false -> "DM の受信先（kind 10050）が未設定です。ほかのアプリから DM を送ってもらうには、受信先の設定が必要です"
             else -> "届いた DM がここに表示されます"
         }

@@ -274,7 +274,7 @@ class DmInbox internal constructor(
                 coroutineScope { fresh.map { wrap -> async { wrap to unwrapGiftWrap(wrap, signer) } }.awaitAll() }
             } catch (e: SignerException) {
                 failure = e.message ?: "DM を開封できませんでした"
-                _state.update { it.copy(status = DmInboxStatus.Failed(failure!!)) }
+                _state.update { it.copy(status = DmInboxStatus.Failed(failure)) }
                 continue
             }
             dataLock.withLock {

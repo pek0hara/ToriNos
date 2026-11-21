@@ -59,7 +59,7 @@ object AccountLogin {
         check(PlatformSigners.protectsPrivateKeyWithPasskey) { "この環境ではパスキーで保護しません" }
         val stored = KeyStorage.loadActiveAccountSecret()
         check(stored?.pubkeyHex == pubkey) { "保護するアカウントが現在のアカウントと一致しません" }
-        val secret = AccountSecretCodec.decode(pubkey, stored!!.secret) as? AccountSecret.PrivateKey
+        val secret = AccountSecretCodec.decode(pubkey, stored.secret) as? AccountSecret.PrivateKey
             ?: error("このアカウントは秘密鍵を保存していません")
         saveExternalAccount(pubkey, PlatformSigners.protectWithPasskey(pubkey, secret.hex, passkeyUserName(pubkey)))
     }

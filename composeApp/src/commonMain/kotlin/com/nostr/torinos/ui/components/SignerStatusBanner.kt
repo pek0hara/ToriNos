@@ -86,7 +86,7 @@ fun SignerStatusBanner(session: AccountSession, modifier: Modifier = Modifier) {
     when {
         attention == SignerAttention.Locked -> {
             message = "パスキーで解錠すると、投稿やリアクションができます。"
-            actions = listOf("解錠" to { run({ interactive?.unlock() }) })
+            actions = listOf("解錠" to { run({ interactive.unlock() }) })
         }
         attention is SignerAttention.ApprovalRequired -> {
             message = "署名器で、この操作を承認してください。"
@@ -94,7 +94,7 @@ fun SignerStatusBanner(session: AccountSession, modifier: Modifier = Modifier) {
         }
         attention is SignerAttention.Disconnected -> {
             message = "署名器に接続できません（${attention.reason}）。読むことはできます。"
-            actions = listOf("再接続" to { run({ interactive?.reconnect() }) })
+            actions = listOf("再接続" to { run({ interactive.reconnect() }) })
         }
         plaintextNoticeVisible -> {
             message = "秘密鍵が暗号化されずにこのブラウザに保存されています。パスキーで保護できます。"

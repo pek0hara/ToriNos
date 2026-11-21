@@ -173,7 +173,6 @@ class EngagementStore(
         unassigned.clear()
         localSequences.clear()
         revision++
-        Unit
     }
 
     private fun addLocked(event: NostrEvent, sourceRelay: String?): Set<String> {

@@ -205,7 +205,6 @@ class FollowRepository internal constructor(
         saveFollowCache(event.pubkey, event)
         return runCatching {
             NostrRepository.publish(event)
-            Unit
         }
     }
 
