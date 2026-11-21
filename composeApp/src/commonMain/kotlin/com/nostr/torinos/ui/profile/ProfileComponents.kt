@@ -1,5 +1,6 @@
 package com.nostr.torinos.ui.profile
 
+import com.nostr.torinos.ui.components.CenteredInitial
 import androidx.compose.foundation.background
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.border
@@ -1077,11 +1078,10 @@ internal fun AvatarCircle(
                 .background(avatarColor(pubkey), CircleShape),
             contentAlignment = Alignment.Center,
         ) {
-            Text(
+            CenteredInitial(
                 text = letter.toString(),
                 color = Color.White,
                 style = if (size >= 48) MaterialTheme.typography.titleMedium else MaterialTheme.typography.labelLarge,
-                fontWeight = FontWeight.Bold,
             )
         }
     }
