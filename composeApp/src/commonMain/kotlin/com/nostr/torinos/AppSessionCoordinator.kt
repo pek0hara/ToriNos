@@ -1,5 +1,7 @@
 package com.nostr.torinos
 
+import kotlinx.coroutines.withTimeoutOrNull
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.rememberScrollState
@@ -513,18 +515,39 @@ internal fun AppSessionCoordinator(
             }
         }
 
-        // 起動時はフッターの一番左の項目を開く。グラフの起点はフィードなので、保存したフッター設定を読んでから移る。
+        // 起動時は前回最後に開いていたタブを開く。グラフの起点はフィードなので、保存した値を読んでから移る。
         // プロセスで1度だけ行い、読み込み前に利用者が別の画面へ移っていたら何もしない。
         // Web 版は URL の # で起動時の画面が決まり、その反映が window の load 後になるため対象にしない。
+        // 決め終えるまでは本文を描かず、最初の移動はフェードなしにする（起点のフィードが一瞬見えないように）。
+        // また決め終えるまでは今のタブを記録しない（起点のフィードで前回のタブを上書きしないため）。
+        var isLaunchScreenSettled by remember { mutableStateOf(isWebPlatform) }
         LaunchedEffect(Unit) {
             if (isWebPlatform) return@LaunchedEffect
-            DisplayPreferencesStore.footerConfigLoaded.first { it }
-            if (!DisplayPreferencesStore.consumeStartScreenRequest()) return@LaunchedEffect
-            val start = DisplayPreferencesStore.footerConfig.value.startItem
-            if (start == FooterItem.Feed) return@LaunchedEffect
-            val entry = nav.currentBackStackEntryFlow.first()
-            if (entry.destination.route != "feed" || nav.previousBackStackEntry != null) return@LaunchedEffect
-            latestOpenFooterItem.value(start)
+            try {
+                DisplayPreferencesStore.footerConfigLoaded.first { it }
+                if (!DisplayPreferencesStore.consumeStartScreenRequest()) return@LaunchedEffect
+                val start = DisplayPreferencesStore.footerConfig.value.launchItem(DisplayPreferencesStore.lastOpenedTab.value)
+                // 鍵が無いとジャーナルは開けない（移らない）ので、フィードのままにする。
+                if (start == FooterItem.Feed || (start == FooterItem.Journal && ownPubkey == null)) return@LaunchedEffect
+                val entry = nav.currentBackStackEntryFlow.first()
+                if (entry.destination.route != "feed" || nav.previousBackStackEntry != null) return@LaunchedEffect
+                latestOpenFooterItem.value(start)
+                // 移った先を NavHost が描き終えるまで待ってから見せる。移れなかったときに隠したままにしないよう、待つ時間に上限を設ける。
+                withTimeoutOrNull(LaunchScreenWaitMillis) {
+                    nav.currentBackStackEntryFlow.first { it.destination.route == start.route }
+                    withFrameNanos { }
+                    withFrameNanos { }
+                }
+            } finally {
+                isLaunchScreenSettled = true
+            }
+        }
+
+        // 今いるタブを、次の起動で開くために記録する。タブに属さない画面（設定・詳細など）では記録を変えない。
+        val openedFooterItem = footerItemOf(currentRoute, resolveServiceTab(currentServiceTab, footerConfig.serviceTabs) ?: currentServiceTab)
+        LaunchedEffect(isLaunchScreenSettled, openedFooterItem) {
+            if (isWebPlatform || !isLaunchScreenSettled) return@LaunchedEffect
+            openedFooterItem?.let(DisplayPreferencesStore::setLastOpenedTab)
         }
 
 
@@ -790,23 +813,20 @@ internal fun AppSessionCoordinator(
             }
         }
 
-        // タブの最上位でのBackはすぐにアプリを閉じない。ほかのタブはフッターの一番左の項目へ戻し、
-        // 一番左の項目では案内を出して、続けてもう一度Backしたときだけシステムに任せて閉じる。
+        // タブの最上位でのBackはすぐにアプリを閉じない。ほかのタブはフィード（画面遷移の起点）へ戻し、
+        // フィードでは案内を出して、続けてもう一度Backしたときだけシステムに任せて閉じる。
+        // 戻り先はフッターの並び順に左右されない（並び順は見た目の設定で、押しやすい位置に置くためのもの）。
         // 簡易投稿欄やドロワーのBackを優先させるため、それらより先に登録する。
         var isExitArmed by remember { mutableStateOf(false) }
         var exitArmJob by remember { mutableStateOf<Job?>(null) }
         val isTopLevelRoute = (currentRoute == "feed" || currentRoute == "journal" || currentRoute == "services") &&
             nav.previousBackStackEntry == null
-        val startItem = footerConfig.startItem
-        // 鍵が無いとジャーナルは開けないので、そのときはフィードを戻り先にする。
-        val backHomeItem = if (startItem == FooterItem.Journal && ownPubkey == null) FooterItem.Feed else startItem
-        val isOnBackHome = currentRoute == backHomeItem.route &&
-            (backHomeItem.serviceTab == null || resolveServiceTab(currentServiceTab, footerConfig.serviceTabs) == backHomeItem.serviceTab)
+        val isOnBackHome = currentRoute == "feed"
         TopLevelBackHandler(
             enabled = isTopLevelRoute && !(isOnBackHome && isExitArmed),
         ) {
             if (!isOnBackHome) {
-                latestOpenFooterItem.value(backHomeItem)
+                latestOpenFooterItem.value(FooterItem.Feed)
                 return@TopLevelBackHandler
             }
             isExitArmed = true
@@ -1402,7 +1422,10 @@ internal fun AppSessionCoordinator(
                 ) {
                 AppNavigationGraph(
                     navController = nav,
-                    modifier = Modifier.weight(1f),
+                    modifier = Modifier
+                        .weight(1f)
+                        .graphicsLayer { alpha = if (isLaunchScreenSettled) 1f else 0f },
+                    animateTransitions = { isLaunchScreenSettled },
                 ) {
                     composable("feed") {
                         FeedScreen(
@@ -2143,4 +2166,7 @@ private fun appNavigationRailItemColors() = NavigationRailItemDefaults.colors(
 )
 
 private const val TopLevelExitWindowMillis = 2_000L
+
+/** 起動時に前回のタブへ移るのを待つ上限。超えたら移り終えていなくても本文を見せる。 */
+private const val LaunchScreenWaitMillis = 1_000L
 private const val StatusPageRoute = "status-page"

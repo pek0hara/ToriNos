@@ -1,6 +1,7 @@
 package com.nostr.torinos.network
 
 import com.nostr.torinos.FooterConfig
+import com.nostr.torinos.FooterItem
 import com.nostr.torinos.ui.theme.AppFontScale
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -19,6 +20,7 @@ object DisplayPreferencesStore {
     private const val FooterComposerKey = "display_pref_footer_composer_v1"
     private const val FontScaleKey = "display_pref_font_scale_v1"
     private const val FooterItemsKey = "display_pref_footer_items_v1"
+    private const val LastOpenedTabKey = "display_pref_last_opened_tab_v1"
 
     /** フッター投稿を一度も切り替えていないときの既定。全プラットフォームで投稿シートを使う。 */
     private const val defaultUseFooterComposer = false
@@ -47,9 +49,13 @@ object DisplayPreferencesStore {
     private val _footerConfig = MutableStateFlow(FooterConfig.Default)
     internal val footerConfig: StateFlow<FooterConfig> = _footerConfig.asStateFlow()
 
-    /** 保存したフッター設定を読み終えたか。起動時の画面（フッターの一番左）はこれを待って決める。 */
+    /** フッター設定と最後に開いていたタブを読み終えたか。起動時の画面はこれを待って決める。 */
     private val _footerConfigLoaded = MutableStateFlow(false)
     internal val footerConfigLoaded: StateFlow<Boolean> = _footerConfigLoaded.asStateFlow()
+
+    /** 最後に開いていたフッターのタブ。次の起動でこのタブを開く（Web 版は URL で決まるので使わない）。 */
+    private val _lastOpenedTab = MutableStateFlow<FooterItem?>(null)
+    internal val lastOpenedTab: StateFlow<FooterItem?> = _lastOpenedTab.asStateFlow()
 
     /** 起動時の画面へ移る処理を、プロセスで1度だけにする（アカウント切り替えや画面の作り直しでは移らない）。 */
     private var startScreenApplied = false
@@ -70,6 +76,7 @@ object DisplayPreferencesStore {
                 ?.toBoolean() ?: defaultUseFooterComposer
             _fontScale.value = AppFontScale.fromStorage(LocalSettingsStorage.getString(FontScaleKey))
             _footerConfig.value = FooterConfig.parse(LocalSettingsStorage.getString(FooterItemsKey))
+            _lastOpenedTab.value = LocalSettingsStorage.getString(LastOpenedTabKey)?.let(FooterItem::fromStorageId)
             _footerConfigLoaded.value = true
         }
     }
@@ -92,6 +99,13 @@ object DisplayPreferencesStore {
     internal fun setFooterConfig(value: FooterConfig) {
         _footerConfig.value = value
         scope.launch { LocalSettingsStorage.putString(FooterItemsKey, value.serialize()) }
+    }
+
+    internal fun setLastOpenedTab(value: FooterItem) {
+        if (_lastOpenedTab.value == value) return
+        _lastOpenedTab.value = value
+        // 保存は並行して走るので、渡された値ではなくその時点の最新を書く（順序が入れ替わっても古い値で上書きしない）。
+        scope.launch { _lastOpenedTab.value?.let { LocalSettingsStorage.putString(LastOpenedTabKey, it.storageId) } }
     }
 
     fun setShowXPreviews(value: Boolean) {

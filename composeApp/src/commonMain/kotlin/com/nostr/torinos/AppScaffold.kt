@@ -109,14 +109,16 @@ internal fun appScreenExitTransition(): ExitTransition = fadeOut(tween(AppScreen
 internal fun AppNavigationGraph(
     navController: NavHostController,
     modifier: Modifier = Modifier,
+    // false の間の遷移はフェードしない（起動時に前回のタブへ移るとき、起点のフィードを見せないため）。
+    animateTransitions: () -> Boolean = { true },
     builder: NavGraphBuilder.() -> Unit,
 ) {
     NavHost(
         navController = navController,
         startDestination = "feed",
         modifier = modifier,
-        enterTransition = { appScreenEnterTransition() },
-        exitTransition = { appScreenExitTransition() },
+        enterTransition = { if (animateTransitions()) appScreenEnterTransition() else EnterTransition.None },
+        exitTransition = { if (animateTransitions()) appScreenExitTransition() else ExitTransition.None },
         builder = builder,
     )
     BindBrowserNavigation(navController)

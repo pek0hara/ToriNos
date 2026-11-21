@@ -241,11 +241,30 @@ class FooterConfigTest {
     }
 
     @Test
-    fun startItemIsTheLeftmostVisibleItem() {
-        assertEquals(FooterItem.Feed, FooterConfig.Default.startItem)
-        assertEquals(FooterItem.Journal, FooterConfig.parse("journal,home,articles").startItem)
-        // 隠した項目は飛ばす。
-        assertEquals(FooterItem.Channels, FooterConfig.parse("!articles,channels,home,journal").startItem)
+    fun launchItemIsTheLastOpenedTab() {
+        assertEquals(FooterItem.Channels, FooterConfig.Default.launchItem(FooterItem.Channels))
+        assertEquals(FooterItem.Journal, FooterConfig.Default.launchItem(FooterItem.Journal))
+        // フッターの並び順には左右されない。
+        assertEquals(FooterItem.Feed, FooterConfig.parse("chat,journal,home").launchItem(FooterItem.Feed))
+    }
+
+    @Test
+    fun launchItemFallsBackToFeed() {
+        // 一度も記録していないとき。
+        assertEquals(FooterItem.Feed, FooterConfig.parse("chat,journal,home").launchItem(null))
+        // 最後に開いたタブを、その後フッターから隠したとき。
+        assertEquals(FooterItem.Feed, FooterConfig.parse("home,journal,!articles").launchItem(FooterItem.Articles))
+    }
+
+    @Test
+    fun footerItemOfTopLevelScreens() {
+        assertEquals(FooterItem.Feed, footerItemOf("feed", ServiceTab.Chat))
+        assertEquals(FooterItem.Journal, footerItemOf("journal", ServiceTab.Chat))
+        assertEquals(FooterItem.Chat, footerItemOf("services", ServiceTab.Chat))
+        assertEquals(FooterItem.Articles, footerItemOf("services", ServiceTab.Articles))
+        // タブに属さない画面（設定・詳細など）は記録しない。
+        assertNull(footerItemOf("settings", ServiceTab.Chat))
+        assertNull(footerItemOf(null, ServiceTab.Chat))
     }
 
     @Test

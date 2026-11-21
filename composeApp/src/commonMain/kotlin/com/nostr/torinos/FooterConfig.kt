@@ -34,8 +34,8 @@ internal enum class FooterItem(
     ;
 
     /**
-     * フィードは隠せない。サービスのタブを全部隠したときや、URLから開いた画面の戻り先になるため。
-     * 起動時の画面と最上位の Back の戻り先は、フッターの一番左の項目（[FooterConfig.startItem]）。
+     * フィードは隠せない。サービスのタブを全部隠したときや、URLから開いた画面、最上位の Back の戻り先になるため。
+     * 起動時の画面はフッターの並び順ではなく、前回最後に開いていたタブ（[FooterConfig.launchItem]）。
      */
     val canHide: Boolean get() = this != Feed
 
@@ -59,8 +59,12 @@ internal data class FooterConfig(
 ) {
     val visibleItems: List<FooterItem> get() = order.filter { it !in hidden }
 
-    /** 起動時に開き、最上位の Back で戻る項目。フッターの一番左。フィードは隠せないので空にはならない。 */
-    val startItem: FooterItem get() = visibleItems.firstOrNull() ?: FooterItem.Feed
+    /**
+     * 起動時に開く項目。前回最後に開いていたタブ [lastOpened] を開き直す。
+     * 記録が無いときや、そのタブを後からフッターで隠したときはフィード。
+     */
+    fun launchItem(lastOpened: FooterItem?): FooterItem =
+        lastOpened?.takeIf { isVisible(it) } ?: FooterItem.Feed
 
     /** サービス画面で切り替えられるタブ。フッターと同じ順に並ぶ。 */
     val serviceTabs: List<ServiceTab> get() = visibleItems.mapNotNull { it.serviceTab }
@@ -120,6 +124,14 @@ internal data class FooterConfig(
 }
 
 /** [current] がページにないとき（非表示にした・URLから開いた）は、表示中の最初のコンテンツに寄せる。 */
+/** タブの最上位の画面が、フッターのどの項目か。タブに属さない画面（設定・詳細など）は null。 */
+internal fun footerItemOf(route: String?, serviceTab: ServiceTab): FooterItem? = when (route) {
+    "feed" -> FooterItem.Feed
+    "journal" -> FooterItem.Journal
+    "services" -> FooterItem.entries.firstOrNull { it.serviceTab == serviceTab }
+    else -> null
+}
+
 internal fun resolveServiceTab(current: ServiceTab, pages: List<ServiceTab>): ServiceTab? =
     current.takeIf { it in pages } ?: pages.firstOrNull()
 
