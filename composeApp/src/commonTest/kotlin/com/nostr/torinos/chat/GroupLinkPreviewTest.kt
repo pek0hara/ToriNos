@@ -19,6 +19,47 @@ class GroupLinkPreviewTest {
     }
 
     @Test
+    fun bareBuzzAndNpubLinksBecomeLinks() {
+        val npub = "npub1nl8kt3ww0dc53t8023up58scxrhjua3e24ppzjuex56h3jl3zndqfzmkhu"
+        val text = "ふだんの雑談は タイムライン (buzz://channel/6405dd9c-0bb0-44cc-bcc7-2a027c380794) の方で。\nnostr:$npub"
+        assertEquals(
+            listOf(
+                MdInline.Text("ふだんの雑談は タイムライン ("),
+                MdInline.Link("buzz://channel/6405dd9c-0bb0-44cc-bcc7-2a027c380794", "buzz://channel/6405dd9c-0bb0-44cc-bcc7-2a027c380794"),
+                MdInline.Text(") の方で。\n"),
+                MdInline.Link("nostr:$npub", "nostr:$npub"),
+            ),
+            listOf(MdInline.Text(text)).withAutolinks(),
+        )
+        assertEquals(com.nostr.torinos.model.decodeNpub(npub), npubOfLink("nostr:$npub"))
+        assertEquals(null, npubOfLink("https://example.com"))
+    }
+
+    @Test
+    fun bareLinksUseSameLabelsAsFeed() {
+        val npub = "npub1nl8kt3ww0dc53t8023up58scxrhjua3e24ppzjuex56h3jl3zndqfzmkhu"
+        val pubkey = com.nostr.torinos.model.decodeNpub(npub)!!
+        val buzz = "buzz://channel/6405dd9c-0bb0-44cc-bcc7-2a027c380794"
+        assertEquals("💬 Buzz のメッセージ", MdInline.Link(buzz, buzz).displayText())
+        assertEquals("タイムライン", MdInline.Link("タイムライン", buzz).displayText())
+        assertEquals("@" + pubkey.take(8) + "…" + pubkey.takeLast(8), MdInline.Link(npub, "nostr:$npub").displayText())
+        assertEquals("田中", MdInline.Link("田中", "nostr:$npub").displayText())
+    }
+
+    @Test
+    fun unsafeSchemesStayText() {
+        val text = "spotify:search:foo bar"
+        assertEquals(listOf(MdInline.Text(text)), listOf(MdInline.Text(text)).withAutolinks())
+    }
+
+    @Test
+    fun npubInsideWebUrlStaysPartOfUrl() {
+        val npub = "npub1nl8kt3ww0dc53t8023up58scxrhjua3e24ppzjuex56h3jl3zndqfzmkhu"
+        val url = "https://njump.me/$npub"
+        assertEquals(listOf(MdInline.Link(url, url)), listOf(MdInline.Text(url)).withAutolinks())
+    }
+
+    @Test
     fun previewUsesFirstWebLinkInBuzzMarkdown() {
         val body = "buzzの自由さ\nhttps://x.com/Hello_World/status/2122023115815285147?a=E4&s=19\n[別](https://example.com)"
         assertEquals("https://x.com/Hello_World/status/2122023115815285147?a=E4&s=19", groupLinkPreviewUrl(body, GroupFlavor.Buzz))

@@ -21,6 +21,10 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -29,31 +33,50 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.nostr.torinos.chat.GroupFlavor
+import com.nostr.torinos.ui.components.CenteredInitial
+import com.nostr.torinos.ui.components.NetworkImage
+import androidx.compose.ui.layout.ContentScale
 
 /** リレー・コミュニティの丸いアイコン（名前の頭文字。無ければサーバーの絵）。 */
 @Composable
-internal fun ChatRelayIcon(label: String, flavor: GroupFlavor, size: Dp = 40.dp) {
+internal fun ChatRelayIcon(label: String, flavor: GroupFlavor, size: Dp = 40.dp, iconUrl: String? = null) {
     val buzz = flavor == GroupFlavor.Buzz
     val container = if (buzz) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.secondaryContainer
     val content = if (buzz) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSecondaryContainer
     val initial = label.trim().firstOrNull()?.takeIf { it.isLetterOrDigit() }?.uppercaseChar()
+    // 透過のある絵だと下の頭文字が透けるので、読めたら頭文字は消す。
+    var iconLoaded by remember(iconUrl) { mutableStateOf(false) }
     Box(
         modifier = Modifier.size(size).clip(CircleShape).background(container),
         contentAlignment = Alignment.Center,
     ) {
-        if (initial != null) {
-            Text(initial.toString(), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = content)
-        } else {
-            Icon(Icons.Outlined.Dns, contentDescription = null, tint = content, modifier = Modifier.size(size * 0.5f))
+        if (!iconLoaded) {
+            if (initial != null) {
+                CenteredInitial(initial.toString(), color = content, style = MaterialTheme.typography.titleMedium)
+            } else {
+                Icon(Icons.Outlined.Dns, contentDescription = null, tint = content, modifier = Modifier.size(size * 0.5f))
+            }
+        }
+        // 絵があれば頭文字の上に重ねる（読めるまで・読めないときは頭文字のまま）。
+        if (iconUrl != null) {
+            NetworkImage(
+                url = iconUrl,
+                contentDescription = null,
+                contentScale = ContentScale.Crop,
+                maxDecodeSizePx = 128,
+                animate = false,
+                onSuccessSize = { iconLoaded = true },
+                modifier = Modifier.size(size).clip(CircleShape),
+            )
         }
     }
 }
 
 /** リレー名・ホスト・Buzz の印を並べた見出し。 */
 @Composable
-internal fun ChatRelayHeadline(label: String, host: String?, flavor: GroupFlavor, modifier: Modifier = Modifier) {
+internal fun ChatRelayHeadline(label: String, host: String?, flavor: GroupFlavor, modifier: Modifier = Modifier, iconUrl: String? = null) {
     Row(modifier = modifier, verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-        ChatRelayIcon(label, flavor)
+        ChatRelayIcon(label, flavor, iconUrl = iconUrl)
         Column(modifier = Modifier.weight(1f)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
@@ -107,6 +130,7 @@ internal fun HideChatRelayDialog(relay: ChatRelaySummary, onConfirm: () -> Unit,
                         host = relay.host,
                         flavor = relay.flavor,
                         modifier = Modifier.padding(12.dp),
+                        iconUrl = relay.iconUrl,
                     )
                 }
                 Text(

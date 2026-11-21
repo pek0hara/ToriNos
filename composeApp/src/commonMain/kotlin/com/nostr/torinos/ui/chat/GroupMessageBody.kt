@@ -1,5 +1,6 @@
 package com.nostr.torinos.ui.chat
 
+import com.nostr.torinos.chat.displayText
 import com.nostr.torinos.chat.withAutolinks
 
 import androidx.compose.foundation.background
@@ -57,6 +58,18 @@ import com.nostr.torinos.ui.components.NetworkImage
  * Buzz のメッセージ本文（Markdown）。`buzz://` のリンクは [onBuzzLink] へ、それ以外のリンクはブラウザで開く。
  * 画像は [imageAuth] で認証を決めてから読む。
  */
+/** 長い本文を畳む基準（文字数と行数。[com.nostr.torinos.chat.collapseMarkdown]）。 */
+internal data class BodyCollapse(val chars: Int, val lines: Int) {
+    companion object {
+        /** フィードの長い投稿と同じ。スレッドの画面など、読むための画面。 */
+        val Feed = BodyCollapse(com.nostr.torinos.ui.components.CollapsedTextCharacterLimit, com.nostr.torinos.ui.components.CollapsedTextMaxVisibleLines)
+        /** チャンネルの画面の発言。流れを追いやすいよう短めに畳む。 */
+        val Channel = BodyCollapse(chars = 80, lines = 5)
+        /** 投稿の下に出す最新の返信。押せばスレッドが開くので、さらに短く。 */
+        val ReplyPreview = BodyCollapse(chars = 50, lines = 3)
+    }
+}
+
 @Composable
 internal fun MarkdownMessageBody(
     text: String,
@@ -68,17 +81,48 @@ internal fun MarkdownMessageBody(
     imagesUnlocked: Boolean = false,
     /** カスタム絵文字（小文字の shortcode → URL）。 */
     emojis: Map<String, String> = emptyMap(),
+    /** 長い本文をフィードの長い投稿と同じ基準で畳み、「もっと見る」で開く。 */
+    collapsible: Boolean = false,
+    /** [collapsible] のときの畳む基準。 */
+    collapse: BodyCollapse = BodyCollapse.Feed,
+    /** メンションできる名前（表示名 → その人）。本文の `@表示名` をリンクにする（[com.nostr.torinos.chat.splitMentions]）。 */
+    mentionNames: Map<String, Set<String>> = emptyMap(),
+    /** メンションを押した（その人の pubkey）。null ならリンクにせず色だけ付ける。 */
+    onMentionClick: ((String) -> Unit)? = null,
+    /** 本文の `nostr:npub1…` に出す名前（pubkey → 名前）。分からなければ短くした npub を出す。 */
+    profileName: (String) -> String? = { null },
 ) {
-    val blocks = remember(text) { parseMarkdownLite(text) }
+    val mentions = MentionLinks(mentionNames, onMentionClick, profileName)
+    val allBlocks = remember(text) { parseMarkdownLite(text) }
+    var expanded by remember(text) { mutableStateOf(false) }
+    val collapsed = remember(allBlocks, emojis.keys, collapsible, collapse) {
+        if (!collapsible) null
+        else com.nostr.torinos.chat.collapseMarkdown(
+            allBlocks,
+            maxChars = collapse.chars,
+            maxLines = collapse.lines,
+            emojiShortcodes = emojis.keys,
+        ).takeIf { it.truncated }
+    }
+    val blocks = if (collapsed != null && !expanded) collapsed.blocks else allBlocks
     val emojiImages = rememberEmojiImages(emojis, imageAuth, imagesUnlocked)
     // 押した画像を全画面で開く。読み込めた画像（とその認証ヘッダー）だけをページにする。
-    val imageUrls = remember(blocks) { blocks.filterIsInstance<MdBlock.Image>().map { it.url }.distinct() }
+    val imageUrls = remember(allBlocks) { allBlocks.filterIsInstance<MdBlock.Image>().map { it.url }.distinct() }
     val loadedHeaders = remember(text) { androidx.compose.runtime.mutableStateMapOf<String, Map<String, String>>() }
     var expandedUrl by remember(text) { mutableStateOf<String?>(null) }
     val uriHandler = LocalUriHandler.current
+    // naddr のグループへのリンクは、フィードの本文と同じくチャットタブの参加シートで開く。
+    val groupLinkHandler = com.nostr.torinos.ui.components.LocalGroupLinkHandler.current
     val openLink: (String) -> Unit = { url ->
         when {
             url.startsWith("buzz://", ignoreCase = true) -> onBuzzLink(url)
+            url.startsWith("nostr:", ignoreCase = true) -> {
+                val pubkey = com.nostr.torinos.chat.npubOfLink(url)
+                when {
+                    pubkey != null -> onMentionClick?.invoke(pubkey)
+                    com.nostr.torinos.model.isGroupLinkUri(url) -> groupLinkHandler?.invoke(url)
+                }
+            }
             com.nostr.torinos.chat.isSafeExternalLink(url) -> runCatching { uriHandler.openUri(url) }
             // javascript: などは開かない。
             else -> Unit
@@ -87,17 +131,18 @@ internal fun MarkdownMessageBody(
     Column(modifier = modifier, verticalArrangement = Arrangement.spacedBy(4.dp)) {
         blocks.forEach { block ->
             when (block) {
-                is MdBlock.Paragraph -> InlineText(block.inlines, openLink, emojiImages)
+                is MdBlock.Paragraph -> InlineText(block.inlines, openLink, emojiImages, mentions)
                 is MdBlock.Heading -> InlineText(
                     block.inlines,
                     openLink,
                     emojiImages,
+                    mentions,
                     style = if (block.level <= 2) MaterialTheme.typography.titleMedium else MaterialTheme.typography.titleSmall,
                 )
                 is MdBlock.Quote -> Row {
                     Box(Modifier.width(3.dp).height(20.dp).background(MaterialTheme.colorScheme.outlineVariant))
                     Spacer(Modifier.width(8.dp))
-                    InlineText(block.inlines, openLink, emojiImages, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    InlineText(block.inlines, openLink, emojiImages, mentions, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
                 is MdBlock.CodeBlock -> Text(
                     text = block.text,
@@ -115,6 +160,12 @@ internal fun MarkdownMessageBody(
                 )
             }
         }
+        if (collapsed != null) {
+            com.nostr.torinos.ui.components.InlineTextAction(
+                label = if (expanded) "閉じる" else "もっと見る",
+                onClick = { expanded = !expanded },
+            )
+        }
     }
     expandedUrl?.let { url ->
         val pages = imageUrls.filter { it in loadedHeaders }
@@ -127,11 +178,35 @@ internal fun MarkdownMessageBody(
     }
 }
 
+/**
+ * Buzz のメッセージのメンションの名前（表示名 → その人）。Buzz と同じく、編集したメッセージはタグと本文が合わないのでリンクにしない。
+ */
+@Composable
+internal fun rememberMentionNames(
+    message: com.nostr.torinos.chat.GroupMessage,
+    profiles: Map<String, com.nostr.torinos.model.NostrProfile>,
+): Map<String, Set<String>> {
+    val targets = remember(message.event, message.edited) {
+        if (message.edited) emptyList() else com.nostr.torinos.chat.buzzMentionTargets(message.event)
+    }
+    if (targets.isEmpty()) return emptyMap()
+    val names = targets.map { profiles[it]?.bestName }
+    return remember(targets, names) { com.nostr.torinos.chat.mentionNameTable(targets) { profiles[it]?.bestName } }
+}
+
+/** 本文の `@表示名` のリンク。 */
+private class MentionLinks(
+    val names: Map<String, Set<String>>,
+    val onClick: ((String) -> Unit)?,
+    val profileName: (String) -> String? = { null },
+)
+
 @Composable
 private fun InlineText(
     inlines: List<MdInline>,
     onLink: (String) -> Unit,
     emojis: Map<String, EmojiImage>,
+    mentions: MentionLinks,
     color: androidx.compose.ui.graphics.Color = androidx.compose.ui.graphics.Color.Unspecified,
     style: androidx.compose.ui.text.TextStyle = MaterialTheme.typography.bodyMedium,
 ) {
@@ -153,20 +228,66 @@ private fun InlineText(
         }
         append(text.substring(cursor))
     }
+    // `@表示名` は名前の色にして、押すとその人のプロフィールを開く。
+    fun AnnotatedString.Builder.appendWithMentions(text: String) {
+        com.nostr.torinos.chat.splitMentions(text, mentions.names).forEach { part ->
+            val pubkey = part.pubkey
+            if (pubkey == null) {
+                appendWithEmoji(part.text)
+                return@forEach
+            }
+            val mentionStyle = SpanStyle(color = linkColor, fontWeight = FontWeight.SemiBold)
+            val onClick = mentions.onClick
+            if (onClick == null) {
+                withStyle(mentionStyle) { append(part.text) }
+            } else {
+                withLink(
+                    LinkAnnotation.Clickable(
+                        tag = "mention:$pubkey",
+                        styles = TextLinkStyles(mentionStyle),
+                        linkInteractionListener = { onClick(pubkey) },
+                    ),
+                ) { append(part.text) }
+            }
+        }
+    }
     val annotated: AnnotatedString = buildAnnotatedString {
         linked.forEach { inline ->
             when (inline) {
-                is MdInline.Text -> appendWithEmoji(inline.text)
-                is MdInline.Bold -> withStyle(SpanStyle(fontWeight = FontWeight.Bold)) { appendWithEmoji(inline.text) }
-                is MdInline.Italic -> withStyle(SpanStyle(fontStyle = FontStyle.Italic)) { appendWithEmoji(inline.text) }
+                is MdInline.Text -> appendWithMentions(inline.text)
+                is MdInline.Bold -> withStyle(SpanStyle(fontWeight = FontWeight.Bold)) { appendWithMentions(inline.text) }
+                is MdInline.Italic -> withStyle(SpanStyle(fontStyle = FontStyle.Italic)) { appendWithMentions(inline.text) }
                 is MdInline.Code -> withStyle(SpanStyle(fontFamily = FontFamily.Monospace, background = codeBackground)) { append(inline.text) }
-                is MdInline.Link -> withLink(
-                    LinkAnnotation.Clickable(
-                        tag = inline.url,
-                        styles = TextLinkStyles(SpanStyle(color = linkColor, textDecoration = TextDecoration.Underline)),
-                        linkInteractionListener = { onLink(inline.url) },
-                    ),
-                ) { append(inline.text) }
+                is MdInline.Link -> {
+                    val npubKey = com.nostr.torinos.chat.npubOfLink(inline.url)
+                    if (npubKey != null) {
+                        // むき出しの `nostr:npub1…` はフィードと同じ `@名前` にする。押すとその人のプロフィールを開く。
+                        // 見た目は同じ本文の `@表示名` のメンションに合わせる。
+                        val bare = inline.displayText() != inline.text
+                        val label = if (bare) com.nostr.torinos.model.profileLinkLabel(npubKey, mentions.profileName(npubKey)) else inline.text
+                        val mentionStyle = SpanStyle(color = linkColor, fontWeight = FontWeight.SemiBold)
+                        val onClick = mentions.onClick
+                        if (onClick == null) {
+                            withStyle(mentionStyle) { append(label) }
+                        } else {
+                            withLink(
+                                LinkAnnotation.Clickable(
+                                    tag = "mention:$npubKey",
+                                    styles = TextLinkStyles(mentionStyle),
+                                    linkInteractionListener = { onClick(npubKey) },
+                                ),
+                            ) { append(label) }
+                        }
+                    } else {
+                        withLink(
+                            LinkAnnotation.Clickable(
+                                tag = inline.url,
+                                styles = TextLinkStyles(SpanStyle(color = linkColor, textDecoration = TextDecoration.Underline)),
+                                linkInteractionListener = { onLink(inline.url) },
+                            ),
+                        ) { append(inline.displayText()) }
+                    }
+                }
                 is MdInline.Spoiler -> if (revealed) {
                     append(inline.text)
                 } else {

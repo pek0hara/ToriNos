@@ -61,6 +61,8 @@ class JoinedTimelineLoader(
         var oldest: Long? = null
         /** 1ページ目を（一部でも）読めた。 */
         var started = false
+        /** bot（エージェントの発言 40002 を出した人と、メンバー一覧 39002 で役割が bot の人）。Buzz だけ。 */
+        val bots = mutableSetOf<String>()
 
         val chatKinds = if (flavor == GroupFlavor.Buzz) {
             listOf(GROUP_CHAT_KIND, BUZZ_AGENT_MESSAGE_KIND, BUZZ_FORUM_POST_KIND, BUZZ_FORUM_COMMENT_KIND)
@@ -100,17 +102,30 @@ class JoinedTimelineLoader(
         failedRelays = failed
     }
 
-    /** 最後の動きの新しい順。読めている範囲がそろっているところまで（3.1）。 */
-    fun entries(muted: Set<String> = emptySet()): List<JoinedTimelineEntry> {
+    /**
+     * 最後の動きの新しい順。読めている範囲がそろっているところまで（3.1）。
+     * [hideBots] では bot の投稿を出さない。bot の投稿に人の返信があれば、返信だけを残す（docs/chat-joined-timeline-design.md 2.1）。
+     */
+    fun entries(muted: Set<String> = emptySet(), hideBots: Boolean = false): List<JoinedTimelineEntry> {
         val floor = floor()
         return relays
             .flatMap { state ->
+                val hidden = if (hideBots) state.bots else emptySet()
                 state.timelines.flatMap { (groupId, timeline) ->
-                    timeline.conversations(muted).map { JoinedTimelineEntry(GroupRef(state.relayUrl, groupId), it) }
+                    timeline.conversations(muted, hidden).map { JoinedTimelineEntry(GroupRef(state.relayUrl, groupId), it) }
                 }
             }
             .filter { floor == null || it.conversation.lastActivity >= floor }
             .sortedWith(compareByDescending<JoinedTimelineEntry> { it.conversation.lastActivity }.thenBy { it.key })
+    }
+
+    /** bot を隠すと出なくなる投稿の数（表示の範囲の中。ミュートした bot は数えない）。 */
+    fun hiddenBotPosts(muted: Set<String> = emptySet()): Int {
+        val floor = floor()
+        return relays.sumOf { state ->
+            val bots = state.bots - muted
+            state.timelines.values.sumOf { it.countPosts(bots, floor) }
+        }
     }
 
     private fun floor(): Long? = relays.filter { it.bounding }.mapNotNull { it.oldest }.maxOrNull()
@@ -158,19 +173,38 @@ class JoinedTimelineLoader(
         val extraFilters = targets.chunked(TARGETS_PER_FILTER).map {
             NostrFilter(kinds = listOf(5, GROUP_DELETE_EVENT_KIND, BUZZ_EDIT_KIND), eTags = it)
         } + listOfNotNull(
-            relayKey?.takeIf { firstPage }?.let { NostrFilter(kinds = listOf(GROUP_ADMINS_KIND), authors = listOf(it), dTags = state.groupIds) },
+            relayKey?.takeIf { firstPage }?.let {
+                // Buzz ではメンバー一覧も読み、役割が bot の人を知る（標準のリレーは一覧が大きくなりうるので読まない）。
+                val kinds = if (state.flavor == GroupFlavor.Buzz) listOf(GROUP_ADMINS_KIND, GROUP_MEMBERS_KIND) else listOf(GROUP_ADMINS_KIND)
+                NostrFilter(kinds = kinds, authors = listOf(it), dTags = state.groupIds)
+            },
         )
         val extra = fetch(state.relayUrl, extraFilters)
         val admins = extra.events.filter { it.kind == GROUP_ADMINS_KIND }
-        add(state, extra.events.filter { it.kind != GROUP_ADMINS_KIND && it.id !in state.ids })
-        if (firstPage) setModerators(state, admins)
+        add(state, extra.events.filter { it.kind != GROUP_ADMINS_KIND && it.kind != GROUP_MEMBERS_KIND && it.id !in state.ids })
+        if (firstPage) {
+            setModerators(state, admins)
+            addBotMembers(state, extra.events.filter { it.kind == GROUP_MEMBERS_KIND })
+        }
         return thread.answered && extra.answered
     }
 
     private fun add(state: RelayState, events: List<NostrEvent>) {
         if (events.isEmpty()) return
         events.forEach { state.ids.add(it.id) }
+        events.filter { it.kind == BUZZ_AGENT_MESSAGE_KIND }
+            .forEach { state.bots.add(groupMessageAuthor(it, state.flavor, state.relayPubkey)) }
         state.timelines.values.forEach { it.add(events) }
+    }
+
+    private fun addBotMembers(state: RelayState, memberLists: List<NostrEvent>) {
+        if (state.flavor != GroupFlavor.Buzz) return
+        state.groupIds.forEach { groupId ->
+            channelRoles(memberLists, groupId, state.relayPubkey)
+                ?.filterValues { it == ChannelRole.Bot }
+                ?.keys
+                ?.let(state.bots::addAll)
+        }
     }
 
     private fun setModerators(state: RelayState, admins: List<NostrEvent>) {

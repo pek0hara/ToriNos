@@ -185,4 +185,68 @@ class JoinedTimelineTest {
         assertEquals("bold text", timelineMessagePreview(message(ev(2, "g", content = "**bold** text")), GroupFlavor.Buzz))
         assertEquals("first", timelineMessagePreview(message(ev(3, "g", content = "\n first \nsecond")), GroupFlavor.Standard))
     }
+
+    @Test
+    fun botsAreHiddenOnlyWhenAsked() = runTest {
+        // bot1 はエージェントの発言（40002）を出した人、bot2 はメンバー一覧（39002）で役割が bot の人。
+        val bot1 = "e".repeat(64)
+        val bot2 = "f".repeat(64)
+        val relays = FakeRelays(mapOf(
+            buzzRelay to listOf(
+                ev(1, "b1"),
+                ev(2, "b1", kind = BUZZ_AGENT_MESSAGE_KIND, pubkey = bot1, content = """{"content":"agent"}"""),
+                ev(3, "b1", pubkey = bot1),
+                ev(4, "b2", pubkey = bot2),
+                ev(5, "b1", tags = reply(1), pubkey = me),
+                ev(6, "b1", tags = reply(1), pubkey = bot2),
+                NostrEvent(id(20), relayKey, 1, GROUP_MEMBERS_KIND, listOf(listOf("d", "b2"), listOf("p", alice), listOf("p", bot2, "", "bot")), "", "sig"),
+            ),
+        ))
+        val loader = JoinedTimelineLoader(me, relays::fetch, pageSize = 10)
+        loader.load(listOf(buzzGroup("b1"), buzzGroup("b2")))
+
+        assertEquals(listOf(id(1), id(4), id(3), id(2)), loader.entries().map { it.conversation.rootId })
+
+        // 隠す bot の投稿は 2, 3, 4, 6 の4件（ミュートした人の分は数えない）。
+        assertEquals(4, loader.hiddenBotPosts())
+        assertEquals(2, loader.hiddenBotPosts(muted = setOf(bot2)))
+
+        val hidden = loader.entries(hideBots = true)
+        assertEquals(listOf(id(1)), hidden.map { it.conversation.rootId })
+        // 最新の返信は人のものにする。件数は bot の返信も数える。
+        assertEquals(id(5), hidden.single().conversation.latestReply?.event?.id)
+        assertEquals(2, hidden.single().conversation.replyCount)
+    }
+
+    @Test
+    fun botThreadsWithHumanRepliesKeepTheBotRootAndTheHumanReplies() = runTest {
+        val bot = "e".repeat(64)
+        val relays = FakeRelays(mapOf(
+            buzzRelay to listOf(
+                ev(1, "b1", kind = BUZZ_AGENT_MESSAGE_KIND, pubkey = bot, content = """{"content":"agent"}"""),
+                ev(2, "b1", tags = reply(1), pubkey = me),
+                ev(3, "b1", tags = reply(1), pubkey = bot),
+            ),
+        ))
+        val loader = JoinedTimelineLoader(me, relays::fetch, pageSize = 10)
+        loader.load(listOf(buzzGroup("b1")))
+
+        val entry = loader.entries(hideBots = true).single()
+        assertEquals(id(1), entry.conversation.rootId)
+        assertTrue(entry.conversation.rootHidden)
+        assertEquals(id(1), entry.conversation.root?.event?.id)
+        assertEquals(id(2), entry.conversation.latestReply?.event?.id)
+        assertEquals(2, entry.conversation.replyCount)
+        assertTrue(entry.opensThread)
+    }
+
+    @Test
+    fun memberListsAreNotReadForStandardRelays() = runTest {
+        val relays = FakeRelays(mapOf(stdRelay to listOf(ev(1, "s1"))))
+        val loader = JoinedTimelineLoader(me, relays::fetch, pageSize = 10)
+        loader.load(listOf(stdGroup("s1")))
+
+        assertTrue(relays.requests.flatMap { it.second }.none { GROUP_MEMBERS_KIND in it.kinds.orEmpty() })
+        assertEquals(listOf(id(1)), loader.entries(hideBots = true).map { it.conversation.rootId })
+    }
 }

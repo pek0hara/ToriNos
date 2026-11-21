@@ -11,13 +11,19 @@ import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.InsertEmoticon
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.IconButtonDefaults
+import androidx.compose.material3.TextField
+import androidx.compose.material3.TextFieldDefaults
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.filled.ArrowUpward
+import androidx.compose.ui.graphics.Color
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -37,6 +43,7 @@ import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.input.TextFieldValue
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.nostr.torinos.model.ReactionOption
@@ -100,6 +107,7 @@ data class TextInsertion(val text: String, val cursor: Int)
  * @param canSend 送信ボタンの有効条件。null のときは本文が空白でないこと。
  * @param maxLength 入力できる最大文字数。超える入力は受け付けない。
  * @param autoFocus 表示直後にフォーカスしてキーボードを開く。
+ * @param textFieldModifier 入力欄そのものに足す Modifier（長押しメニューの項目など）。
  */
 @Composable
 fun AppMessageComposer(
@@ -121,6 +129,13 @@ fun AppMessageComposer(
     canSend: Boolean? = null,
     maxLength: Int? = null,
     autoFocus: Boolean = false,
+    textFieldModifier: Modifier = Modifier,
+    /**
+     * 入力欄の上に出すもの（メンションの候補など）。今の本文とカーソルを受け取り、本文とカーソルを置き換えられる。
+     */
+    aboveInput: (@Composable (value: TextFieldValue, replace: (TextFieldValue) -> Unit) -> Unit)? = null,
+    /** 本文の見た目だけを変える（メンションに色を付けるなど）。文字は変えない。 */
+    visualTransformation: VisualTransformation = VisualTransformation.None,
 ) {
     DismissKeyboardOnLeave()
     var value by remember { mutableStateOf(TextFieldValue(text)) }
@@ -153,96 +168,127 @@ fun AppMessageComposer(
     // iOSではキーボードを閉じた後に付け直しても余白が0のまま戻らない(シミュレータで実測)ので、
     // 値を読んで普通の余白として付ける。
     val navigationBarsBottom = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
+    // 背景は画面と同じ色にして、境目は細い線だけで示す（色付きの帯にしない）。
     Surface(
         modifier = modifier.fillMaxWidth(),
-        tonalElevation = 3.dp,
+        color = MaterialTheme.colorScheme.surface,
     ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                // ホームインジケーター分の余白は背景色の内側に取り、キーボード表示中は取らない
-                // （キーボードの直上に入力欄を置き、間に隙間を作らない）。
-                .padding(
-                    bottom = navigationBarsBottomPadding(
-                        applyNavigationBarsPadding = applyNavigationBarsPadding,
-                        softwareKeyboardVisible = softwareKeyboardVisible,
-                        navigationBarsBottom = navigationBarsBottom,
-                    ),
-                )
-                .padding(horizontal = 12.dp, vertical = 8.dp),
-            verticalArrangement = Arrangement.spacedBy(6.dp),
-        ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
+        Column {
+            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f))
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    // ホームインジケーター分の余白は背景色の内側に取り、キーボード表示中は取らない
+                    // （キーボードの直上に入力欄を置き、間に隙間を作らない）。
+                    .padding(
+                        bottom = navigationBarsBottomPadding(
+                            applyNavigationBarsPadding = applyNavigationBarsPadding,
+                            softwareKeyboardVisible = softwareKeyboardVisible,
+                            navigationBarsBottom = navigationBarsBottom,
+                        ),
+                    )
+                    .padding(horizontal = 12.dp, vertical = 8.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp),
             ) {
-                leadingContent?.invoke()
-                if (onInsertEmoji != null) {
-                    IconButton(
-                        onClick = {
-                            dismissKeyboard()
-                            showEmojiPicker = true
+                aboveInput?.invoke(value) { next ->
+                    if (isWithinMaxLength(next.text.length, maxLength)) {
+                        value = next
+                        if (next.text != text) onTextChange(next.text)
+                    }
+                }
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    leadingContent?.invoke()
+                    if (onInsertEmoji != null) {
+                        IconButton(
+                            onClick = {
+                                dismissKeyboard()
+                                showEmojiPicker = true
+                            },
+                            enabled = enabled && !isSending,
+                            modifier = Modifier.size(40.dp),
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.InsertEmoticon,
+                                contentDescription = "絵文字",
+                            )
+                        }
+                    }
+                    // 枠線のない角丸の入力欄。下線も出さず、塗りだけで入力欄と分かるようにする。
+                    TextField(
+                        value = value,
+                        onValueChange = { next ->
+                            if (isWithinMaxLength(next.text.length, maxLength)) {
+                                value = next
+                                if (next.text != text) onTextChange(next.text)
+                            }
                         },
-                        enabled = enabled && !isSending,
+                        modifier = Modifier
+                            .weight(1f)
+                            .then(textFieldModifier)
+                            .focusRequester(textFocusRequester)
+                            // iOSで入力欄を閉じた後にスクロールが重くなり続けるのを防ぐ（詳細は関数のコメント）。
+                            .avoidStaleAccessibilityFocus()
+                            .onFocusChanged { focus ->
+                                if (
+                                    shouldHideKeyboardOnFocusChange(
+                                        dismissKeyboardOnFocusLoss = dismissKeyboardOnFocusLoss,
+                                        wasFocused = wasTextFocused,
+                                        isFocused = focus.isFocused,
+                                    )
+                                ) {
+                                    hideKeyboard()
+                                }
+                                wasTextFocused = focus.isFocused
+                                onFocusChanged?.invoke(focus.isFocused)
+                            },
+                        placeholder = { Text(placeholder, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                        enabled = enabled && (keepFocusWhileSending || !isSending),
+                        readOnly = keepFocusWhileSending && isSending,
+                        minLines = 1,
+                        maxLines = 4,
+                        visualTransformation = visualTransformation,
+                        shape = RoundedCornerShape(24.dp),
+                        colors = TextFieldDefaults.colors(
+                            focusedContainerColor = MaterialTheme.colorScheme.surfaceVariant,
+                            unfocusedContainerColor = MaterialTheme.colorScheme.surfaceVariant,
+                            disabledContainerColor = MaterialTheme.colorScheme.surfaceVariant,
+                            focusedIndicatorColor = Color.Transparent,
+                            unfocusedIndicatorColor = Color.Transparent,
+                            disabledIndicatorColor = Color.Transparent,
+                            errorIndicatorColor = Color.Transparent,
+                        ),
+                    )
+                    // 送れるときだけ色の付いた丸ボタンにする。
+                    IconButton(
+                        onClick = onSend,
+                        enabled = enabled && !isSending && sendEnabled,
                         modifier = Modifier.size(40.dp),
+                        shape = CircleShape,
+                        colors = IconButtonDefaults.filledIconButtonColors(
+                        containerColor = MaterialTheme.colorScheme.primary,
+                        contentColor = MaterialTheme.colorScheme.onPrimary,
+                            disabledContainerColor = MaterialTheme.colorScheme.surfaceVariant,
+                            disabledContentColor = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
+                        ),
                     ) {
                         Icon(
-                            imageVector = Icons.Default.InsertEmoticon,
-                            contentDescription = "絵文字",
+                            imageVector = Icons.Default.ArrowUpward,
+                            contentDescription = sendContentDescription,
                         )
                     }
                 }
-                OutlinedTextField(
-                    value = value,
-                    onValueChange = { next ->
-                        if (isWithinMaxLength(next.text.length, maxLength)) {
-                            value = next
-                            if (next.text != text) onTextChange(next.text)
-                        }
-                    },
-                    modifier = Modifier
-                        .weight(1f)
-                        .focusRequester(textFocusRequester)
-                        // iOSで入力欄を閉じた後にスクロールが重くなり続けるのを防ぐ（詳細は関数のコメント）。
-                        .avoidStaleAccessibilityFocus()
-                        .onFocusChanged { focus ->
-                            if (
-                                shouldHideKeyboardOnFocusChange(
-                                    dismissKeyboardOnFocusLoss = dismissKeyboardOnFocusLoss,
-                                    wasFocused = wasTextFocused,
-                                    isFocused = focus.isFocused,
-                                )
-                            ) {
-                                hideKeyboard()
-                            }
-                            wasTextFocused = focus.isFocused
-                            onFocusChanged?.invoke(focus.isFocused)
-                        },
-                    placeholder = { Text(placeholder, maxLines = 1, overflow = TextOverflow.Ellipsis) },
-                    enabled = enabled && (keepFocusWhileSending || !isSending),
-                    readOnly = keepFocusWhileSending && isSending,
-                    minLines = 1,
-                    maxLines = 4,
-                )
-                IconButton(
-                    onClick = onSend,
-                    enabled = enabled && !isSending && sendEnabled,
-                    modifier = Modifier.size(48.dp),
-                ) {
-                    Icon(
-                        imageVector = Icons.AutoMirrored.Filled.Send,
-                        contentDescription = sendContentDescription,
+                error?.takeIf { it.isNotBlank() }?.let { message ->
+                    Text(
+                        text = message,
+                        color = MaterialTheme.colorScheme.error,
+                        style = MaterialTheme.typography.bodySmall,
                     )
-                }
+                } ?: Spacer(modifier = Modifier.size(0.dp))
             }
-            error?.takeIf { it.isNotBlank() }?.let { message ->
-                Text(
-                    text = message,
-                    color = MaterialTheme.colorScheme.error,
-                    style = MaterialTheme.typography.bodySmall,
-                )
-            } ?: Spacer(modifier = Modifier.size(0.dp))
         }
     }
 

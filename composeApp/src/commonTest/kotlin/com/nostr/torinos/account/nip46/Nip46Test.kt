@@ -140,9 +140,17 @@ class Nip46Test {
     @Test
     fun permissionsCoverChatKinds() {
         // グループへ送る kind、参加中の一覧(10009)、Blossom の認証(24242)。
-        (com.nostr.torinos.chat.GROUP_PUBLISHABLE_KINDS + com.nostr.torinos.chat.BUZZ_COMMAND_KINDS + listOf(10009, 24242)).forEach { kind ->
+        // 入力中(20002)は外部の署名器では送らない（数秒ごとに確認が出るため。docs/buzz-typing-indicator-design.md）。
+        val typing = com.nostr.torinos.chat.BUZZ_TYPING_KIND
+        (com.nostr.torinos.chat.GROUP_PUBLISHABLE_KINDS - typing + com.nostr.torinos.chat.BUZZ_COMMAND_KINDS + listOf(10009, 24242)).forEach { kind ->
             assertTrue(kind in NIP46_SIGNED_KINDS, "kind $kind")
         }
+    }
+
+    @Test
+    fun permissionsDoNotAskForTyping() {
+        // 送らない kind の許可は求めない。署名器の許可画面に、使わない項目を並べないため。
+        assertTrue(com.nostr.torinos.chat.BUZZ_TYPING_KIND !in NIP46_SIGNED_KINDS)
     }
 
     @Test

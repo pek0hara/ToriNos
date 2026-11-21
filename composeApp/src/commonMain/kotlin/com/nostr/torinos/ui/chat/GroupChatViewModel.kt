@@ -38,6 +38,7 @@ import com.nostr.torinos.chat.buildBuzzMessage
 import com.nostr.torinos.chat.buildForumComment
 import com.nostr.torinos.chat.buildForumPost
 import com.nostr.torinos.chat.buildGroupChatMessage
+import com.nostr.torinos.chat.withMentionTags
 import com.nostr.torinos.chat.buildGroupComment
 import com.nostr.torinos.chat.buildGroupDeletion
 import com.nostr.torinos.chat.buildGroupJoinRequest
@@ -182,6 +183,11 @@ data class GroupChatUiState(
     val messages: List<GroupMessage> = emptyList(),
     /** スレッドの画面のルート。 */
     val threadRoot: GroupMessage? = null,
+    /**
+     * スレッドの画面で折りたたんで出す、ミュート中の人の発言の作者。
+     * スレッドではミュート中の人の発言も「ミュートしています」として残し、押すと開く。チャンネルの画面には出さない。
+     */
+    val collapsedAuthors: Set<String> = emptySet(),
     val isLoading: Boolean = true,
     val isLoadingOlder: Boolean = false,
     val canLoadOlder: Boolean = true,
@@ -204,6 +210,8 @@ data class GroupChatUiState(
     val editing: GroupMessage? = null,
     val isSending: Boolean = false,
     val notice: String? = null,
+    /** 送ったばかりの投稿（編集は除く）。一覧がその位置までスクロールしたら [GroupChatViewModel.consumeSent] で消す。 */
+    val sentEventId: String? = null,
     val hasSigner: Boolean = true,
     /** Buzz の画像を読むための署名を許可した（外部の署名器のとき）。 */
     val imagesUnlocked: Boolean = false,
@@ -259,6 +267,7 @@ data class GroupChatUiState(
 }
 
 private const val PAGE_SIZE = 50
+private const val THREAD_ROOTS_DEBOUNCE_MILLIS = 300L
 
 /** Buzz のコミュニティの絵文字の読み込み状態。 */
 data class CommunityEmojiState(
@@ -333,6 +342,9 @@ class GroupChatViewModel(
     private val pager = com.nostr.torinos.chat.OlderPager(PAGE_SIZE)
     private var session: SubscriptionSession? = null
     private var subscriptionJob: Job? = null
+    /** 古いスレッドの元の発言の読み込み（スレッドへの返信の行に引用する）。 */
+    private var threadRootsJob: Job? = null
+    private val requestedThreadRoots = mutableSetOf<String>()
     // init のコルーチンがすぐ subscribe() を呼ぶことがあるので、init より前に初期化しておく。
     private val subscribeMutex = Mutex()
     private val flavorKnown = CompletableDeferred<Unit>()
@@ -600,7 +612,12 @@ class GroupChatViewModel(
         if (!fromCache) pager.observe(events.filter { it.kind in pageKinds })
         timeline.add(events)
         if (metadataChanged) recomputeState() else publishTimeline()
-        val authors = events.filter { it.kind in chatKinds || it.kind == postKind || it.kind == commentKind }.map { it.pubkey }.toSet()
+        scheduleThreadRoots()
+        val shown = events.filter { it.kind in chatKinds || it.kind == postKind || it.kind == commentKind }
+        // Buzz では本文のメンションを名前でリンクにするので、メンションされた人のプロフィールも取る。
+        val mentioned = if (flavor == GroupFlavor.Buzz) shown.flatMap { com.nostr.torinos.chat.buzzProfileTargets(it) } else emptyList()
+        // リレーが署名した発言は `actor` の人が作者なので、その人のプロフィールを取る。
+        val authors = shown.map { com.nostr.torinos.chat.groupMessageAuthor(it, flavor, relayPubkey) }.toSet() + mentioned
         if (authors.isNotEmpty()) {
             // Buzz などで作ったアカウントは kind 0 をそのグループのリレーにしか置かないことがある。
             // グループのリレーへ先に聞き、取れなかった分は全リレーへ広げる(ProfileRepository の relayHint の動き)。
@@ -733,12 +750,13 @@ class GroupChatViewModel(
         fun List<GroupMessage>.visible() = filter { it.author !in muted }
         when (mode) {
             GroupRoomMode.Chat -> {
-                val snapshot = timeline.snapshot()
-                _state.update { it.copy(messages = snapshot.messages.visible()) }
+                val snapshot = timeline.snapshot(muted)
+                _state.update { it.copy(messages = snapshot.messages) }
             }
             is GroupRoomMode.Thread -> {
                 val thread = timeline.thread(mode.rootId)
-                _state.update { it.copy(threadRoot = thread.root, messages = thread.replies.visible()) }
+                // ミュート中の人の発言も外さず、画面で折りたたむ。
+                _state.update { it.copy(threadRoot = thread.root, messages = thread.replies, collapsedAuthors = muted) }
             }
             GroupRoomMode.Forum -> _state.update { it.copy(messages = timeline.forumPosts().visible()) }
         }
@@ -757,17 +775,21 @@ class GroupChatViewModel(
         }
     }
 
+    /**
+     * メンバー全員のプロフィールを取る（メンバー一覧、メンションの候補）。発言していないメンバーのプロフィールは、まだ取っていない。
+     * Buzz の kind 0 はコミュニティのリレーにしか無いことがあるので、先にそこへ聞く。
+     */
+    fun ensureMemberProfiles() {
+        val members = memberListOrder(_state.value, ownPubkey).toSet()
+        if (members.isEmpty()) return
+        launch { ProfileRepository.ensureProfiles(members, ProfileFetchPolicy.CacheFirst(maxAgeMillis = 3_600_000), relayHint = ref.relayUrl) }
+    }
+
     /** メンバー一覧を開いた・閉じた。 */
     fun setMemberListOpen(open: Boolean) {
         if (memberListOpen == open) return
         memberListOpen = open
-        if (open) {
-            // 発言していないメンバーのプロフィールは、まだ取っていない。Buzz の kind 0 はコミュニティのリレーにしか無いことがあるので、先にそこへ聞く。
-            val members = memberListOrder(_state.value, ownPubkey).toSet()
-            if (members.isNotEmpty()) {
-                launch { ProfileRepository.ensureProfiles(members, ProfileFetchPolicy.CacheFirst(maxAgeMillis = 3_600_000), relayHint = ref.relayUrl) }
-            }
-        }
+        if (open) ensureMemberProfiles()
         launch {
             flavorKnown.await()
             if (!presenceActive) return@launch
@@ -899,6 +921,46 @@ class GroupChatViewModel(
         }
     }
 
+    /**
+     * チャンネルの画面で、スレッドへの返信の行が指す元の発言のうち、読めていないものを `ids` で読む。
+     * 元の発言が読めている範囲より古いスレッドは、返信も読めている範囲より前にあるので、`#e` で読んで数をそろえる。
+     * 届いた返信がまとまってから1回で読む。答えがそろわなかった分は、次に返信が届いたときに読み直す。
+     */
+    private fun scheduleThreadRoots() {
+        if (mode != GroupRoomMode.Chat || flavor != GroupFlavor.Buzz) return
+        if (threadRootsJob?.isActive == true) return
+        threadRootsJob = launch {
+            delay(THREAD_ROOTS_DEBOUNCE_MILLIS)
+            val missing = timeline.missingThreadRoots() - requestedThreadRoots
+            if (missing.isEmpty()) return@launch
+            requestedThreadRoots += missing
+            val result = fetchFiniteEvents(
+                SubscriptionSpec(
+                    id = "group-thread-roots-${Random.nextLong().toULong().toString(16)}",
+                    // Buzz は #h の無い読み取りから unlisted・system チャンネルを外すので、グループを指定して読む。
+                    filters = missing.chunked(100).flatMap { ids ->
+                        listOf(
+                            NostrFilter(ids = ids, hTags = listOf(ref.groupId)),
+                            NostrFilter(kinds = chatKinds, hTags = listOf(ref.groupId), eTags = ids, limit = 500),
+                        )
+                    },
+                    target = RelayTarget.Explicit(setOf(ref.relayUrl)),
+                    behavior = SubscriptionBehavior.Fetch(timeoutMillis = 10_000),
+                    replayCachedEvents = false,
+                ),
+            )
+            val found = result.events.mapTo(mutableSetOf()) { it.id }
+            if (!result.allAnswered) requestedThreadRoots -= (missing - found)
+            if (result.events.isEmpty()) return@launch
+            timeline.addThreadRoots(result.events.filter { it.id in missing })
+            timeline.addThreadReplies(result.events.filter { it.id !in missing })
+            publishTimeline()
+            val mentioned = result.events.flatMap { com.nostr.torinos.chat.buzzProfileTargets(it) }
+            val authors = result.events.map { com.nostr.torinos.chat.groupMessageAuthor(it, flavor, relayPubkey) }.toSet() + mentioned
+            launch { ProfileRepository.ensureProfiles(authors, ProfileFetchPolicy.CacheFirst(maxAgeMillis = 3_600_000), relayHint = ref.relayUrl) }
+        }
+    }
+
     fun loadOlder() {
         if (mode is GroupRoomMode.Thread) return
         val current = _state.value
@@ -976,12 +1038,19 @@ class GroupChatViewModel(
         _state.update { it.copy(editing = message, replyTo = null) }
     }
 
+    fun consumeSent() {
+        _state.update { it.copy(sentEventId = null) }
+    }
+
     fun consumeNotice() {
         _state.update { it.copy(notice = null) }
     }
 
-    /** 本文を送る。画面の種類と流儀で、メッセージ・返信・コメント・投稿・編集を作り分ける。 */
-    fun send(text: String, title: String = "", onSent: () -> Unit) {
+    /**
+     * 本文を送る。画面の種類と流儀で、メッセージ・返信・コメント・投稿・編集を作り分ける。
+     * [mentions] は Buzz のメンションの宛先。今のメンバーだけを `p` タグにする（編集には付けない）。
+     */
+    fun send(text: String, title: String = "", mentions: List<String> = emptyList(), onSent: () -> Unit) {
         val account = account ?: return
         val current = _state.value
         if ((text.isBlank() && title.isBlank() && current.attachments.isEmpty()) || current.isSending || current.isUploading) return
@@ -994,7 +1063,14 @@ class GroupChatViewModel(
                 val body = text.trim().ifEmpty { attachments.joinToString("\n\n") { it.markdown } }
                 val draft = runCatching {
                     val base = buildDraft(current, body, title.trim())
-                    if (text.isBlank()) base.copy(tags = base.tags + attachments.map { it.imeta }) else base.withAttachments(attachments)
+                    val withAttachments = if (text.isBlank()) base.copy(tags = base.tags + attachments.map { it.imeta }) else base.withAttachments(attachments)
+                    val members = memberListOrder(current, ownPubkey).toSet()
+                    val recipients = mentions.filter { it in members && it != ownPubkey }
+                    if (flavor == GroupFlavor.Buzz && current.editing == null && recipients.isNotEmpty()) {
+                        withAttachments.withMentionTags(recipients)
+                    } else {
+                        withAttachments
+                    }
                 }.getOrElse {
                     notice("送れない内容です: ${it.message}")
                     return@launch
@@ -1002,7 +1078,8 @@ class GroupChatViewModel(
                 when (val outcome = account.publishToGroup(ref, draft)) {
                     is GroupPublishOutcome.Published -> {
                         onEvents(listOf(outcome.event))
-                        _state.update { it.copy(replyTo = null, editing = null, attachments = emptyList()) }
+                        val sentId = outcome.event.id.takeIf { current.editing == null }
+                        _state.update { it.copy(replyTo = null, editing = null, attachments = emptyList(), sentEventId = sentId) }
                         onSent()
                     }
                     is GroupPublishOutcome.Rejected -> notice("送信できませんでした: ${outcome.reason}")

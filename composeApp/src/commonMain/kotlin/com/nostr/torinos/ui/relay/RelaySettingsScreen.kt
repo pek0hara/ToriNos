@@ -1162,7 +1162,9 @@ internal fun relayDisplayName(relayUrl: String, metadataName: String?): String =
 internal fun relayIconUrl(relayUrl: String, metadataIcon: String?): String? {
     metadataIcon?.trim()?.takeIf { icon ->
         icon.startsWith("https://", ignoreCase = true) ||
-            icon.startsWith("http://", ignoreCase = true)
+            icon.startsWith("http://", ignoreCase = true) ||
+            // Buzz などは絵を data URL で直接入れている。
+            icon.startsWith("data:image/", ignoreCase = true)
     }?.let { return it }
     val host = runCatching { Url(relayUrl).host }.getOrNull()?.takeIf { it.isNotBlank() } ?: return null
     return "https://$host/favicon.ico"

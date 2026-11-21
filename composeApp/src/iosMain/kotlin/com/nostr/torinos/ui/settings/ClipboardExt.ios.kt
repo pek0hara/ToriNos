@@ -10,3 +10,6 @@ actual suspend fun Clipboard.setPlainText(text: String) {
 }
 
 actual suspend fun Clipboard.setSensitiveText(text: String) = setPlainText(text)
+
+@OptIn(ExperimentalComposeUiApi::class)
+actual suspend fun Clipboard.getPlainText(): String? = getClipEntry()?.getPlainText()

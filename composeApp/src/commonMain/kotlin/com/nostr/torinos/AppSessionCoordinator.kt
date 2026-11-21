@@ -453,6 +453,20 @@ internal fun AppSessionCoordinator(
                 onUserClick = ::openProfileDrawer,
                 onOpenGroup = { ref -> nav.navigate(GroupChatRoute(ref.relayUrl, ref.groupId)) },
                 onOpenThread = { ref, rootId -> nav.navigate(GroupThreadRoute(ref.relayUrl, ref.groupId, rootId)) },
+                onOpenParent = { ref ->
+                    if (isShowing()) {
+                        // チャンネルから開いたスレッドなら戻るだけ。タイムラインや通知から開いたときはチャンネルを積む
+                        // （フォーラムなら開いた画面がフォーラムに置き換わる）。
+                        val previous = nav.previousBackStackEntry
+                        val previousRef = when (previous?.destination?.route?.substringBefore("/")?.substringAfterLast(".")) {
+                            "GroupChatRoute" -> runCatching { previous.toRoute<GroupChatRoute>().let { it.relayUrl to it.groupId } }.getOrNull()
+                            "GroupForumRoute" -> runCatching { previous.toRoute<GroupForumRoute>().let { it.relayUrl to it.groupId } }.getOrNull()
+                            else -> null
+                        }
+                        if (previousRef == (ref.relayUrl to ref.groupId)) nav.popBackStack()
+                        else nav.navigate(GroupChatRoute(ref.relayUrl, ref.groupId))
+                    }
+                },
                 onReplaceWithForum = { ref ->
                     if (isShowing()) {
                         nav.popBackStack()
@@ -1483,6 +1497,7 @@ internal fun AppSessionCoordinator(
                                             onPendingLinkConsumed = { pendingGroupLink = null },
                                             onOpenThread = { ref, rootId -> nav.navigate(GroupThreadRoute(ref.relayUrl, ref.groupId, rootId)) },
                                             onOpenDm = { key -> nav.navigate(DmConversationRoute(key)) },
+                                            onUserClick = ::openProfileDrawer,
                                         )
                                     }
                                     ServiceTab.Channels -> {

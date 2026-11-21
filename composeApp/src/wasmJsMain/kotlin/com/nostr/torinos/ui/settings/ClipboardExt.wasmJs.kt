@@ -42,3 +42,15 @@ private fun copyWithExecCommand(text: String): Boolean =
     )
 
 actual suspend fun Clipboard.setSensitiveText(text: String) = setPlainText(text)
+
+actual suspend fun Clipboard.getPlainText(): String? {
+    if (!isClipboardReadAvailable()) return null
+    // 利用者が読み取りを拒んだときなどは失敗するので、貼り付けるものが無かった扱いにする。
+    return runCatching { readClipboardText().await<JsString>().toString() }.getOrNull()
+}
+
+private fun isClipboardReadAvailable(): Boolean =
+    js("window.isSecureContext === true && !!(navigator.clipboard && navigator.clipboard.readText)")
+
+private fun readClipboardText(): Promise<JsString> =
+    js("navigator.clipboard.readText()")

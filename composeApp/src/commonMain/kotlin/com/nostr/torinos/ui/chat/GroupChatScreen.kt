@@ -6,6 +6,7 @@ import com.nostr.torinos.ui.components.ActionDropdownMenu
 import com.nostr.torinos.ui.components.ActionDropdownMenuItem
 import com.nostr.torinos.ui.components.ActionDropdownMenuDivider
 import androidx.compose.material.icons.outlined.Link
+import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material.icons.automirrored.outlined.ExitToApp
 import androidx.compose.material.icons.automirrored.outlined.Reply
 import androidx.compose.material.icons.outlined.AddReaction
@@ -53,11 +54,11 @@ import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.ui.draw.clip
 import kotlinx.coroutines.launch
+import com.nostr.torinos.ui.post.imagePasteMenuItem
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.material.icons.filled.ContentPaste
 import com.nostr.torinos.ui.components.AppMessageComposer
@@ -66,6 +67,7 @@ import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.ChatBubbleOutline
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Close
@@ -101,8 +103,8 @@ import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalClipboardManager
-import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.platform.LocalClipboard
+import com.nostr.torinos.ui.settings.setPlainText
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -129,6 +131,7 @@ import com.nostr.torinos.ui.components.AppTopBar
 import com.nostr.torinos.ui.components.LinkedText
 import com.nostr.torinos.ui.profile.AvatarCircle
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flowOf
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.runtime.DisposableEffect
@@ -152,6 +155,11 @@ class GroupNavigation(
     val onOpenGroup: (GroupRef) -> Unit,
     /** スレッドを開く。 */
     val onOpenThread: (GroupRef, String) -> Unit,
+    /**
+     * スレッドの画面から、そのスレッドがあるチャンネル（フォーラム）へ移る。
+     * 1つ前の画面がそのチャンネルなら戻るだけにする（同じチャンネルを積み重ねない）。
+     */
+    val onOpenParent: (GroupRef) -> Unit = onOpenGroup,
     /** チャットとして開いたグループがフォーラムだった（Buzz のリンクなど）。フォーラムの画面に置き換える。 */
     val onReplaceWithForum: (GroupRef) -> Unit = {},
 )
@@ -192,12 +200,17 @@ private fun GroupRoomScreen(ref: GroupRef, mode: GroupRoomMode, navigation: Grou
         onDispose { viewModel.setScreenVisible(false) }
     }
     val snackbar = remember { SnackbarHostState() }
-    val clipboard = LocalClipboardManager.current
+    val clipboard = LocalClipboard.current
+    val copyScope = rememberCoroutineScope()
     var menuOpen by remember { mutableStateOf(false) }
     var infoOpen by remember { mutableStateOf(false) }
     /** 取り返しのつかない管理の操作の確認（docs/buzz-admin-design.md 7章）。 */
     var confirm by remember { mutableStateOf<AdminConfirm?>(null) }
     var input by remember(ref, mode) { mutableStateOf("") }
+    /** メンションの候補から選んだ人（Buzz）。送るときに本文に `@表示名` が残っている人だけを宛先にする。 */
+    var mentionPicks by remember(ref, mode) { mutableStateOf(emptyList<com.nostr.torinos.chat.MentionCandidate>()) }
+    /** メンションの候補を一度出したら、メンバー全員のプロフィールも見る（名前と画像を出すため）。 */
+    var mentionMembersWanted by remember(ref, mode) { mutableStateOf(false) }
     var composingPost by remember { mutableStateOf(false) }
     val pickImage = com.nostr.torinos.ui.components.rememberOptimizedImagePickerLauncher { picked ->
         picked?.let { viewModel.attach(it.uploadBytes, it.mimeType, it.previewBytes) }
@@ -227,8 +240,16 @@ private fun GroupRoomScreen(ref: GroupRef, mode: GroupRoomMode, navigation: Grou
 
     // DM では見出しを参加者の名前から作るので、参加者のプロフィールも見る。
     val isDirect = state.metadata?.layout == com.nostr.torinos.chat.GroupLayout.Direct
-    val authors = remember(state.messages, state.threadRoot, state.metadata?.participants, state.typingAuthors) {
-        (state.messages + listOfNotNull(state.threadRoot)).map { it.author }.toSet() + state.metadata?.participants.orEmpty() + state.typingAuthors
+    val mentionMembers = remember(state.members, state.metadata, state.admins) { memberListOrder(state, viewModel.ownPubkey) }
+    val authors = remember(state.messages, state.threadRoot, state.metadata?.participants, state.typingAuthors, state.flavor, mentionMembersWanted, mentionMembers) {
+        // 投稿の下に出す最新の返信と、スレッドへの返信の枠の元の投稿も、名前とアイコンを出す。
+        val shown = (state.messages + listOfNotNull(state.threadRoot)).flatMap { message ->
+            listOfNotNull(message, message.latestThreadReply, message.threadNotice?.root)
+        }
+        // Buzz の本文の `@表示名` は、メンションされた人の名前と照らし合わせてリンクにする。
+        val mentioned = if (state.flavor == GroupFlavor.Buzz) shown.flatMap { com.nostr.torinos.chat.buzzProfileTargets(it.event) } else emptyList()
+        shown.map { it.author }.toSet() + state.metadata?.participants.orEmpty() + state.typingAuthors + mentioned +
+            (if (mentionMembersWanted) mentionMembers else emptyList())
     }
     val profiles by remember(authors) {
         if (authors.isEmpty()) flowOf(emptyMap()) else ProfileRepository.observe(authors)
@@ -324,8 +345,8 @@ private fun GroupRoomScreen(ref: GroupRef, mode: GroupRoomMode, navigation: Grou
         palette = palette,
         reactingMessageIds = state.reactingMessageIds,
         ownEmojiSetAddress = emojiPreferences::setAddressOf,
-        onCopy = { clipboard.setText(AnnotatedString(it.body)) },
-        onCopyLink = { clipboard.setText(AnnotatedString(viewModel.messageLink(it))) },
+        onCopy = { copyScope.launch { clipboard.setPlainText(it.body) } },
+        onCopyLink = { copyScope.launch { clipboard.setPlainText(viewModel.messageLink(it)) } },
         onEdit = { if (viewModel.canEdit(it)) viewModel.startEditing(it) },
         canEdit = viewModel::canEdit,
         onDelete = viewModel::delete,
@@ -357,8 +378,15 @@ private fun GroupRoomScreen(ref: GroupRef, mode: GroupRoomMode, navigation: Grou
                         IconButton(onClick = navigation.onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "戻る") }
                     },
                     title = {
-                        // 見出しを押すとグループの情報（説明・メンバー）を出す。
-                        Column(modifier = Modifier.clickable(onClickLabel = "グループの情報") { infoOpen = true }) {
+                        // 見出しを押すとグループの情報（説明・メンバー）を出す。スレッドの画面では、そのチャンネルへ移る。
+                        val opensParent = mode is GroupRoomMode.Thread && !isDirect
+                        Column(
+                            modifier = if (opensParent) {
+                                Modifier.clickable(onClickLabel = "チャンネルを開く") { navigation.onOpenParent(ref) }
+                            } else {
+                                Modifier.clickable(onClickLabel = "グループの情報") { infoOpen = true }
+                            },
+                        ) {
                             val title = when (mode) {
                                 is GroupRoomMode.Thread -> state.threadRoot?.let { root ->
                                     if (root.event.kind == com.nostr.torinos.chat.BUZZ_FORUM_POST_KIND || root.event.kind == com.nostr.torinos.chat.GROUP_THREAD_KIND) {
@@ -384,7 +412,7 @@ private fun GroupRoomScreen(ref: GroupRef, mode: GroupRoomMode, navigation: Grou
                                     }
                                     append(
                                         when {
-                                            mode is GroupRoomMode.Thread && !isDirect -> state.title
+                                            opensParent -> state.title + " ›"
                                             isDirect -> "DM · " + (state.relayName ?: ref.relayUrl.substringAfter("://"))
                                             else -> listOfNotNull(
                                                 state.members?.takeIf { it.isNotEmpty() }?.let { "${it.size}人" },
@@ -393,8 +421,9 @@ private fun GroupRoomScreen(ref: GroupRef, mode: GroupRoomMode, navigation: Grou
                                         },
                                     )
                                 },
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                // スレッドの画面のチャンネル名は押して移れるので、少し大きくしてリンクの色にする。
+                                style = if (opensParent) MaterialTheme.typography.labelLarge else MaterialTheme.typography.labelSmall,
+                                color = if (opensParent) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis,
                             )
@@ -407,12 +436,16 @@ private fun GroupRoomScreen(ref: GroupRef, mode: GroupRoomMode, navigation: Grou
                             ActionDropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
                                 // DM はリンクで開けず、退出もできない（隠す操作は Buzz のアプリで行う）。
                                 val link = if (isDirect) null else viewModel.shareLink()
+                                // スレッドの画面では見出しがチャンネルへの移動になるので、グループの情報はメニューから開く。
+                                if (mode is GroupRoomMode.Thread) {
+                                    ActionDropdownMenuItem("グループの情報", Icons.Outlined.Info, onClick = { menuOpen = false; infoOpen = true })
+                                }
                                 if (state.canEdit && mode !is GroupRoomMode.Thread) {
                                     ActionDropdownMenuItem("グループを編集", Icons.Outlined.Edit, onClick = { menuOpen = false; viewModel.openEdit() })
                                 }
                                 if (link != null) {
                                     ActionDropdownMenuItem("グループのリンクをコピー", Icons.Outlined.Link,
-                                        onClick = { menuOpen = false; clipboard.setText(AnnotatedString(link)) })
+                                        onClick = { menuOpen = false; copyScope.launch { clipboard.setPlainText(link) } })
                                 }
                                 // Buzz の owner / admin の操作（docs/buzz-admin-design.md 3.2）。スレッドの画面には出さない。
                                 val authority = state.authority
@@ -468,6 +501,7 @@ private fun GroupRoomScreen(ref: GroupRef, mode: GroupRoomMode, navigation: Grou
                     profiles = profiles,
                     ownPubkey = session?.pubkey,
                     flavor = state.flavor,
+                    isLoading = state.isLoading,
                     isLoadingOlder = state.isLoadingOlder,
                     canLoadOlder = state.canLoadOlder && state.messages.isNotEmpty(),
                     onLoadOlder = viewModel::loadOlder,
@@ -479,6 +513,8 @@ private fun GroupRoomScreen(ref: GroupRef, mode: GroupRoomMode, navigation: Grou
                     } else {
                         null
                     },
+                    sentEventId = state.sentEventId,
+                    onSentShown = viewModel::consumeSent,
                     modifier = Modifier.weight(1f),
                 )
                 is GroupRoomMode.Thread -> ThreadList(
@@ -489,6 +525,9 @@ private fun GroupRoomScreen(ref: GroupRef, mode: GroupRoomMode, navigation: Grou
                     flavor = state.flavor,
                     canWrite = state.composer == GroupComposerState.Writable,
                     actions = rowActions,
+                    collapsedAuthors = state.collapsedAuthors,
+                    sentEventId = state.sentEventId,
+                    onSentShown = viewModel::consumeSent,
                     modifier = Modifier.weight(1f),
                 )
                 GroupRoomMode.Forum -> ForumList(
@@ -498,6 +537,8 @@ private fun GroupRoomScreen(ref: GroupRef, mode: GroupRoomMode, navigation: Grou
                     canLoadOlder = state.canLoadOlder && state.messages.isNotEmpty(),
                     onLoadOlder = viewModel::loadOlder,
                     onOpen = { navigation.onOpenThread(ref, it.event.id) },
+                    sentEventId = state.sentEventId,
+                    onSentShown = viewModel::consumeSent,
                     modifier = Modifier.weight(1f),
                 )
             }
@@ -512,8 +553,11 @@ private fun GroupRoomScreen(ref: GroupRef, mode: GroupRoomMode, navigation: Grou
                         input = it
                         viewModel.onInputEdited(it)
                     },
-                    onSend = { viewModel.send(input) { input = "" } },
-                    onCancelReply = { viewModel.setReplyTo(null); viewModel.startEditing(null); input = "" },
+                    onSend = {
+                        val mentions = com.nostr.torinos.chat.mentionedPubkeys(input, mentionPicks)
+                        viewModel.send(input, mentions = mentions) { input = ""; mentionPicks = emptyList() }
+                    },
+                    onCancelReply = { viewModel.setReplyTo(null); viewModel.startEditing(null); input = ""; mentionPicks = emptyList() },
                     onJoin = { viewModel.join() },
                     replyName = state.replyTo?.let { profiles[it.author]?.bestName ?: it.author.take(8) },
                     placeholder = when (mode) {
@@ -524,6 +568,24 @@ private fun GroupRoomScreen(ref: GroupRef, mode: GroupRoomMode, navigation: Grou
                     onAttach = pickImage,
                     onPasteImage = pasteImage,
                     onRemoveAttachment = viewModel::removeAttachment,
+                    mention = if (state.flavor == GroupFlavor.Buzz && state.editing == null) {
+                        MentionSupport(
+                            candidates = { query ->
+                                com.nostr.torinos.chat.mentionCandidates(mentionMembers, { profiles[it]?.bestName }, query, viewModel.ownPubkey)
+                            },
+                            profiles = profiles,
+                            onShown = {
+                                if (!mentionMembersWanted) {
+                                    mentionMembersWanted = true
+                                    viewModel.ensureMemberProfiles()
+                                }
+                            },
+                            onPicked = { picked -> mentionPicks = mentionPicks + picked },
+                            picked = mentionPicks,
+                        )
+                    } else {
+                        null
+                    },
                 )
             }
         }
@@ -542,7 +604,7 @@ private fun GroupRoomScreen(ref: GroupRef, mode: GroupRoomMode, navigation: Grou
             },
             ownPubkey = session?.pubkey,
             shareLink = if (isDirect) null else viewModel.shareLink(),
-            onCopyLink = { clipboard.setText(AnnotatedString(it)) },
+            onCopyLink = { copyScope.launch { clipboard.setPlainText(it) } },
             onEdit = { infoOpen = false; viewModel.openEdit() },
             onUserClick = { infoOpen = false; navigation.onUserClick(it) },
             onDismiss = { infoOpen = false },
@@ -625,6 +687,15 @@ internal class MessageRowActions(
     val presence: Map<String, com.nostr.torinos.chat.PresenceStatus> = emptyMap(),
 )
 
+/** 行の中の本文（[TimelinePost]）に渡す、画像とリンクの操作。 */
+private fun MessageRowActions.toTimelineBodyActions() = TimelineBodyActions(
+    imageAuth = imageAuth,
+    imagesUnlocked = imagesUnlocked,
+    onUnlockImages = onUnlockImages,
+    onBuzzLink = { link, _ -> onBuzzLink(link) },
+    onUserClick = onUserClick,
+)
+
 @Composable
 private fun GroupBanners(state: GroupChatUiState, onAllowAuth: () -> Unit, onJoin: () -> Unit) {
     val host = state.ref.relayUrl.substringAfter("://")
@@ -660,12 +731,15 @@ private fun MessageList(
     profiles: Map<String, NostrProfile>,
     ownPubkey: String?,
     flavor: GroupFlavor,
+    isLoading: Boolean,
     isLoadingOlder: Boolean,
     canLoadOlder: Boolean,
     onLoadOlder: () -> Unit,
     canWrite: Boolean,
     actions: MessageRowActions,
     onMessageClick: ((GroupMessage) -> Unit)?,
+    sentEventId: String?,
+    onSentShown: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val listState = rememberLazyListState()
@@ -673,6 +747,14 @@ private fun MessageList(
     val rows = remember(messages) { messageTimeline(messages).asReversed() }
     val today = rememberToday()
     LoadOlderEffect(listState, itemCount = rows.size, canLoadOlder = canLoadOlder, onLoadOlder = onLoadOlder)
+    ScrollToSentPost(listState, sentEventId, onSentShown) { id ->
+        rows.indexOfFirst { it is ChatTimelineItem.Message && it.message.event.id == id }
+    }
+    // 最初の答え（EOSE）を待つ間は「まだメッセージがありません」を出さず、発言の形を出す。
+    if (messages.isEmpty() && isLoading) {
+        ChatMessageSkeleton(modifier = modifier.dismissKeyboardOnListTouch())
+        return
+    }
     if (messages.isEmpty()) {
         Box(modifier = modifier.fillMaxSize().dismissKeyboardOnListTouch(), contentAlignment = Alignment.Center) {
             Text("まだメッセージがありません", color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -683,7 +765,15 @@ private fun MessageList(
         items(rows, key = { it.key }, contentType = { if (it is ChatTimelineItem.Day) "day" else "message" }) { item ->
             when (item) {
                 is ChatTimelineItem.Day -> DayDivider(chatDayLabel(item.date, today))
-                is ChatTimelineItem.Message -> MessageRow(
+                is ChatTimelineItem.Message -> if (item.message.threadNotice != null) {
+                    ThreadNoticeRow(
+                        message = item.message,
+                        profiles = profiles,
+                        flavor = flavor,
+                        actions = actions,
+                        onClick = { onMessageClick?.invoke(item.message) },
+                    )
+                } else MessageRow(
                     message = item.message,
                     profile = profiles[item.message.author],
                     replyProfile = item.message.replyTo?.let { profiles[it.author] },
@@ -693,6 +783,8 @@ private fun MessageList(
                     flavor = flavor,
                     actions = actions,
                     onClick = onMessageClick?.let { open -> { open(item.message) } },
+                    profiles = profiles,
+                    collapse = BodyCollapse.Channel,
                 )
             }
         }
@@ -711,9 +803,11 @@ private fun messageTimeline(messages: List<GroupMessage>): List<ChatTimelineItem
     chatTimeline(
         messages,
         TimeZone.currentSystemDefault(),
-        author = { it.author },
+        // スレッドへの返信の行や、返信の付いた発言（スレッドの先頭）は、前後の同じ人の発言とまとめない
+        // （返信のプレビューを挟むので、アイコンと名前を出し直さないと誰の発言か分かりにくい）。
+        author = { if (it.threadNotice != null || it.threadReplyCount > 0) "thread:${it.event.id}" else it.author },
         createdAt = { it.event.createdAt },
-        startsNewGroup = { it.replyTo != null || it.replyToId != null || it.sentFromThreadLabel != null },
+        startsNewGroup = { it.replyTo != null || it.replyToId != null || it.sentFromThreadLabel != null || it.threadNotice != null },
     )
 
 private val ChatTimelineItem<GroupMessage>.key: String
@@ -759,6 +853,22 @@ private fun DayDivider(label: String) {
     }
 }
 
+/**
+ * 送ったばかりの投稿（[sentId]）が一覧に入ったら、その行が見えるところまでスクロールする。
+ * 一覧を上の方まで読んでいても、送った投稿を確かめられるように。入らないまま時間が過ぎたらあきらめる。
+ */
+@Composable
+private fun ScrollToSentPost(listState: LazyListState, sentId: String?, onShown: () -> Unit, indexOf: (String) -> Int) {
+    val currentIndexOf by rememberUpdatedState(indexOf)
+    val shown by rememberUpdatedState(onShown)
+    LaunchedEffect(sentId) {
+        val id = sentId ?: return@LaunchedEffect
+        val index = kotlinx.coroutines.withTimeoutOrNull(3_000) { snapshotFlow { currentIndexOf(id) }.first { it >= 0 } }
+        if (index != null) listState.animateScrollToItem(index)
+        shown()
+    }
+}
+
 /** 一覧の終わり近くまでスクロールしたら、さらに古いものを読む。件数は常に最新の値で判定する。 */
 @Composable
 private fun LoadOlderEffect(listState: LazyListState, itemCount: Int, canLoadOlder: Boolean, onLoadOlder: () -> Unit) {
@@ -773,19 +883,80 @@ private fun LoadOlderEffect(listState: LazyListState, itemCount: Int, canLoadOld
 }
 
 /**
- * 一覧の表示域の高さが変わったら（キーボードの出し入れ）、その分だけスクロールして下端の位置を保つ。
- * 上から並べる一覧は、そのままだとキーボードを出したときに下の方（最新の返信）が隠れる。
+ * 開いたときは一番下（最新の返信）を見せる。返信や画像が後から届いて下に伸びた分も、
+ * 利用者が一覧を指で動かすまでは一番下へ追う。
+ *
+ * 配置ごとの [LazyListState.layoutInfo] を見て、まだ下へ進めるなら最後の行の末尾へ移る。
+ * 行を足した直後の scrollToItem は前の行数で丸められるが、次の配置でまた進めるので最後には一番下に着く。
  */
 @Composable
-private fun KeepBottomOnResize(listState: LazyListState) {
+private fun FollowBottomUntilDragged(listState: LazyListState) {
+    var follow by remember(listState) { mutableStateOf(true) }
     LaunchedEffect(listState) {
-        var previous = 0
-        snapshotFlow { listState.layoutInfo.viewportSize.height }
-            .collect { height ->
-                val shrunk = previous - height
-                if (previous > 0 && shrunk != 0) listState.scrollBy(shrunk.toFloat())
-                previous = height
+        listState.interactionSource.interactions
+            .first { it is androidx.compose.foundation.interaction.DragInteraction.Start }
+        follow = false
+    }
+    LaunchedEffect(listState) {
+        snapshotFlow { listState.layoutInfo }
+            .collect { info ->
+                if (follow && listState.canScrollForward && info.totalItemsCount > 0) {
+                    listState.scrollUnlessPreempted { scrollToItem(info.totalItemsCount - 1, Int.MAX_VALUE) }
+                }
             }
+    }
+}
+
+/**
+ * チャンネルの画面の「スレッドへの返信」の投稿。最新の返信を送った時刻の位置に、元の投稿をそのまま出し、
+ * その下に最新の返信を「╰」を付けて字下げして出す（タイムラインタブの会話の行と同じ形）。
+ * 押すとスレッドを開く。リアクションなどの操作はスレッドの画面で行う。
+ */
+@Composable
+private fun ThreadNoticeRow(
+    message: GroupMessage,
+    profiles: Map<String, NostrProfile>,
+    flavor: GroupFlavor,
+    actions: MessageRowActions,
+    onClick: () -> Unit,
+) {
+    val notice = message.threadNotice ?: return
+    val muted = MaterialTheme.colorScheme.onSurfaceVariant
+    val bodyActions = remember(actions) { actions.toTimelineBodyActions() }
+    Surface(
+        shape = RoundedCornerShape(12.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f),
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 6.dp),
+    ) {
+        Column(
+            modifier = Modifier
+                .clickable(onClickLabel = "スレッドを開く", onClick = onClick)
+                .padding(horizontal = 8.dp, vertical = 10.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Outlined.ChatBubbleOutline, contentDescription = null, tint = muted, modifier = Modifier.size(14.dp))
+                Spacer(Modifier.width(6.dp))
+                Text("スレッドに新しい返信", style = MaterialTheme.typography.labelMedium, color = muted)
+            }
+            val root = notice.root
+            if (root != null) {
+                TimelinePost(root, flavor, "", profiles, bodyActions, avatarSize = 40, collapse = BodyCollapse.Channel)
+            } else {
+                Text("元の投稿を読み込み中…", style = MaterialTheme.typography.bodySmall, color = muted, modifier = Modifier.padding(start = 48.dp))
+            }
+            Row(modifier = Modifier.padding(start = 48.dp)) {
+                Text("╰", style = MaterialTheme.typography.bodyMedium, color = muted)
+                Spacer(Modifier.width(6.dp))
+                TimelinePost(message, flavor, "", profiles, bodyActions, avatarSize = 28, collapse = BodyCollapse.ReplyPreview)
+            }
+            Text(
+                "💬 返信 ${notice.count}件 ▸",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.padding(start = 48.dp),
+            )
+        }
     }
 }
 
@@ -798,17 +969,38 @@ private fun ThreadList(
     flavor: GroupFlavor,
     canWrite: Boolean,
     actions: MessageRowActions,
+    collapsedAuthors: Set<String>,
+    sentEventId: String?,
+    onSentShown: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val today = rememberToday()
     val rows = remember(replies) { messageTimeline(replies) }
+    // 押して開いたミュート中の人の発言。
+    var expanded by remember { mutableStateOf(emptySet<String>()) }
+    fun isCollapsed(message: GroupMessage) = message.author in collapsedAuthors && message.event.id !in expanded
+    fun expand(message: GroupMessage) { expanded = expanded + message.event.id }
     val listState = rememberLazyListState()
     KeepBottomOnResize(listState)
+    FollowBottomUntilDragged(listState)
+    // 一覧の先頭は元の発言（読み込み中はくるくる）の1行。
+    ScrollToSentPost(listState, sentEventId, onSentShown) { id ->
+        rows.indexOfFirst { it is ChatTimelineItem.Message && it.message.event.id == id }.let { if (it < 0) -1 else it + 1 }
+    }
+    // 元の発言も返信もまだ届いていない間は、くるくるの代わりに発言の形を出す。
+    if (root == null && replies.isEmpty()) {
+        ChatMessageSkeleton(modifier = modifier.dismissKeyboardOnListTouch(), alignBottom = false)
+        return
+    }
     LazyColumn(state = listState, modifier = modifier.fillMaxSize().dismissKeyboardOnListTouch(), contentPadding = PaddingValues(vertical = 8.dp)) {
         if (root != null) {
             item(key = "root") {
                 val rootTime = chatDayLabel(chatLocalDate(root.event.createdAt), today) + " " + chatClockTime(root.event.createdAt)
-                MessageRow(root, profiles[root.author], null, grouped = false, isOwn = root.event.pubkey == ownPubkey, canWrite = canWrite, flavor = flavor, actions = actions, showThreadLink = false, timeLabel = rootTime)
+                MessageRow(
+                    root, profiles[root.author], null, grouped = false, isOwn = root.event.pubkey == ownPubkey, canWrite = canWrite, flavor = flavor, actions = actions,
+                    showThreadLink = false, timeLabel = rootTime, profiles = profiles,
+                    onExpandMuted = if (isCollapsed(root)) ({ expand(root) }) else null,
+                )
                 HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
                 Text(
                     "返信 ${replies.size}件",
@@ -830,10 +1022,25 @@ private fun ThreadList(
                 is ChatTimelineItem.Message -> MessageRow(
                     item.message, profiles[item.message.author], null, grouped = item.grouped,
                     isOwn = item.message.event.pubkey == ownPubkey, canWrite = canWrite, flavor = flavor, actions = actions, showThreadLink = false,
+                    profiles = profiles,
+                    onExpandMuted = if (isCollapsed(item.message)) ({ expand(item.message) }) else null,
                 )
             }
         }
     }
+}
+
+/** ミュート中の人の発言の本文の代わりに出す。押すと本文を開く。 */
+@Composable
+private fun MutedMessageBody(onExpand: () -> Unit) {
+    Text(
+        "ミュートしています",
+        style = MaterialTheme.typography.bodyMedium,
+        color = MaterialTheme.colorScheme.error,
+        modifier = Modifier
+            .clickable(onClickLabel = "表示する", onClick = onExpand)
+            .padding(vertical = 2.dp),
+    )
 }
 
 @Composable
@@ -844,6 +1051,8 @@ private fun ForumList(
     canLoadOlder: Boolean,
     onLoadOlder: () -> Unit,
     onOpen: (GroupMessage) -> Unit,
+    sentEventId: String?,
+    onSentShown: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     if (posts.isEmpty()) {
@@ -854,6 +1063,7 @@ private fun ForumList(
     }
     val listState = rememberLazyListState()
     LoadOlderEffect(listState, itemCount = posts.size, canLoadOlder = canLoadOlder, onLoadOlder = onLoadOlder)
+    ScrollToSentPost(listState, sentEventId, onSentShown) { id -> posts.indexOfFirst { it.event.id == id } }
     LazyColumn(state = listState, modifier = modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 88.dp)) {
         items(posts, key = { it.event.id }) { post ->
             Column(
@@ -898,6 +1108,12 @@ private fun MessageRow(
     timeLabel: String = chatClockTime(message.event.createdAt),
     /** 発言を押したとき（Buzz のチャンネルではスレッドを開く）。null なら何もしない。 */
     onClick: (() -> Unit)? = null,
+    /** 本文のメンションの名前に使う。 */
+    profiles: Map<String, NostrProfile> = emptyMap(),
+    /** ミュート中の人の発言を折りたたんでいるなら、開く操作。本文の代わりに「ミュートしています」を出す。 */
+    onExpandMuted: (() -> Unit)? = null,
+    /** 長い本文を畳む基準（チャンネルの画面は短め）。 */
+    collapse: BodyCollapse = BodyCollapse.Feed,
 ) {
     var menuOpen by remember { mutableStateOf(false) }
     if (menuOpen && canWrite) {
@@ -911,7 +1127,7 @@ private fun MessageRow(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .combinedClickable(onClickLabel = if (onClick != null) "スレッドを開く" else null, onClick = { onClick?.invoke() }, onLongClick = { menuOpen = true })
+                .combinedClickable(onClickLabel = if (onClick != null) "スレッドを開く" else null, onClick = { onClick?.invoke() }, onLongClick = { if (onExpandMuted == null) menuOpen = true })
                 .padding(start = 12.dp, end = 12.dp, top = if (grouped) 2.dp else 10.dp, bottom = 2.dp),
         ) {
             Box(modifier = Modifier.width(40.dp)) {
@@ -940,6 +1156,10 @@ private fun MessageRow(
                         Spacer(Modifier.width(6.dp))
                         Text(timeLabel, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
+                }
+                if (onExpandMuted != null) {
+                    MutedMessageBody(onExpand = onExpandMuted)
+                    return@Column
                 }
                 message.sentFromThreadLabel?.let { label ->
                     Text(
@@ -976,6 +1196,11 @@ private fun MessageRow(
                         onBuzzLink = actions.onBuzzLink,
                         imagesUnlocked = actions.imagesUnlocked,
                         emojis = message.emojis,
+                        collapsible = true,
+                        collapse = collapse,
+                        mentionNames = rememberMentionNames(message, profiles),
+                        onMentionClick = actions.onUserClick,
+                        profileName = { profiles[it]?.bestName },
                     )
                 } else {
                     StandardMessageBody(message, onUserClick = actions.onUserClick)
@@ -997,6 +1222,16 @@ private fun MessageRow(
                 }
                 if (message.reactions.isNotEmpty()) {
                     GroupReactionChips(message, canWrite, actions)
+                }
+                // 返信がすぐ付いたスレッドは、最新の返信をここに出す（離れていればチャンネルの下の方に別の枠で出る）。
+                val latestReply = message.latestThreadReply
+                if (showThreadLink && latestReply != null) {
+                    val bodyActions = remember(actions) { actions.toTimelineBodyActions() }
+                    Row(modifier = Modifier.padding(top = 6.dp)) {
+                        Text("╰", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Spacer(Modifier.width(6.dp))
+                        TimelinePost(latestReply, flavor, "", profiles, bodyActions, avatarSize = 28, collapse = BodyCollapse.ReplyPreview)
+                    }
                 }
                 if (showThreadLink && message.threadReplyCount > 0) {
                     Text(
@@ -1187,6 +1422,7 @@ private fun GroupComposer(
     onAttach: () -> Unit,
     onPasteImage: () -> Unit,
     onRemoveAttachment: (com.nostr.torinos.chat.MessageAttachment) -> Unit,
+    mention: MentionSupport? = null,
 ) {
     when (state.composer) {
         GroupComposerState.Writable -> if (showComposer) Column {
@@ -1237,6 +1473,18 @@ private fun GroupComposer(
                 } else {
                     null
                 },
+                aboveInput = mention?.let { support ->
+                    { value, replace -> MentionSuggestions(support, value, replace) }
+                },
+                visualTransformation = mention?.picked?.takeIf { it.isNotEmpty() }?.let { picked ->
+                    val color = MaterialTheme.colorScheme.primary
+                    remember(picked, color) { MentionHighlight(picked, color) }
+                } ?: androidx.compose.ui.text.input.VisualTransformation.None,
+                // 長押しメニューからも画像を貼れるようにする（＋ボタンの「貼り付け」と同じ。編集中は添付できない）。
+                textFieldModifier = Modifier.imagePasteMenuItem(
+                    enabled = state.editing == null && !state.isUploading,
+                    onPasteImage = onPasteImage,
+                ),
             )
         }
         GroupComposerState.JoinToWrite -> ComposerNotice("このグループに参加すると書き込めます", action = "参加する", onAction = onJoin)
@@ -1248,6 +1496,92 @@ private fun GroupComposer(
         )
         GroupComposerState.NoSigner -> ComposerNotice("書き込むには署名できるアカウントでログインしてください", action = null, onAction = {})
         GroupComposerState.Checking -> ComposerNotice("参加状況を確認しています…", action = null, onAction = {})
+    }
+}
+
+/** Buzz のメンションの候補を出すための材料。 */
+private class MentionSupport(
+    val candidates: (query: String) -> List<com.nostr.torinos.chat.MentionCandidate>,
+    val profiles: Map<String, NostrProfile>,
+    /** 候補を出した。メンバーのプロフィールを読み始める。 */
+    val onShown: () -> Unit,
+    val onPicked: (com.nostr.torinos.chat.MentionCandidate) -> Unit,
+    /** 選んだ人。入力欄の `@表示名` に色を付ける。 */
+    val picked: List<com.nostr.torinos.chat.MentionCandidate> = emptyList(),
+)
+
+/** 選んだ人の `@表示名` を、本文のメンションと同じ色で示す。文字は変えないので位置の対応はそのまま。 */
+private class MentionHighlight(
+    private val picked: List<com.nostr.torinos.chat.MentionCandidate>,
+    private val color: androidx.compose.ui.graphics.Color,
+) : androidx.compose.ui.text.input.VisualTransformation {
+    override fun filter(text: androidx.compose.ui.text.AnnotatedString): androidx.compose.ui.text.input.TransformedText {
+        val ranges = com.nostr.torinos.chat.pickedMentionRanges(text.text, picked)
+        if (ranges.isEmpty()) return androidx.compose.ui.text.input.TransformedText(text, androidx.compose.ui.text.input.OffsetMapping.Identity)
+        val styled = androidx.compose.ui.text.AnnotatedString.Builder(text).apply {
+            ranges.forEach { addStyle(androidx.compose.ui.text.SpanStyle(color = color), it.first, it.last + 1) }
+        }.toAnnotatedString()
+        return androidx.compose.ui.text.input.TransformedText(styled, androidx.compose.ui.text.input.OffsetMapping.Identity)
+    }
+
+    override fun equals(other: Any?): Boolean = other is MentionHighlight && other.picked == picked && other.color == color
+    override fun hashCode(): Int = picked.hashCode() * 31 + color.hashCode()
+}
+
+/** カーソルの直前が `@…` のとき、入力欄の上にメンバーの候補を出す。選ぶと `@表示名 ` に置き換える。 */
+@Composable
+private fun MentionSuggestions(
+    support: MentionSupport,
+    value: androidx.compose.ui.text.input.TextFieldValue,
+    replace: (androidx.compose.ui.text.input.TextFieldValue) -> Unit,
+) {
+    val query = if (value.selection.collapsed) com.nostr.torinos.chat.activeMentionQuery(value.text, value.selection.start) else null
+    if (query == null) return
+    LaunchedEffect(Unit) { support.onShown() }
+    val candidates = support.candidates(query.query)
+    if (candidates.isEmpty()) return
+    Surface(
+        shape = RoundedCornerShape(16.dp),
+        color = MaterialTheme.colorScheme.surfaceContainerHigh,
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        LazyColumn(modifier = Modifier.heightIn(max = 240.dp)) {
+            items(candidates, key = { it.pubkey }) { candidate ->
+                val profile = support.profiles[candidate.pubkey]
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable(onClickLabel = "${candidate.name} をメンション") {
+                            val inserted = com.nostr.torinos.chat.insertMention(value.text, query, value.selection.start, candidate.name)
+                            support.onPicked(candidate)
+                            replace(
+                                androidx.compose.ui.text.input.TextFieldValue(
+                                    inserted.text,
+                                    androidx.compose.ui.text.TextRange(inserted.cursor),
+                                ),
+                            )
+                        }
+                        .padding(horizontal = 12.dp, vertical = 8.dp),
+                ) {
+                    ChatAvatar(pubkey = candidate.pubkey, name = candidate.name, pictureUrl = profile?.picture, size = 32)
+                    Spacer(Modifier.width(10.dp))
+                    Column(Modifier.weight(1f)) {
+                        Text(candidate.name, style = MaterialTheme.typography.bodyLarge, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        val handle = profile?.name?.takeIf { it.isNotBlank() && it != candidate.name }
+                        if (handle != null) {
+                            Text(
+                                "@$handle",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -1299,8 +1633,13 @@ private fun AttachImageButton(enabled: Boolean, onPick: () -> Unit, onPaste: () 
             onClick = { if (com.nostr.torinos.crypto.isWebPlatform) onPick() else open = true },
             enabled = enabled,
             modifier = Modifier.size(40.dp),
+            shape = androidx.compose.foundation.shape.CircleShape,
+            colors = androidx.compose.material3.IconButtonDefaults.filledTonalIconButtonColors(
+                containerColor = MaterialTheme.colorScheme.surfaceVariant,
+                contentColor = MaterialTheme.colorScheme.onSurface,
+            ),
         ) {
-            Icon(Icons.Default.Image, contentDescription = "画像を添付")
+            Icon(Icons.Default.Add, contentDescription = "画像を添付")
         }
         com.nostr.torinos.ui.components.HeaderDropdownMenu(expanded = open, onDismissRequest = { open = false }) {
             com.nostr.torinos.ui.components.HeaderDropdownMenuItem(

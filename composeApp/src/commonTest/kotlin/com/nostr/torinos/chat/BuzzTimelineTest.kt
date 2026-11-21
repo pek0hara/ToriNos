@@ -19,7 +19,7 @@ class BuzzTimelineTest {
     private fun timeline() = GroupTimeline("g", me, GroupFlavor.Buzz, relayPubkey = relayKey)
 
     @Test
-    fun threadRepliesAreCountedOnTheRootNotShownInline() {
+    fun quickThreadRepliesAreShownUnderTheRootNotAsANoticeRow() {
         val t = timeline()
         t.add(listOf(
             ev(1, 9, emptyList(), "root"),
@@ -27,9 +27,11 @@ class BuzzTimelineTest {
             ev(3, 9, listOf(listOf("e", id(1), "", "root"), listOf("e", id(2), "", "reply")), "nested"),
         ))
 
-        val messages = t.snapshot().messages
-        assertEquals(listOf(id(1)), messages.map { it.event.id })
-        assertEquals(2, messages.single().threadReplyCount)
+        val root = t.snapshot().messages.single()
+        assertEquals(id(1), root.event.id)
+        assertEquals(2, root.threadReplyCount)
+        assertNull(root.threadNotice)
+        assertEquals("nested", root.latestThreadReply?.body)
         assertEquals(listOf(id(2), id(3)), t.thread(id(1)).replies.map { it.event.id })
         assertEquals("root", t.thread(id(1)).root?.body)
     }
@@ -204,5 +206,151 @@ class BuzzTimelineTest {
         val t = timeline()
         t.add(listOf(NostrEvent(id(1), alice, 1, 9, emptyList(), "stray", "sig")))
         assertTrue(t.snapshot().messages.isEmpty())
+    }
+
+    /** [from] から [count] 件の普通の発言（ID と時刻は [from] から順に）。 */
+    private fun chats(from: Int, count: Int) = (from until from + count).map { ev(it, 9, emptyList(), "chat $it") }
+
+    private fun reply(n: Int, root: Int, content: String = "reply $n", pubkey: String = alice) =
+        ev(n, 9, listOf(listOf("e", id(root), "", "reply")), content, pubkey = pubkey)
+
+    @Test
+    fun replyWithFiveMessagesBetweenStaysUnderTheRoot() {
+        val t = timeline()
+        t.add(listOf(ev(1, 9, emptyList(), "root")) + chats(10, 5) + reply(20, 1, "late"))
+
+        val messages = t.snapshot().messages
+        assertEquals(6, messages.size)
+        assertEquals("late", messages.first().latestThreadReply?.body)
+        assertTrue(messages.all { it.threadNotice == null })
+    }
+
+    @Test
+    fun replyWithMoreThanFiveMessagesBetweenIsShownAtTheTimeItWasSent() {
+        val t = timeline()
+        t.add(listOf(ev(1, 9, emptyList(), "root")) + chats(10, 6) + reply(20, 1, "late", pubkey = me) + chats(30, 1))
+
+        val messages = t.snapshot().messages
+        assertEquals(listOf("root") + (10..15).map { "chat $it" } + listOf("late", "chat 30"), messages.map { it.body })
+        assertNull(messages.first().latestThreadReply)
+        assertEquals(id(1), messages[7].threadNotice?.rootId)
+        assertEquals("root", messages[7].threadNotice?.root?.body)
+        assertEquals(1, messages[7].threadNotice?.count)
+        assertEquals(id(1), messages[7].openThreadRootId)
+    }
+
+    @Test
+    fun onlyTheLatestReplyOfEachThreadIsShown() {
+        val t = timeline()
+        t.add(
+            listOf(ev(1, 9, emptyList(), "root"), reply(2, 1, "r1")) + chats(10, 6) +
+                listOf(reply(20, 1, "r2"), ev(21, 9, emptyList(), "other root"), reply(22, 1, "r3"), reply(23, 21, "other reply")),
+        )
+
+        val messages = t.snapshot().messages
+        assertEquals(listOf("root") + (10..15).map { "chat $it" } + listOf("other root", "r3"), messages.map { it.body })
+        assertEquals(3, messages.last().threadNotice?.count)
+        assertEquals("other reply", messages[7].latestThreadReply?.body)
+    }
+
+    @Test
+    fun noticeWithoutLoadedRootStillOpensTheThread() {
+        val t = timeline()
+        t.add(listOf(reply(2, 1, "reply")))
+
+        val notice = t.snapshot().messages.single().threadNotice!!
+        assertEquals(id(1), notice.rootId)
+        assertNull(notice.root)
+        assertEquals(setOf(id(1)), t.missingThreadRoots())
+    }
+
+    @Test
+    fun rootReadSeparatelyIsQuotedButNotPlacedInTheChannel() {
+        val t = timeline()
+        t.add(listOf(reply(2, 1, "reply")))
+        t.addThreadRoots(listOf(ev(1, 9, emptyList(), "old root", pubkey = me)))
+
+        val messages = t.snapshot().messages
+        assertEquals(listOf(id(2)), messages.map { it.event.id })
+        assertEquals("old root", messages.single().threadNotice?.root?.body)
+        assertTrue(t.missingThreadRoots().isEmpty())
+        // スレッドの画面でも元の発言として使う。
+        assertEquals("old root", t.thread(id(1)).root?.body)
+    }
+
+    @Test
+    fun olderRepliesReadSeparatelyAreCountedButTopLevelOnesAreNotPlaced() {
+        val t = timeline()
+        t.add(listOf(reply(20, 1, "latest")))
+        t.addThreadRoots(listOf(ev(1, 9, emptyList(), "old root")))
+        t.addThreadReplies(listOf(
+            reply(2, 1, "old reply"),
+            reply(3, 1, "older copy"),
+            // `e` で元の発言を指していても返信でないものは、チャンネルの並びに入れない。
+            ev(4, 9, listOf(listOf("e", id(1))), "mention"),
+        ))
+        t.addThreadReplies(listOf(reply(3, 1, "older copy")))
+
+        val messages = t.snapshot().messages
+        assertEquals(listOf("latest"), messages.map { it.body })
+        assertEquals(3, messages.single().threadNotice?.count)
+        assertEquals(3, t.thread(id(1)).replies.size)
+    }
+
+    @Test
+    fun deletionOfARootReadSeparatelyHidesItsReplies() {
+        val t = timeline()
+        t.add(listOf(reply(2, 1, "reply"), ev(3, 5, listOf(listOf("e", id(1))), pubkey = me)))
+        t.addThreadRoots(listOf(ev(1, 9, emptyList(), "old root", pubkey = me)))
+
+        assertTrue(t.snapshot().messages.isEmpty())
+    }
+
+    @Test
+    fun replyAlreadyCopiedToTheChannelIsNotShownTwice() {
+        val t = timeline()
+        t.add(listOf(
+            ev(1, 9, emptyList(), "root"),
+            reply(2, 1, "reply"),
+            ev(3, 9, listOf(listOf("buzz:sent-from-thread", id(1), "root"), listOf("buzz:copy-of", id(2))), "reply"),
+        ))
+
+        val messages = t.snapshot().messages
+        assertEquals(listOf(id(1), id(3)), messages.map { it.event.id })
+        assertNull(messages.first().latestThreadReply)
+    }
+
+    @Test
+    fun mutedPeopleAreLeftOut() {
+        val t = timeline()
+        t.add(
+            listOf(ev(1, 9, emptyList(), "root"), reply(2, 1, "r1")) +
+                (10 until 20).map { ev(it, 9, emptyList(), "muted chat", pubkey = actor) } +
+                listOf(reply(20, 1, "muted reply", pubkey = actor), ev(21, 9, emptyList(), "muted root", pubkey = actor), reply(22, 21, "reply to muted")),
+        )
+
+        // ミュートした人の発言は間の数にも入れない。
+        val messages = t.snapshot(muted = setOf(actor)).messages
+        assertEquals(listOf("root"), messages.map { it.body })
+        assertEquals("r1", messages.single().latestThreadReply?.body)
+    }
+
+    @Test
+    fun repliesToADeletedRootAreNotShownInTheChannel() {
+        val t = timeline()
+        t.add(listOf(
+            ev(1, 9, emptyList(), "root"),
+            reply(2, 1, "reply"),
+            ev(3, 5, listOf(listOf("e", id(1)))),
+        ))
+
+        assertTrue(t.snapshot().messages.isEmpty())
+    }
+
+    @Test
+    fun standardFlavorHasNoNotices() {
+        val t = GroupTimeline("g", me, GroupFlavor.Standard, relayPubkey = null)
+        t.add(listOf(ev(1, 9, emptyList(), "a"), ev(2, 9, listOf(listOf("q", id(1), "", alice)), "b")))
+        assertTrue(t.snapshot().messages.all { it.threadNotice == null && it.latestThreadReply == null })
     }
 }

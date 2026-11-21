@@ -19,3 +19,9 @@ actual suspend fun Clipboard.setSensitiveText(text: String) {
 }
 
 private const val ExtraIsSensitive = "android.content.extra.IS_SENSITIVE"
+
+actual suspend fun Clipboard.getPlainText(): String? {
+    val clip = getClipEntry()?.clipData ?: return null
+    if (clip.itemCount == 0) return null
+    return clip.getItemAt(0).text?.toString()
+}

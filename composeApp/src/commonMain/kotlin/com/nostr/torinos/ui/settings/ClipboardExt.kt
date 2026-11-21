@@ -6,3 +6,6 @@ expect suspend fun Clipboard.setPlainText(text: String)
 
 /** 秘密鍵など、クリップボードのプレビューや履歴に表示させたくない文字列をコピーする。 */
 expect suspend fun Clipboard.setSensitiveText(text: String)
+
+/** クリップボードの文字列を読む。文字列が無いときや読めないときは null。 */
+expect suspend fun Clipboard.getPlainText(): String?

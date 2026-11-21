@@ -56,12 +56,16 @@ internal fun decodeAuthRelays(stored: String?): Set<String> =
 
 internal fun encodeAuthRelays(relays: Set<String>): String = relays.sorted().joinToString("\n")
 
-/** NIP-42 で認証してよいリレー。ユーザーが許可したリレーと、参加中のグループのリレー。 */
+/**
+ * NIP-42 で認証してよいリレー。ユーザーが許可したリレーと、参加中のグループのリレー。
+ * [restoring] は、自分の kind 10009 の暗号化項目から復元を確かめている Buzz のリレー。
+ */
 internal fun authAllowedRelays(
     consented: Set<String>,
     joined: List<JoinedGroup>,
     buzzCommunities: Set<String> = emptySet(),
-): Set<String> = consented + joined.map { it.ref.relayUrl } + buzzCommunities
+    restoring: Set<String> = emptySet(),
+): Set<String> = consented + joined.map { it.ref.relayUrl } + buzzCommunities + restoring
 
 /** Buzz コミュニティに参加済みかを確かめた結果。 */
 sealed interface BuzzMembershipCheck {
@@ -114,7 +118,10 @@ private val GROUPS_RETRY_DELAYS_MILLIS = listOf(5_000L, 15_000L, 45_000L)
 
 internal sealed interface GroupsListChange {
     data class Add(val group: JoinedGroup) : GroupsListChange
-    data class Remove(val ref: GroupRef) : GroupsListChange
+    /** [keepRelays] は参加中の Buzz コミュニティ。そのリレーの `r` は残す。 */
+    data class Remove(val ref: GroupRef, val keepRelays: Set<String> = emptySet()) : GroupsListChange
+    /** Buzz コミュニティの `r` を暗号化項目へ足す（docs/buzz-community-sync-design.md）。 */
+    data class AddPrivateRelays(val relays: Set<String>) : GroupsListChange
 }
 
 internal data class GroupsListUpdate(
@@ -141,12 +148,16 @@ internal fun applyGroupsListChange(
         )
     }
     is GroupsListChange.Remove -> {
-        val nextPrivate = withoutJoinedGroup(privateTags, change.ref)
+        val nextPrivate = withoutJoinedGroup(privateTags, change.ref, change.keepRelays)
         GroupsListUpdate(
-            publicTags = withoutJoinedGroup(publicTags, change.ref),
+            publicTags = withoutJoinedGroup(publicTags, change.ref, change.keepRelays),
             privateTags = nextPrivate,
             privateChanged = nextPrivate != privateTags,
         )
+    }
+    is GroupsListChange.AddPrivateRelays -> {
+        val nextPrivate = withPrivateRelays(privateTags, change.relays)
+        GroupsListUpdate(publicTags = publicTags, privateTags = nextPrivate, privateChanged = nextPrivate != privateTags)
     }
 }
 
@@ -186,8 +197,20 @@ class ChatAccount internal constructor(
     private val pendingKey = "chat.pendingGroups.$pubkey"
     private val buzzKey = "chat.buzzCommunities.$pubkey"
     private val _buzz = MutableStateFlow<Set<String>>(emptySet())
-    /** 参加中の Buzz コミュニティ（リレーの URL）。端末にだけ保存する（kind 10009 には入れない）。 */
+    /**
+     * 参加中の Buzz コミュニティ（リレーの URL）。端末に保存し、kind 10009 の暗号化項目の `r` と合わせる
+     * （docs/buzz-community-sync-design.md）。
+     */
     val buzzCommunities: StateFlow<Set<String>> = _buzz.asStateFlow()
+    private val buzzSyncStateKey = "chat.buzzSync.state.$pubkey"
+    private val buzzNotMemberKey = "chat.buzzSync.notMember.$pubkey"
+    private val _restoringBuzz = MutableStateFlow<Set<String>>(emptySet())
+    /** kind 10009 から復元を確かめている Buzz のリレー（確認中）。メモリだけに持つ。 */
+    val restoringBuzz: StateFlow<Set<String>> = _restoringBuzz.asStateFlow()
+    private val buzzSyncMutex = Mutex()
+    /** タブを開いたときに、一覧が確かに読めていなかった。読めたら合わせる。 */
+    @kotlin.concurrent.Volatile
+    private var buzzSyncPending = false
     private val blossomTokens = BlossomTokenCache()
     /** グループの画面を開き直したときに先に出す控え。アカウントをまたいで使わない。 */
     val roomCache = GroupRoomCache()
@@ -289,7 +312,8 @@ class ChatAccount internal constructor(
     }
 
     fun isAuthAllowed(relayUrl: String): Boolean =
-        relayUrl in authAllowedRelays(consented.value, _joined.value, _buzz.value) || relayUrl in extraAuthRelays()
+        relayUrl in authAllowedRelays(consented.value, _joined.value, _buzz.value, _restoringBuzz.value) ||
+            relayUrl in extraAuthRelays()
 
     suspend fun addBuzzCommunity(relayUrl: String) {
         val url = normalizeRelayUrl(relayUrl) ?: return
@@ -442,6 +466,7 @@ class ChatAccount internal constructor(
             _loaded.value = true
         }
         _joined.value.forEach { NostrRepository.onRelayAuthPolicyChanged(it.ref.relayUrl) }
+        if (buzzSyncPending && listConfirmed && !closed) syncBuzzCommunities()
     }
 
     private suspend fun applyGroupsLoad(outcome: GroupsLoad) {
@@ -529,7 +554,7 @@ class ChatAccount internal constructor(
     /** 退出はユーザーの操作。非公開の項目からも外す。 */
     suspend fun recordLeft(ref: GroupRef) {
         clearPending(ref)
-        updateList(GroupsListChange.Remove(ref), userInitiated = true)
+        updateList(GroupsListChange.Remove(ref, keepRelays = _buzz.value), userInitiated = true)
     }
 
     private suspend fun updateList(change: GroupsListChange, userInitiated: Boolean) {
@@ -538,7 +563,16 @@ class ChatAccount internal constructor(
         check(listConfirmed) { "参加中のグループの一覧を読めなかったため、保存できませんでした" }
         mutex.withLock {
             val base = latestList
-            val currentPrivate = base?.let { privateTags(it, allowPrompt = userInitiated) }.orEmpty()
+            // 暗号化項目は読めたときだけ書き換える。読めないのを空として扱うと、ほかのクライアントが入れた項目を消してしまう。
+            val readPrivate: List<List<String>>? = when {
+                base == null -> emptyList()
+                !(signsSilently || userInitiated) && base.content.isNotBlank() -> null
+                else -> readPrivateTagsStrict(base.content) { signer.decrypt(it, pubkey) }
+            }
+            check(readPrivate != null || change !is GroupsListChange.AddPrivateRelays) {
+                "非公開の一覧を読めなかったため、保存できませんでした"
+            }
+            val currentPrivate = readPrivate.orEmpty()
             val update = applyGroupsListChange(base?.tags.orEmpty(), currentPrivate, change)
             if (base != null && update.publicTags == base.tags && !update.privateChanged) return
             val content = if (update.privateChanged) {
@@ -550,9 +584,130 @@ class ChatAccount internal constructor(
             NostrRepository.publish(event)
             latestList = event
             _joined.value = parseJoinedGroups(event.tags + update.privateTags)
+            // 自分で書いた版は中身が分かっているので、次にタブを開いたときに復号し直さない。
+            if (readPrivate != null) {
+                saveBuzzSyncState(BuzzSyncState(event.id, buzzRelayCandidates(event.tags, update.privateTags)))
+            }
         }
         // 参加・退出で書き換えた一覧に合わせて、控えも直す（最後のグループを抜けたら DM が主役に戻る）。
         setGroupsExpected(_joined.value.isNotEmpty())
+    }
+
+    // ---- Buzz コミュニティの同期（docs/buzz-community-sync-design.md） ----
+
+    /**
+     * チャットタブを開いたときに呼ぶ。kind 10009 の暗号化項目の `r` と端末の一覧を合わせる。
+     * アカウントのスコープで最後まで行い、同時には1回だけ走らせる。一覧が確かに読めていなければ、読めたときに行う。
+     */
+    fun syncBuzzCommunities() {
+        buzzSyncPending = true
+        scope.launch {
+            if (!buzzSyncMutex.tryLock()) return@launch
+            try {
+                awaitReady()
+                runBuzzSync()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                logException("ChatAccount", e, "failed to sync buzz communities")
+            } finally {
+                buzzSyncMutex.unlock()
+            }
+        }
+    }
+
+    /** Buzz コミュニティに参加できた。10009 の暗号化項目へ書き足す（失敗しても参加は成功。次にタブを開いたときに書き直す）。 */
+    fun recordBuzzJoined(relayUrl: String) {
+        val url = normalizeRelayUrl(relayUrl) ?: return
+        scope.launch {
+            try {
+                updateList(GroupsListChange.AddPrivateRelays(setOf(url)), userInitiated = true)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                logException("ChatAccount", e, "failed to record buzz community")
+            }
+        }
+    }
+
+    private suspend fun runBuzzSync() {
+        val (base, confirmed) = mutex.withLock { latestList to listConfirmed }
+        if (!buzzSyncAllowed(confirmed)) return
+        buzzSyncPending = false
+        val stored = decodeBuzzSyncState(LocalSettingsStorage.getString(buzzSyncStateKey))
+        val listId = base?.id
+        val remote: Set<String> = when {
+            base == null -> emptySet()
+            !needsBuzzDecrypt(listId, base.content.isBlank(), stored) ->
+                if (base.content.isBlank()) buzzRelayCandidates(base.tags, emptyList()) else stored!!.remote
+            else -> {
+                // タブを開いたのは利用者の操作なので、外部の署名器でも復号を頼んでよい（同じ版では頼まない）。
+                val tags = readPrivateTagsStrict(base.content) { signer.decrypt(it, pubkey) } ?: return
+                buzzRelayCandidates(base.tags, tags)
+            }
+        }
+        if (listId != null) saveBuzzSyncState(BuzzSyncState(listId, remote))
+        val notMember = decodeBuzzNotMember(LocalSettingsStorage.getString(buzzNotMemberKey))
+        val plan = planBuzzSync(_buzz.value, remote, notMember, listId)
+        if (plan.toPublish.isNotEmpty()) {
+            try {
+                updateList(GroupsListChange.AddPrivateRelays(plan.toPublish), userInitiated = true)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                logException("ChatAccount", e, "failed to publish buzz communities")
+            }
+        }
+        // 前回から確認中のまま残っているものも、今回の候補に入っていなければ外す（10009 から消えた・ほかで参加した）。
+        _restoringBuzz.value = plan.toVerify
+        if (plan.toVerify.isEmpty()) return
+        plan.toVerify.forEach { NostrRepository.onRelayAuthPolicyChanged(it) }
+        coroutineScope {
+            plan.toVerify.forEach { url -> launch { verifyRestoredBuzz(url, listId) } }
+        }
+    }
+
+    /**
+     * 10009 にだけあった候補を確かめる。Buzz でメンバーなら端末の一覧に入れる。
+     * 分からない（NIP-11 を読めない、時間切れ）ときは確認中のまま残し、次にタブを開いたときに確かめ直す。
+     */
+    private suspend fun verifyRestoredBuzz(url: String, listId: String?) {
+        val decided = try {
+            val info = RelayInformationRepository.fetch(url).getOrNull()
+            when {
+                info == null -> false
+                groupFlavorOf(info.supportedExtensions) != GroupFlavor.Buzz -> {
+                    skipUntilListChanges(url, listId, "not a buzz relay")
+                    true
+                }
+                else -> when (val check = checkBuzzMembership(url)) {
+                    BuzzMembershipCheck.Member -> { addBuzzCommunity(url); true }
+                    is BuzzMembershipCheck.NotMember -> { skipUntilListChanges(url, listId, "not a member: ${check.reason}"); true }
+                    is BuzzMembershipCheck.Unknown -> false
+                }
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Throwable) {
+            logException("ChatAccount", e, "failed to verify restored buzz community")
+            false
+        }
+        if (!decided) return
+        _restoringBuzz.update { it - url }
+        // 確かめ終わったリレーは、参加中でなければ認証済みの接続を残さない。
+        if (url !in _buzz.value) NostrRepository.dropRelayAuthIfDisallowed(url)
+    }
+
+    /** 端末の一覧に入れないと決めた候補。10009 の版が変わるまで確かめ直さない（10009 からは消さない）。 */
+    private suspend fun skipUntilListChanges(url: String, listId: String?, reason: String) {
+        com.nostr.torinos.util.appLog("[BuzzSync] skip $url: $reason")
+        if (listId == null) return
+        val current = decodeBuzzNotMember(LocalSettingsStorage.getString(buzzNotMemberKey))
+        LocalSettingsStorage.putString(buzzNotMemberKey, encodeBuzzNotMember(current + (url to listId)))
+    }
+
+    private suspend fun saveBuzzSyncState(state: BuzzSyncState) {
+        LocalSettingsStorage.putString(buzzSyncStateKey, encodeBuzzSyncState(state))
     }
 
     // ---- 管理（docs/buzz-admin-design.md） ----

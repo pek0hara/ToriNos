@@ -9,13 +9,17 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.outlined.ChatBubbleOutline
+import androidx.compose.material.icons.outlined.SmartToy
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -26,6 +30,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -43,10 +48,13 @@ import com.nostr.torinos.network.ProfileRepository
 import com.nostr.torinos.ui.components.AppTab
 import kotlinx.coroutines.flow.flowOf
 
+/** 「グループ / タイムライン」の並び。タブと横スワイプのページで同じ順にする。 */
+internal val chatViewPages = listOf(ChatListView.Groups, ChatListView.Timeline)
+
 /** 「グループ / タイムライン」の切り替え。アプリ内の他のタブと同じ下線タブ（[AppTab]）。 */
 @Composable
 internal fun ChatViewToggle(view: ChatListView, onSelect: (ChatListView) -> Unit) {
-    val options = listOf(ChatListView.Groups to "グループ", ChatListView.Timeline to "タイムライン")
+    val options = chatViewPages.map { it to if (it == ChatListView.Groups) "グループ" else "タイムライン" }
     PrimaryTabRow(
         selectedTabIndex = options.indexOfFirst { it.first == view }.coerceAtLeast(0),
         containerColor = MaterialTheme.colorScheme.background,
@@ -67,26 +75,51 @@ internal fun ChatViewToggle(view: ChatListView, onSelect: (ChatListView) -> Unit
 @Composable
 internal fun ChatTimelineContent(
     state: ChatTimelineState,
+    /** 読み込み中（タイムラインか、その前の参加中の一覧）。空でも「投稿がありません」は出さず、前回の失敗も出さない。 */
+    loading: Boolean,
     ownPubkey: String?,
     onOpen: (ChatTimelineRow) -> Unit,
     onLoadOlder: () -> Unit,
+    /** null なら「bot を隠す」を出さない（Buzz のコミュニティだけで出す）。 */
+    onHideBotsChange: ((Boolean) -> Unit)?,
     actions: TimelineBodyActions,
 ) {
+    val listState = rememberLazyListState()
+    // 「bot を隠す」を切り替えると、上に行や見出し（「今日」）が増減する。LazyColumn は見えていた行の key で
+    // 位置を保つので、そのままだと先頭からずれる。切り替えは一番上の見出しにあるので、切り替えたら先頭へ戻す。
+    // SideEffect は変更の反映後・同じフレームの配置の前に動くので、requestScrollToItem が新しい行の配置に効く
+    // （ずれた位置が1フレームも出ない）。先頭なので行の数での丸めも起きない。
+    val seenHideBots = remember { booleanArrayOf(state.hideBots) }
+    SideEffect {
+        if (seenHideBots[0] != state.hideBots) {
+            seenHideBots[0] = state.hideBots
+            listState.requestScrollToItem(0)
+        }
+    }
     val people = remember(state.rows) {
         state.rows.flatMap { row ->
-            listOfNotNull(row.entry.conversation.root?.author, row.entry.conversation.latestReply?.author) +
-                row.group.metadata?.participants.orEmpty()
+            val posts = listOfNotNull(row.entry.conversation.root, row.entry.conversation.latestReply)
+            // Buzz の本文の `@表示名` は、メンションされた人の名前と照らし合わせてリンクにする。
+            val mentioned = if (row.group.flavor == com.nostr.torinos.chat.GroupFlavor.Buzz) {
+                posts.flatMap { com.nostr.torinos.chat.buzzProfileTargets(it.event) }
+            } else {
+                emptyList()
+            }
+            posts.map { it.author } + row.group.metadata?.participants.orEmpty() + mentioned
         }.toSet()
     }
     val profiles by remember(people) {
         if (people.isEmpty()) flowOf(emptyMap()) else ProfileRepository.observe(people)
     }.collectAsState(emptyMap())
+    // 読めなかったリレーは、読み直しが終わってからも答えなかったときだけ出す（読み直し中は前回の結果なので出さない）。
+    val failedRelays = if (loading) emptyList() else state.failedRelays
     when {
-        state.rows.isEmpty() && !state.loaded -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
+        state.rows.isEmpty() && (!state.loaded || loading) -> ChatMessageSkeleton(alignBottom = false)
         state.rows.isEmpty() -> Column(Modifier.fillMaxSize()) {
-            FailedRelaysNotice(state.failedRelays)
+            FailedRelaysNotice(failedRelays)
+            onHideBotsChange?.let { BotFilterRow(state.hideBots, state.hiddenBotPosts, it) }
             Text(
-                "参加中のグループに投稿がありません",
+                if (state.hideBots && onHideBotsChange != null) "bot 以外の投稿がありません" else "参加中のグループに投稿がありません",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 textAlign = TextAlign.Center,
@@ -97,11 +130,16 @@ internal fun ChatTimelineContent(
             val now = kotlin.time.Clock.System.now().epochSeconds
             val byKey = state.rows.associateBy { it.entry.key }
             val (today, earlier) = splitTodayEntries(state.rows.map { it.entry }, now)
-            LazyColumn(modifier = Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 88.dp)) {
-                if (state.failedRelays.isNotEmpty()) item(key = "tl-failed") { FailedRelaysNotice(state.failedRelays) }
-                listOf("今日" to today, "昨日以前" to earlier).forEach { (label, entries) ->
-                    if (entries.isEmpty()) return@forEach
-                    item(key = "tl-h-$label") { TimelineSectionHeader(label) }
+            LazyColumn(state = listState, modifier = Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 88.dp)) {
+                if (failedRelays.isNotEmpty()) item(key = "tl-failed") { FailedRelaysNotice(failedRelays) }
+                val sections = listOf("今日" to today, "昨日以前" to earlier).filter { it.second.isNotEmpty() }
+                sections.forEachIndexed { index, (label, entries) ->
+                    item(key = "tl-h-$label") {
+                        // 「bot を隠す」は一番上の見出しの右端に置く（専用の行を取らない）。
+                        TimelineSectionHeader(label) {
+                            if (index == 0) onHideBotsChange?.let { BotFilterToggle(state.hideBots, state.hiddenBotPosts, it) }
+                        }
+                    }
                     items(entries, key = { "tl-" + it.key }) { entry ->
                         if (entry !== entries.first()) HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
                         val row = byKey.getValue(entry.key)
@@ -121,6 +159,41 @@ internal fun ChatTimelineContent(
     }
 }
 
+/** 投稿の無いときの「bot を隠す」（見出しが無いので、右端に寄せた行に置く）。 */
+@Composable
+private fun BotFilterRow(hideBots: Boolean, hiddenCount: Int, onChange: (Boolean) -> Unit) {
+    Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp), horizontalArrangement = Arrangement.End) {
+        BotFilterToggle(hideBots, hiddenCount, onChange)
+    }
+}
+
+/**
+ * 「bot を隠す」の切り替え（docs/chat-joined-timeline-design.md 2.1）。塗らずに文字だけで小さく出す。
+ * オンのときは色を付け、隠している数を出す（投稿が少ないと感じたときに、ここが原因だと分かるように）。
+ */
+@Composable
+private fun BotFilterToggle(hideBots: Boolean, hiddenCount: Int, onChange: (Boolean) -> Unit) {
+    val color = if (hideBots) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+    val label = when {
+        !hideBots -> "bot を表示中"
+        hiddenCount > 0 -> "bot 非表示 · $hiddenCount"
+        else -> "bot 非表示"
+    }
+    TextButton(
+        onClick = { onChange(!hideBots) },
+        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
+        modifier = Modifier.heightIn(min = 32.dp),
+    ) {
+        Icon(Icons.Outlined.SmartToy, contentDescription = null, tint = color, modifier = Modifier.size(16.dp))
+        Spacer(Modifier.width(4.dp))
+        Text(label, style = MaterialTheme.typography.labelMedium, color = color)
+        if (hideBots) {
+            Spacer(Modifier.width(2.dp))
+            Icon(Icons.Filled.Check, contentDescription = null, tint = color, modifier = Modifier.size(14.dp))
+        }
+    }
+}
+
 @Composable
 private fun FailedRelaysNotice(relays: List<String>) {
     if (relays.isEmpty()) return
@@ -133,13 +206,19 @@ private fun FailedRelaysNotice(relays: List<String>) {
 }
 
 @Composable
-private fun TimelineSectionHeader(text: String) {
-    Text(
-        text = text,
-        style = MaterialTheme.typography.labelLarge,
-        color = MaterialTheme.colorScheme.onSurfaceVariant,
-        modifier = Modifier.padding(start = 16.dp, top = 16.dp, bottom = 4.dp),
-    )
+private fun TimelineSectionHeader(text: String, trailing: @Composable () -> Unit = {}) {
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(start = 16.dp, end = 8.dp, top = 12.dp, bottom = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            text = text,
+            style = MaterialTheme.typography.labelLarge,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.weight(1f),
+        )
+        trailing()
+    }
 }
 
 /** 画像の読み込みとリンク（行の中の本文から使う）。 */
@@ -148,6 +227,8 @@ internal class TimelineBodyActions(
     val imagesUnlocked: Boolean,
     val onUnlockImages: () -> Unit,
     val onBuzzLink: (link: String, relayUrl: String) -> Unit,
+    /** 本文のメンションを押した（その人の pubkey）。 */
+    val onUserClick: ((String) -> Unit)? = null,
 )
 
 /**
@@ -194,7 +275,8 @@ private fun TimelineRowItem(
         }
         val root = conversation.root
         if (root != null) {
-            TimelinePost(root, group.flavor, group.ref.relayUrl, profiles, actions, avatarSize = 40)
+            // 畳み方はチャンネルの画面のスレッドの表示と同じ（元の投稿は短め、最新の返信はさらに短く）。
+            TimelinePost(root, group.flavor, group.ref.relayUrl, profiles, actions, avatarSize = 40, collapse = BodyCollapse.Channel)
         } else {
             Text(
                 "元の投稿を読み込めません",
@@ -207,7 +289,7 @@ private fun TimelineRowItem(
             Row(modifier = Modifier.padding(start = 48.dp)) {
                 Text("╰", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 Spacer(Modifier.width(6.dp))
-                TimelinePost(reply, group.flavor, group.ref.relayUrl, profiles, actions, avatarSize = 28)
+                TimelinePost(reply, group.flavor, group.ref.relayUrl, profiles, actions, avatarSize = 28, collapse = BodyCollapse.ReplyPreview)
             }
             // チャットの画面の「返信 n件」と同じ表示。
             Text(
@@ -222,13 +304,14 @@ private fun TimelineRowItem(
 
 /** 投稿1件。チャットの画面の発言と同じく、アイコン・名前・時刻・本文（Markdown・画像）を出す。 */
 @Composable
-private fun TimelinePost(
+internal fun TimelinePost(
     message: GroupMessage,
     flavor: com.nostr.torinos.chat.GroupFlavor,
     relayUrl: String,
     profiles: Map<String, NostrProfile>,
     actions: TimelineBodyActions,
     avatarSize: Int,
+    collapse: BodyCollapse = BodyCollapse.Feed,
 ) {
     val profile = profiles[message.author]
     val now = kotlin.time.Clock.System.now().epochSeconds
@@ -264,6 +347,11 @@ private fun TimelinePost(
                     onBuzzLink = { actions.onBuzzLink(it, relayUrl) },
                     imagesUnlocked = actions.imagesUnlocked,
                     emojis = message.emojis,
+                    collapsible = true,
+                    collapse = collapse,
+                    mentionNames = rememberMentionNames(message, profiles),
+                    onMentionClick = actions.onUserClick,
+                    profileName = { profiles[it]?.bestName },
                 )
                 else -> StandardMessageBody(message, onUserClick = {})
             }

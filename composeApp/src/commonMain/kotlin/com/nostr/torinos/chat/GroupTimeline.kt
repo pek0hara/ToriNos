@@ -39,16 +39,34 @@ data class GroupMessage(
     val sentFromThreadLabel: String? = null,
     /** 本文の `:shortcode:` を画像にするカスタム絵文字（NIP-30 の `emoji` タグ）。shortcode → URL。 */
     val emojis: Map<String, String> = emptyMap(),
+    /** Buzz のチャンネルの画面に差し込む「スレッドへの返信」の行なら、その情報。普通の発言は null。 */
+    val threadNotice: GroupThreadNotice? = null,
+    /** Buzz のチャンネルの画面で、この発言の下に出すスレッドの最新の返信（返信が近いとき。[threadNotice] の代わり）。 */
+    val latestThreadReply: GroupMessage? = null,
 ) {
     /**
      * 発言を押したときに開くスレッドの元投稿。
-     * Buzz で「スレッドから送信」したコピーは元のスレッド（`buzz:sent-from-thread` の2番目）、それ以外はこの発言。
+     * スレッドへの返信の行はそのスレッド、Buzz で「スレッドから送信」したコピーは元のスレッド
+     * （`buzz:sent-from-thread` の2番目）、それ以外はこの発言。
      */
     val openThreadRootId: String
-        get() = event.tags.firstOrNull { it.firstOrNull() == "buzz:sent-from-thread" }
-            ?.getOrNull(1)?.takeIf { HEX64.matches(it) }
+        get() = threadNotice?.rootId
+            ?: event.tags.firstOrNull { it.firstOrNull() == "buzz:sent-from-thread" }
+                ?.getOrNull(1)?.takeIf { HEX64.matches(it) }
             ?: event.id
 }
+
+/**
+ * チャンネルの画面の「スレッドへの返信」の行（docs/chat-joined-timeline-design.md 5章）。
+ * 行の発言は、そのスレッドの最新の返信。
+ */
+data class GroupThreadNotice(
+    val rootId: String,
+    /** スレッドの元の発言。まだ読めていなければ null。 */
+    val root: GroupMessage?,
+    /** 読めている返信の数（行の発言を含む）。 */
+    val count: Int,
+)
 
 data class GroupTimelineSnapshot(
     val messages: List<GroupMessage>,
@@ -67,9 +85,17 @@ data class GroupConversation(
     val replyCount: Int,
     /** ルートと返信の `created_at` の最大。 */
     val lastActivity: Long,
+    /**
+     * ルートの作者を隠している（bot を隠すとき）。人の返信があるので会話を残し、何への返信か分かるように
+     * ルートも [root] に出す。
+     */
+    val rootHidden: Boolean = false,
 )
 
 private val HEX64 = Regex("^[0-9a-f]{64}$")
+
+/** スレッドの返信をルートの下に出す、ルートとの間の発言の数の上限。超えたら返信の時刻の位置に別の行で出す。 */
+const val THREAD_INLINE_MAX_BETWEEN = 5
 
 /** 対象のメッセージを `e` で指すだけのイベント（リアクション、削除、Buzz の編集）。 */
 private val TARGETED_KINDS = setOf(7, 5, GROUP_DELETE_EVENT_KIND, BUZZ_EDIT_KIND)
@@ -92,6 +118,8 @@ class GroupTimeline(
 ) {
     private val messages = mutableMapOf<String, NostrEvent>()
     private val threadItems = mutableMapOf<String, NostrEvent>()
+    /** スレッドの返信の行に引用するため別に読んだ、古いスレッドの元の発言（チャンネルの並びには入れない）。 */
+    private val threadRoots = mutableMapOf<String, NostrEvent>()
     private val reactions = mutableMapOf<String, NostrEvent>()
     private val deletions = mutableMapOf<String, NostrEvent>()
     private val edits = mutableMapOf<String, NostrEvent>()
@@ -130,6 +158,30 @@ class GroupTimeline(
         return groups.isEmpty() && event.kind in TARGETED_KINDS
     }
 
+    /** 別に読んだスレッドの元の発言を取り込む（[missingThreadRoots] の答え）。 */
+    fun addThreadRoots(events: Iterable<NostrEvent>) {
+        if (flavor != GroupFlavor.Buzz) return
+        events.forEach { event ->
+            if (event.kind in chatKinds && belongsToGroup(event) && buzzThreadRootId(event) == null) threadRoots[event.id] = event
+        }
+    }
+
+    /**
+     * 別に読んだ、古いスレッドの返信を取り込む（返信の数を正しくするため）。
+     * 返信でないもの（`e` で指しているだけの発言）はチャンネルの並びに入れないよう捨てる。
+     */
+    fun addThreadReplies(events: Iterable<NostrEvent>) {
+        if (flavor != GroupFlavor.Buzz) return
+        add(events.filter { it.kind in chatKinds && buzzThreadRootId(it) != null })
+    }
+
+    /** Buzz のスレッドの返信が指している元の発言のうち、まだ読めていないもの。 */
+    fun missingThreadRoots(): Set<String> {
+        if (flavor != GroupFlavor.Buzz) return emptySet()
+        return messages.values.mapNotNullTo(mutableSetOf()) { buzzThreadRootId(it) }
+            .filterTo(mutableSetOf()) { it !in messages && it !in threadRoots }
+    }
+
     /** [ids] のうち、[before] 秒より前に作られたもの。 */
     fun eventsCreatedBefore(ids: Set<String>, before: Long): Set<String> =
         listOf(messages, threadItems, reactions, deletions, edits)
@@ -140,10 +192,17 @@ class GroupTimeline(
     /** 前回の控えから流し込んだイベントのうち、今のリレーの答えとつながらないものを外す。 */
     fun remove(ids: Set<String>) {
         if (ids.isEmpty()) return
-        listOf(messages, threadItems, reactions, deletions, edits).forEach { it.keys.removeAll(ids) }
+        listOf(messages, threadItems, threadRoots, reactions, deletions, edits).forEach { it.keys.removeAll(ids) }
     }
 
-    fun snapshot(): GroupTimelineSnapshot {
+    /**
+     * チャンネルの画面の発言を古い順に。[muted] の人の発言は出さない。
+     * Buzz では、スレッドごとに最新の返信を出す。ルートとの間の発言が [THREAD_INLINE_MAX_BETWEEN] 件以内なら
+     * ルートの下（[GroupMessage.latestThreadReply]）、それより離れているか、ルートがチャンネルの並びに無ければ、
+     * 送った時刻の位置に「スレッドへの返信」の行（[GroupMessage.threadNotice]）として差し込む。
+     * ルートが削除された・[muted] の人のスレッドの返信と、チャンネルへ送ったコピー（`buzz:copy-of`）がある返信は出さない。
+     */
+    fun snapshot(muted: Set<String> = emptySet()): GroupTimelineSnapshot {
         val deleted = deletedTargets()
         val visible = messages.values.filter { it.id !in deleted }
         val topLevel = if (flavor == GroupFlavor.Buzz) visible.filter { buzzThreadRootId(it) == null } else visible
@@ -152,16 +211,67 @@ class GroupTimeline(
         val base = topLevel.sortedWith(eventOrder).associate { event ->
             event.id to toMessage(event, deleted, reactionsByTarget, replyCounts)
         }
-        val withReplies = base.values.map { message -> message.copy(replyTo = message.replyToId?.let(base::get)) }
-        return GroupTimelineSnapshot(withReplies, messages.values.minOfOrNull { it.createdAt })
+        val withReplies = base.values
+            .map { message -> message.copy(replyTo = message.replyToId?.let(base::get)) }
+            .filter { it.author !in muted }
+        val shown = if (flavor == GroupFlavor.Buzz) {
+            placeThreadReplies(withReplies, threadNotices(visible, base, deleted, reactionsByTarget, muted))
+        } else {
+            withReplies
+        }
+        return GroupTimelineSnapshot(shown, messages.values.minOfOrNull { it.createdAt })
     }
 
+    /** 返信がルートに近ければルートの下へ、離れていれば時刻の位置の行にする。[topLevel] は古い順。 */
+    private fun placeThreadReplies(topLevel: List<GroupMessage>, notices: List<GroupMessage>): List<GroupMessage> {
+        val rowOrder = compareBy<GroupMessage> { it.event.createdAt }.thenBy { it.event.id }
+        val indexById = topLevel.withIndex().associate { (index, message) -> message.event.id to index }
+        val inline = mutableMapOf<String, GroupMessage>()
+        val rows = notices.filter { notice ->
+            val rootId = notice.threadNotice?.rootId ?: return@filter true
+            val rootIndex = indexById[rootId] ?: return@filter true
+            var between = 0
+            for (i in rootIndex + 1 until topLevel.size) {
+                if (rowOrder.compare(topLevel[i], notice) >= 0) break
+                between++
+            }
+            if (between > THREAD_INLINE_MAX_BETWEEN) return@filter true
+            inline[rootId] = notice.copy(threadNotice = null)
+            false
+        }
+        val withInline = topLevel.map { message -> inline[message.event.id]?.let { message.copy(latestThreadReply = it) } ?: message }
+        return (withInline + rows).sortedWith(rowOrder)
+    }
+
+    private fun threadNotices(
+        visible: List<NostrEvent>,
+        base: Map<String, GroupMessage>,
+        deleted: Set<String>,
+        reactionsByTarget: Map<String?, List<NostrEvent>>,
+        muted: Set<String>,
+    ): List<GroupMessage> {
+        val copied = visible.mapNotNullTo(mutableSetOf()) { event ->
+            event.tags.firstOrNull { it.firstOrNull() == "buzz:copy-of" }?.getOrNull(1)
+        }
+        return visible
+            .mapNotNull { event -> buzzThreadRootId(event)?.let { it to event } }
+            .filter { (rootId, event) -> rootId !in deleted && authorOf(event) !in muted }
+            .groupBy({ it.first }, { it.second })
+            .mapNotNull { (rootId, replies) ->
+                val root = base[rootId]
+                    ?: threadRoots[rootId]?.takeIf { it.id !in deleted }?.let { toMessage(it, deleted, reactionsByTarget, emptyMap()) }
+                if (root != null && root.author in muted) return@mapNotNull null
+                val latest = replies.filter { it.id !in copied }.maxWithOrNull(eventOrder) ?: return@mapNotNull null
+                toMessage(latest, deleted, reactionsByTarget, emptyMap())
+                    .copy(threadNotice = GroupThreadNotice(rootId, root, replies.size))
+            }
+    }
     /** スレッド（Buzz のスレッド、フォーラムの投稿、kind 11）のルートと返信を古い順に。 */
     fun thread(rootId: String): GroupThread {
         val deleted = deletedTargets()
         val reactionsByTarget = reactionsByTarget(deleted)
         val all = (messages.values + threadItems.values).filter { it.id !in deleted }
-        val root = all.firstOrNull { it.id == rootId }?.let { toMessage(it, deleted, reactionsByTarget, emptyMap()) }
+        val root = (all.firstOrNull { it.id == rootId } ?: threadRoots[rootId]?.takeIf { it.id !in deleted })?.let { toMessage(it, deleted, reactionsByTarget, emptyMap()) }
         val replies = all
             .filter { it.id != rootId && threadRootOf(it) == rootId }
             .sortedWith(eventOrder)
@@ -193,7 +303,13 @@ class GroupTimeline(
      * 会話（トップレベルの投稿とそのスレッド）を、最後の動きの新しい順に（docs/chat-joined-timeline-design.md 2章）。
      * ルートが削除された会話、ルートが [muted] の人の会話は出さない。[muted] の人の返信は数えない。
      */
-    fun conversations(muted: Set<String> = emptySet()): List<GroupConversation> {
+    /**
+     * [muted] の人がルートの会話は出さず、返信からも外す。
+     * [hidden] の人（bot）は投稿を出さないが、ルートに人の返信があれば元の投稿ごと会話を残す
+     * （「最後の動き」は人の返信の時刻）。
+     * 返信の数には [hidden] の人の返信も数える（スレッドを開けば見えるため）。
+     */
+    fun conversations(muted: Set<String> = emptySet(), hidden: Set<String> = emptySet()): List<GroupConversation> {
         val deleted = deletedTargets()
         val reactionsByTarget = reactionsByTarget(deleted)
         val visible = (messages.values + threadItems.values).filter { it.id !in deleted }
@@ -215,12 +331,29 @@ class GroupTimeline(
             if (base.author in muted) return@mapNotNull null
             // 標準の `q` 返信は、返信先が読めていれば引用として付ける。
             val rootMessage = base.replyToId?.let(rootsById::get)?.let { base.copy(replyTo = message(it)) } ?: base
-            conversation(root.id, rootMessage, repliesByRoot[root.id].orEmpty(), muted, ::message)
+            if (base.author in hidden) {
+                // 人の返信が無ければ出さない。あれば元の投稿も出す（順番は人の返信の時刻で決める）。
+                return@mapNotNull conversation(root.id, null, repliesByRoot[root.id].orEmpty(), muted, hidden, ::message)
+                    ?.copy(root = rootMessage, rootHidden = true)
+            }
+            conversation(root.id, rootMessage, repliesByRoot[root.id].orEmpty(), muted, hidden, ::message)
         }
         val orphans = repliesByRoot
             .filterKeys { it !in rootsById && it !in deleted }
-            .mapNotNull { (rootId, replies) -> conversation(rootId, null, replies, muted, ::message) }
+            .mapNotNull { (rootId, replies) -> conversation(rootId, null, replies, muted, hidden, ::message) }
         return (withRoot + orphans).sortedWith(compareByDescending<GroupConversation> { it.lastActivity }.thenBy { it.rootId })
+    }
+
+    /** [authors] の投稿（削除されていないもの）の数。[since] より古いものは数えない（bot を隠した数の表示）。 */
+    fun countPosts(authors: Set<String>, since: Long?): Int {
+        if (authors.isEmpty()) return 0
+        val deleted = deletedTargets()
+        val all = (messages.values + threadItems.values).filter { it.id !in deleted }
+        // 人の返信が付いた投稿は、隠しても元の投稿として出すので数えない。
+        val shownRoots = all.filter { authorOf(it) !in authors }.mapNotNull { threadRootOf(it) }.toSet()
+        return all.count { event ->
+            (since == null || event.createdAt >= since) && authorOf(event) in authors && event.id !in shownRoots
+        }
     }
 
     private fun conversation(
@@ -228,11 +361,13 @@ class GroupTimeline(
         root: GroupMessage?,
         replyEvents: List<NostrEvent>,
         muted: Set<String>,
+        hidden: Set<String>,
         message: (NostrEvent) -> GroupMessage,
     ): GroupConversation? {
         val replies = replyEvents.sortedWith(eventOrder).map(message).filter { it.author !in muted }
-        if (root == null && replies.isEmpty()) return null
-        val latest = replies.lastOrNull()
+        val shown = replies.filter { it.author !in hidden }
+        if (root == null && shown.isEmpty()) return null
+        val latest = shown.lastOrNull()
         val activity = maxOf(root?.event?.createdAt ?: Long.MIN_VALUE, latest?.event?.createdAt ?: Long.MIN_VALUE)
         return GroupConversation(rootId, root, latest, replies.size, activity)
     }
@@ -306,7 +441,7 @@ class GroupTimeline(
     }.getOrNull() ?: content
 
     private fun deletedTargets(): Set<String> {
-        val authorOf = (messages.values + threadItems.values + reactions.values + edits.values).associate { it.id to it.pubkey }
+        val authorOf = (messages.values + threadItems.values + threadRoots.values + reactions.values + edits.values).associate { it.id to it.pubkey }
         return deletions.values.flatMap { deletion ->
             val targets = deletion.tags.filter { it.firstOrNull() == "e" }.mapNotNull { it.getOrNull(1) }
             when (deletion.kind) {

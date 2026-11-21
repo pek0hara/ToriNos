@@ -100,7 +100,7 @@ internal fun CreateTargetCard(
                 .clickable(enabled = selectable, onClickLabel = "作成先を選ぶ") { open = true },
         ) {
             Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(12.dp)) {
-                ChatRelayHeadline(label = target.label, host = target.host, flavor = target.flavor, modifier = Modifier.weight(1f))
+                ChatRelayHeadline(label = target.label, host = target.host, flavor = target.flavor, modifier = Modifier.weight(1f), iconUrl = target.iconUrl)
                 if (targets.size > 1) {
                     Icon(Icons.Default.ArrowDropDown, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
@@ -112,7 +112,7 @@ internal fun CreateTargetCard(
                     label = item.label,
                     supportingText = item.host.takeIf { it != item.label },
                     badge = if (item.flavor == GroupFlavor.Buzz) "Buzz" else null,
-                    leadingIcon = { ChatRelayIcon(item.label, item.flavor, size = 28.dp) },
+                    leadingIcon = { ChatRelayIcon(item.label, item.flavor, size = 28.dp, iconUrl = item.iconUrl) },
                     selected = item.relayUrl == target.relayUrl,
                     onClick = { open = false; onTarget(item) },
                 )

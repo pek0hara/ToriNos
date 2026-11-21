@@ -4,6 +4,9 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxScope
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -18,6 +21,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ContentPaste
@@ -61,7 +65,10 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.snapshotFlow
 import kotlinx.coroutines.launch
+import com.nostr.torinos.ui.settings.getPlainText
+import com.nostr.torinos.ui.settings.setPlainText
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
@@ -129,6 +136,8 @@ fun ChatTabScreen(
     onOpenThread: (GroupRef, String) -> Unit = { _, _ -> },
     /** NIP-17 の会話を開く（会話の鍵）。 */
     onOpenDm: (String) -> Unit = {},
+    /** ほかの人のプロフィールを開く（タイムラインの本文のメンション）。 */
+    onUserClick: ((String) -> Unit)? = null,
 ) {
     val session = LocalAccountSession.current
     val viewModel = accountSessionViewModel(key = "chat-tab-${session?.sessionId}") { s -> ChatTabViewModel(s?.chat, s?.dm, s?.muteStore?.mutedPubkeys) }
@@ -140,6 +149,9 @@ fun ChatTabScreen(
     var archivedExpanded by rememberSaveable { mutableStateOf(false) }
     // 「グループを探す」（未参加のグループの一覧）は、押したときだけ開く。
     var othersExpanded by rememberSaveable { mutableStateOf(false) }
+    // グループの一覧の位置。未読の見出しが先頭に入ったときに戻すのに使う。
+    val groupsListState = rememberLazyListState()
+    val hadUnread = remember { booleanArrayOf(false) }
     // DM の見出しとアイコンは参加者のプロフィールから作る。
     val dmPeople = remember(state.joinedRows) {
         state.joinedRows.filter { it.layout == GroupLayout.Direct }.flatMap { it.metadata?.participants.orEmpty() }.toSet()
@@ -156,6 +168,7 @@ fun ChatTabScreen(
     LaunchedEffect(Unit) {
         viewModel.refreshJoined()
         viewModel.refreshDm()
+        viewModel.syncBuzzCommunities()
     }
     // DM アイコンでもう一度押したときに戻る選択。
     var beforeDirect by remember { mutableStateOf<ChatSelection>(ChatSelection.All) }
@@ -179,6 +192,20 @@ fun ChatTabScreen(
         }
     }
     val linkScope = rememberCoroutineScope()
+    // 「グループ / タイムライン」は横スワイプでも切り替える。ページは [chatViewPages] の順。
+    val viewPager = rememberPagerState(initialPage = chatViewPages.indexOf(state.view).coerceAtLeast(0)) { chatViewPages.size }
+    // 保存していた表示の読み込みなど、外から表示が変わったらページを合わせる（スワイプ中は動かさない）。
+    LaunchedEffect(viewPager, state.view) {
+        val page = chatViewPages.indexOf(state.view)
+        if (page >= 0 && !viewPager.isScrollInProgress && viewPager.settledPage != page) viewPager.scrollToPage(page)
+    }
+    // ページが止まったら表示を切り替える（タイムラインの読み込みは止まってから）。
+    LaunchedEffect(viewPager) {
+        snapshotFlow { viewPager.settledPage }.collect { page ->
+            val view = chatViewPages.getOrNull(page) ?: return@collect
+            if (viewModel.state.value.showsViewToggle && viewModel.state.value.view != view) viewModel.setView(view)
+        }
+    }
     LaunchedEffect(pendingLink) {
         val link = pendingLink ?: return@LaunchedEffect
         // 受け取り済みにするとこの effect は取り消されるので、続きは画面のスコープで行う。
@@ -272,7 +299,7 @@ fun ChatTabScreen(
                                     HeaderDropdownMenuItem(
                                         label = relay.label,
                                         supportingText = relay.host.takeIf { it != relay.label },
-                                        leadingIcon = { ChatRelayIcon(relay.label, relay.flavor, size = 28.dp) },
+                                        leadingIcon = { ChatRelayIcon(relay.label, relay.flavor, size = 28.dp, iconUrl = relay.iconUrl) },
                                         badge = if (relay.flavor == com.nostr.torinos.chat.GroupFlavor.Buzz) "Buzz" else null,
                                         selected = (state.selection as? ChatSelection.Relay)?.relayUrl == relay.relayUrl,
                                         onClick = { selectorOpen = false; viewModel.select(ChatSelection.Relay(relay.relayUrl)) },
@@ -280,6 +307,16 @@ fun ChatTabScreen(
                                             { selectorOpen = false; hideRelayCandidate = relay }
                                         } else null,
                                         onLongClickLabel = "このリレーを非表示",
+                                    )
+                                }
+                                // 別の端末で参加した Buzz コミュニティを確かめている間（開けない）。
+                                state.restoringRelays.forEach { relay ->
+                                    HeaderDropdownMenuItem(
+                                        label = relay.label,
+                                        supportingText = relay.host.takeIf { it != relay.label },
+                                        leadingIcon = { ChatRelayIcon(relay.label, relay.flavor, size = 28.dp, iconUrl = relay.iconUrl) },
+                                        badge = "確認中",
+                                        onClick = { selectorOpen = false },
                                     )
                                 }
                                 HorizontalDivider(
@@ -332,11 +369,20 @@ fun ChatTabScreen(
                     },
                 )
                 ServiceHeaderDivider()
-                val loading = if (state.showsTimeline) state.timeline.isLoading else state.isLoading
+                // タイムラインも、参加中の一覧を読み直している間と自分の読み込みの間は、グループと同じ線を出す。
+                // 前の結果を出したまま差し替え、行が無いうちは一覧の側でスケルトンを出す。
+                val loading = state.isLoading || (state.showsTimeline && state.timeline.isLoading)
                 // 読み込み中の線はタブの上（ヘッダー側）に出す。タブの下に出すと選択中の下線と紛れる。
                 if (state.showsViewToggle) {
-                    if (loading) LinearProgressIndicator(modifier = Modifier.fillMaxWidth().height(2.dp))
-                    ChatViewToggle(state.view, viewModel::setView)
+                    // 線の分の高さは常に取っておき、出し入れでタブが上下に動かないようにする。
+                    Box(Modifier.fillMaxWidth().height(2.dp)) {
+                        if (loading) LinearProgressIndicator(modifier = Modifier.fillMaxSize())
+                    }
+                    // 下線はスワイプの行き先に合わせて先に動かす。
+                    ChatViewToggle(chatViewPages.getOrElse(viewPager.targetPage) { state.view }) { view ->
+                        val page = chatViewPages.indexOf(view)
+                        if (page >= 0) linkScope.launch { viewPager.animateScrollToPage(page) }
+                    }
                 } else if (loading) {
                     LinearProgressIndicator(modifier = Modifier.fillMaxWidth().height(2.dp))
                 }
@@ -398,6 +444,151 @@ fun ChatTabScreen(
         Box(modifier = Modifier.fillMaxSize().padding(padding)) {
             val empty = state.joinedRows.isEmpty() && state.otherRows.isEmpty() && state.archivedRows.isEmpty() &&
                 state.pendingCreations.isEmpty()
+            // グループの一覧（参加中・探す・アーカイブ）。
+            val groupsContent: @Composable BoxScope.() -> Unit = {
+                when {
+                    !state.hasLoaded && empty -> CircularProgressIndicator(modifier = Modifier.align(Alignment.Center))
+                    // 前回グループがあったのに一覧（kind 10009）をまだ読めていない。読み直しているあいだは待つ。
+                    // 前回の一覧が無く、読み込み中（参加中の一覧を読み直している、Buzz の最新の発言を読んでいる）。
+                    // 行の形だけ先に出して待つ。
+                    empty && state.selection == ChatSelection.All && (state.groupsExpected || (state.isLoading && state.hasGroups)) ->
+                        Column(modifier = Modifier.fillMaxSize()) { GroupRowPlaceholders() }
+                    empty && state.selection == ChatSelection.All -> ChatEmptyState(
+                        onJoin = { viewModel.openJoinSheet() },
+                        signedOut = !state.hasSigner,
+                    )
+                    else -> {
+                    // 未読のまとまりが新しく先頭に入ったとき、一覧は前の先頭の行に留まるので、見出しが画面の上に隠れる。
+                    // 先頭を見ていたなら、入った見出しが見えるように先頭へ戻す。
+                    val hasUnread = state.joinedRows.any { it.unread }
+                    if (hasUnread && !hadUnread[0] && groupsListState.firstVisibleItemIndex <= state.pendingCreations.size) {
+                        groupsListState.requestScrollToItem(0)
+                    }
+                    hadUnread[0] = hasUnread
+                    LazyColumn(state = groupsListState, modifier = Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 88.dp)) {
+                        items(state.pendingCreations, key = { "pc-" + it.ref.key }) { pending ->
+                            PendingCreationBanner(
+                                pending = pending,
+                                busy = state.resumingCreation == pending.ref,
+                                enabled = state.resumingCreation == null,
+                                onResume = { viewModel.resumeCreation(pending, openCreated) },
+                                onDiscard = { viewModel.discardCreation(pending) },
+                            )
+                        }
+                        // 未読のグループは先頭にまとめ、下のまとまりからは外す。
+                        val (unreadRows, readRows) = state.joinedRows.partition { it.unread }
+                        if (unreadRows.isNotEmpty()) {
+                            item(key = "unread-header") { SectionHeader("未読") }
+                            items(unreadRows, key = { "j-" + it.ref.key }) { row ->
+                                GroupRowItem(row, resolved = !state.isLoading, ownPubkey = ownPubkey, profiles = dmProfiles, onClick = { viewModel.markRead(row.ref); onOpenGroup(row.ref, row.layout) })
+                            }
+                        }
+                        if (state.selection is ChatSelection.Relay) {
+                            if (readRows.isNotEmpty() || state.joinedRows.isEmpty()) item(key = "joined-header") { SectionHeader("参加中") }
+                            if (state.joinedRows.isEmpty()) {
+                                if (state.isLoading) item(key = "joined-loading") { GroupRowPlaceholders(count = 3) }
+                                else item(key = "joined-empty") { EmptyLine("参加中のグループはありません") }
+                            }
+                        }
+                        if (state.selection == ChatSelection.All) {
+                            // リレー・コミュニティごとにまとめる（行ごとにホスト名を出すと、グループ名が削られて読めない）。
+                            val relayLabels = state.relays.associateBy { it.relayUrl }
+                            groupRowsByRelay(readRows).forEach { section ->
+                                val relay = relayLabels[section.relayUrl]
+                                item(key = "s-" + section.relayUrl) {
+                                    SectionHeader(
+                                        (relay?.label ?: section.relayUrl.substringAfter("://")) +
+                                            if (relay?.flavor == com.nostr.torinos.chat.GroupFlavor.Buzz) "  [Buzz]" else "",
+                                    )
+                                }
+                                items(section.rows, key = { "j-" + it.ref.key }) { row ->
+                                    GroupRowItem(row, resolved = !state.isLoading, ownPubkey = ownPubkey, profiles = dmProfiles, onClick = { viewModel.markRead(row.ref); onOpenGroup(row.ref, row.layout) })
+                                }
+                            }
+                        } else {
+                            val (directRows, groupRows) = readRows.partition { it.layout == GroupLayout.Direct }
+                            items(groupRows, key = { "j-" + it.ref.key }) { row ->
+                                GroupRowItem(row, resolved = !state.isLoading, ownPubkey = ownPubkey, profiles = dmProfiles, onClick = { viewModel.markRead(row.ref); onOpenGroup(row.ref, row.layout) })
+                            }
+                            if (directRows.isNotEmpty()) {
+                                item(key = "dm-header") { SectionHeader("DM") }
+                                items(directRows, key = { "j-" + it.ref.key }) { row ->
+                                    GroupRowItem(row, resolved = !state.isLoading, ownPubkey = ownPubkey, profiles = dmProfiles, onClick = { viewModel.markRead(row.ref); onOpenGroup(row.ref, row.layout) })
+                                }
+                            }
+                        }
+                        if (state.selection is ChatSelection.Relay) {
+                            item(key = "others-header") {
+                                FindGroupsRow(
+                                    count = state.otherRows.size.takeIf { !state.isLoading && !state.browseAuthNeeded },
+                                    expanded = othersExpanded,
+                                    onToggle = { othersExpanded = !othersExpanded },
+                                )
+                            }
+                            if (othersExpanded && state.browseAuthNeeded) {
+                                item(key = "others-auth") {
+                                    Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp)) {
+                                        Text(
+                                            "このリレーはログインが必要です。公開鍵を伝えてログインすると、グループの一覧を読めます",
+                                            style = MaterialTheme.typography.bodyMedium,
+                                        )
+                                        TextButton(onClick = viewModel::allowBrowseAuth) { Text("ログインして読む") }
+                                    }
+                                }
+                            } else if (othersExpanded && state.otherRows.isEmpty() && !state.isLoading) {
+                                item(key = "others-empty") { EmptyLine("公開されているグループはありません") }
+                            }
+                            if (othersExpanded) {
+                                items(state.otherRows, key = { "o-" + it.ref.key }) { row ->
+                                    GroupRowItem(row, resolved = true, onClick = { viewModel.markRead(row.ref); onOpenGroup(row.ref, row.layout) })
+                                }
+                            }
+                        }
+                        if (state.archivedRows.isNotEmpty()) {
+                            item(key = "archived-header") {
+                                ArchivedSectionHeader(
+                                    count = state.archivedRows.size,
+                                    expanded = archivedExpanded,
+                                    onToggle = { archivedExpanded = !archivedExpanded },
+                                )
+                            }
+                            if (archivedExpanded) {
+                                items(state.archivedRows, key = { "a-" + it.ref.key }) { row ->
+                                    GroupRowItem(
+                                        row,
+                                        resolved = true,
+                                        ownPubkey = ownPubkey,
+                                        profiles = dmProfiles,
+                                        onClick = { viewModel.markRead(row.ref); onOpenGroup(row.ref, row.layout) },
+                                    )
+                                }
+                            }
+                        }
+                    }
+                    }
+                }
+            }
+            val timelineContent: @Composable () -> Unit = {
+                ChatTimelineContent(
+                    state = state.timeline,
+                    // 参加中の一覧を読み直している間は、そのあとタイムラインも読み直す。
+                    loading = state.isLoading || state.timeline.isLoading,
+                    ownPubkey = ownPubkey,
+                    onOpen = { row ->
+                        if (row.entry.opensThread) onOpenThread(row.entry.ref, row.entry.conversation.rootId)
+                        else onOpenGroup(row.entry.ref, row.group.layout)
+                    },
+                    onLoadOlder = viewModel::loadOlderTimeline,
+                    onHideBotsChange = if (state.selectsBuzzCommunity) viewModel::setHideBots else null,
+                    actions = TimelineBodyActions(
+                        imageAuth = viewModel::timelineImageAuth,
+                        imagesUnlocked = state.timeline.imagesUnlocked,
+                        onUnlockImages = viewModel::unlockTimelineImages,
+                        onBuzzLink = { link, relayUrl -> openBuzzLink(link, relayUrl) },
+                        onUserClick = onUserClick,
+                    ),
+                )
+            }
             when {
                 state.showsDmList -> DmListContent(
                     state = state.dm,
@@ -406,131 +597,20 @@ fun ChatTabScreen(
                     onJoinGroup = { viewModel.openJoinSheet() },
                     showJoinHint = !state.hasGroups,
                 )
-                state.showsTimeline -> ChatTimelineContent(
-                    state = state.timeline,
-                    ownPubkey = ownPubkey,
-                    onOpen = { row ->
-                        if (row.entry.opensThread) onOpenThread(row.entry.ref, row.entry.conversation.rootId)
-                        else onOpenGroup(row.entry.ref, row.group.layout)
-                    },
-                    onLoadOlder = viewModel::loadOlderTimeline,
-                    actions = TimelineBodyActions(
-                        imageAuth = viewModel::timelineImageAuth,
-                        imagesUnlocked = state.timeline.imagesUnlocked,
-                        onUnlockImages = viewModel::unlockTimelineImages,
-                        onBuzzLink = { link, relayUrl -> openBuzzLink(link, relayUrl) },
-                    ),
-                )
-                !state.hasLoaded && empty -> CircularProgressIndicator(modifier = Modifier.align(Alignment.Center))
-                // 前回グループがあったのに一覧（kind 10009）をまだ読めていない。読み直しているあいだは待つ。
-                // 前回の一覧が無く、読み込み中（参加中の一覧を読み直している、Buzz の最新の発言を読んでいる）。
-                // 行の形だけ先に出して待つ。
-                empty && state.selection == ChatSelection.All && (state.groupsExpected || (state.isLoading && state.hasGroups)) ->
-                    Column(modifier = Modifier.fillMaxSize()) { GroupRowPlaceholders() }
-                empty && state.selection == ChatSelection.All -> ChatEmptyState(
-                    onJoin = { viewModel.openJoinSheet() },
-                    signedOut = !state.hasSigner,
-                )
-                else -> LazyColumn(modifier = Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 88.dp)) {
-                    items(state.pendingCreations, key = { "pc-" + it.ref.key }) { pending ->
-                        PendingCreationBanner(
-                            pending = pending,
-                            busy = state.resumingCreation == pending.ref,
-                            enabled = state.resumingCreation == null,
-                            onResume = { viewModel.resumeCreation(pending, openCreated) },
-                            onDiscard = { viewModel.discardCreation(pending) },
-                        )
-                    }
-                    // 未読のグループは先頭にまとめ、下のまとまりからは外す。
-                    val (unreadRows, readRows) = state.joinedRows.partition { it.unread }
-                    if (unreadRows.isNotEmpty()) {
-                        item(key = "unread-header") { SectionHeader("未読") }
-                        items(unreadRows, key = { "j-" + it.ref.key }) { row ->
-                            GroupRowItem(row, resolved = !state.isLoading, ownPubkey = ownPubkey, profiles = dmProfiles, onClick = { viewModel.markRead(row.ref); onOpenGroup(row.ref, row.layout) })
-                        }
-                    }
-                    if (state.selection is ChatSelection.Relay) {
-                        if (readRows.isNotEmpty() || state.joinedRows.isEmpty()) item(key = "joined-header") { SectionHeader("参加中") }
-                        if (state.joinedRows.isEmpty()) {
-                            if (state.isLoading) item(key = "joined-loading") { GroupRowPlaceholders(count = 3) }
-                            else item(key = "joined-empty") { EmptyLine("参加中のグループはありません") }
-                        }
-                    }
-                    if (state.selection == ChatSelection.All) {
-                        // リレー・コミュニティごとにまとめる（行ごとにホスト名を出すと、グループ名が削られて読めない）。
-                        val relayLabels = state.relays.associateBy { it.relayUrl }
-                        groupRowsByRelay(readRows).forEach { section ->
-                            val relay = relayLabels[section.relayUrl]
-                            item(key = "s-" + section.relayUrl) {
-                                SectionHeader(
-                                    (relay?.label ?: section.relayUrl.substringAfter("://")) +
-                                        if (relay?.flavor == com.nostr.torinos.chat.GroupFlavor.Buzz) "  [Buzz]" else "",
-                                )
-                            }
-                            items(section.rows, key = { "j-" + it.ref.key }) { row ->
-                                GroupRowItem(row, resolved = !state.isLoading, ownPubkey = ownPubkey, profiles = dmProfiles, onClick = { viewModel.markRead(row.ref); onOpenGroup(row.ref, row.layout) })
-                            }
-                        }
-                    } else {
-                        val (directRows, groupRows) = readRows.partition { it.layout == GroupLayout.Direct }
-                        items(groupRows, key = { "j-" + it.ref.key }) { row ->
-                            GroupRowItem(row, resolved = !state.isLoading, ownPubkey = ownPubkey, profiles = dmProfiles, onClick = { viewModel.markRead(row.ref); onOpenGroup(row.ref, row.layout) })
-                        }
-                        if (directRows.isNotEmpty()) {
-                            item(key = "dm-header") { SectionHeader("DM") }
-                            items(directRows, key = { "j-" + it.ref.key }) { row ->
-                                GroupRowItem(row, resolved = !state.isLoading, ownPubkey = ownPubkey, profiles = dmProfiles, onClick = { viewModel.markRead(row.ref); onOpenGroup(row.ref, row.layout) })
-                            }
-                        }
-                    }
-                    if (state.selection is ChatSelection.Relay) {
-                        item(key = "others-header") {
-                            FindGroupsRow(
-                                count = state.otherRows.size.takeIf { !state.isLoading && !state.browseAuthNeeded },
-                                expanded = othersExpanded,
-                                onToggle = { othersExpanded = !othersExpanded },
-                            )
-                        }
-                        if (othersExpanded && state.browseAuthNeeded) {
-                            item(key = "others-auth") {
-                                Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp)) {
-                                    Text(
-                                        "このリレーはログインが必要です。公開鍵を伝えてログインすると、グループの一覧を読めます",
-                                        style = MaterialTheme.typography.bodyMedium,
-                                    )
-                                    TextButton(onClick = viewModel::allowBrowseAuth) { Text("ログインして読む") }
-                                }
-                            }
-                        } else if (othersExpanded && state.otherRows.isEmpty() && !state.isLoading) {
-                            item(key = "others-empty") { EmptyLine("公開されているグループはありません") }
-                        }
-                        if (othersExpanded) {
-                            items(state.otherRows, key = { "o-" + it.ref.key }) { row ->
-                                GroupRowItem(row, resolved = true, onClick = { viewModel.markRead(row.ref); onOpenGroup(row.ref, row.layout) })
-                            }
-                        }
-                    }
-                    if (state.archivedRows.isNotEmpty()) {
-                        item(key = "archived-header") {
-                            ArchivedSectionHeader(
-                                count = state.archivedRows.size,
-                                expanded = archivedExpanded,
-                                onToggle = { archivedExpanded = !archivedExpanded },
-                            )
-                        }
-                        if (archivedExpanded) {
-                            items(state.archivedRows, key = { "a-" + it.ref.key }) { row ->
-                                GroupRowItem(
-                                    row,
-                                    resolved = true,
-                                    ownPubkey = ownPubkey,
-                                    profiles = dmProfiles,
-                                    onClick = { viewModel.markRead(row.ref); onOpenGroup(row.ref, row.layout) },
-                                )
-                            }
+                // 「グループ / タイムライン」のタブがあるときは横スワイプでも切り替える。
+                state.showsViewToggle -> HorizontalPager(
+                    state = viewPager,
+                    modifier = Modifier.fillMaxSize(),
+                    key = { chatViewPages[it] },
+                ) { page ->
+                    Box(modifier = Modifier.fillMaxSize()) {
+                        when (chatViewPages[page]) {
+                            ChatListView.Groups -> groupsContent()
+                            ChatListView.Timeline -> timelineContent()
                         }
                     }
                 }
+                else -> groupsContent()
             }
         }
     }
@@ -780,12 +860,8 @@ internal fun GroupIcon(picture: String?, locked: Boolean, size: Int = 40, channe
         when {
             locked -> Icon(Icons.Default.Lock, contentDescription = null, modifier = Modifier.size((size / 2).dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
             channel && forum -> Icon(Icons.Outlined.Forum, contentDescription = null, modifier = Modifier.size((size / 2).dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
-            channel -> Text(
-                "#",
-                fontSize = (size * 0.5f).sp,
-                fontWeight = FontWeight.SemiBold,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
+            // 文字の「#」は行の高さとフォントの余白で下にずれるので、ほかと同じくアイコンで描く。
+            channel -> Icon(Icons.Default.Tag, contentDescription = null, modifier = Modifier.size((size / 2).dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
             else -> Icon(Icons.Default.Groups, contentDescription = null, modifier = Modifier.size((size / 2).dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
         }
         if (!picture.isNullOrBlank()) {
@@ -938,22 +1014,29 @@ private fun JoinGroupSheet(
     joinedRefs: Set<GroupRef> = emptySet(),
     onPickPublicGroup: (GroupRef) -> Unit = {},
 ) {
-    ModalBottomSheet(onDismissRequest = onDismiss, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)) {
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+        containerColor = MaterialTheme.colorScheme.surface,
+    ) {
         Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp).padding(bottom = 24.dp)) {
             when (state) {
                 JoinSheetState.Closed -> Unit
                 is JoinSheetState.Buzz -> BuzzJoinContent(state, hasSigner, onBack, onBuzzConsent, onBuzzJoin)
                 is JoinSheetState.Input -> {
-                    val clipboard = androidx.compose.ui.platform.LocalClipboardManager.current
+                    val clipboard = androidx.compose.ui.platform.LocalClipboard.current
+                    val pasteScope = rememberCoroutineScope()
                     // 入力のたびに、何として読めたか(種類と行き先)を見せる。
                     val recognized = remember(state.text) {
                         state.text.takeIf { it.isNotBlank() }?.let { com.nostr.torinos.chat.describeGroupInput(com.nostr.torinos.chat.parseGroupInput(it)) }
                     }
                     val paste: () -> Unit = {
-                        val pasted = clipboard.getText()?.text?.trim().orEmpty()
-                        if (pasted.isNotEmpty()) {
-                            onInputChange(pasted)
-                            onSubmit()
+                        pasteScope.launch {
+                            val pasted = clipboard.getPlainText()?.trim().orEmpty()
+                            if (pasted.isNotEmpty()) {
+                                onInputChange(pasted)
+                                onSubmit()
+                            }
                         }
                     }
                     JoinSheetHeader()
@@ -1438,7 +1521,8 @@ private fun CommunityAdminSheetView(
     onUses: (Int?) -> Unit,
     onMint: () -> Unit,
 ) {
-    val clipboard = androidx.compose.ui.platform.LocalClipboardManager.current
+    val clipboard = androidx.compose.ui.platform.LocalClipboard.current
+    val copyScope = rememberCoroutineScope()
     val people = remember(sheet.members) { sheet.members.orEmpty().map { it.pubkey }.toSet() }
     val profiles by remember(people) {
         if (people.isEmpty()) flowOf(emptyMap()) else ProfileRepository.observe(people)
@@ -1562,7 +1646,7 @@ private fun CommunityAdminSheetView(
                                 Text(invite.url, style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
                                 Text(com.nostr.torinos.chat.inviteSummary(invite), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                             }
-                            TextButton(onClick = { clipboard.setText(androidx.compose.ui.text.AnnotatedString(invite.url)); copied = invite.url }) {
+                            TextButton(onClick = { copyScope.launch { clipboard.setPlainText(invite.url) }; copied = invite.url }) {
                                 Text(if (copied == invite.url) "コピー済み" else "コピー")
                             }
                         }

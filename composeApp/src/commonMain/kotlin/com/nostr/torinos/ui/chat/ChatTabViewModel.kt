@@ -146,9 +146,26 @@ data class ChatGroupRow(
     }
 }
 
-data class ChatRelaySummary(val relayUrl: String, val name: String?, val flavor: GroupFlavor = GroupFlavor.Standard) {
+data class ChatRelaySummary(
+    val relayUrl: String,
+    val name: String?,
+    val flavor: GroupFlavor = GroupFlavor.Standard,
+    /** NIP-11 の icon（Buzz は data URL でコミュニティの絵が入っている）。 */
+    val icon: String? = null,
+) {
     val host: String get() = relayUrl.substringAfter("://").trimEnd('/')
-    val label: String get() = name?.takeIf { it.isNotBlank() } ?: host
+    // Buzz の NIP-11 の name はどのコミュニティも「Buzz Relay」なので、公式アプリと同じく
+    // アドレスの先頭（png.communities.buzz.xyz の png）をコミュニティ名にする。
+    val label: String get() = (if (flavor == GroupFlavor.Buzz) buzzCommunityName(host) else null)
+        ?: name?.takeIf { it.isNotBlank() }
+        ?: host
+    val iconUrl: String? get() = com.nostr.torinos.ui.relay.relayIconUrl(relayUrl, icon)
+}
+
+/** Buzz コミュニティのアドレスの先頭のラベル。サブドメインが無ければ null。 */
+internal fun buzzCommunityName(host: String): String? {
+    val labels = host.substringBefore('/').substringBefore(':').split('.')
+    return labels.first().takeIf { labels.size >= 3 && it.isNotBlank() }
 }
 
 /** 長い ID（64桁の16進など）は先頭だけを見出しにする。 */
@@ -264,6 +281,10 @@ data class ChatTimelineState(
     val failedRelays: List<String> = emptyList(),
     /** Buzz の画像を読むための署名を許可している（外部署名器では押して許可する）。 */
     val imagesUnlocked: Boolean = false,
+    /** bot（エージェント）の投稿を出さない（docs/chat-joined-timeline-design.md 2.1）。アカウントごとに保存する。 */
+    val hideBots: Boolean = false,
+    /** bot を隠すと出なくなる投稿の数（読めている範囲）。 */
+    val hiddenBotPosts: Int = 0,
 )
 
 data class ChatTabUiState(
@@ -271,6 +292,8 @@ data class ChatTabUiState(
     val view: ChatListView = ChatListView.Groups,
     val timeline: ChatTimelineState = ChatTimelineState(),
     val relays: List<ChatRelaySummary> = emptyList(),
+    /** kind 10009 から復元を確かめている Buzz コミュニティ（確認中。開けない）。 */
+    val restoringRelays: List<ChatRelaySummary> = emptyList(),
     val joinedRows: List<ChatGroupRow> = emptyList(),
     /** 個別のリレーを選んだときの、未参加のグループ。 */
     val otherRows: List<ChatGroupRow> = emptyList(),
@@ -321,6 +344,12 @@ data class ChatTabUiState(
 
     /** タイムラインを出す。 */
     val showsTimeline: Boolean get() = showsViewToggle && view == ChatListView.Timeline
+
+    /** 選んでいるのが Buzz のコミュニティ（bot の切り替えを出す）。 */
+    val selectsBuzzCommunity: Boolean
+        get() = (selection as? ChatSelection.Relay)?.relayUrl?.let { url ->
+            relays.any { it.relayUrl == url && it.flavor == GroupFlavor.Buzz }
+        } == true
 
     /**
      * ヘッダーの DM アイコンを出す（グループがある人の「すべて」だけ）。
@@ -413,6 +442,7 @@ class ChatTabViewModel(
     private var joined: List<JoinedGroup> = emptyList()
     private var pending: Set<GroupRef> = emptySet()
     private var buzz: Set<String> = emptySet()
+    private var restoringBuzz: Set<String> = emptySet()
     /** この端末で非表示にしたリレー・コミュニティ（[com.nostr.torinos.chat.ChatHiddenRelaysStore]）。 */
     private var hiddenRelays: Set<String> = emptySet()
     // init の collect から refreshJoined() が呼ばれるので、init より前に宣言する。
@@ -449,6 +479,14 @@ class ChatTabViewModel(
             launch { account.groupsExpected.collect { expected -> _state.update { it.copy(groupsExpected = expected) } } }
             // 削除したチャンネルを一覧から外す（docs/buzz-admin-design.md 4.3）。
             launch { account.deletedChannels.collect { publish() } }
+            // 別の端末で参加した Buzz コミュニティの確認中の表示（docs/buzz-community-sync-design.md 4.1）。
+            launch {
+                account.restoringBuzz.collect { restoring ->
+                    restoringBuzz = restoring
+                    restoring.forEach { url -> launch { info(url); publish() } }
+                    publish()
+                }
+            }
             // 非表示のリレーは一覧から外し、読み込みもしない。表示に戻したら読み直す。
             launch {
                 com.nostr.torinos.chat.ChatHiddenRelaysStore.hidden(account.pubkey).collect { hidden ->
@@ -496,10 +534,15 @@ class ChatTabViewModel(
 
     fun layoutOf(ref: GroupRef): GroupLayout = metadataByRef[ref]?.layout ?: GroupLayout.Chat
 
+    /** 参加中の Buzz コミュニティを kind 10009 と合わせる（チャットタブを開いたとき）。 */
+    fun syncBuzzCommunities() {
+        account?.syncBuzzCommunities()
+    }
+
     /** 参加中の Buzz コミュニティ（`buzz://` のリンクをどこで開くかを決めるため）。 */
     suspend fun buzzCommunitiesForLink(): List<ChatRelaySummary> {
         account?.awaitReady()
-        return account?.buzzCommunities?.value.orEmpty().sorted().map { ChatRelaySummary(it, info(it)?.name, GroupFlavor.Buzz) }
+        return account?.buzzCommunities?.value.orEmpty().sorted().map { info(it).let { i -> ChatRelaySummary(it, i?.name, GroupFlavor.Buzz, i?.icon) } }
     }
 
     /** 参加中のグループの情報と最新の発言を、リレーごとに並行して読む。前の読み込みは取り消す。 */
@@ -682,7 +725,7 @@ class ChatTabViewModel(
             launch { ProfileRepository.ensureProfiles(dmPeople, ProfileFetchPolicy.CacheFirst(maxAgeMillis = 3_600_000), relayHint = relayUrl) }
         }
         // グループの画面を開いたとき、リレーの答えを待たずに投稿欄を出せるようにする。
-        mine.forEach { account?.roomCache?.setJoinedHint(it, true) }
+        mine.forEach { account.roomCache.setJoinedHint(it, true) }
         // 参加中のチャンネルは、最新の発言を読んでから一覧に入れる。先に入れると発言の無い順で並び、読んだ後に並び替わってしまう。
         // それまでは前回の一覧（保存済み）を出しておく。
         if (mine.isEmpty()) {
@@ -797,6 +840,10 @@ class ChatTabViewModel(
     // ---- タイムライン（docs/chat-joined-timeline-design.md） ----
 
     private suspend fun restoreView(account: ChatAccount) {
+        if (LocalSettingsStorage.getString(hideBotsKey(account.pubkey)) == "true" && !_state.value.timeline.hideBots) {
+            _state.update { it.copy(timeline = it.timeline.copy(hideBots = true)) }
+            publishTimeline()
+        }
         val stored = LocalSettingsStorage.getString(viewKey(account.pubkey))
         if (stored != ChatListView.Timeline.name || _state.value.view == ChatListView.Timeline) return
         setView(ChatListView.Timeline, persist = false)
@@ -809,6 +856,13 @@ class ChatTabViewModel(
         _state.update { it.copy(view = view) }
         // 一覧の読み直しの途中なら、終わったときに読む。
         if (view == ChatListView.Timeline && refreshJob?.isActive != true) refreshTimeline()
+    }
+
+    /** タイムラインで bot の投稿を出さない。読み直さず、読めているものから作り直す。 */
+    fun setHideBots(hide: Boolean) {
+        account?.pubkey?.let { me -> launch { LocalSettingsStorage.putString(hideBotsKey(me), hide.toString()) } }
+        _state.update { it.copy(timeline = it.timeline.copy(hideBots = hide)) }
+        publishTimeline()
     }
 
     /** 参加中のグループ（選んでいるリレーのものだけ）。削除・非表示のチャンネルは外す。 */
@@ -872,10 +926,12 @@ class ChatTabViewModel(
 
     private fun publishTimeline(loaded: Boolean = false) {
         val loader = timelineLoader ?: return
-        val entries = loader.entries(mutedPubkeys?.value.orEmpty())
-        // 行に出す作者の名前を読んでおく（グループのリレーに先に聞く）。
+        val entries = loader.entries(mutedPubkeys?.value.orEmpty(), hideBots = _state.value.timeline.hideBots)
+        // 行に出す作者の名前を読んでおく（グループのリレーに先に聞く）。Buzz では本文でメンションされた人の名前も要る。
         entries.flatMap { entry ->
-            listOfNotNull(entry.conversation.root?.author, entry.conversation.latestReply?.author).map { it to entry.ref.relayUrl }
+            val posts = listOfNotNull(entry.conversation.root, entry.conversation.latestReply)
+            val mentioned = if (entry.ref.relayUrl in buzz) posts.flatMap { com.nostr.torinos.chat.buzzProfileTargets(it.event) } else emptyList()
+            (posts.map { it.author } + mentioned).map { it to entry.ref.relayUrl }
         }.filter { (author, _) -> author != account?.pubkey && timelineAuthors.add(author) }
             .groupBy({ it.second }, { it.first })
             .forEach { (relayUrl, authors) ->
@@ -892,6 +948,7 @@ class ChatTabViewModel(
                     loaded = it.timeline.loaded || loaded,
                     canLoadOlder = loader.canLoadOlder,
                     failedRelays = failed.sorted(),
+                    hiddenBotPosts = loader.hiddenBotPosts(mutedPubkeys?.value.orEmpty()),
                 ),
             )
         }
@@ -1004,7 +1061,9 @@ class ChatTabViewModel(
         val relays = (standardRelays + buzz + listOfNotNull((selection as? ChatSelection.Relay)?.relayUrl))
             .distinct()
             .filterNot(::isHidden)
-            .map { ChatRelaySummary(it, relayInfo[it]?.name, if (it in buzz) GroupFlavor.Buzz else GroupFlavor.Standard) }
+            .map { ChatRelaySummary(it, relayInfo[it]?.name, if (it in buzz) GroupFlavor.Buzz else GroupFlavor.Standard, relayInfo[it]?.icon) }
+        val restoringRelays = (restoringBuzz - buzz).sorted().filterNot(::isHidden)
+            .map { ChatRelaySummary(it, relayInfo[it]?.name, GroupFlavor.Buzz, relayInfo[it]?.icon) }
         // 削除したチャンネルは、控えや前回の一覧に残っていても出さない。
         val deleted = account?.deletedChannels?.value.orEmpty()
         val buzzMine = visibleBuzz().flatMap { url -> buzzJoined[url].orEmpty().filter { it !in deleted }.map { row(it, GroupFlavor.Buzz) } }
@@ -1027,6 +1086,7 @@ class ChatTabViewModel(
         _state.update {
             it.copy(
                 relays = relays,
+                restoringRelays = restoringRelays,
                 joinedRows = activeMine,
                 otherRows = activeOthers,
                 archivedRows = archivedMine + archivedOthers,
@@ -1567,6 +1627,7 @@ class ChatTabViewModel(
             account.addBuzzCommunity(current.relayUrl)
             when (val check = account.checkBuzzMembership(current.relayUrl)) {
                 BuzzMembershipCheck.Member -> {
+                    account.recordBuzzJoined(current.relayUrl)
                     closeJoinSheet()
                     onJoined(current.relayUrl)
                     select(ChatSelection.Relay(current.relayUrl))
@@ -1670,6 +1731,8 @@ private fun lastReadKey(pubkey: String) = "chat.lastRead.$pubkey"
 private fun selectionKey(pubkey: String) = "chat.selectedRelay.$pubkey"
 
 private fun viewKey(pubkey: String) = "chat.view.$pubkey"
+
+private fun hideBotsKey(pubkey: String) = "chat.hideBots.$pubkey"
 
 /** 「すべて」は何も保存しない。リレーは URL をそのまま保存する。 */
 internal fun encodeChatSelection(selection: ChatSelection): String? = when (selection) {

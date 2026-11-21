@@ -36,7 +36,12 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
+import com.nostr.torinos.chat.GroupFlavor
 import com.nostr.torinos.network.NostrRepository
+import com.nostr.torinos.network.RelayInformation
+import com.nostr.torinos.ui.chat.ChatRelayIcon
+import com.nostr.torinos.ui.relay.relayIconUrl
+import kotlinx.coroutines.launch
 import com.nostr.torinos.network.RelayConnectionState
 import com.nostr.torinos.network.RelayInformationRepository
 
@@ -65,6 +70,18 @@ fun RelaySelector(
             ?.takeIf(String::isNotEmpty)
     }
 
+    // 開いたときに一覧のリレー名を引く(キャッシュがあればすぐ返る)。
+    var menuRelayInfo by remember { mutableStateOf<Map<String, RelayInformation>>(emptyMap()) }
+    LaunchedEffect(expanded, relays) {
+        if (!expanded) return@LaunchedEffect
+        relays.distinct().filter { it !in menuRelayInfo }.forEach { url ->
+            launch {
+                RelayInformationRepository.fetch(url).getOrNull()
+                    ?.let { menuRelayInfo = menuRelayInfo + (url to it) }
+            }
+        }
+    }
+
     Box(modifier = modifier) {
         Row(
             modifier = Modifier
@@ -86,9 +103,12 @@ fun RelaySelector(
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
-                if (showSelectedRelayUrl && selectedRelayUrl != null) {
+                // チャットのヘッダーと同じく、補足はスキームを外したホスト。名前と同じなら出さない。
+                val selectedHost = selectedRelayUrl?.relayDisplayName()
+                val selectedName = providedRelayName ?: fetchedRelayName
+                if (showSelectedRelayUrl && selectedHost != null && selectedName != null && selectedName != selectedHost) {
                     Text(
-                        text = selectedRelayUrl,
+                        text = selectedHost,
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         maxLines = 1,
@@ -123,10 +143,15 @@ fun RelaySelector(
             }
             relays.distinct().forEach { url ->
                 val state = relayConnectionStates[url] ?: RelayConnectionState.Disconnected
+                val host = url.relayDisplayName()
+                // チャットの切り替えと同じ形: リレー名(NIP-11)と、違えばホストの2行。
+                val information = menuRelayInfo[url]
+                val name = information?.name?.trim()?.takeIf(String::isNotEmpty) ?: host
                 HeaderDropdownMenuItem(
-                    label = url.relayDisplayName(),
+                    label = name,
+                    supportingText = host.takeIf { it != name },
                     selected = url == selectedRelayUrl,
-                    leadingIcon = { RelayConnectionDot(state) },
+                    leadingIcon = { RelayMenuIcon(name, relayIconUrl(url, information?.icon), state) },
                     onClick = {
                         expanded = false
                         onRelaySelected(url)
@@ -147,6 +172,27 @@ fun RelaySelector(
                     onOpenRelaySettings()
                 },
             )
+        }
+    }
+}
+
+/**
+ * リレーのアイコン(NIP-11 の icon、無ければ favicon)。読めるまでと読めないときは
+ * チャットと同じ頭文字の丸。接続状態の点を右下に重ねる。
+ */
+@Composable
+private fun RelayMenuIcon(name: String, iconUrl: String?, state: RelayConnectionState) {
+    Box(modifier = Modifier.size(28.dp)) {
+        ChatRelayIcon(name, GroupFlavor.Standard, size = 28.dp, iconUrl = iconUrl)
+        Box(
+            modifier = Modifier
+                .align(Alignment.BottomEnd)
+                .size(12.dp)
+                .clip(CircleShape)
+                .background(MaterialTheme.colorScheme.surface),
+            contentAlignment = Alignment.Center,
+        ) {
+            RelayConnectionDot(state)
         }
     }
 }

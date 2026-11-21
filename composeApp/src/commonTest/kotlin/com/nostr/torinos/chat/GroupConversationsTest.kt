@@ -116,6 +116,56 @@ class GroupConversationsTest {
     }
 
     @Test
+    fun hiddenAuthorsKeepTheirConversationsWhenOthersReplied() {
+        // bob（bot）の投稿は出さないが、人の返信があれば元の投稿ごと会話を残す（何への返信か分かるように）。
+        val t = buzz()
+        t.add(listOf(
+            ev(1, 9, content = "bot root", pubkey = bob),
+            ev(2, 9, reply(1), "human", pubkey = me),
+            ev(3, 9, reply(1), "bot reply", pubkey = bob),
+            ev(4, 9, content = "bot alone", pubkey = bob),
+            ev(5, 9, content = "root"),
+        ))
+        val conversations = t.conversations(hidden = setOf(bob))
+        assertEquals(listOf(id(5), id(1)), conversations.map { it.rootId })
+        val kept = conversations.last()
+        assertEquals("bot root", kept.root?.body)
+        assertTrue(kept.rootHidden)
+        assertEquals("human", kept.latestReply?.body)
+        // 件数は隠した人の返信も数える（スレッドを開けば見える）。
+        assertEquals(2, kept.replyCount)
+        assertEquals(2L, kept.lastActivity)
+        assertTrue(!conversations.first().rootHidden)
+    }
+
+    @Test
+    fun postsByAuthorsAreCountedWithoutDeletedOnesAndOlderThanTheFloor() {
+        val t = buzz()
+        t.add(listOf(
+            ev(1, 9, pubkey = bob),
+            ev(2, 9, reply(5), pubkey = bob),
+            ev(3, 9, pubkey = bob),
+            ev(4, 5, listOf(listOf("e", id(3))), pubkey = bob),
+            ev(5, 9),
+        ))
+        assertEquals(2, t.countPosts(setOf(bob), since = null))
+        assertEquals(1, t.countPosts(setOf(bob), since = 2))
+    }
+
+    @Test
+    fun botRootsShownForHumanRepliesAreNotCountedAsHidden() {
+        // 人の返信が付いた bot の投稿は、隠しても元の投稿として出すので数えない。
+        val t = buzz()
+        t.add(listOf(
+            ev(1, 9, content = "bot root", pubkey = bob),
+            ev(2, 9, reply(1), "human", pubkey = me),
+            ev(3, 9, reply(1), "bot reply", pubkey = bob),
+            ev(4, 9, content = "bot alone", pubkey = bob),
+        ))
+        assertEquals(2, t.countPosts(setOf(bob), since = null))
+    }
+
+    @Test
     fun buzzForumPostsCollectTheirComments() {
         val t = buzz()
         t.add(listOf(

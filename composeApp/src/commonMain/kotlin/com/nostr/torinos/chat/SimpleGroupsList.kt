@@ -38,10 +38,13 @@ fun withJoinedGroup(tags: List<List<String>>, group: JoinedGroup): List<List<Str
     }
 }
 
-/** [ref] を外す。そのリレーのグループが無くなれば `r` タグも外す。 */
-fun withoutJoinedGroup(tags: List<List<String>>, ref: GroupRef): List<List<String>> {
+/**
+ * [ref] を外す。そのリレーのグループが無くなれば `r` タグも外す。
+ * ただし [keepRelays]（参加中の Buzz コミュニティ）の `r` は残す。
+ */
+fun withoutJoinedGroup(tags: List<List<String>>, ref: GroupRef, keepRelays: Set<String> = emptySet()): List<List<String>> {
     val remaining = tags.filterNot { it.groupRefOrNull() == ref }
-    val stillUsed = remaining.any { it.groupRefOrNull()?.relayUrl == ref.relayUrl }
+    val stillUsed = ref.relayUrl in keepRelays || remaining.any { it.groupRefOrNull()?.relayUrl == ref.relayUrl }
     if (stillUsed) return remaining
     return remaining.filterNot { it.firstOrNull() == "r" && it.getOrNull(1)?.let(::normalizeRelayUrl) == ref.relayUrl }
 }

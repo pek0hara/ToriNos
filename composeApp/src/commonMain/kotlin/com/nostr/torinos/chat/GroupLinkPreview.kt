@@ -1,23 +1,43 @@
 package com.nostr.torinos.chat
 
-import com.nostr.torinos.model.extractWebUrlMatches
+import com.nostr.torinos.model.decodeNpub
+import com.nostr.torinos.model.TextLink
+import com.nostr.torinos.model.findTextLinks
 import com.nostr.torinos.model.extractWebUrls
 import com.nostr.torinos.model.isImageUrl
 
-/** 文章の中のむき出しの URL を、押せるリンクに分ける(Markdown の `[文字](URL)` と同じ扱いにする)。 */
+/**
+ * 文章の中のむき出しのリンクを、押せるリンクに分ける(Markdown の `[文字](URL)` と同じ扱いにする)。
+ * 拾うものはフィードの本文と同じ([findTextLinks]): Web の URL、グループへのリンク(`buzz://`・naddr)、人へのリンク。
+ * 人へのリンクは URL を `nostr:npub1…` にそろえる([npubOfLink])。外へ開けない URL は文字のまま残す。
+ */
 fun List<MdInline>.withAutolinks(): List<MdInline> = flatMap { inline ->
     if (inline !is MdInline.Text) return@flatMap listOf(inline)
-    val matches = extractWebUrlMatches(inline.text)
-    if (matches.isEmpty()) return@flatMap listOf(inline)
+    val links = findTextLinks(inline.text).mapNotNull { link ->
+        val url = when (link) {
+            is TextLink.Uri -> link.uri.takeIf(::isSafeExternalLink)
+            is TextLink.Group -> link.uri
+            is TextLink.Profile -> "nostr:" + link.npub
+            is TextLink.Hashtag -> null
+        } ?: return@mapNotNull null
+        Triple(link.start, link.endExclusive, url)
+    }
+    if (links.isEmpty()) return@flatMap listOf(inline)
     buildList {
         var cursor = 0
-        matches.forEach { match ->
-            if (match.start > cursor) add(MdInline.Text(inline.text.substring(cursor, match.start)))
-            add(MdInline.Link(match.url, match.url))
-            cursor = match.endExclusive
+        links.forEach { (start, end, url) ->
+            if (start > cursor) add(MdInline.Text(inline.text.substring(cursor, start)))
+            add(MdInline.Link(inline.text.substring(start, end), url))
+            cursor = end
         }
         if (cursor < inline.text.length) add(MdInline.Text(inline.text.substring(cursor)))
     }
+}
+
+/** 人へのリンク(`nostr:npub1…`)なら、その人の pubkey。 */
+fun npubOfLink(url: String): String? {
+    if (!url.startsWith("nostr:npub1", ignoreCase = true)) return null
+    return decodeNpub(url.removePrefix("nostr:"))
 }
 
 /**
