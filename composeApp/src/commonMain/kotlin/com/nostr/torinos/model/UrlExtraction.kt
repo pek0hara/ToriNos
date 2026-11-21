@@ -123,7 +123,7 @@ fun truncateTextPreservingWebUrlsAndCustomEmojis(
     return text.take(end).trimEnd() + ellipsis
 }
 
-private fun findRawEndForCustomEmojiLength(
+internal fun findRawEndForCustomEmojiLength(
     text: String,
     maxLength: Int,
     customEmojiShortcodes: Set<String>,

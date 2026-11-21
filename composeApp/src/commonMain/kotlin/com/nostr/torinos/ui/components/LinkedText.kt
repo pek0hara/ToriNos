@@ -29,7 +29,6 @@ import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.em
 import com.nostr.torinos.model.NostrProfile
-import com.nostr.torinos.model.extractNpubReferences
 import kotlin.math.roundToInt
 
 /**
@@ -37,8 +36,6 @@ import kotlin.math.roundToInt
  * null の間は、これらのリンクを普通の文字として表示する。
  */
 val LocalGroupLinkHandler = androidx.compose.runtime.compositionLocalOf<((String) -> Unit)?> { null }
-
-private val hashtagTextRegex = Regex("""(?<![\p{L}\p{N}_])#[\p{L}\p{N}_]+""")
 
 /** テキスト内のURLをクリッカブルリンクにして表示する。登録済みカスタム絵文字(:shortcode:)はインライン画像に置換する */
 @Composable
@@ -78,30 +75,7 @@ fun LinkedText(
     val groupLinkHandler = LocalGroupLinkHandler.current
     val includeGroups = groupLinkHandler != null
     val links = remember(text, includeProfiles, includeHashtags, enableWebLinks, includeGroups) {
-        val groupLinks = if (includeGroups) {
-            com.nostr.torinos.chat.extractGroupLinks(text).map { TextLink.Group(it.start, it.endExclusive, it.uri) }
-        } else {
-            emptyList()
-        }
-        fun overlapsGroup(start: Int, end: Int) = groupLinks.any { start < it.endExclusive && end > it.start }
-        groupLinks + buildList {
-            if (enableWebLinks) {
-                extractClickableUriMatches(text).forEach { match ->
-                    add(TextLink.Uri(match.start, match.endExclusive, match.uri, match.text))
-                }
-            }
-            if (includeProfiles) {
-                extractNpubReferences(text).forEach { reference ->
-                    add(TextLink.Profile(reference.start, reference.endExclusive, reference.pubkey))
-                }
-            }
-            if (includeHashtags) {
-                hashtagTextRegex.findAll(text).forEach { match ->
-                    val tag = match.value.removePrefix("#")
-                    add(TextLink.Hashtag(match.range.first, match.range.last + 1, tag))
-                }
-            }
-        }.filterNot { overlapsGroup(it.start, it.endExclusive) }.sortedBy { it.start }
+        findTextLinks(text, web = enableWebLinks, profiles = includeProfiles, groups = includeGroups, hashtags = includeHashtags)
     }
 
     val emojiSegments = remember(text, emojiMap) {
@@ -150,9 +124,7 @@ fun LinkedText(
                             pop()
                         }
                         is TextLink.Profile -> {
-                            val label = profiles[link.pubkey]?.bestName
-                                ?.takeIf { it.isNotBlank() }
-                                ?: link.pubkey.shortPubkey()
+                            val label = profileLinkLabel(link.pubkey, profiles[link.pubkey]?.bestName)
                             pushLink(
                                 LinkAnnotation.Clickable(
                                     tag = "npub:${link.pubkey}",
@@ -160,7 +132,7 @@ fun LinkedText(
                                     linkInteractionListener = { onProfileClick?.invoke(link.pubkey) },
                                 ),
                             )
-                            append("@$label")
+                            append(label)
                             pop()
                         }
                         is TextLink.Group -> {
@@ -171,7 +143,7 @@ fun LinkedText(
                                     linkInteractionListener = { groupLinkHandler?.invoke(link.uri) },
                                 ),
                             )
-                            append(if (link.uri.startsWith("buzz://", ignoreCase = true)) "💬 Buzz のメッセージ" else "💬 グループへのリンク")
+                            append(groupLinkLabel(link.uri))
                             pop()
                         }
                         is TextLink.Hashtag -> {
@@ -335,17 +307,5 @@ private sealed class Segment {
         override val end get() = data.end
     }
 }
-
-private sealed class TextLink(
-    val start: Int,
-    val endExclusive: Int,
-) {
-    class Uri(start: Int, endExclusive: Int, val uri: String, val text: String) : TextLink(start, endExclusive)
-    class Profile(start: Int, endExclusive: Int, val pubkey: String) : TextLink(start, endExclusive)
-    class Hashtag(start: Int, endExclusive: Int, val tag: String) : TextLink(start, endExclusive)
-    class Group(start: Int, endExclusive: Int, val uri: String) : TextLink(start, endExclusive)
-}
-
-private fun String.shortPubkey(): String = take(8) + "…" + takeLast(8)
 
 private fun unregisteredEmojiInlineContentId(shortcode: String): String = "unregistered-emoji:$shortcode"
