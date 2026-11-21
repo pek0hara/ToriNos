@@ -69,6 +69,8 @@ import com.nostr.torinos.ui.settings.setSensitiveText
 import com.nostr.torinos.util.loggingExceptionHandler
 import com.nostr.torinos.util.logException
 import com.nostr.torinos.ui.components.DismissKeyboardOnLeave
+import com.nostr.torinos.ui.components.rememberTextFilePickerLauncher
+import androidx.compose.material3.OutlinedButton
 
 @Composable
 fun KeySetupScreen(
@@ -342,6 +344,18 @@ fun KeySetupScreen(
                         }
                         Spacer(modifier = Modifier.height(8.dp))
                         run {
+                            val pickKeyFile = rememberTextFilePickerLauncher { content ->
+                                if (content == null) return@rememberTextFilePickerLauncher
+                                val key = runCatching { extractPrivateKeyFromFile(content) }
+                                key.onSuccess { found ->
+                                    if (found != null) {
+                                        importKey = found
+                                        error = null
+                                    } else {
+                                        error = "ファイルに秘密鍵(nsec)が見つかりませんでした"
+                                    }
+                                }.onFailure { e -> error = e.message }
+                            }
                             PrivateKeyInputField(
                                 value = importKey,
                                 onValueChange = { importKey = it.trim(); error = null },
@@ -365,6 +379,17 @@ fun KeySetupScreen(
                                 enabled = importKey.isNotBlank(),
                             ) {
                                 Text("インポートして始める")
+                            }
+                            Spacer(modifier = Modifier.height(4.dp))
+                            OutlinedButton(
+                                onClick = {
+                                    focusManager.clearFocus()
+                                    keyboardController?.hide()
+                                    pickKeyFile()
+                                },
+                                modifier = Modifier.fillMaxWidth(),
+                            ) {
+                                Text("鍵ファイル(.nsec)から読み込む")
                             }
                         }
                     }
