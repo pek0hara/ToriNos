@@ -1064,6 +1064,159 @@ class ChatAccount internal constructor(
         return palette
     }
 
+    // ---- 検索（docs/buzz-search-design.md） ----
+
+    /**
+     * 検索画面を開いている間、[relayUrl] を常時接続の側に置く（入力のたびにつなぎ直して認証し直さないため）。
+     * 戻り値で手放す。
+     */
+    fun holdBuzzRelay(relayUrl: String): () -> Unit {
+        if (closed || relayUrl !in _buzz.value) return {}
+        val job = scope.launch { keepingRelay(relayUrl) { kotlinx.coroutines.awaitCancellation() } }
+        return { job.cancel() }
+    }
+
+    private suspend fun searchFetch(relayUrl: String, filter: NostrFilter) = keepingRelay(relayUrl) {
+        fetchFiniteEvents(
+            SubscriptionSpec(
+                id = "buzz-search-${Random.nextLong().toULong().toString(16)}",
+                filters = listOf(filter),
+                target = RelayTarget.Explicit(setOf(relayUrl)),
+                behavior = SubscriptionBehavior.Fetch(timeoutMillis = 10_000),
+                replayCachedEvents = false,
+            ),
+        )
+    }
+
+    /**
+     * コミュニティのメッセージを検索する（NIP-50、関連度順）。リレーが答えなかった・断ったときは null。
+     * 途中で切れても、届いた当たりがあればそれを返す。
+     */
+    suspend fun searchBuzzMessages(relayUrl: String, query: String): List<NostrEvent>? {
+        if (relayUrl !in _buzz.value) return null
+        // 確認なしで署名できるときは、デスクトップ版と同じ前方一致（`/query`、NIP-98）。
+        // 最後の語が短いとき・外部の署名器・失敗したときは WebSocket の全文検索（公式モバイル版と同じ）。
+        if (signsSilently && buzzPrefixSearchable(query)) {
+            try {
+                val url = "${buzzHttpOrigin(relayUrl)}/query"
+                val body = buzzMessagePrefixQueryBody(query)
+                val auth = signer.sign(content = "", kind = HTTP_AUTH_KIND, tags = nip98Tags(url, "POST", body))
+                val response = profileSearchHttp.postJson(url, body, nostrAuthorizationHeader(auth))
+                if (response.isSuccess) {
+                    parseBuzzEventArray(response.body) { com.nostr.torinos.crypto.isValidEvent(it) }?.let { return it }
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Throwable) {
+                // 全文検索で探し直す。
+            }
+        }
+        val result = searchFetch(relayUrl, buzzMessageSearchFilter(query))
+        return when (result.relays[relayUrl]?.outcome) {
+            RelayOutcome.Eose -> result.events
+            is RelayOutcome.Closed -> null
+            else -> result.events.takeIf { it.isNotEmpty() }
+        }
+    }
+
+    /** `/profiles/search` が無いリレー（404 / 405）と、NIP-50 で探す期限。 */
+    private val profileSearchFallback = mutableMapOf<String, Long>()
+    private val profileSearchHttp: BuzzHttp by lazy { KtorBuzzHttp() }
+
+    /**
+     * コミュニティの人を名前で探す。確認なしで署名できるときは `/profiles/search`（NIP-98）、
+     * それ以外とそのエンドポイントが無いリレーでは NIP-50 の kind 0。失敗したら空。
+     */
+    suspend fun searchBuzzPeople(relayUrl: String, query: String): List<NostrEvent> {
+        if (relayUrl !in _buzz.value) return emptyList()
+        val text = query.trim()
+        if (text.isEmpty()) return emptyList()
+        val now = kotlin.time.Clock.System.now().toEpochMilliseconds()
+        val useEndpoint = signsSilently && text.length <= BUZZ_PROFILE_SEARCH_QUERY_MAX &&
+            (profileSearchFallback[relayUrl]?.let { now >= it } ?: true)
+        if (useEndpoint) {
+            try {
+                val url = "${buzzHttpOrigin(relayUrl)}/profiles/search"
+                val body = buzzProfileSearchBody(text)
+                val auth = signer.sign(content = "", kind = HTTP_AUTH_KIND, tags = nip98Tags(url, "POST", body))
+                val response = profileSearchHttp.postJson(url, body, nostrAuthorizationHeader(auth))
+                when {
+                    response.isSuccess ->
+                        return parseBuzzEventArray(response.body) { com.nostr.torinos.crypto.isValidEvent(it) }.orEmpty()
+                    response.status == 404 || response.status == 405 ->
+                        profileSearchFallback[relayUrl] = now + PROFILE_SEARCH_RETRY_MILLIS
+                    else -> return emptyList()
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Throwable) {
+                return emptyList()
+            }
+        }
+        return try {
+            searchFetch(relayUrl, buzzPeopleSearchFilter(text)).events
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Throwable) {
+            emptyList()
+        }
+    }
+
+    /**
+     * 検索の候補にするチャンネル（ChatTabViewModel.refreshBuzz と同じ読み方）。グループ情報（39000）は
+     * リレーの鍵の署名だけ、参加中は自分が入っているメンバー一覧（39002）。答えがそろわなければ null。
+     */
+    suspend fun loadBuzzSearchChannels(relayUrl: String): List<BuzzSearchChannel>? {
+        if (relayUrl !in _buzz.value) return null
+        val relayKey = RelayInformationRepository.fetch(relayUrl).getOrNull()?.self ?: return null
+        val result = keepingRelay(relayUrl) {
+            fetchFiniteEvents(
+                SubscriptionSpec(
+                    id = "buzz-search-ch-${Random.nextLong().toULong().toString(16)}",
+                    filters = listOf(
+                        NostrFilter(kinds = listOf(GROUP_METADATA_KIND), authors = listOf(relayKey), limit = 300),
+                        NostrFilter(kinds = listOf(GROUP_MEMBERS_KIND), authors = listOf(relayKey), pTags = listOf(pubkey), limit = 300),
+                    ),
+                    target = RelayTarget.Explicit(setOf(relayUrl)),
+                    behavior = SubscriptionBehavior.Fetch(timeoutMillis = 10_000),
+                    replayCachedEvents = false,
+                ),
+            )
+        }
+        if (!result.allAnswered) return null
+        val joined = result.events.filter { it.kind == GROUP_MEMBERS_KIND }
+            .groupBy { e -> e.tags.firstOrNull { it.firstOrNull() == "d" }?.getOrNull(1) }
+            .mapNotNull { (id, lists) -> lists.maxByOrNull { it.createdAt }?.takeIf { latest -> id != null && latest.tags.any { it.firstOrNull() == "p" && it.getOrNull(1) == pubkey } }?.let { id } }
+            .toSet()
+        val deleted = deletedChannels.value
+        return latestGroupMetadata(result.events, relayKey).values
+            .filter { !it.isHidden && GroupRef(relayUrl, it.groupId) !in deleted }
+            .map { BuzzSearchChannel(GroupRef(relayUrl, it.groupId), it, it.groupId in joined) }
+    }
+
+    /** 検索の当たりのチャンネルで、一覧に無かったもの（DM・一覧に載らないチャンネル）のグループ情報。 */
+    suspend fun fetchBuzzChannelMetadata(relayUrl: String, ids: Collection<String>): Map<String, GroupMetadata> {
+        if (ids.isEmpty() || relayUrl !in _buzz.value) return emptyMap()
+        val relayKey = RelayInformationRepository.fetch(relayUrl).getOrNull()?.self ?: return emptyMap()
+        val events = keepingRelay(relayUrl) {
+            ids.chunked(50).flatMap { chunk ->
+                fetchFiniteEvents(
+                    SubscriptionSpec(
+                        id = "buzz-search-md-${Random.nextLong().toULong().toString(16)}",
+                        filters = listOf(NostrFilter(kinds = listOf(GROUP_METADATA_KIND), authors = listOf(relayKey), dTags = chunk)),
+                        target = RelayTarget.Explicit(setOf(relayUrl)),
+                        behavior = SubscriptionBehavior.Fetch(timeoutMillis = 8_000),
+                        replayCachedEvents = false,
+                    ),
+                ).events
+            }
+        }
+        return latestGroupMetadata(events, relayKey)
+    }
+
+    /** そのコミュニティのリレーの鍵（NIP-11 の `self`）。リレーが署名した発言の作者を読むのに使う。 */
+    suspend fun buzzRelayPubkey(relayUrl: String): String? = RelayInformationRepository.fetch(relayUrl).getOrNull()?.self
+
     /**
      * 署名済みのプロフィール（kind 0）を、参加中の Buzz コミュニティのリレーにも送る。
      * Buzz のアプリはコミュニティのリレーからしか kind 0 を読まないので、通常の書き込みリレーへの送信だけでは反映されない。
@@ -1212,6 +1365,8 @@ private const val OWN_PROFILE_MAX_AGE_MS = 10 * 60 * 1000L
 
 /** 何にも当たらない ID。接続を保つためだけの購読に使う。 */
 private const val KEEP_ALIVE_ID = "0000000000000000000000000000000000000000000000000000000000000000"
+/** `/profiles/search` が無いリレーで、NIP-50 を使い続ける間（公式の `profileSearchRetry`）。 */
+private const val PROFILE_SEARCH_RETRY_MILLIS = 5 * 60 * 1000L
 
 private fun encodeTagsJson(tags: List<List<String>>): String =
     kotlinx.serialization.json.JsonArray(

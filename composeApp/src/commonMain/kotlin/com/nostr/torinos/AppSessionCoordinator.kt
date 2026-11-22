@@ -166,6 +166,8 @@ import kotlin.time.Clock
 @Serializable data class GroupThreadRoute(val relayUrl: String, val groupId: String, val rootId: String)
 /** NIP-29 のフォーラム（Buzz の forum チャンネル、kind 11 のグループ）。 */
 @Serializable data class GroupForumRoute(val relayUrl: String, val groupId: String)
+/** Buzz コミュニティ内の検索（docs/buzz-search-design.md）。 */
+@Serializable data class BuzzSearchRoute(val relayUrl: String)
 @Serializable data class ProfileRoute(val pubkey: String)
 @Serializable data class UserJournalRoute(val pubkey: String)
 @Serializable data class ArticleRoute(val pubkey: String, val identifier: String)
@@ -1551,6 +1553,7 @@ internal fun AppSessionCoordinator(
                                             onOpenThread = { ref, rootId -> nav.navigate(GroupThreadRoute(ref.relayUrl, ref.groupId, rootId)) },
                                             onOpenDm = { key -> nav.navigate(DmConversationRoute(key)) },
                                             onUserClick = ::openProfileDrawer,
+                                            onOpenSearch = { relayUrl -> nav.navigate(BuzzSearchRoute(relayUrl)) },
                                         )
                                     }
                                     ServiceTab.Channels -> {
@@ -1784,6 +1787,22 @@ internal fun AppSessionCoordinator(
                             ref = com.nostr.torinos.chat.GroupRef(route.relayUrl, route.groupId),
                             rootId = route.rootId,
                             navigation = groupNavigation(backStack),
+                        )
+                    }
+                    composable<BuzzSearchRoute> { backStack ->
+                        val route = backStack.toRoute<BuzzSearchRoute>()
+                        com.nostr.torinos.ui.chat.BuzzSearchScreen(
+                            relayUrl = route.relayUrl,
+                            onBack = { if (nav.currentBackStackEntry?.id == backStack.id) nav.popBackStack() },
+                            onOpenGroup = { ref, layout ->
+                                if (layout == com.nostr.torinos.chat.GroupLayout.Forum) {
+                                    nav.navigate(GroupForumRoute(ref.relayUrl, ref.groupId))
+                                } else {
+                                    nav.navigate(GroupChatRoute(ref.relayUrl, ref.groupId))
+                                }
+                            },
+                            onOpenThread = { ref, rootId -> nav.navigate(GroupThreadRoute(ref.relayUrl, ref.groupId, rootId)) },
+                            onUserClick = ::openProfileDrawer,
                         )
                     }
                     composable<GroupForumRoute> { backStack ->

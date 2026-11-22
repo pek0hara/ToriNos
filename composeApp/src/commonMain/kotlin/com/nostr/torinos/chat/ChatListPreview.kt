@@ -35,7 +35,7 @@ fun chatListPreview(body: String): String? {
     }
 }
 
-private fun List<MdInline>.plainText(): String = joinToString("") { inline ->
+internal fun List<MdInline>.plainText(): String = joinToString("") { inline ->
     when (inline) {
         is MdInline.Text -> inline.text
         is MdInline.Bold -> inline.text

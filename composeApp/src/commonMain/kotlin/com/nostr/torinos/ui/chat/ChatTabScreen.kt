@@ -139,6 +139,8 @@ fun ChatTabScreen(
     onOpenDm: (String) -> Unit = {},
     /** ほかの人のプロフィールを開く（タイムラインの本文のメンション）。 */
     onUserClick: ((String) -> Unit)? = null,
+    /** 選んでいる Buzz コミュニティの中を検索する（コミュニティのリレー、docs/buzz-search-design.md）。 */
+    onOpenSearch: (String) -> Unit = {},
 ) {
     val session = LocalAccountSession.current
     val viewModel = accountSessionViewModel(key = "chat-tab-${session?.sessionId}") { s -> ChatTabViewModel(s?.chat, s?.dm, s?.muteStore?.mutedPubkeys) }
@@ -343,6 +345,12 @@ fun ChatTabScreen(
                         }
                     },
                     actions = {
+                        val searchRelay = (state.selection as? ChatSelection.Relay)?.relayUrl
+                        if (state.selectsBuzzCommunity && state.hasSigner && searchRelay != null) {
+                            IconButton(onClick = { onOpenSearch(searchRelay) }) {
+                                Icon(Icons.Default.Search, contentDescription = "コミュニティ内を検索")
+                            }
+                        }
                         if (state.showsDmButton) {
                             val selected = state.selection == ChatSelection.Direct
                             IconButton(onClick = {
