@@ -47,6 +47,13 @@ private const val PLAINTEXT_KEY_NOTICE_SNOOZE_SECONDS = 7L * 24 * 60 * 60
 fun SignerStatusBanner(session: AccountSession, modifier: Modifier = Modifier) {
     val interactive = session.signer as? InteractiveSigner
     val attention = interactive?.attention?.collectAsState()?.value
+    val attentionRequests = interactive?.attentionRequests?.collectAsState()?.value ?: 0L
+    // 「後で」で閉じた帯。本文の上に重なり、ヘッダーの操作（アカウント切替など）を隠すため閉じられるようにする。
+    var dismissal by remember(session.sessionId) { mutableStateOf<SignerBannerDismissal?>(null) }
+    val attentionShown = isSignerAttentionShown(attention, attentionRequests, dismissal)
+    fun dismissAttention() {
+        attention?.let { dismissal = SignerBannerDismissal(it, attentionRequests) }
+    }
     val scope = rememberCoroutineScope()
     val uriHandler = LocalUriHandler.current
     var busy by remember(session.sessionId) { mutableStateOf(false) }
@@ -84,17 +91,23 @@ fun SignerStatusBanner(session: AccountSession, modifier: Modifier = Modifier) {
     val message: String
     val actions: List<Pair<String, () -> Unit>>
     when {
-        attention == SignerAttention.Locked -> {
+        attentionShown && attention == SignerAttention.Locked -> {
             message = "パスキーで解錠すると、投稿やリアクションができます。"
-            actions = listOf("解錠" to { run({ interactive.unlock() }) })
+            actions = listOf(
+                "後で" to { dismissAttention() },
+                "解錠" to { run({ interactive.unlock() }) },
+            )
         }
-        attention is SignerAttention.ApprovalRequired -> {
+        attentionShown && attention is SignerAttention.ApprovalRequired -> {
             message = "署名器で、この操作を承認してください。"
             actions = listOf("署名器を開く" to { runCatching { uriHandler.openUri(attention.url) } })
         }
-        attention is SignerAttention.Disconnected -> {
+        attentionShown && attention is SignerAttention.Disconnected -> {
             message = "署名器に接続できません（${attention.reason}）。読むことはできます。"
-            actions = listOf("再接続" to { run({ interactive.reconnect() }) })
+            actions = listOf(
+                "後で" to { dismissAttention() },
+                "再接続" to { run({ interactive.reconnect() }) },
+            )
         }
         plaintextNoticeVisible -> {
             message = "秘密鍵が暗号化されずにこのブラウザに保存されています。パスキーで保護できます。"
@@ -141,4 +154,17 @@ fun SignerStatusBanner(session: AccountSession, modifier: Modifier = Modifier) {
             }
         }
     }
+}
+
+/** 「後で」で閉じたときの状態。同じ知らせのまま、操作で必要になった回数が増えなければ出さない。 */
+internal data class SignerBannerDismissal(val attention: SignerAttention, val requestCount: Long)
+
+internal fun isSignerAttentionShown(
+    attention: SignerAttention?,
+    requestCount: Long,
+    dismissal: SignerBannerDismissal?,
+): Boolean {
+    if (attention == null) return false
+    if (dismissal == null || dismissal.attention != attention) return true
+    return requestCount > dismissal.requestCount
 }

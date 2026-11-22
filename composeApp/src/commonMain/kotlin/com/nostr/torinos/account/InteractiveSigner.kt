@@ -1,6 +1,8 @@
 package com.nostr.torinos.account
 
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 
 /** 署名器が利用者の操作を待っている状態。画面上部の帯で知らせる。 */
 sealed interface SignerAttention {
@@ -18,9 +20,17 @@ sealed interface SignerAttention {
 interface InteractiveSigner {
     val attention: StateFlow<SignerAttention?>
 
+    /**
+     * [attention] の操作が要るのに、それが済んでいないため断った操作の回数。
+     * 利用者が帯を閉じた後でも、投稿などで解錠が要ったら帯を出し直すのに使う。
+     */
+    val attentionRequests: StateFlow<Long> get() = NoAttentionRequests
+
     /** [SignerAttention.Locked] を解く。生体認証のダイアログを出すので、ボタンの操作から呼ぶ。 */
     suspend fun unlock() {}
 
     /** [SignerAttention.Disconnected] から接続し直す。 */
     suspend fun reconnect() {}
 }
+
+private val NoAttentionRequests: StateFlow<Long> = MutableStateFlow(0L).asStateFlow()

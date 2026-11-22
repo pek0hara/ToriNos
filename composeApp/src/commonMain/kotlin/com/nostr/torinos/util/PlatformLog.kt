@@ -49,7 +49,7 @@ internal inline fun journalTraceLog(message: () -> String) {
  * NIP-46 の要求と応答、パスキーの解錠、署名器の状態の変化）をログ出力する。動作確認用。
  * 鍵・本文・暗号文は出さない。
  */
-internal const val isSignerTraceEnabled = true
+internal const val isSignerTraceEnabled = false
 
 internal inline fun signerTraceLog(message: () -> String) {
     if (isSignerTraceEnabled) {

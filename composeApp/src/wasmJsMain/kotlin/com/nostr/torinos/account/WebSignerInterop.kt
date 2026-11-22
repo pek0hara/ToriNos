@@ -44,6 +44,15 @@ private fun installWebSignerHelpers(): Unit = js(
           { name: 'HKDF', hash: 'SHA-256', salt: new Uint8Array(32), info: new TextEncoder().encode('torinos-nostr-private-key-v1') },
           base, { name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt']);
       };
+      // WebAuthn Signal API。対応するブラウザとパスワードマネージャーは、そのパスキーを消す（または隠す）。
+      // 未対応の環境では何もしない。
+      const forget = (credentialId) => {
+        try {
+          if (globalThis.PublicKeyCredential && typeof PublicKeyCredential.signalUnknownCredential === 'function') {
+            PublicKeyCredential.signalUnknownCredential({ rpId: location.hostname, credentialId }).catch(() => {});
+          }
+        } catch (e) {}
+      };
       const nostr = () => {
         if (!globalThis.nostr) throw new Error('NO_EXTENSION');
         return globalThis.nostr;
@@ -60,6 +69,7 @@ private fun installWebSignerHelpers(): Unit = js(
         nip07Nip04Decrypt: safe(async (peer, text) => String(await nostr().nip04.decrypt(peer, text))),
         passkeySupported: () => !!(globalThis.isSecureContext && globalThis.PublicKeyCredential && navigator.credentials),
         newSalt: () => encode(random(32)),
+        forgetPasskey: (credentialId) => forget(credentialId),
         passkeyCreate: safe(async (userName, salt) => {
           const credential = await navigator.credentials.create({ publicKey: {
             rp: { name: 'ToriNos' },
@@ -72,7 +82,11 @@ private fun installWebSignerHelpers(): Unit = js(
           if (!credential) throw new Error('パスキーを作成できませんでした');
           const prf = credential.getClientExtensionResults().prf;
           const first = prf && prf.results && prf.results.first;
-          if (!prf || (prf.enabled !== true && !first)) throw new Error('PRF_UNSUPPORTED');
+          if (!prf || (prf.enabled !== true && !first)) {
+            // 鍵の保護に使えないパスキーを、パスワードマネージャーに残さないよう知らせる。
+            forget(encode(credential.rawId));
+            throw new Error('PRF_UNSUPPORTED');
+          }
           return { credentialId: encode(credential.rawId), key: first ? await deriveAesKey(first) : null };
         }),
         passkeyUnlock: safe(async (credentialId, salt) => {
@@ -137,6 +151,7 @@ private fun callNip07Nip04Encrypt(h: JsAny, peer: String, text: String): Promise
 private fun callNip07Nip04Decrypt(h: JsAny, peer: String, text: String): Promise<JsAny> = js("h.nip07Nip04Decrypt(peer, text)")
 private fun callPasskeySupported(h: JsAny): Boolean = js("h.passkeySupported()")
 private fun callNewSalt(h: JsAny): String = js("h.newSalt()")
+private fun callForgetPasskey(h: JsAny, credentialId: String): Unit = js("h.forgetPasskey(credentialId)")
 private fun callPasskeyCreate(h: JsAny, userName: String, salt: String): Promise<JsAny> = js("h.passkeyCreate(userName, salt)")
 private fun callPasskeyUnlock(h: JsAny, credentialId: String, salt: String): Promise<JsAny> = js("h.passkeyUnlock(credentialId, salt)")
 private fun callAesEncrypt(h: JsAny, key: JsAny, text: String): Promise<JsAny> = js("h.aesEncrypt(key, text)")
@@ -162,6 +177,9 @@ internal class CreatedPasskey(val credentialId: String, val key: JsAny?)
 internal object PasskeyJs {
     fun isSupported(): Boolean = callPasskeySupported(helpers())
     fun newSalt(): String = callNewSalt(helpers())
+
+    /** 使えなくなったパスキーを、対応するパスワードマネージャーに消してもらう。 */
+    fun forget(credentialId: String) = callForgetPasskey(helpers(), credentialId)
 
     suspend fun create(userName: String, salt: String): CreatedPasskey {
         val value = callPasskeyCreate(helpers(), userName, salt).awaitValue() ?: throw WebSignerCallFailed("empty")

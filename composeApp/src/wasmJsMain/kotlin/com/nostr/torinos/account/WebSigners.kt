@@ -84,13 +84,32 @@ internal class Nip07AccountSigner(
     }
 }
 
+/** パスキーを作る（保護する）ときか、保存済みのパスキーで解錠するときか。 */
+internal enum class PasskeyStep { Create, Unlock }
+
 /** パスキーの呼び出しの失敗を、画面に出せる [SignerException] にする。 */
-private fun passkeyFailure(e: WebSignerCallFailed): SignerException = when (e.reason) {
+internal fun passkeyFailure(e: WebSignerCallFailed, step: PasskeyStep): SignerException = when (e.reason) {
     "PRF_UNSUPPORTED" -> SignerException.Unavailable(
         "このブラウザまたはパスキーの保存先は、秘密鍵の保護（PRF）に対応していません。" +
             "ブラウザ拡張（NIP-07）またはリモート署名（NIP-46）でログインしてください",
     )
-    "NotAllowedError", "AbortError" -> SignerException.Rejected()
+    // 解錠の NotAllowedError は、取り消したときのほか、このブラウザで使えるパスキーが無いときにも返る。
+    // 区別できないので、どちらの場合も分かる文にする。
+    "NotAllowedError" -> if (step == PasskeyStep.Unlock) {
+        SignerException.Unavailable(
+            "パスキーで解錠できませんでした。取り消したか、保存したときのパスキーがこのブラウザで見つかりません",
+            e,
+        )
+    } else {
+        SignerException.Rejected()
+    }
+    "AbortError" -> SignerException.Rejected()
+    // AES-GCM の復号の失敗（別のパスキーを選んだなど）もここに来る。
+    "OperationError" -> if (step == PasskeyStep.Unlock) {
+        SignerException.Unavailable("このパスキーでは解錠できません。保存したときのパスキーを選んでください", e)
+    } else {
+        SignerException.Unavailable("パスキーを使えませんでした: ${e.reason}", e)
+    }
     "SecurityError" -> SignerException.Unavailable("このページのアドレスではパスキーを使えません")
     else -> SignerException.Unavailable("パスキーを使えませんでした: ${e.reason}", e)
 }
@@ -145,7 +164,12 @@ internal object PasskeyVault {
             UnlockedPasskeyKeys.put(pubkey, normalized)
             return SignerCredential.Passkey(credentialId = credentialId, prfSalt = salt, iv = iv, ciphertext = ciphertext)
         } catch (e: WebSignerCallFailed) {
-            throw passkeyFailure(e)
+            if (e.reason == "PRF_UNSUPPORTED") {
+                // 作ったパスキーは鍵の保護に使えない。パスワードマネージャーに使えないパスキーを残さない。
+                pendingPasskey?.takeIf { it.pubkey == pubkey }?.let { PasskeyJs.forget(it.credentialId) }
+                pendingPasskey = null
+            }
+            throw passkeyFailure(e, PasskeyStep.Create)
         }
     }
 
@@ -161,12 +185,7 @@ internal object PasskeyVault {
             UnlockedPasskeyKeys.put(pubkey, normalized)
             return normalized
         } catch (e: WebSignerCallFailed) {
-            // AES-GCM の復号の失敗（別のパスキーを選んだなど）もここに来る。
-            throw if (e.reason == "OperationError") {
-                SignerException.Unavailable("このパスキーでは解錠できません。保存したときのパスキーを選んでください")
-            } else {
-                passkeyFailure(e)
-            }
+            throw passkeyFailure(e, PasskeyStep.Unlock)
         }
     }
 }
@@ -185,6 +204,8 @@ internal class PasskeyAccountSigner(
         UnlockedPasskeyKeys.get(pubkey)?.let { PrivateKeyAccountSigner(it, lease) }
     private val _attention = MutableStateFlow<SignerAttention?>(if (unlocked == null) SignerAttention.Locked else null)
     override val attention: StateFlow<SignerAttention?> = _attention.asStateFlow()
+    private val _attentionRequests = MutableStateFlow(0L)
+    override val attentionRequests: StateFlow<Long> = _attentionRequests.asStateFlow()
 
     override val method: SignerMethod get() = SignerMethod.Passkey
 
@@ -202,7 +223,11 @@ internal class PasskeyAccountSigner(
 
     private fun inner(): PrivateKeyAccountSigner {
         lease.ensureActive()
-        return unlocked ?: throw SignerException.Locked()
+        return unlocked ?: run {
+            // 帯を閉じていても、解錠が要ったことを知らせて出し直させる。
+            _attentionRequests.value += 1
+            throw SignerException.Locked()
+        }
     }
 
     override suspend fun sign(content: String, kind: Int, tags: List<List<String>>, createdAt: Long?): NostrEvent =
