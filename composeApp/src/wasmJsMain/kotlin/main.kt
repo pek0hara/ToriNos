@@ -1,6 +1,7 @@
 import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.window.ComposeViewport
 import com.nostr.torinos.App
+import com.nostr.torinos.account.installCrossTabAccountSync
 import com.nostr.torinos.ui.components.installDuplicateCompositionCommitGuard
 import com.nostr.torinos.ui.components.installRedundantFocusGuard
 import com.nostr.torinos.ui.components.installSoftwareKeyboardBridge
@@ -16,6 +17,7 @@ fun main() {
     installDuplicateCompositionCommitGuard()
     installSoftwareKeyboardBridge()
     installVisualViewportBridge(ComposeViewportContainerId)
+    installCrossTabAccountSync()
     // 画像はCoilの既定シングルトンを使う(ディスクキャッシュを置けないため registerAppImageLoader は呼ばない)。
     ComposeViewport(ComposeViewportContainerId) {
         App()

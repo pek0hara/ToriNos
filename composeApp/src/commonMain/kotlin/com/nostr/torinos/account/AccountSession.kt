@@ -545,6 +545,49 @@ class AccountSessionManager internal constructor(
 
     suspend fun listAccounts(): List<StoredAccount> = storage.listAccounts()
 
+    /**
+     * ほかの所（Web の別タブなど）が保存先のアカウントを書き換えたとき、このセッションを保存先に合わせる。
+     *
+     * 保存先は読むだけで書き換えない（書き換えた側の決定に従う）。アクティブなアカウントが同じなら何もしない。
+     * 入力の保存に失敗しても、ログアウト・切り替え済みのアカウントで署名を続けさせないため、セッションは終える。
+     */
+    suspend fun syncWithStorage(): Result<AccountSessionState> =
+        transitionScope.async { syncWithStorageInternal() }.await()
+
+    private suspend fun syncWithStorageInternal(): Result<AccountSessionState> = transitionMutex.withLock {
+        val previous = _state.value
+        if (previous !is AccountSessionState.Active && previous !is AccountSessionState.Anonymous) {
+            return@withLock Result.success(previous)
+        }
+        val stored = runCatching { storage.loadActiveCredentials() }
+        val storedPubkey = stored.getOrNull()?.pubkey
+        val currentSession = (previous as? AccountSessionState.Active)?.session
+        if (stored.isSuccess && storedPubkey == currentSession?.pubkey) return@withLock Result.success(previous)
+
+        signerTraceLog { "sync with storage from=${currentSession?.pubkey?.take(8)} to=${storedPubkey?.take(8)}" }
+        if (currentSession != null) {
+            runCatching { currentSession.prepareTransition() }.onFailure {
+                logException("AccountSessionManager", it, "Failed to save inputs before following another tab")
+            }
+        }
+        _state.value = AccountSessionState.Switching(fromPubkey = currentSession?.pubkey, toPubkey = storedPubkey)
+        runCatching {
+            currentSession?.resources?.close()
+            if (currentSession != null) {
+                // 別のタブで切り替えただけなら、戻ったときに解錠し直さなくてよいよう鍵を残す。ログアウト・削除なら消す。
+                val stillLoggedIn = runCatching {
+                    storage.listAccounts().any { it.pubkeyHex == currentSession.pubkey && !it.isLoggedOut }
+                }.getOrDefault(false)
+                if (!stillLoggedIn) PlatformSigners.forgetUnlockedKey(currentSession.pubkey)
+            }
+            activeOrAnonymous(stored.getOrThrow()).also { _state.value = it }
+        }.onFailure {
+            logException("AccountSessionManager", it, "Failed to follow account changed in another tab")
+            _state.value = fallbackAnonymousSession()
+            _transitionError.value = "別の画面で変わったアカウントを読み込めませんでした"
+        }
+    }
+
     fun consumeTransitionError() {
         _transitionError.value = null
     }

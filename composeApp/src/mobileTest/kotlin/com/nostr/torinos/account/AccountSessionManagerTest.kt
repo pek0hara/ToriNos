@@ -329,6 +329,107 @@ class AccountSessionManagerTest {
         }
     }
 
+    @Test
+    fun syncWithStorageEndsSessionLoggedOutInAnotherTab() = runBlocking {
+        val storage = FakeAccountStorage(activePubkey = PUBKEY_A, initiallyLoggedOut = setOf(PUBKEY_B))
+        val manager = newManager(storage)
+        val first = manager.initialize().getOrThrow() as AccountSessionState.Active
+        storage.externalLogout()
+        val writesBefore = storage.writeCount
+
+        val result = manager.syncWithStorage().getOrThrow()
+
+        assertTrue(result is AccountSessionState.Anonymous)
+        assertEquals(null, manager.currentPubkey)
+        assertTrue(!first.session.resources.lease.isActive)
+        assertFailsWith<IllegalStateException> { first.session.signer.encryptToSelf("old tab") }
+        // 同期は読むだけで、保存先を書き換えない。
+        assertEquals(writesBefore, storage.writeCount)
+    }
+
+    @Test
+    fun syncWithStorageFollowsAccountSwitchedInAnotherTab() = runBlocking {
+        val storage = FakeAccountStorage(activePubkey = PUBKEY_A)
+        val manager = newManager(storage)
+        manager.initialize().getOrThrow()
+        storage.externalSwitch(PUBKEY_B)
+
+        manager.syncWithStorage().getOrThrow()
+
+        assertEquals(PUBKEY_B, manager.currentPubkey)
+    }
+
+    @Test
+    fun syncWithStorageStartsSessionLoggedInFromAnotherTab() = runBlocking {
+        val storage = FakeAccountStorage()
+        val manager = newManager(storage)
+        manager.initialize().getOrThrow()
+        storage.externalSwitch(PUBKEY_A)
+
+        manager.syncWithStorage().getOrThrow()
+
+        assertEquals(PUBKEY_A, manager.currentPubkey)
+    }
+
+    @Test
+    fun syncWithStorageKeepsSessionWhenAccountIsUnchanged() = runBlocking {
+        for (initial in listOf(PUBKEY_A, null)) {
+            val manager = newManager(FakeAccountStorage(activePubkey = initial))
+            val first = manager.initialize().getOrThrow()
+
+            val synced = manager.syncWithStorage().getOrThrow()
+
+            assertTrue(synced === first)
+        }
+    }
+
+    @Test
+    fun syncWithStorageSavesInputsBeforeEndingSession() = runBlocking {
+        val storage = FakeAccountStorage(activePubkey = PUBKEY_A)
+        val manager = newManager(storage)
+        val active = manager.initialize().getOrThrow() as AccountSessionState.Active
+        var flushed = false
+        active.session.registerInput("editor") {
+            assertTrue(active.session.resources.lease.isActive)
+            flushed = true
+        }
+        storage.externalLogout()
+
+        manager.syncWithStorage().getOrThrow()
+
+        assertTrue(flushed)
+        assertTrue(!active.session.resources.lease.isActive)
+    }
+
+    @Test
+    fun syncWithStorageEndsSessionEvenIfInputsCannotBeSaved() = runBlocking {
+        // 別のタブでログアウト済みなので、保存に失敗してもこのタブで署名を続けさせない。
+        val storage = FakeAccountStorage(activePubkey = PUBKEY_A, initiallyLoggedOut = setOf(PUBKEY_B))
+        val manager = newManager(storage)
+        val active = manager.initialize().getOrThrow() as AccountSessionState.Active
+        active.session.registerInput("editor") { error("storage failure") }
+        storage.externalLogout()
+
+        manager.syncWithStorage()
+
+        assertTrue(manager.state.value is AccountSessionState.Anonymous)
+        assertTrue(!active.session.resources.lease.isActive)
+    }
+
+    @Test
+    fun syncWithStorageFallsBackToAnonymousWithoutWritingWhenNewAccountCannotLoad() = runBlocking {
+        val storage = FakeAccountStorage(activePubkey = PUBKEY_A, failLoadForPubkey = PUBKEY_B)
+        val manager = newManager(storage)
+        manager.initialize().getOrThrow()
+        storage.externalSwitch(PUBKEY_B)
+        val writesBefore = storage.writeCount
+
+        manager.syncWithStorage()
+
+        assertTrue(manager.state.value is AccountSessionState.Anonymous)
+        assertEquals(writesBefore, storage.writeCount)
+    }
+
     private class FakeAccountStorage(
         activePubkey: String? = null,
         private val failSwitch: Boolean = false,
@@ -343,6 +444,22 @@ class AccountSessionManagerTest {
         private val loggedOutPubkeys = initiallyLoggedOut.toMutableSet()
         val activePubkeyForTest: String?
             get() = activePubkey
+
+        /** このマネージャーを通した書き込みの回数。 */
+        var writeCount = 0
+            private set
+
+        /** 別のタブでのログアウト。このマネージャーを通さずに保存先を書き換える。 */
+        fun externalLogout() {
+            activePubkey?.let { loggedOutPubkeys += it }
+            activePubkey = accounts.keys.firstOrNull { it !in loggedOutPubkeys }
+        }
+
+        /** 別のタブでの切り替え・ログイン。 */
+        fun externalSwitch(pubkey: String) {
+            activePubkey = pubkey
+            loggedOutPubkeys -= pubkey
+        }
 
         override suspend fun loadActiveCredentials(): AccountCredentials? {
             val pubkey = activePubkey ?: return null
@@ -362,6 +479,7 @@ class AccountSessionManagerTest {
             }
 
         override suspend fun switchAccount(pubkey: String) {
+            writeCount++
             if (failSwitch) error("switch failed")
             check(pubkey in accounts)
             activePubkey = pubkey
@@ -369,11 +487,13 @@ class AccountSessionManagerTest {
         }
 
         override suspend fun logout() {
+            writeCount++
             activePubkey?.let { loggedOutPubkeys += it }
             activePubkey = accounts.keys.firstOrNull { it !in loggedOutPubkeys }
         }
 
         override suspend fun deleteActiveAccount() {
+            writeCount++
             activePubkey?.let(accounts::remove)
             loggedOutPubkeys.retainAll(accounts.keys)
             activePubkey = accounts.keys.firstOrNull { it !in loggedOutPubkeys }
