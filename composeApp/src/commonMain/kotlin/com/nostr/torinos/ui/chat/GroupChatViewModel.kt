@@ -115,6 +115,7 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.coroutines.yield
 import kotlinx.coroutines.delay
 import kotlin.random.Random
 import com.nostr.torinos.chat.GroupRoomCache
@@ -532,12 +533,31 @@ class GroupChatViewModel(
         )
         session = opened
         subscriptionJob = launch {
+            // 届いたイベントは、受け取りが一段落してから（次を待つ間に）まとめて渡す。1件ずつ渡すとタイムラインを毎回作り直し、
+            // 最初に数百件届くチャンネルではメインスレッドが1秒ほど止まって、開くフェードが止まって見えた。
+            val pending = mutableListOf<NostrEvent>()
+            var flushScheduled = false
+            fun flush() {
+                if (pending.isEmpty()) return
+                val batch = pending.toList()
+                pending.clear()
+                onEvents(batch)
+            }
             opened.signals.collect { signal ->
+                if (signal !is SubscriptionSignal.Event) flush()
                 when (signal) {
                     is SubscriptionSignal.Event -> {
                         if (!tracedFirstEvent) { tracedFirstEvent = true; trace("first event") }
                         if (!firstEoseSeen && signal.event.kind in pageKinds) firstPageCount++
-                        onEvents(listOf(signal.event))
+                        pending += signal.event
+                        if (!flushScheduled) {
+                            flushScheduled = true
+                            launch {
+                                yield()
+                                flushScheduled = false
+                                flush()
+                            }
+                        }
                     }
                     is SubscriptionSignal.Eose -> {
                         if (!firstEoseSeen) {
