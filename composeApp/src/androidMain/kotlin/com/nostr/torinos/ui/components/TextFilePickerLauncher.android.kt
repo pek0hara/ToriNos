@@ -14,7 +14,7 @@ import kotlinx.coroutines.withContext
 
 @Composable
 actual fun rememberTextFilePickerLauncher(
-    onResult: (String?) -> Unit,
+    onResult: (TextFilePickResult?) -> Unit,
 ): () -> Unit {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -27,7 +27,7 @@ actual fun rememberTextFilePickerLauncher(
             return@rememberLauncherForActivityResult
         }
         scope.launch {
-            val text = withContext(Dispatchers.IO) {
+            val result = withContext(Dispatchers.IO) {
                 runCatching {
                     context.contentResolver.openInputStream(uri)?.use { input ->
                         val buffer = ByteArray(MAX_TEXT_FILE_BYTES + 1)
@@ -37,13 +37,14 @@ actual fun rememberTextFilePickerLauncher(
                             if (read < 0) break
                             size += read
                         }
-                        if (size > MAX_TEXT_FILE_BYTES) null else buffer.decodeToString(0, size)
-                    }
+                        // 上限を 1 バイト超えるまでしか読まないので、size は上限超えの判定にだけ使える。
+                        textFilePickResult(size.toLong()) { buffer.decodeToString(0, size) }
+                    } ?: TextFilePickResult.Unreadable
                 }.onFailure { e ->
                     logException("TextFilePicker", e, "Failed to read picked file")
-                }.getOrNull()
+                }.getOrDefault(TextFilePickResult.Unreadable)
             }
-            currentOnResult(text)
+            currentOnResult(result)
         }
     }
     return { launcher.launch(arrayOf("*/*")) }

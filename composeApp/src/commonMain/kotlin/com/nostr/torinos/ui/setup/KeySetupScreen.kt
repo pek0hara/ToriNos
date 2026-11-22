@@ -69,6 +69,8 @@ import com.nostr.torinos.ui.settings.setSensitiveText
 import com.nostr.torinos.util.loggingExceptionHandler
 import com.nostr.torinos.util.logException
 import com.nostr.torinos.ui.components.DismissKeyboardOnLeave
+import com.nostr.torinos.ui.components.MAX_TEXT_FILE_BYTES
+import com.nostr.torinos.ui.components.TextFilePickResult
 import com.nostr.torinos.ui.components.rememberTextFilePickerLauncher
 import androidx.compose.material3.OutlinedButton
 
@@ -344,8 +346,19 @@ fun KeySetupScreen(
                         }
                         Spacer(modifier = Modifier.height(8.dp))
                         run {
-                            val pickKeyFile = rememberTextFilePickerLauncher { content ->
-                                if (content == null) return@rememberTextFilePickerLauncher
+                            val pickKeyFile = rememberTextFilePickerLauncher { picked ->
+                                val content = when (picked) {
+                                    null -> return@rememberTextFilePickerLauncher
+                                    is TextFilePickResult.Picked -> picked.text
+                                    TextFilePickResult.TooLarge -> {
+                                        error = "ファイルが大きすぎます。秘密鍵(nsec)を書いた ${MAX_TEXT_FILE_BYTES / 1024}KB までのファイルを選んでください"
+                                        return@rememberTextFilePickerLauncher
+                                    }
+                                    TextFilePickResult.Unreadable -> {
+                                        error = "ファイルを読み込めませんでした"
+                                        return@rememberTextFilePickerLauncher
+                                    }
+                                }
                                 val key = runCatching { extractPrivateKeyFromFile(content) }
                                 key.onSuccess { found ->
                                     if (found != null) {

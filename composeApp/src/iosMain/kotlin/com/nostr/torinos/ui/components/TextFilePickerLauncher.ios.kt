@@ -22,7 +22,7 @@ private val activeDocumentPickerDelegates = mutableSetOf<DocumentPickerDelegate>
 
 @Composable
 actual fun rememberTextFilePickerLauncher(
-    onResult: (String?) -> Unit,
+    onResult: (TextFilePickResult?) -> Unit,
 ): () -> Unit {
     val scope = rememberCoroutineScope()
     val currentOnResult = rememberUpdatedState(onResult)
@@ -58,11 +58,11 @@ private suspend fun pickDocumentUrl(): NSURL? = suspendCancellableCoroutine { co
 }
 
 @OptIn(ExperimentalForeignApi::class)
-private fun readSmallTextFile(url: NSURL): String? {
-    val data: NSData = NSData.dataWithContentsOfURL(url) ?: return null
-    if (data.length.toLong() > MAX_TEXT_FILE_BYTES) return null
-    val bytes = data.bytes?.readBytes(data.length.toInt()) ?: ByteArray(0)
-    return bytes.decodeToString()
+private fun readSmallTextFile(url: NSURL): TextFilePickResult {
+    val data: NSData = NSData.dataWithContentsOfURL(url) ?: return TextFilePickResult.Unreadable
+    return textFilePickResult(data.length.toLong()) {
+        (data.bytes?.readBytes(data.length.toInt()) ?: ByteArray(0)).decodeToString()
+    }
 }
 
 private class DocumentPickerDelegate(
