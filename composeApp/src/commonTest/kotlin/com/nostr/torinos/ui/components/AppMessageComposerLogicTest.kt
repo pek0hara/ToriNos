@@ -82,4 +82,17 @@ class AppMessageComposerLogicTest {
     fun bottomPaddingIsZeroWhenTheScreenHasABottomBar() {
         assertEquals(0.dp, navigationBarsBottomPadding(applyNavigationBarsPadding = false, softwareKeyboardVisible = false, navigationBarsBottom = 34.dp))
     }
+
+    @Test
+    fun singleLineTextIsCenteredInTheMinimumHeight() {
+        // 40dp の欄に 20dp の行なら上下 10dp ずつ。
+        assertEquals(10.dp, composerVerticalPadding(minHeight = 40.dp, lineHeight = 20.dp))
+    }
+
+    @Test
+    fun largeFontsKeepAMinimumPadding() {
+        // 文字サイズ設定で行が欄より高くなっても、上下に最低限の余白を残す（欄のほうが伸びる）。
+        assertEquals(COMPOSER_MIN_VERTICAL_PADDING, composerVerticalPadding(minHeight = 40.dp, lineHeight = 40.dp))
+        assertEquals(COMPOSER_MIN_VERTICAL_PADDING, composerVerticalPadding(minHeight = 40.dp, lineHeight = 60.dp))
+    }
 }

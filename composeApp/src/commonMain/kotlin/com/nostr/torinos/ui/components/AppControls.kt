@@ -18,7 +18,12 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.IconButtonDefaults
-import androidx.compose.material3.TextField
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -84,6 +89,19 @@ internal fun navigationBarsBottomPadding(
     softwareKeyboardVisible: Boolean,
     navigationBarsBottom: Dp,
 ): Dp = if (applyNavigationBarsPadding && !softwareKeyboardVisible) navigationBarsBottom else 0.dp
+
+/** 入力欄の最低の高さ。左右の丸ボタン（40dp）と揃えると窮屈に見えたので、少しだけ高くする。 */
+internal val COMPOSER_MIN_HEIGHT: Dp = 44.dp
+
+/** 入力欄の文字の上下に必ず残す余白。 */
+internal val COMPOSER_MIN_VERTICAL_PADDING: Dp = 6.dp
+
+/**
+ * 入力欄の上下の余白。1行のとき [minHeight] の中で文字が上下中央に来るようにする。
+ * 文字サイズ設定で行が高くなったときは [COMPOSER_MIN_VERTICAL_PADDING] を残し、欄のほうを伸ばす。
+ */
+internal fun composerVerticalPadding(minHeight: Dp, lineHeight: Dp): Dp =
+    maxOf((minHeight - lineHeight) / 2, COMPOSER_MIN_VERTICAL_PADDING)
 
 /** [maxLength] が null なら無制限。超える入力は受け付けない。 */
 internal fun isWithinMaxLength(length: Int, maxLength: Int?): Boolean =
@@ -218,7 +236,32 @@ fun AppMessageComposer(
                         }
                     }
                     // 枠線のない角丸の入力欄。下線も出さず、塗りだけで入力欄と分かるようにする。
-                    TextField(
+                    // 文字は本文と同じ大きさにし、1行のときは左右のボタンより少し高い程度にする。
+                    // material3 の TextField は高さが最低56dpに固定されるので、BasicTextField に同じ飾りを付けて組む。
+                    val fieldEnabled = enabled && (keepFocusWhileSending || !isSending)
+                    val textStyle = MaterialTheme.typography.bodyMedium
+                    val lineHeight = with(LocalDensity.current) {
+                        val height = if (textStyle.lineHeight.isSp) textStyle.lineHeight else textStyle.fontSize * 1.4f
+                        height.toDp()
+                    }
+                    val verticalPadding = composerVerticalPadding(COMPOSER_MIN_HEIGHT, lineHeight)
+                    val fieldShape = RoundedCornerShape(24.dp)
+                    val fieldColors = TextFieldDefaults.colors(
+                        focusedContainerColor = MaterialTheme.colorScheme.surfaceVariant,
+                        unfocusedContainerColor = MaterialTheme.colorScheme.surfaceVariant,
+                        disabledContainerColor = MaterialTheme.colorScheme.surfaceVariant,
+                        focusedIndicatorColor = Color.Transparent,
+                        unfocusedIndicatorColor = Color.Transparent,
+                        disabledIndicatorColor = Color.Transparent,
+                        errorIndicatorColor = Color.Transparent,
+                    )
+                    val interactionSource = remember { MutableInteractionSource() }
+                    val textColor = if (fieldEnabled) {
+                        MaterialTheme.colorScheme.onSurface
+                    } else {
+                        MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f)
+                    }
+                    BasicTextField(
                         value = value,
                         onValueChange = { next ->
                             if (isWithinMaxLength(next.text.length, maxLength)) {
@@ -228,6 +271,7 @@ fun AppMessageComposer(
                         },
                         modifier = Modifier
                             .weight(1f)
+                            .heightIn(min = COMPOSER_MIN_HEIGHT)
                             .then(textFieldModifier)
                             .focusRequester(textFocusRequester)
                             // iOSで入力欄を閉じた後にスクロールが重くなり続けるのを防ぐ（詳細は関数のコメント）。
@@ -245,22 +289,39 @@ fun AppMessageComposer(
                                 wasTextFocused = focus.isFocused
                                 onFocusChanged?.invoke(focus.isFocused)
                             },
-                        placeholder = { Text(placeholder, maxLines = 1, overflow = TextOverflow.Ellipsis) },
-                        enabled = enabled && (keepFocusWhileSending || !isSending),
+                        enabled = fieldEnabled,
                         readOnly = keepFocusWhileSending && isSending,
+                        textStyle = textStyle.copy(color = textColor),
+                        cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
                         minLines = 1,
                         maxLines = 4,
                         visualTransformation = visualTransformation,
-                        shape = RoundedCornerShape(24.dp),
-                        colors = TextFieldDefaults.colors(
-                            focusedContainerColor = MaterialTheme.colorScheme.surfaceVariant,
-                            unfocusedContainerColor = MaterialTheme.colorScheme.surfaceVariant,
-                            disabledContainerColor = MaterialTheme.colorScheme.surfaceVariant,
-                            focusedIndicatorColor = Color.Transparent,
-                            unfocusedIndicatorColor = Color.Transparent,
-                            disabledIndicatorColor = Color.Transparent,
-                            errorIndicatorColor = Color.Transparent,
-                        ),
+                        interactionSource = interactionSource,
+                        decorationBox = { innerTextField ->
+                            TextFieldDefaults.DecorationBox(
+                                value = value.text,
+                                innerTextField = innerTextField,
+                                enabled = fieldEnabled,
+                                singleLine = false,
+                                visualTransformation = visualTransformation,
+                                interactionSource = interactionSource,
+                                placeholder = {
+                                    Text(placeholder, style = textStyle, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                },
+                                shape = fieldShape,
+                                colors = fieldColors,
+                                contentPadding = PaddingValues(horizontal = 16.dp, vertical = verticalPadding),
+                                container = {
+                                    TextFieldDefaults.Container(
+                                        enabled = fieldEnabled,
+                                        isError = false,
+                                        interactionSource = interactionSource,
+                                        colors = fieldColors,
+                                        shape = fieldShape,
+                                    )
+                                },
+                            )
+                        },
                     )
                     // 送れるときだけ色の付いた丸ボタンにする。
                     IconButton(
