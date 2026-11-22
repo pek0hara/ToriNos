@@ -86,6 +86,7 @@ import kotlinx.coroutines.launch
 @Composable
 fun FeedScreen(
     onOpenSettings: () -> Unit = {},
+    onLogin: () -> Unit = {},
     onOpenRelaySettings: () -> Unit = {},
     onOpenNotifications: () -> Unit = {},
     onUserClick: (pubkey: String) -> Unit = {},
@@ -472,6 +473,8 @@ fun FeedScreen(
                                     size = 32,
                                 )
                             }
+                        } else if (authorPubkey == null) {
+                            com.nostr.torinos.ui.components.GuestAccountButton(onLogin = onLogin, onOpenSettings = onOpenSettings)
                         }
                     },
                     actions = {

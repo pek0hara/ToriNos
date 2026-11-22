@@ -23,7 +23,7 @@ import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.Settings
+import com.nostr.torinos.ui.components.GuestAccountButton
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.outlined.StarBorder
@@ -85,6 +85,7 @@ fun ChannelListScreen(
     onOpenProfile: () -> Unit = {},
     onOpenRelaySettings: () -> Unit = {},
     onOpenSettings: () -> Unit = {},
+    onLogin: () -> Unit = {},
     /** false の間は描画だけして、購読や一覧の取得を始めない。 */
     isActive: Boolean = true,
 ) {
@@ -189,6 +190,8 @@ fun ChannelListScreen(
                                     size = 32,
                                 )
                             }
+                        } else {
+                            GuestAccountButton(onLogin = onLogin, onOpenSettings = onOpenSettings)
                         }
                     },
                     title = {
@@ -198,15 +201,6 @@ fun ChannelListScreen(
                             onRelaySelected = RelayStore::setSelectedChannelRelayUrl,
                             onOpenRelaySettings = onOpenRelaySettings,
                         )
-                    },
-                    actions = {
-                        IconButton(onClick = onOpenSettings) {
-                            Icon(
-                                Icons.Default.Settings,
-                                contentDescription = "設定",
-                                tint = headerContentColor,
-                            )
-                        }
                     },
                 )
                 ServiceHeaderDivider()

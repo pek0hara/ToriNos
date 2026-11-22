@@ -20,6 +20,7 @@ import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.KeyboardArrowUp
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Sms
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -568,6 +569,12 @@ internal fun AppSessionCoordinator(
             } else {
                 nav.navigate("settings") { launchSingleTop = true }
             }
+        }
+
+        // ヘッダー左上（未ログイン時）の「ログイン」。設定の「アカウントを追加」と同じく、鍵設定だけを開く。
+        fun openLogin() {
+            composer.pendingKeyAction = null
+            composer.showKeySetup = true
         }
 
         fun openSearch(query: String) {
@@ -1281,6 +1288,15 @@ internal fun AppSessionCoordinator(
                                     }
                                 }
                             }
+                            // ヘッダーには設定を出さない（入口はアバター → プロフィール）。広い画面ではレールの下端からも開ける。
+                            NavigationRailItem(
+                                icon = { Icon(Icons.Default.Settings, contentDescription = null) },
+                                label = { Text("設定") },
+                                selected = currentRoute == "settings",
+                                colors = appNavigationRailItemColors(),
+                                onClick = { openSettings() },
+                                modifier = Modifier.padding(bottom = 12.dp),
+                            )
                         }
                     }
                 } else {
@@ -1430,6 +1446,7 @@ internal fun AppSessionCoordinator(
                     composable("feed") {
                         FeedScreen(
                             onOpenSettings = { openSettings() },
+                            onLogin = ::openLogin,
                             onOpenRelaySettings = {
                                 requestRelaySettings()
                             },
@@ -1506,6 +1523,7 @@ internal fun AppSessionCoordinator(
                                                     ownProfile = ownProfile,
                                                     onOpenProfile = ::requestOwnProfile,
                                                     onOpenSettings = { openSettings() },
+                                                    onLogin = ::openLogin,
                                                     onOpenRelaySettings = ::requestRelaySettings,
                                                 )
                                             },
@@ -1517,6 +1535,7 @@ internal fun AppSessionCoordinator(
                                             ownProfile = ownProfile,
                                             onOpenProfile = { requestOwnProfile() },
                                             onOpenSettings = { openSettings() },
+                                            onLogin = ::openLogin,
                                             onOpenGroup = { ref, layout ->
                                                 if (layout == com.nostr.torinos.chat.GroupLayout.Forum) {
                                                     nav.navigate(GroupForumRoute(ref.relayUrl, ref.groupId))
@@ -1546,6 +1565,7 @@ internal fun AppSessionCoordinator(
                                                 requestRelaySettings()
                                             },
                                             onOpenSettings = { openSettings() },
+                                            onLogin = ::openLogin,
                                             isActive = isActive,
                                         )
                                     }
@@ -1558,6 +1578,7 @@ internal fun AppSessionCoordinator(
                                                 requestOwnProfile()
                                             },
                                             onOpenSettings = { openSettings() },
+                                            onLogin = ::openLogin,
                                             onOpenRelaySettings = {
                                                 requestRelaySettings()
                                             },
@@ -1594,6 +1615,7 @@ internal fun AppSessionCoordinator(
                                                 requestRelaySettings()
                                             },
                                             onOpenSettings = { openSettings() },
+                                            onLogin = ::openLogin,
                                             isActive = isActive,
                                         )
                                     }
@@ -1616,6 +1638,7 @@ internal fun AppSessionCoordinator(
                             onUserClick = ::openProfileDrawer,
                             onOpenRelaySettings = ::requestRelaySettings,
                             onOpenSettings = { openSettings() },
+                            onLogin = ::openLogin,
                             // URL（#status-page）から直接開いたときは戻り先がないので、フィードへ移る。
                             onBack = dropUnlessResumed {
                                 if (nav.previousBackStackEntry != null) nav.popBackStack() else selectFooterRoute("feed")

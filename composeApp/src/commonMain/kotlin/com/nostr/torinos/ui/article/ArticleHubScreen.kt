@@ -22,7 +22,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.EditNote
-import androidx.compose.material.icons.filled.Settings
+import com.nostr.torinos.ui.components.GuestAccountButton
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -53,6 +53,7 @@ fun ArticleHubScreen(
     ownProfile: NostrProfile?,
     onOpenProfile: () -> Unit,
     onOpenSettings: () -> Unit,
+    onLogin: () -> Unit = {},
     onOpenRelaySettings: () -> Unit,
     onArticleClick: (pubkey: String, identifier: String) -> Unit,
     onAuthorClick: (pubkey: String) -> Unit,
@@ -139,6 +140,8 @@ fun ArticleHubScreen(
                                     size = 32,
                                 )
                             }
+                        } else {
+                            GuestAccountButton(onLogin = onLogin, onOpenSettings = onOpenSettings)
                         }
                     },
                     title = {
@@ -162,13 +165,6 @@ fun ArticleHubScreen(
                                 androidx.compose.material3.Text("下書き", color = headerContentColor,
                                     style = MaterialTheme.typography.labelLarge)
                             }
-                        }
-                        IconButton(onClick = onOpenSettings) {
-                            Icon(
-                                Icons.Default.Settings,
-                                contentDescription = "設定",
-                                tint = headerContentColor,
-                            )
                         }
                     },
                 )

@@ -22,7 +22,7 @@ import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Link
 import androidx.compose.material.icons.filled.MusicNote
-import androidx.compose.material.icons.filled.Settings
+import com.nostr.torinos.ui.components.GuestAccountButton
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
@@ -79,6 +79,7 @@ fun StatusScreen(
     onOpenProfile: () -> Unit = {},
     onOpenRelaySettings: () -> Unit = {},
     onOpenSettings: () -> Unit = {},
+    onLogin: () -> Unit = {},
     modifier: Modifier = Modifier,
     /** false の間は描画だけして、購読しない。 */
     isActive: Boolean = true,
@@ -159,6 +160,8 @@ fun StatusScreen(
                                     size = 32,
                                 )
                             }
+                        } else {
+                            GuestAccountButton(onLogin = onLogin, onOpenSettings = onOpenSettings)
                         }
                     },
                     title = {
@@ -168,15 +171,6 @@ fun StatusScreen(
                             onRelaySelected = RelayStore::setSelectedStatusRelayUrl,
                             onOpenRelaySettings = onOpenRelaySettings,
                         )
-                    },
-                    actions = {
-                        IconButton(onClick = onOpenSettings) {
-                            Icon(
-                                Icons.Default.Settings,
-                                contentDescription = "設定",
-                                tint = headerContentColor,
-                            )
-                        }
                     },
                 )
                 ServiceHeaderDivider()

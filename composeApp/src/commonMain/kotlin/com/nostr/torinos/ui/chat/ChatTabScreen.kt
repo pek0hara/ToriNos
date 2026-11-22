@@ -31,7 +31,7 @@ import androidx.compose.material.icons.filled.Groups
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.Lock
-import androidx.compose.material.icons.filled.Settings
+import com.nostr.torinos.ui.components.GuestAccountButton
 import androidx.compose.material.icons.filled.Mail
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.outlined.AdminPanelSettings
@@ -128,6 +128,7 @@ fun ChatTabScreen(
     ownProfile: NostrProfile?,
     onOpenProfile: () -> Unit,
     onOpenSettings: () -> Unit,
+    onLogin: () -> Unit,
     onOpenGroup: (GroupRef, GroupLayout) -> Unit,
     onGroupJoined: () -> Unit = {},
     /** 通常の投稿などから開いたグループへのリンク。 */
@@ -234,6 +235,8 @@ fun ChatTabScreen(
                             IconButton(onClick = onOpenProfile) {
                                 ChatAvatar(pubkey = ownPubkey, name = ownProfile?.bestName, pictureUrl = ownProfile?.picture, size = 32)
                             }
+                        } else {
+                            GuestAccountButton(onLogin = onLogin, onOpenSettings = onOpenSettings)
                         }
                     },
                     title = {
@@ -365,7 +368,6 @@ fun ChatTabScreen(
                                 }
                             }
                         }
-                        IconButton(onClick = onOpenSettings) { Icon(Icons.Default.Settings, contentDescription = "設定") }
                     },
                 )
                 ServiceHeaderDivider()
