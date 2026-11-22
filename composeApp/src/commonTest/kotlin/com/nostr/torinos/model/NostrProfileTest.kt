@@ -149,4 +149,14 @@ class NostrProfileTest {
         val profile = NostrProfile(name = "  ", displayName = null)
         assertNull(profile.bestName)
     }
+
+    @Test
+    fun toProfile_botFlag() {
+        assertEquals(true, makeEvent("""{"name":"b","bot":true}""").toProfile()?.bot)
+        assertEquals(true, makeEvent("""{"name":"b","bot":"true"}""").toProfile()?.bot)
+        assertEquals(false, makeEvent("""{"name":"b","bot":false}""").toProfile()?.bot)
+        assertEquals(false, makeEvent("""{"name":"b","bot":null}""").toProfile()?.bot)
+        assertEquals(false, makeEvent("""{"name":"b"}""").toProfile()?.bot)
+        assertEquals(false, makeEvent("""{"name":"b","bot":[true]}""").toProfile()?.bot)
+    }
 }

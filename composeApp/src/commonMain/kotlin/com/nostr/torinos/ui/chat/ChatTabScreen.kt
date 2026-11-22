@@ -571,6 +571,12 @@ fun ChatTabScreen(
                 }
             }
             val timelineContent: @Composable () -> Unit = {
+                // 本文の `buzz://channel/…` をチャンネル名で出すため、一覧で分かっているチャンネルの名前を引けるようにする。
+                val channelNames = remember(state.joinedRows, state.otherRows, state.archivedRows, state.timeline.rows) {
+                    (state.joinedRows + state.otherRows + state.archivedRows + state.timeline.rows.map { it.group })
+                        .mapNotNull { row -> row.metadata?.name?.takeIf { it.isNotBlank() }?.let { row.ref to it } }
+                        .toMap()
+                }
                 ChatTimelineContent(
                     state = state.timeline,
                     // 参加中の一覧を読み直している間は、そのあとタイムラインも読み直す。
@@ -588,6 +594,9 @@ fun ChatTabScreen(
                         onUnlockImages = viewModel::unlockTimelineImages,
                         onBuzzLink = { link, relayUrl -> openBuzzLink(link, relayUrl) },
                         onUserClick = onUserClick,
+                        channelName = { relayUrl, channelId ->
+                            channelNames[com.nostr.torinos.chat.GroupRef(relayUrl, channelId)]
+                        },
                     ),
                 )
             }

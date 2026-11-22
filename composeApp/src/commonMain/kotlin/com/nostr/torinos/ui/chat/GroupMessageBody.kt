@@ -91,8 +91,10 @@ internal fun MarkdownMessageBody(
     onMentionClick: ((String) -> Unit)? = null,
     /** 本文の `nostr:npub1…` に出す名前（pubkey → 名前）。分からなければ短くした npub を出す。 */
     profileName: (String) -> String? = { null },
+    /** 本文の `buzz://channel/…` に出すチャンネル名（チャンネル ID → 名前）。分からなければ「💬 Buzz のメッセージ」。 */
+    channelName: (String) -> String? = { null },
 ) {
-    val mentions = MentionLinks(mentionNames, onMentionClick, profileName)
+    val mentions = MentionLinks(mentionNames, onMentionClick, profileName, channelName)
     val allBlocks = remember(text) { parseMarkdownLite(text) }
     var expanded by remember(text) { mutableStateOf(false) }
     val collapsed = remember(allBlocks, emojis.keys, collapsible, collapse) {
@@ -199,6 +201,7 @@ private class MentionLinks(
     val names: Map<String, Set<String>>,
     val onClick: ((String) -> Unit)?,
     val profileName: (String) -> String? = { null },
+    val channelName: (String) -> String? = { null },
 )
 
 @Composable
@@ -285,7 +288,11 @@ private fun InlineText(
                                 styles = TextLinkStyles(SpanStyle(color = linkColor, textDecoration = TextDecoration.Underline)),
                                 linkInteractionListener = { onLink(inline.url) },
                             ),
-                        ) { append(inline.displayText()) }
+                        ) {
+                            // むき出しの `buzz://channel/…` は、チャンネル名が分かれば `#名前`。
+                            val bareGroupLink = inline.text == inline.url && com.nostr.torinos.model.isGroupLinkUri(inline.url)
+                            append(if (bareGroupLink) com.nostr.torinos.model.groupLinkLabel(inline.url, mentions.channelName) else inline.displayText())
+                        }
                     }
                 }
                 is MdInline.Spoiler -> if (revealed) {

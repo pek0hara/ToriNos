@@ -28,6 +28,7 @@ import androidx.compose.material3.PrimaryTabRow
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.SideEffect
@@ -46,6 +47,7 @@ import com.nostr.torinos.chat.splitTodayEntries
 import com.nostr.torinos.model.NostrProfile
 import com.nostr.torinos.network.ProfileRepository
 import com.nostr.torinos.ui.components.AppTab
+import com.nostr.torinos.ui.components.BotBadge
 import kotlinx.coroutines.flow.flowOf
 
 /** 「グループ / タイムライン」の並び。タブと横スワイプのページで同じ順にする。 */
@@ -143,7 +145,9 @@ internal fun ChatTimelineContent(
                     items(entries, key = { "tl-" + it.key }) { entry ->
                         if (entry !== entries.first()) HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
                         val row = byKey.getValue(entry.key)
-                        TimelineRowItem(row, ownPubkey, profiles, actions, onClick = { onOpen(row) })
+                        CompositionLocalProvider(LocalChatBots provides state.bots) {
+                            TimelineRowItem(row, ownPubkey, profiles, actions, onClick = { onOpen(row) })
+                        }
                     }
                 }
                 item(key = "tl-more") {
@@ -229,6 +233,8 @@ internal class TimelineBodyActions(
     val onBuzzLink: (link: String, relayUrl: String) -> Unit,
     /** 本文のメンションを押した（その人の pubkey）。 */
     val onUserClick: ((String) -> Unit)? = null,
+    /** 本文の `buzz://channel/…` に出すチャンネル名（リレー, チャンネル ID → 名前）。 */
+    val channelName: (relayUrl: String, channelId: String) -> String? = { _, _ -> null },
 )
 
 /**
@@ -328,6 +334,7 @@ internal fun TimelinePost(
                     overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.weight(1f, fill = false),
                 )
+                if (isChatBot(message, profile)) BotBadge(Modifier.padding(start = 4.dp))
                 Spacer(Modifier.width(6.dp))
                 Text(
                     chatListTime(message.event.createdAt, now),
@@ -352,6 +359,7 @@ internal fun TimelinePost(
                     mentionNames = rememberMentionNames(message, profiles),
                     onMentionClick = actions.onUserClick,
                     profileName = { profiles[it]?.bestName },
+                    channelName = { actions.channelName(relayUrl, it) },
                 )
                 else -> StandardMessageBody(message, onUserClick = {})
             }

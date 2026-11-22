@@ -276,7 +276,7 @@ internal fun NoteCardContent(
                     modifier = Modifier.fillMaxWidth().heightIn(min = nameRowHeight),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                        Box(Modifier.weight(1f), contentAlignment = Alignment.CenterStart) {
+                        Row(Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically) {
                             ProfileNameText(
                                 profile = profile,
                                 fallback = event.shortPubkey,
@@ -286,8 +286,9 @@ internal fun NoteCardContent(
                                 color = MaterialTheme.colorScheme.onSurface,
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis,
-                                modifier = Modifier.clickable { onUserClick(event.pubkey) },
+                                modifier = Modifier.weight(1f, fill = false).clickable { onUserClick(event.pubkey) },
                             )
+                            if (profile?.bot == true) BotBadge(Modifier.padding(start = 4.dp))
                         }
                         Text(
                             text = formatPostTimestamp(event.createdAt),

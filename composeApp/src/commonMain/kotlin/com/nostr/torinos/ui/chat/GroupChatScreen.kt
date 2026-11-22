@@ -136,6 +136,7 @@ import kotlinx.coroutines.flow.flowOf
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.CompositionLocalProvider
+import com.nostr.torinos.ui.components.BotBadge
 import com.nostr.torinos.chat.buzzMediaHost
 import com.nostr.torinos.model.ReactionOption
 import com.nostr.torinos.ui.components.QuickReactionContent
@@ -356,13 +357,19 @@ private fun GroupRoomScreen(ref: GroupRef, mode: GroupRoomMode, navigation: Grou
         onUserClick = navigation.onUserClick,
         onNeedProfiles = viewModel::ensureProfiles,
         onBuzzLink = onBuzzLink,
+        channelName = { id -> if (id == state.ref.groupId) state.metadata?.name else state.linkedChannelNames[id] },
         imageAuth = viewModel::imageAuthorization,
         onUnlockImages = viewModel::unlockImages,
         imagesUnlocked = state.imagesUnlocked,
         presence = state.presence,
     )
 
-    CompositionLocalProvider(LocalEmojiImageHeaders provides emojiImageHeaders) {
+    // 役割が bot の人と、エージェントの発言（40002）を出した人。参加中のタイムラインの bot と同じ決め方。
+    val botPubkeys = remember(state.roles, state.messages) {
+        state.roles.filterValues { it == ChannelRole.Bot }.keys +
+            state.messages.filter { it.event.kind == com.nostr.torinos.chat.BUZZ_AGENT_MESSAGE_KIND }.map { it.author }
+    }
+    CompositionLocalProvider(LocalEmojiImageHeaders provides emojiImageHeaders, LocalChatBots provides botPubkeys) {
     Scaffold(
         contentWindowInsets = WindowInsets(0),
         snackbarHost = { SnackbarHost(snackbar) },
@@ -680,6 +687,8 @@ internal class MessageRowActions(
     /** リアクションした人の一覧を開いたとき、その人たちのプロフィールを読む。 */
     val onNeedProfiles: (Set<String>) -> Unit = {},
     val onBuzzLink: (String) -> Unit,
+    /** 本文の `buzz://channel/…` に出すチャンネル名（同じコミュニティのチャンネル ID → 名前）。 */
+    val channelName: (String) -> String? = { null },
     val imageAuth: suspend (String) -> ImageAuth,
     val onUnlockImages: () -> Unit,
     val imagesUnlocked: Boolean,
@@ -694,6 +703,7 @@ private fun MessageRowActions.toTimelineBodyActions() = TimelineBodyActions(
     onUnlockImages = onUnlockImages,
     onBuzzLink = { link, _ -> onBuzzLink(link) },
     onUserClick = onUserClick,
+    channelName = { _, id -> channelName(id) },
 )
 
 @Composable
@@ -1149,10 +1159,7 @@ private fun MessageRow(
                             overflow = TextOverflow.Ellipsis,
                             modifier = Modifier.weight(1f, fill = false),
                         )
-                        if (message.event.kind == com.nostr.torinos.chat.BUZZ_AGENT_MESSAGE_KIND) {
-                            Spacer(Modifier.width(4.dp))
-                            Text("エージェント", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
-                        }
+                        if (isChatBot(message, profile)) BotBadge(Modifier.padding(start = 4.dp))
                         Spacer(Modifier.width(6.dp))
                         Text(timeLabel, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
@@ -1201,6 +1208,7 @@ private fun MessageRow(
                         mentionNames = rememberMentionNames(message, profiles),
                         onMentionClick = actions.onUserClick,
                         profileName = { profiles[it]?.bestName },
+                        channelName = actions.channelName,
                     )
                 } else {
                     StandardMessageBody(message, onUserClick = actions.onUserClick)

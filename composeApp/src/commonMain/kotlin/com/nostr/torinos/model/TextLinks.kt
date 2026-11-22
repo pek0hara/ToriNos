@@ -53,9 +53,16 @@ fun findTextLinks(
     return kept.sortedBy { it.start }
 }
 
-/** グループへのリンクを本文に出す文字。 */
-fun groupLinkLabel(uri: String): String =
-    if (uri.startsWith("buzz://", ignoreCase = true)) "💬 Buzz のメッセージ" else "💬 グループへのリンク"
+/**
+ * グループへのリンクを本文に出す文字。Buzz のチャンネルへのリンクは、名前が分かれば `#名前`。
+ * [channelName] はチャンネル ID から名前を引く（同じコミュニティの中だけで分かる）。
+ */
+fun groupLinkLabel(uri: String, channelName: (String) -> String? = { null }): String {
+    if (!uri.startsWith("buzz://", ignoreCase = true)) return "💬 グループへのリンク"
+    val channel = com.nostr.torinos.chat.parseBuzzLink(uri) as? com.nostr.torinos.chat.BuzzLink.Channel
+    val name = channel?.let { channelName(it.channelId) }?.takeIf { it.isNotBlank() }
+    return if (name != null) "#$name" else "💬 Buzz のメッセージ"
+}
 
 /** 人へのリンクを本文に出す文字。名前が分からなければ pubkey を短くして出す。 */
 fun profileLinkLabel(pubkey: String, name: String?): String =

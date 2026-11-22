@@ -35,4 +35,19 @@ class TextLinksTest {
         assertEquals(false, isGroupLinkUri("buzz://channel/abc と"))
         assertEquals(false, isGroupLinkUri("https://example.com"))
     }
+
+    @Test
+    fun buzzChannelLinkUsesChannelNameWhenKnown() {
+        val names = mapOf("6405dd9c-0bb0-44cc-bcc7-2a027c380794" to "timeline")
+        assertEquals("#timeline", groupLinkLabel("buzz://channel/6405dd9c-0bb0-44cc-bcc7-2a027c380794") { names[it] })
+        assertEquals("💬 Buzz のメッセージ", groupLinkLabel("buzz://channel/unknown") { names[it] })
+        // メッセージへのリンクはチャンネル名にしない。
+        assertEquals("💬 Buzz のメッセージ", groupLinkLabel("buzz://message?channel=6405dd9c-0bb0-44cc-bcc7-2a027c380794&id=" + "a".repeat(64)) { names[it] })
+    }
+
+    @Test
+    fun linkedBuzzChannelsFindsBareAndMarkdownLinks() {
+        val text = "[ch](buzz://channel/abc) と buzz://channel/def。 buzz://channel/abc buzz://message?channel=ghi&id=" + "a".repeat(64)
+        assertEquals(listOf("abc", "def"), com.nostr.torinos.chat.linkedBuzzChannels(text))
+    }
 }

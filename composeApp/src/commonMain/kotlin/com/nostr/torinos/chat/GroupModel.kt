@@ -203,6 +203,10 @@ fun extractGroupLinks(text: String): List<GroupLinkMatch> {
     return (naddrs + buzz).sortedBy { it.start }.toList()
 }
 
+/** 本文の `buzz://channel/…`（Markdown のリンク先も含む）が指すチャンネル ID。出現順に重複なく。 */
+fun linkedBuzzChannels(text: String): List<String> =
+    extractGroupLinks(text).mapNotNull { (parseBuzzLink(it.uri) as? BuzzLink.Channel)?.channelId }.distinct()
+
 /** 参加シートの入力が何として読めたかの説明（種類 · ホスト）。読めないものは null。 */
 fun describeGroupInput(input: GroupInput): String? {
     fun host(url: String) = url.substringAfter("://").trimEnd('/')

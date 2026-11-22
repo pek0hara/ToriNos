@@ -133,6 +133,9 @@ class JoinedTimelineLoader(
             .sortedWith(compareByDescending<JoinedTimelineEntry> { it.conversation.lastActivity }.thenBy { it.key })
     }
 
+    /** 読めたリレーで bot と分かった人（名前の横に Bot の印を出す）。 */
+    fun bots(): Set<String> = relays.filter { it.started }.flatMapTo(mutableSetOf()) { it.bots }
+
     /** bot を隠すと出なくなる投稿の数（表示の範囲の中。ミュートした bot は数えない）。 */
     fun hiddenBotPosts(muted: Set<String> = emptySet()): Int {
         val floor = floor()

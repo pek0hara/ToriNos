@@ -285,6 +285,8 @@ data class ChatTimelineState(
     val hideBots: Boolean = false,
     /** bot を隠すと出なくなる投稿の数（読めている範囲）。 */
     val hiddenBotPosts: Int = 0,
+    /** リレーで bot と分かった人。名前の横に Bot の印を出す。 */
+    val bots: Set<String> = emptySet(),
 )
 
 data class ChatTabUiState(
@@ -997,6 +999,7 @@ class ChatTabViewModel(
                     canLoadOlder = loader.canLoadOlder,
                     failedRelays = failed.sorted(),
                     hiddenBotPosts = loader.hiddenBotPosts(mutedPubkeys?.value.orEmpty()),
+                    bots = loader.bots(),
                 ),
             )
         }

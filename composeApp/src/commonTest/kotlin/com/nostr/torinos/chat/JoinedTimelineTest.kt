@@ -225,6 +225,8 @@ class JoinedTimelineTest {
         assertEquals(listOf(id(1), id(4), id(3), id(2)), loader.entries().map { it.conversation.rootId })
 
         // 隠す bot の投稿は 2, 3, 4, 6 の4件（ミュートした人の分は数えない）。
+        // 名前の横に Bot の印を出す人。
+        assertEquals(setOf(bot1, bot2), loader.bots())
         assertEquals(4, loader.hiddenBotPosts())
         assertEquals(2, loader.hiddenBotPosts(muted = setOf(bot2)))
 

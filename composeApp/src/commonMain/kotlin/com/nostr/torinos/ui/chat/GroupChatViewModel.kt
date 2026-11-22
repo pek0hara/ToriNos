@@ -247,6 +247,8 @@ data class GroupChatUiState(
     val communityEmojis: CommunityEmojiState = CommunityEmojiState(),
     /** リアクションを送っているメッセージ。送り終わるまで付け外しを止める。 */
     val reactingMessageIds: Set<String> = emptySet(),
+    /** 本文の `buzz://channel/…` が指す、同じコミュニティのチャンネルの名前（チャンネル ID → 名前）。 */
+    val linkedChannelNames: Map<String, String> = emptyMap(),
 ) {
     /** リレーがメンバーと示したか、リレーの情報が無く参加済み一覧にある。リレーが非メンバーと示したらそちらに従う。 */
     val isMember: Boolean
@@ -345,6 +347,11 @@ class GroupChatViewModel(
     private var subscriptionJob: Job? = null
     /** 古いスレッドの元の発言の読み込み（スレッドへの返信の行に引用する）。 */
     private var threadRootsJob: Job? = null
+    private var channelNamesJob: Job? = null
+    /** 名前を読みに行ったチャンネル。 */
+    private val requestedChannelNames = mutableSetOf<String>()
+    /** 本文のリンクで見つけた、名前がまだ分からないチャンネル。 */
+    private val pendingChannelNames = mutableSetOf<String>()
     private val requestedThreadRoots = mutableSetOf<String>()
     // init のコルーチンがすぐ subscribe() を呼ぶことがあるので、init より前に初期化しておく。
     private val subscribeMutex = Mutex()
@@ -633,6 +640,7 @@ class GroupChatViewModel(
         timeline.add(events)
         if (metadataChanged) recomputeState() else publishTimeline()
         scheduleThreadRoots()
+        scheduleChannelNames(events)
         val shown = events.filter { it.kind in chatKinds || it.kind == postKind || it.kind == commentKind }
         // Buzz では本文のメンションを名前でリンクにするので、メンションされた人のプロフィールも取る。
         val mentioned = if (flavor == GroupFlavor.Buzz) shown.flatMap { com.nostr.torinos.chat.buzzProfileTargets(it) } else emptyList()
@@ -946,6 +954,43 @@ class GroupChatViewModel(
      * 元の発言が読めている範囲より古いスレッドは、返信も読めている範囲より前にあるので、`#e` で読んで数をそろえる。
      * 届いた返信がまとまってから1回で読む。答えがそろわなかった分は、次に返信が届いたときに読み直す。
      */
+    /**
+     * Buzz の本文の `buzz://channel/…` を、チャンネル名で出せるようにする。届いた発言からリンク先のチャンネルを集め、
+     * 1回にまとめてリレーの kind 39000 を読む。答えがそろわなかった分は、次にリンクが届いたときに読み直す。
+     */
+    private fun scheduleChannelNames(events: Collection<NostrEvent>) {
+        if (flavor != GroupFlavor.Buzz) return
+        val linked = events.flatMap { com.nostr.torinos.chat.linkedBuzzChannels(it.content) }
+            .filter { it != ref.groupId && it !in requestedChannelNames && it !in _state.value.linkedChannelNames }
+        if (linked.isEmpty() && pendingChannelNames.isEmpty()) return
+        pendingChannelNames += linked
+        if (channelNamesJob?.isActive == true) return
+        channelNamesJob = launch {
+            delay(THREAD_ROOTS_DEBOUNCE_MILLIS)
+            val ids = pendingChannelNames.toList()
+            pendingChannelNames.clear()
+            if (ids.isEmpty()) return@launch
+            requestedChannelNames += ids
+            val result = fetchFiniteEvents(
+                SubscriptionSpec(
+                    id = "group-channel-names-${Random.nextLong().toULong().toString(16)}",
+                    filters = ids.chunked(100).map { chunk ->
+                        NostrFilter(kinds = listOf(GROUP_METADATA_KIND), authors = relayPubkey?.let(::listOf), dTags = chunk)
+                    },
+                    target = RelayTarget.Explicit(setOf(ref.relayUrl)),
+                    behavior = SubscriptionBehavior.Fetch(timeoutMillis = 10_000),
+                    replayCachedEvents = false,
+                ),
+            )
+            val names = latestGroupMetadata(result.events, relayPubkey)
+                .filterKeys { it in ids }
+                .mapNotNull { (id, metadata) -> metadata.name.takeIf { it.isNotBlank() }?.let { id to it } }
+                .toMap()
+            if (!result.allAnswered) requestedChannelNames -= (ids.toSet() - names.keys)
+            if (names.isNotEmpty()) _state.update { it.copy(linkedChannelNames = it.linkedChannelNames + names) }
+        }
+    }
+
     private fun scheduleThreadRoots() {
         if (mode != GroupRoomMode.Chat || flavor != GroupFlavor.Buzz) return
         if (threadRootsJob?.isActive == true) return
@@ -975,6 +1020,7 @@ class GroupChatViewModel(
             timeline.addThreadRoots(result.events.filter { it.id in missing })
             timeline.addThreadReplies(result.events.filter { it.id !in missing })
             publishTimeline()
+            scheduleChannelNames(result.events)
             val mentioned = result.events.flatMap { com.nostr.torinos.chat.buzzProfileTargets(it) }
             val authors = result.events.map { com.nostr.torinos.chat.groupMessageAuthor(it, flavor, relayPubkey) }.toSet() + mentioned
             launch { ProfileRepository.ensureProfiles(authors, ProfileFetchPolicy.CacheFirst(maxAgeMillis = 3_600_000), relayHint = ref.relayUrl) }

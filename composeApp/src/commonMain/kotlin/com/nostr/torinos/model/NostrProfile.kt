@@ -20,6 +20,8 @@ data class NostrProfile(
     /** bech32 の LNURL（LUD-06）。`lud16` がないときの Zap の受け取り先。 */
     val lud06: String? = null,
     val customEmojis: Map<String, String> = emptyMap(),
+    /** 自動で投稿するアカウント（NIP-24 の `bot`）。名前の横に Bot の印を出す。 */
+    val bot: Boolean = false,
 ) {
     /** 表示名。display_name → name → null の優先順 */
     val bestName: String?
@@ -50,6 +52,8 @@ fun NostrEvent.toProfile(): NostrProfile? {
         lud16 = text("lud16"),
         lud06 = text("lud06"),
         customEmojis = tags.customEmojiMap(),
+        // NIP-24 は真偽値。文字列の "true" で書くクライアントもあるので受け付ける。
+        bot = (fields["bot"] as? JsonPrimitive)?.content?.lowercase() == "true",
     )
 }
 
