@@ -45,3 +45,6 @@ fastlane/play-service-account.json
 
 # store listing assets (contain unpublished device captures)
 output/
+
+# OpenSats grant application drafts (private)
+output/opensats-application/

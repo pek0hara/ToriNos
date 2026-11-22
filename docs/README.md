@@ -44,6 +44,7 @@
 
 ## 将来計画
 
+- [`buzz-huddle-design.md`](./buzz-huddle-design.md) — Buzz のハドル（音声通話）。親チャンネルの開始・終了イベント、音声用 WebSocket（Opus・protocol v2）、Android・iOS の音声処理、抜けるときの判定（Web は対象外、未着手）
 - [`push-notification-durable-object-design.md`](./push-notification-durable-object-design.md) — Yabume共有購読とDurable Objectを使うプッシュ通知基盤の現行設計
 - [`zap-feature-design.md`](./zap-feature-design.md) — ポストカードの⚡ボタンからのZap送信（NIP-57）、請求書の検証、レシートの検証と合計表示、NWC（NIP-47）の段階計画（未着手）
 - [`feed-startup-cache-design.md`](./feed-startup-cache-design.md) — 起動直後に前回のフィードの先頭とプロフィールを表示する、上限つき使い捨てのスナップショットと新しい取得結果との合流（未着手）
