@@ -62,6 +62,7 @@ fun parseGroupInput(text: String): GroupInput {
     if (value.isEmpty()) return GroupInput.Invalid
     if (value.startsWith("naddr1", ignoreCase = true)) return parseGroupNaddr(value)
     if (value.startsWith("buzz://", ignoreCase = true)) return parseBuzzInviteLink(value)
+    if (isToriNosLinkCandidate(value)) return parseToriNosInviteLink(value) ?: GroupInput.Invalid
     if (BUZZ_CODE_PATTERN.matches(value)) return GroupInput.BareBuzzCode
     INVITE_PATH_PATTERN.matchEntire(value)?.let { match ->
         val relayUrl = relayUrlOf("https://" + match.groupValues[1]) ?: return GroupInput.Invalid
@@ -94,7 +95,7 @@ private fun parseGroupNaddr(value: String): GroupInput {
 }
 
 /** `wss://`・`ws://`・`https://`（パス無し）・ホスト名を、WebSocket の URL にする。 */
-private fun relayUrlOf(value: String): String? {
+internal fun relayUrlOf(value: String): String? {
     val trimmed = value.trim()
     val candidate = when {
         trimmed.startsWith("wss://", ignoreCase = true) || trimmed.startsWith("ws://", ignoreCase = true) -> trimmed
@@ -123,7 +124,7 @@ private fun parseBuzzInviteLink(value: String): GroupInput {
     return GroupInput.BuzzInvite(relayUrl, codes.single())
 }
 
-private fun queryParams(query: String): Map<String, List<String>> =
+internal fun queryParams(query: String): Map<String, List<String>> =
     query.substringBefore('#').split('&').filter { it.isNotEmpty() }.groupBy(
         keySelector = { percentDecode(it.substringBefore('=')) },
         valueTransform = { percentDecode(it.substringAfter('=', missingDelimiterValue = "")) },

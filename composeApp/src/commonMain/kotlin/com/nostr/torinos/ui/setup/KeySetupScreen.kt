@@ -179,6 +179,8 @@ fun KeySetupScreen(
                     textAlign = TextAlign.Center,
                 )
                 Spacer(modifier = Modifier.height(8.dp))
+                KeySetupInviteSection()
+                Spacer(modifier = Modifier.height(8.dp))
                 KeyInfoCard(
                     title = "Nostr とは",
                     body = "• Nostrは、特定の会社に依存しないSNSの仕組み（ルール）です\n• アカウントは「鍵」で管理され、どのアプリでも同じIDで使えます\n• 投稿は複数のサーバーに分散して保存され、消えにくいのが特徴です",

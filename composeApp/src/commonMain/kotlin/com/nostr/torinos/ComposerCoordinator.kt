@@ -105,6 +105,8 @@ internal class ComposerCoordinator(
     fun completeRegistration(preparePost: (String) -> Unit) {
         if (!showRegistrationProfile) return
         showRegistrationProfile = false
+        // 招待リンクから始めた人は、参加の確認を先に出す（最初の投稿の画面は挟まない）。
+        if (com.nostr.torinos.chat.pendingInvites.invite.value != null) return
         clearPostContext(clearDraft = true)
         preparePost("Nostr、はじめました🐦")
         openFullScreen(PostSheetInitialState.KeepCurrent)
@@ -263,6 +265,8 @@ internal class ComposerCoordinator(
     }
 
     fun dismissKeySetup() {
+        // 招待リンクから開いた鍵設定をやめたら、預かっていた招待も捨てる（また開かないように）。
+        com.nostr.torinos.chat.pendingInvites.clear()
         pendingKeyAction = null
         pendingRequests.clear()
         clearPostContext(clearDraft = false)

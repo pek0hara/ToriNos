@@ -57,6 +57,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
+import com.nostr.torinos.chat.pendingInvites
 import kotlin.coroutines.cancellation.CancellationException
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -804,6 +805,30 @@ internal fun AppSessionCoordinator(
             if (ownPubkey != null) {
                 composer.resumeAfterKeySetup(ownPubkey, useFooterComposer, postViewModel::reset)
             }
+        }
+
+        // 招待リンク（docs/buzz-invite-link-design.md）。ログインしていなければ先に鍵設定を開く。
+        // 鍵設定・新規登録のプロフィール・全画面の投稿が閉じてから、チャットタブの参加シートへ渡す。
+        // 参加シートは確認を押すまで AUTH も署名もしない。
+        val pendingInvite by pendingInvites.invite.collectAsState()
+        LaunchedEffect(
+            pendingInvite,
+            ownPubkey,
+            composer.showKeySetup,
+            composer.showRegistrationProfile,
+            composer.pendingRequests.registeringPubkey,
+            composer.presentation,
+        ) {
+            if (pendingInvite == null) return@LaunchedEffect
+            if (ownPubkey == null) {
+                if (!composer.showKeySetup) openLogin()
+                return@LaunchedEffect
+            }
+            if (composer.showKeySetup || composer.showRegistrationProfile) return@LaunchedEffect
+            if (composer.pendingRequests.registeringPubkey != null) return@LaunchedEffect
+            if (composer.presentation == ComposerPresentation.FullScreen) return@LaunchedEffect
+            val link = pendingInvites.take(kotlin.time.Clock.System.now().toEpochMilliseconds()) ?: return@LaunchedEffect
+            groupLinkHandler(link)
         }
 
         // 送信中に「…」でフッターメニューへ切り替えた後の失敗は、簡易欄が見えないのでSnackbarで知らせる。

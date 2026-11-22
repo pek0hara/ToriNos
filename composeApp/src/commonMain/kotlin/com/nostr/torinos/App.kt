@@ -24,6 +24,13 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import com.nostr.torinos.account.AccountSessionHost
 import com.nostr.torinos.account.AccountSessionState
+import com.nostr.torinos.chat.GroupInput
+import com.nostr.torinos.chat.inviteFromFragment
+import com.nostr.torinos.chat.parseGroupInput
+import com.nostr.torinos.chat.pendingInvites
+import com.nostr.torinos.chat.toriNosInviteLink
+import com.nostr.torinos.ui.setup.PhoneInviteLanding
+import kotlin.time.Clock
 import com.nostr.torinos.account.AccountSessions
 import com.nostr.torinos.badge.AppBadgeCachePersistence
 import com.nostr.torinos.ui.components.SignerStatusBanner
@@ -63,10 +70,17 @@ fun App() {
             if (accountTransitionError != null) pendingComposerRequests.requestRegistration(null)
         }
 
+        // スマホのブラウザで招待リンクを開いたときの入口（docs/buzz-invite-link-design.md）。
+        var phoneInviteLink by remember { mutableStateOf<String?>(null) }
+
         LaunchedEffect(Unit) {
             AppProfilePersistence.start()
             AppBadgeCachePersistence.start()
             AccountSessions.manager.initialize()
+            receiveLaunchInvite(
+                loggedIn = AccountSessions.manager.state.value is AccountSessionState.Active,
+                showPhoneLanding = { phoneInviteLink = it },
+            )
             try {
                 ageVerificationStatus = LocalSettingsStorage.getString(AgeVerificationKey)
             } catch (e: CancellationException) {
@@ -97,6 +111,25 @@ fun App() {
                 onAgeVerificationChanged = ::updateAgeVerification,
                 pendingComposerRequests = pendingComposerRequests,
             )
+        }
+
+        phoneInviteLink?.let { link ->
+            val invite = remember(link) { parseGroupInput(link) as? GroupInput.BuzzInvite }
+            val phone = remember { currentPhoneBrowser() }
+            if (invite == null || phone == null) {
+                phoneInviteLink = null
+            } else {
+                PhoneInviteLanding(
+                    host = invite.relayUrl.substringAfter("://").trimEnd('/'),
+                    link = link,
+                    phone = phone,
+                    onContinueInBrowser = {
+                        pendingInvites.offer(link, Clock.System.now().toEpochMilliseconds())
+                        phoneInviteLink = null
+                    },
+                    onClose = { phoneInviteLink = null },
+                )
+            }
         }
 
         accountTransitionError?.let { message ->
@@ -177,5 +210,20 @@ private fun AppSessionHost(
                 pendingComposerRequests = pendingComposerRequests,
             )
         }
+    }
+}
+
+/**
+ * Web 版を開いた URL にあった招待を受け取る。スマホのブラウザで、まだログインしていなければアプリへ案内する
+ * （スマホのブラウザで新しく鍵を作らせない）。それ以外は預けて、ログインの後に参加シートで確かめる。
+ */
+private fun receiveLaunchInvite(loggedIn: Boolean, showPhoneLanding: (String) -> Unit) {
+    val fragment = takeLaunchInviteFragment() ?: return
+    val invite = inviteFromFragment(fragment) ?: return
+    val link = toriNosInviteLink(invite.relayUrl, invite.code)
+    if (currentPhoneBrowser() != null && !loggedIn) {
+        showPhoneLanding(link)
+    } else {
+        pendingInvites.offer(link, Clock.System.now().toEpochMilliseconds())
     }
 }

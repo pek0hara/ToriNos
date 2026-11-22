@@ -42,6 +42,9 @@ internal fun ChatSettingsSection(ownPubkey: String) {
             fontWeight = FontWeight.Bold,
             modifier = Modifier.padding(bottom = 4.dp),
         )
+        // チャットタブを隠していても、受け取った招待リンクから参加できるようにする。
+        // 預けた招待はチャットタブの参加シートで確かめてから使う。
+        com.nostr.torinos.ui.setup.KeySetupInviteSection(modifier = Modifier.padding(bottom = 4.dp))
         Text(
             text = "非表示のリレー",
             style = MaterialTheme.typography.bodyMedium,

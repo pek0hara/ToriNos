@@ -731,6 +731,9 @@ fun ChatTabScreen(
             publicGroupsLoading = state.publicGroupsLoading,
             joinedRefs = state.joinedRefs,
             onPickPublicGroup = viewModel::pickPublicGroup,
+            accountName = ownPubkey?.let { pubkey ->
+                ownProfile?.bestName?.takeIf { it.isNotBlank() } ?: runCatching { com.nostr.torinos.crypto.hexToNpub(pubkey) }.getOrDefault(pubkey).let { it.take(12) + "…" + it.takeLast(6) }
+            },
         )
     }
 }
@@ -1032,6 +1035,8 @@ private fun JoinGroupSheet(
     publicGroupsLoading: Boolean = false,
     joinedRefs: Set<GroupRef> = emptySet(),
     onPickPublicGroup: (GroupRef) -> Unit = {},
+    /** 参加に使うアカウントの表示名（Buzz の招待で見せる）。 */
+    accountName: String? = null,
 ) {
     ModalBottomSheet(
         onDismissRequest = onDismiss,
@@ -1041,7 +1046,7 @@ private fun JoinGroupSheet(
         Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp).padding(bottom = 24.dp)) {
             when (state) {
                 JoinSheetState.Closed -> Unit
-                is JoinSheetState.Buzz -> BuzzJoinContent(state, hasSigner, onBack, onBuzzConsent, onBuzzJoin)
+                is JoinSheetState.Buzz -> BuzzJoinContent(state, hasSigner, accountName, onBack, onBuzzConsent, onBuzzJoin)
                 is JoinSheetState.Input -> {
                     val clipboard = androidx.compose.ui.platform.LocalClipboard.current
                     val pasteScope = rememberCoroutineScope()
@@ -1195,6 +1200,7 @@ internal fun chatRelativeTime(epochSeconds: Long): String {
 private fun BuzzJoinContent(
     state: JoinSheetState.Buzz,
     hasSigner: Boolean,
+    accountName: String?,
     onBack: () -> Unit,
     onConsent: (Boolean?, Boolean?) -> Unit,
     onJoin: () -> Unit,
@@ -1212,6 +1218,13 @@ private fun BuzzJoinContent(
         else "このコミュニティに参加済みかを、公開鍵を伝えてログインして確かめます。",
         style = MaterialTheme.typography.bodySmall,
     )
+    if (hasSigner && accountName != null) {
+        Text(
+            "参加するアカウント: $accountName",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
     val policy = state.policy
     if (state.code != null && policy != null) {
         Spacer(Modifier.height(8.dp))
@@ -1659,14 +1672,23 @@ private fun CommunityAdminSheetView(
                 if (sheet.invites.isNotEmpty()) {
                     HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
                     Text("作った招待", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text(
+                        "ToriNos のリンクは、スマホではアプリのインストールを案内し、PC ではそのままブラウザで参加できます。Buzz アプリを使う人には Buzz のリンクを渡してください。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
                     sheet.invites.forEach { invite ->
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text(invite.url, style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                                Text(com.nostr.torinos.chat.inviteSummary(invite), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                            }
-                            TextButton(onClick = { copyScope.launch { clipboard.setPlainText(invite.url) }; copied = invite.url }) {
-                                Text(if (copied == invite.url) "コピー済み" else "コピー")
+                        val toriNosLink = remember(invite) { com.nostr.torinos.chat.toriNosInviteLinkFor(invite) }
+                        Column {
+                            Text(com.nostr.torinos.chat.inviteSummary(invite), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            listOfNotNull(toriNosLink?.let { "ToriNos" to it }, "Buzz" to invite.url).forEach { (label, url) ->
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Text("$label  ", style = MaterialTheme.typography.labelMedium)
+                                    Text(url, style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+                                    TextButton(onClick = { copyScope.launch { clipboard.setPlainText(url) }; copied = url }) {
+                                        Text(if (copied == url) "コピー済み" else "コピー")
+                                    }
+                                }
                             }
                         }
                     }
