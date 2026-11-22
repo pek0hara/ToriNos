@@ -238,8 +238,24 @@ fun KeySetupScreen(
                     val nsec = remember(priv) { runCatching { hexToNsec(priv) }.getOrDefault(priv) }
                     val npub = remember(pub) { runCatching { hexToNpub(pub) }.getOrDefault(pub) }
                     GeneratedKeyValues(npub = npub, nsec = nsec)
+                    // Web 版はブラウザの保存データが消えることがある（iOS Safari の削除、アプリ内ブラウザ）。
+                    // 鍵を失わないよう、秘密鍵を控えたことを確かめてから始める。
+                    var backedUp by remember(priv) { mutableStateOf(!isWebPlatform) }
+                    if (isWebPlatform) {
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Text(
+                            text = "ブラウザの保存データは消えることがあります。秘密鍵(nsec)をコピーして、パスワードマネージャーなど安全な場所に保存してください。秘密鍵が無いとアカウントに戻れません。",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Checkbox(checked = backedUp, onCheckedChange = { backedUp = it })
+                            Text("秘密鍵を保存しました", style = MaterialTheme.typography.bodyMedium)
+                        }
+                    }
                     Spacer(modifier = Modifier.height(16.dp))
                     Button(
+                        enabled = backedUp,
                         onClick = {
                             scope.launch(uiExceptionHandler) {
                                 val err = runCatching {
@@ -499,12 +515,7 @@ private fun UsageConsentDialog(
             "• 違法な内容、権利侵害、嫌がらせ、脅迫、差別、性的または暴力的な不適切コンテンツ、その他の迷惑行為を投稿しません。ToriNos は不適切なコンテンツや迷惑ユーザーを許容しません。\n" +
             "• 不適切な投稿は通報できます。迷惑ユーザーはブロックでき、投稿は自分のフィードから直ちに非表示になります。\n" +
             "• NG ワード設定により、不適切または見たくない語句を含む投稿をフィルタできます。\n" +
-            "• 秘密鍵はアカウントの利用に必要な情報であり、自分の責任で安全に保管します。" +
-            if (isWebPlatform) {
-                "\n• 秘密鍵はこのブラウザに暗号化せずに保存されます。共有のパソコンでは使わず、使い終わったらログアウトして保存済みアカウントを削除します。"
-            } else {
-                ""
-            }
+            "• 秘密鍵はアカウントの利用に必要な情報であり、自分の責任で安全に保管します。"
     }
 
     AlertDialog(

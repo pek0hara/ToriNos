@@ -54,9 +54,11 @@ private fun installSoftwareKeyboardBridgeJs(tapSlop: Int, keyboardMinHeight: Int
                 }
                 return false;
             };
-            // iOS はキーボード表示で window.innerHeight を変えず、visualViewport だけが縮む。
+            // iOS Safari はキーボード表示中に window.innerHeight も visualViewport と同じだけ縮めるため、
+            // 縮まない Layout Viewport の高さ(documentElement.clientHeight)と比べる(VisualViewportBridge と同じ)。
             const isKeyboardVisible = () =>
-                !!window.visualViewport && window.innerHeight - window.visualViewport.height > keyboardMinHeight;
+                !!window.visualViewport &&
+                document.documentElement.clientHeight - window.visualViewport.height > keyboardMinHeight;
 
             let start = null;
             document.addEventListener('touchstart', (e) => {

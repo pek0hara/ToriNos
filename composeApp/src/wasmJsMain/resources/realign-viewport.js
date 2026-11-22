@@ -4,6 +4,10 @@
 // 読み込み後に数回、文書を一瞬だけスクロール可能にして 1px 動かして戻し、表示位置を揃え直す。
 // initial-hash.js は URL の # による位置合わせを防ぐが、それ以外の経路でも起きるため併用する。
 (() => {
+    // ずれは iOS(iPadOS を含む)のブラウザでだけ起きる。ほかでは文書のスクロールを切り替えない。
+    const isIos = /iPad|iPhone|iPod/.test(navigator.userAgent) ||
+        (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+    if (!isIos) return;
     const realign = () => {
         const html = document.documentElement.style;
         const body = document.body.style;

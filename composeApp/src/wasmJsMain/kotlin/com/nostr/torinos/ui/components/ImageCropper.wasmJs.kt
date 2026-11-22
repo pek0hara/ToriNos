@@ -1,6 +1,7 @@
 package com.nostr.torinos.ui.components
 
-// Web版は画像添付に対応していないため、呼ばれることはない。
+// 切り抜きダイアログ(ImageCropperDialog)は今どこからも使っていない。
+// Web版で使うときは canvas で切り抜く実装に置き換える。
 actual suspend fun readImageDimensions(bytes: ByteArray): ImageDimensions? = null
 
 actual suspend fun cropImageForUpload(
