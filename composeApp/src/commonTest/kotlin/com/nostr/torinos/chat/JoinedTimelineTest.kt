@@ -3,7 +3,11 @@ package com.nostr.torinos.chat
 import com.nostr.torinos.model.NostrEvent
 import com.nostr.torinos.model.NostrFilter
 import com.nostr.torinos.model.matches
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.yield
 import kotlinx.datetime.TimeZone
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -28,8 +32,21 @@ class JoinedTimelineTest {
     /** リレーごとの保存済みイベントにフィルターを当て、`limit` は新しい順に切る。 */
     private class FakeRelays(val stored: Map<String, List<NostrEvent>>, val failing: Set<String> = emptySet()) {
         val requests = mutableListOf<Pair<String, List<NostrFilter>>>()
+        /** リレーごとの、答えを止めておく門。開くまで、そのリレーへの要求は返らない。 */
+        val gates = mutableMapOf<String, CompletableDeferred<Unit>>()
+        private var inFlight = 0
+        /** 同時に答えを待っていた要求の数の最大。 */
+        var maxInFlight = 0
         suspend fun fetch(relayUrl: String, filters: List<NostrFilter>): TimelineFetch {
             requests += relayUrl to filters
+            inFlight++
+            maxInFlight = maxOf(maxInFlight, inFlight)
+            try {
+                yield()
+                gates[relayUrl]?.await()
+            } finally {
+                inFlight--
+            }
             if (relayUrl in failing) return TimelineFetch(emptyList(), answered = false)
             val events = filters.flatMap { filter ->
                 stored[relayUrl].orEmpty().filter { filter.matches(it) }
@@ -248,5 +265,61 @@ class JoinedTimelineTest {
 
         assertTrue(relays.requests.flatMap { it.second }.none { GROUP_MEMBERS_KIND in it.kinds.orEmpty() })
         assertEquals(listOf(id(1)), loader.entries(hideBots = true).map { it.conversation.rootId })
+    }
+
+    @Test
+    fun relaysThatAnsweredAreShownWithoutWaitingForSlowOnes() = runTest {
+        val relays = FakeRelays(mapOf(
+            buzzRelay to listOf(ev(1, "b1", createdAt = 100), ev(2, "b1", createdAt = 101)),
+            stdRelay to listOf(ev(3, "s1", createdAt = 50)),
+        ))
+        val slow = CompletableDeferred<Unit>()
+        relays.gates[stdRelay] = slow
+        val loader = JoinedTimelineLoader(me, relays::fetch, pageSize = 2)
+        var progress = 0
+        val job = launch { loader.load(listOf(buzzGroup("b1"), stdGroup("s1"))) { progress++ } }
+        runCurrent()
+
+        // buzz は読み終えた。std はまだ答えていないので、下限にもしない（buzz の行がそのまま出る）。
+        assertEquals(1, progress)
+        assertEquals(listOf(id(2), id(1)), loader.entries().map { it.conversation.rootId })
+
+        slow.complete(Unit)
+        job.join()
+        assertEquals(2, progress)
+        // std が答えると、buzz（ページいっぱい）の下限 100 より古い std の 50 は出さない（3.1）。
+        assertEquals(listOf(id(2), id(1)), loader.entries().map { it.conversation.rootId })
+        assertTrue(loader.canLoadOlder)
+    }
+
+    @Test
+    fun followUpAndDeletionsOfThePageAreRequestedTogether() = runTest {
+        val relays = FakeRelays(mapOf(
+            buzzRelay to listOf(ev(1, "b1"), ev(2, "b1", tags = reply(1)), ev(10, "b1", kind = 5, tags = listOf(listOf("e", id(1))))),
+        ))
+        val loader = JoinedTimelineLoader(me, relays::fetch, pageSize = 10)
+        loader.load(listOf(buzzGroup("b1")))
+
+        assertEquals(2, relays.maxInFlight)
+        assertEquals(emptyList(), loader.entries().map { it.conversation.rootId })
+        // 続きで新しく読めた投稿が無いので、削除・編集をもう一度は読まない（ページ・続き・削除の3回）。
+        assertEquals(3, relays.requests.size)
+    }
+
+    @Test
+    fun deletionsOfRepliesFoundInTheFollowUpAreApplied() = runTest {
+        // ページ（2件）より古い返信 2 は、続きで読める。その削除は後から読む。
+        val relays = FakeRelays(mapOf(
+            buzzRelay to listOf(
+                ev(1, "b1", content = "root"), ev(2, "b1", tags = reply(1)), ev(8, "b1", tags = reply(1)), ev(9, "b1", tags = reply(1)),
+                ev(20, "b1", kind = 5, tags = listOf(listOf("e", id(2))), createdAt = 3),
+            ),
+        ))
+        val loader = JoinedTimelineLoader(me, relays::fetch, pageSize = 2)
+        loader.load(listOf(buzzGroup("b1")))
+
+        val conversation = loader.entries().single().conversation
+        assertEquals(2, conversation.replyCount)
+        assertEquals(id(9), conversation.latestReply?.event?.id)
     }
 }

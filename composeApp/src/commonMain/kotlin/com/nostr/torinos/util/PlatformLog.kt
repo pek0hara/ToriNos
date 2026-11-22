@@ -105,3 +105,15 @@ internal inline fun feedTraceLog(message: () -> String) {
  * 一覧への反映・画面への表示）を、起動からの経過ミリ秒つきでログ出力する。表示までの時間の調査用。
  */
 internal const val isStartupTraceEnabled = false
+
+/**
+ * trueにするとチャットタブのタイムライン（参加中グループ）の読み込みを、プロセス起動からの経過ミリ秒つきでログ出力する。
+ * 一覧の読み直し・リレーごとの各往復の所要時間と件数・画面への反映を出す。表示までの時間の調査用。
+ */
+internal const val isTimelineTraceEnabled = false
+
+internal inline fun timelineTraceLog(message: () -> String) {
+    if (isTimelineTraceEnabled) {
+        platformLog("[Timeline] +${StartupTrace.elapsedMillis()}ms ${message()}")
+    }
+}

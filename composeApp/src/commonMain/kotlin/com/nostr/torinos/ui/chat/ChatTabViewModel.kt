@@ -449,6 +449,10 @@ class ChatTabViewModel(
     private var refreshJob: Job? = null
     private var timelineLoader: com.nostr.torinos.chat.JoinedTimelineLoader? = null
     private var timelineJob: Job? = null
+    /** 読み込み中、または最後に読んだタイムラインのグループ。同じグループなら読み直さないことがある。 */
+    private var timelineRequestedGroups: Set<com.nostr.torinos.chat.TimelineGroup>? = null
+    /** 前回の一覧の控えを戻し終えた。タイムラインのグループは、これを待ってから数える（空と決めつけない）。 */
+    private val snapshotRestored = kotlinx.coroutines.CompletableDeferred<Unit>()
     /** プロフィールを読みに行った作者（同じ人を何度も頼まない）。 */
     private val timelineAuthors = mutableSetOf<String>()
     /** 保存した選択を戻す前に利用者が選び直したら、戻さない。 */
@@ -470,7 +474,7 @@ class ChatTabViewModel(
         }
         if (account != null) {
             account.start()
-            launch { restoreSnapshot(account) }
+            launch { try { restoreSnapshot(account) } finally { snapshotRestored.complete(Unit) } }
             launch { restoreSelection(account) }
             launch { restoreView(account) }
             mutedPubkeys?.let { flow -> launch { flow.collect { publishTimeline() } } }
@@ -495,19 +499,22 @@ class ChatTabViewModel(
                     val selected = (_state.value.selection as? ChatSelection.Relay)?.relayUrl
                     if (selected != null && com.nostr.torinos.chat.isHiddenRelay(selected, hidden)) select(ChatSelection.All)
                     publish()
-                    if (shown.isNotEmpty()) refreshJoined()
+                    if (shown.isNotEmpty()) refreshJoined(reloadTimeline = false)
                 }
             }
             launch {
                 combine(account.joinedGroups, account.pendingGroups, account.buzzCommunities, account.loaded, ::AccountSnapshot)
                     .collect { snapshot ->
                         val changed = snapshot.joined != joined || snapshot.pending != pending || snapshot.buzz != buzz
+                        val becameLoaded = snapshot.loaded && !_state.value.hasLoaded
                         joined = snapshot.joined
                         pending = snapshot.pending
                         buzz = snapshot.buzz
                         _state.update { it.copy(hasLoaded = snapshot.loaded) }
                         publish()
-                        if (changed) refreshJoined()
+                        if (changed) refreshJoined(reloadTimeline = false)
+                        // 参加中のグループが無いと、一覧の読み直しは走らない。タイムラインは空と決めてよくなったので読む。
+                        else if (becameLoaded) refreshTimeline(force = false)
                     }
             }
         } else {
@@ -545,30 +552,44 @@ class ChatTabViewModel(
         return account?.buzzCommunities?.value.orEmpty().sorted().map { info(it).let { i -> ChatRelaySummary(it, i?.name, GroupFlavor.Buzz, i?.icon) } }
     }
 
-    /** 参加中のグループの情報と最新の発言を、リレーごとに並行して読む。前の読み込みは取り消す。 */
-    fun refreshJoined() {
+    /**
+     * 参加中のグループの情報と最新の発言を、リレーごとに並行して読む。前の読み込みは取り消す。
+     * [reloadTimeline] ではタイムラインも読み直す（タブに入ったとき）。そうでなければ、グループが変わったときだけ読む。
+     */
+    fun refreshJoined(reloadTimeline: Boolean = true) {
         val byRelay = visibleStandardRefs().groupBy { it.relayUrl }
         val buzzRelays = visibleBuzz()
         if (byRelay.isEmpty() && buzzRelays.isEmpty()) return
         refreshJob?.cancel()
         _state.update { it.copy(isLoading = true) }
+        com.nostr.torinos.util.timelineTraceLog { "joined refresh start standard=${byRelay.size} buzz=${buzzRelays.size}" }
         val job = launch(start = CoroutineStart.LAZY) {
             try {
                 account?.awaitReady()
                 loadLastRead()
+                com.nostr.torinos.util.timelineTraceLog { "joined refresh ready" }
                 coroutineScope {
-                    (byRelay.map { (relayUrl, refs) -> async { refreshRelay(relayUrl, refs) } } +
-                        buzzRelays.map { relayUrl -> async { refreshBuzz(relayUrl) } }).awaitAll()
+                    (byRelay.map { (relayUrl, refs) -> async { tracedJoined(relayUrl) { refreshRelay(relayUrl, refs) } } } +
+                        buzzRelays.map { relayUrl -> async { tracedJoined(relayUrl) { refreshBuzz(relayUrl) } } }).awaitAll()
                 }
+                com.nostr.torinos.util.timelineTraceLog { "joined refresh done" }
                 saveSnapshot()
-                // 参加中の一覧を読み直したので、タイムラインもその一覧で読み直す。
-                refreshTimeline()
+                // 参加中の一覧が変わっていたら、タイムラインもその一覧で読み直す。
+                refreshTimeline(force = false)
             } finally {
                 if (refreshJob === coroutineContext[Job]) _state.update { it.copy(isLoading = false) }
             }
         }
         refreshJob = job
         job.start()
+        // 一覧の読み直しを待たずに、今わかっている参加中のグループでタイムラインも読み始める（docs/chat-joined-timeline-design.md 3.3）。
+        refreshTimeline(force = reloadTimeline)
+    }
+
+    private suspend fun tracedJoined(relayUrl: String, block: suspend () -> Unit) {
+        val started = kotlin.time.TimeSource.Monotonic.markNow()
+        block()
+        com.nostr.torinos.util.timelineTraceLog { "joined ${relayUrl.substringAfter("://").trimEnd('/')} ${started.elapsedNow().inWholeMilliseconds}ms" }
     }
 
     /** 前回の一覧を出す。リレーから読んだものがあれば、そちらを優先する。 */
@@ -832,7 +853,7 @@ class ChatTabViewModel(
         }
         _state.update { it.copy(selection = selection, browseAuthNeeded = false) }
         publish()
-        if (refreshJob?.isActive != true) refreshTimeline()
+        refreshTimeline()
         if (selection is ChatSelection.Relay && selection.relayUrl !in buzz) browseRelay(selection.relayUrl)
         if (selection is ChatSelection.Relay && selection.relayUrl in buzz) loadCommunityRole(selection.relayUrl)
     }
@@ -854,8 +875,7 @@ class ChatTabViewModel(
     private fun setView(view: ChatListView, persist: Boolean) {
         if (persist) account?.pubkey?.let { me -> launch { LocalSettingsStorage.putString(viewKey(me), view.name) } }
         _state.update { it.copy(view = view) }
-        // 一覧の読み直しの途中なら、終わったときに読む。
-        if (view == ChatListView.Timeline && refreshJob?.isActive != true) refreshTimeline()
+        if (view == ChatListView.Timeline) refreshTimeline()
     }
 
     /** タイムラインで bot の投稿を出さない。読み直さず、読めているものから作り直す。 */
@@ -879,19 +899,47 @@ class ChatTabViewModel(
             .map { (ref, flavor) -> com.nostr.torinos.chat.TimelineGroup(ref, flavor, info(ref.relayUrl)?.self) }
     }
 
-    /** タイムラインを読み直す。読み終わるまでは前の結果を出しておく。 */
-    fun refreshTimeline() {
+    /**
+     * タイムラインを読む。[force] でなければ、グループが変わったときだけ読む。同じグループで読み込み中なら、
+     * どちらでも取り消さない（起動直後は一覧の読み直しが続けて呼ばれるため。docs/chat-joined-timeline-design.md 3.3）。
+     */
+    fun refreshTimeline(force: Boolean = true) {
         if (!_state.value.showsTimeline) return
         val account = account ?: return
+        launch {
+            account.awaitReady()
+            snapshotRestored.await()
+            val groups = timelineGroups()
+            if (!_state.value.showsTimeline) return@launch
+            // 参加中の一覧（kind 10009）を読む前や、一覧の読み直しの途中は、グループが無いと決めつけない。
+            // 読めたら一覧の読み直しが走り、終わったときにここへ来る（空の一覧で「投稿がありません」を出さない）。
+            if (groups.isEmpty() && (refreshJob?.isActive == true || !_state.value.hasLoaded)) return@launch
+            // 並び順は一覧の読み直しで変わるので、集合で比べる。
+            if (groups.toSet() == timelineRequestedGroups && (timelineJob?.isActive == true || !force)) return@launch
+            startTimelineLoad(account, groups)
+        }
+    }
+
+    /** 読み直す。前の結果を出しているときは、読み終わるまでそれを出しておく。まだ何も出していなければ、読めたリレーから出す。 */
+    private fun startTimelineLoad(account: ChatAccount, groups: List<com.nostr.torinos.chat.TimelineGroup>) {
         timelineJob?.cancel()
+        timelineRequestedGroups = groups.toSet()
         _state.update { it.copy(timeline = it.timeline.copy(isLoading = true)) }
+        com.nostr.torinos.util.timelineTraceLog { "timeline load groups=${groups.size} relays=${groups.map { it.ref.relayUrl }.distinct().size}" }
         val job = launch(start = CoroutineStart.LAZY) {
             try {
-                account.awaitReady()
                 val loader = com.nostr.torinos.chat.JoinedTimelineLoader(account.pubkey, ::timelineFetch)
-                loader.load(timelineGroups())
+                val progressive = _state.value.timeline.rows.isEmpty()
+                if (progressive) timelineLoader = loader
+                loader.load(groups) {
+                    if (progressive && timelineLoader === loader) {
+                        publishTimeline()
+                        com.nostr.torinos.util.timelineTraceLog { "timeline partial rows=${_state.value.timeline.rows.size}" }
+                    }
+                }
                 timelineLoader = loader
                 publishTimeline(loaded = true)
+                com.nostr.torinos.util.timelineTraceLog { "timeline loaded rows=${_state.value.timeline.rows.size} failed=${loader.failedRelays.size}" }
             } finally {
                 if (timelineJob === coroutineContext[Job]) {
                     _state.update { it.copy(timeline = it.timeline.copy(isLoading = false, isLoadingOlder = false)) }

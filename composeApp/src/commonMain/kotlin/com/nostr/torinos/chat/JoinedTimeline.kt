@@ -6,6 +6,8 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.datetime.TimeZone
+import com.nostr.torinos.util.timelineTraceLog
+import kotlin.time.TimeSource
 
 /** タイムラインで1回に読む、リレーごとの投稿の数。 */
 const val JOINED_TIMELINE_PAGE_SIZE = 100
@@ -61,6 +63,8 @@ class JoinedTimelineLoader(
         var oldest: Long? = null
         /** 1ページ目を（一部でも）読めた。 */
         var started = false
+        /** 1ページ目の続き（ルート・返信・削除・編集）まで読み終えた。これより前は行に出さず、表示の下限にもしない。 */
+        var shown = false
         /** bot（エージェントの発言 40002 を出した人と、メンバー一覧 39002 で役割が bot の人）。Buzz だけ。 */
         val bots = mutableSetOf<String>()
 
@@ -71,7 +75,7 @@ class JoinedTimelineLoader(
         }
 
         /** まだ続きがあり、ほかのリレーと混ぜるときに下限になる。 */
-        val bounding: Boolean get() = started && pager.canLoadOlder && oldest != null
+        val bounding: Boolean get() = shown && pager.canLoadOlder && oldest != null
     }
 
     private var relays: List<RelayState> = emptyList()
@@ -82,13 +86,22 @@ class JoinedTimelineLoader(
 
     val canLoadOlder: Boolean get() = relays.any { it.bounding }
 
-    /** 読み直す。終わるまでは前の結果を [entries] に出す。 */
-    suspend fun load(groups: List<TimelineGroup>) {
+    /**
+     * 読む。リレーごとに並行して読み、1つ読み終えるたびに [onRelayLoaded] を呼ぶ。そのときの [entries] は、
+     * 読み終えたリレーの分だけで作る（docs/chat-joined-timeline-design.md 3.3）。
+     */
+    suspend fun load(groups: List<TimelineGroup>, onRelayLoaded: () -> Unit = {}) {
         val states = groups.groupBy { it.ref.relayUrl }.map { (relayUrl, list) -> RelayState(relayUrl, list) }
-        val failed = coroutineScope {
-            states.map { state -> async { state.relayUrl.takeUnless { loadPage(state, until = null) } } }.awaitAll()
-        }.filterNotNull().toSet()
         relays = states
+        val failed = coroutineScope {
+            states.map { state ->
+                async {
+                    val answered = loadPage(state, until = null)
+                    onRelayLoaded()
+                    state.relayUrl.takeUnless { answered }
+                }
+            }.awaitAll()
+        }.filterNotNull().toSet()
         failedRelays = failed
     }
 
@@ -109,6 +122,7 @@ class JoinedTimelineLoader(
     fun entries(muted: Set<String> = emptySet(), hideBots: Boolean = false): List<JoinedTimelineEntry> {
         val floor = floor()
         return relays
+            .filter { it.shown }
             .flatMap { state ->
                 val hidden = if (hideBots) state.bots else emptySet()
                 state.timelines.flatMap { (groupId, timeline) ->
@@ -122,7 +136,7 @@ class JoinedTimelineLoader(
     /** bot を隠すと出なくなる投稿の数（表示の範囲の中。ミュートした bot は数えない）。 */
     fun hiddenBotPosts(muted: Set<String> = emptySet()): Int {
         val floor = floor()
-        return relays.sumOf { state ->
+        return relays.filter { it.shown }.sumOf { state ->
             val bots = state.bots - muted
             state.timelines.values.sumOf { it.countPosts(bots, floor) }
         }
@@ -132,10 +146,12 @@ class JoinedTimelineLoader(
 
     /** 1ページを読み、続き（ルート・返信・削除・編集）も読む。リレーが最後まで答えたら true。 */
     private suspend fun loadPage(state: RelayState, until: Long?): Boolean {
+        val started = TimeSource.Monotonic.markNow()
         val page = fetch(
             state.relayUrl,
             listOf(NostrFilter(kinds = state.chatKinds, hTags = state.groupIds, until = until, limit = pageSize)),
         )
+        timelineTraceLog { "${host(state)} page until=$until n=${page.events.size} answered=${page.answered} ${started.elapsedNow().inWholeMilliseconds}ms" }
         if (!page.answered && page.events.isEmpty()) return false
         val fresh = state.pager.onPage(page.events, page.answered)
         page.events.minOfOrNull { it.createdAt }?.let { min -> state.oldest = minOf(state.oldest ?: min, min) }
@@ -143,6 +159,8 @@ class JoinedTimelineLoader(
         state.started = true
         add(state, fresh)
         val followUp = followUp(state, fresh, firstPage)
+        state.shown = true
+        timelineTraceLog { "${host(state)} done ${started.elapsedNow().inWholeMilliseconds}ms" }
         return page.answered && followUp
     }
 
@@ -164,30 +182,47 @@ class JoinedTimelineLoader(
                     NostrFilter(kinds = listOf(GROUP_COMMENT_KIND), rootEventTags = chunk, hTags = state.groupIds, limit = REPLIES_LIMIT)
                 }
             }
-        val thread = fetch(state.relayUrl, threadFilters)
-        val threadFresh = thread.events.filter { it.id !in state.ids }
-        add(state, threadFresh)
-
-        val targets = (fresh + threadFresh).map { it.id }
         val relayKey = state.relayPubkey
-        val extraFilters = targets.chunked(TARGETS_PER_FILTER).map {
-            NostrFilter(kinds = listOf(5, GROUP_DELETE_EVENT_KIND, BUZZ_EDIT_KIND), eTags = it)
-        } + listOfNotNull(
+        // 1ページ目の投稿の削除・編集と管理者・メンバー一覧は、続きの答えを待たずに同時に読む（3.3）。
+        val pageExtraFilters = editFilters(fresh.map { it.id }) + listOfNotNull(
             relayKey?.takeIf { firstPage }?.let {
                 // Buzz ではメンバー一覧も読み、役割が bot の人を知る（標準のリレーは一覧が大きくなりうるので読まない）。
                 val kinds = if (state.flavor == GroupFlavor.Buzz) listOf(GROUP_ADMINS_KIND, GROUP_MEMBERS_KIND) else listOf(GROUP_ADMINS_KIND)
                 NostrFilter(kinds = kinds, authors = listOf(it), dTags = state.groupIds)
             },
         )
-        val extra = fetch(state.relayUrl, extraFilters)
+        val (thread, extra) = coroutineScope {
+            val thread = async { traced(state, "thread", threadFilters) }
+            val extra = async { traced(state, "extra", pageExtraFilters) }
+            thread.await() to extra.await()
+        }
+        val threadFresh = thread.events.filter { it.id !in state.ids }
+        add(state, threadFresh)
         val admins = extra.events.filter { it.kind == GROUP_ADMINS_KIND }
         add(state, extra.events.filter { it.kind != GROUP_ADMINS_KIND && it.kind != GROUP_MEMBERS_KIND && it.id !in state.ids })
         if (firstPage) {
             setModerators(state, admins)
             addBotMembers(state, extra.events.filter { it.kind == GROUP_MEMBERS_KIND })
         }
-        return thread.answered && extra.answered
+        // 続きで新しく読めた投稿（ページより古い返信・ルート）の削除・編集。無ければ送らない。
+        val threadEdits = traced(state, "thread-edits", editFilters(threadFresh.map { it.id }))
+        add(state, threadEdits.events.filter { it.id !in state.ids })
+        return thread.answered && extra.answered && threadEdits.answered
     }
+
+    private fun editFilters(targets: List<String>): List<NostrFilter> = targets.chunked(TARGETS_PER_FILTER).map {
+        NostrFilter(kinds = listOf(5, GROUP_DELETE_EVENT_KIND, BUZZ_EDIT_KIND), eTags = it)
+    }
+
+    private suspend fun traced(state: RelayState, label: String, filters: List<NostrFilter>): TimelineFetch {
+        if (filters.isEmpty()) return TimelineFetch(emptyList(), answered = true)
+        val started = TimeSource.Monotonic.markNow()
+        val result = fetch(state.relayUrl, filters)
+        timelineTraceLog { "${host(state)} $label filters=${filters.size} n=${result.events.size} answered=${result.answered} ${started.elapsedNow().inWholeMilliseconds}ms" }
+        return result
+    }
+
+    private fun host(state: RelayState) = state.relayUrl.substringAfter("://").trimEnd('/')
 
     private fun add(state: RelayState, events: List<NostrEvent>) {
         if (events.isEmpty()) return
