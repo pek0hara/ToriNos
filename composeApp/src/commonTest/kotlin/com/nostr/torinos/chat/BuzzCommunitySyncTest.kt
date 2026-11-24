@@ -196,3 +196,50 @@ class BuzzCommunitySyncTest {
         assertFalse(needsBuzzDecrypt(listId = null, contentBlank = true, stored = null))
     }
 }
+
+/** 参加中のコミュニティから退会させられたのを、AUTH の拒否で知る（docs/buzz-community-sync-design.md 14 章）。 */
+class BuzzRemovedDetectionTest {
+    private val me = "a".repeat(64)
+    private val other = "b".repeat(64)
+    private val png = "wss://png.buzz.example"
+    private val notMember = "restricted: not a relay member"
+
+    private fun failed(gen: Long, reason: String = notMember, pubkey: String = me) =
+        com.nostr.torinos.network.RelayAuthState.Failed(gen, pubkey, reason)
+
+    @Test
+    fun newNotMemberRefusalOnJoinedCommunityIsRemoval() {
+        val removed = buzzCommunitiesRemovedByRelay(
+            previous = mapOf(png to com.nostr.torinos.network.RelayAuthState.Authenticated(1, me)),
+            current = mapOf(png to failed(2)),
+            joined = setOf(png),
+            pubkey = me,
+            checking = emptySet(),
+        )
+        assertEquals(setOf(png), removed)
+    }
+
+    @Test
+    fun otherRefusalsAreNotRemoval() {
+        // 署名の拒否・時間切れ・リレーの内部エラーは、メンバーでなくなったとは決めない。
+        listOf("error: internal error checking relay membership", "signer rejected", "auth-required: timeout").forEach { reason ->
+            val removed = buzzCommunitiesRemovedByRelay(emptyMap(), mapOf(png to failed(2, reason)), setOf(png), me, emptySet())
+            assertTrue(removed.isEmpty(), reason)
+        }
+    }
+
+    @Test
+    fun staleRefusalIsNotRemovalAfterRejoining() {
+        // 招待で参加し直す前の拒否が残っていても、同じ状態のままなら外さない（参加直後に消さない）。
+        val stale = mapOf(png to failed(2))
+        assertTrue(buzzCommunitiesRemovedByRelay(stale, stale, setOf(png), me, emptySet()).isEmpty())
+    }
+
+    @Test
+    fun notJoinedOrOtherAccountOrCheckingIsIgnored() {
+        assertTrue(buzzCommunitiesRemovedByRelay(emptyMap(), mapOf(png to failed(2)), emptySet(), me, emptySet()).isEmpty())
+        assertTrue(buzzCommunitiesRemovedByRelay(emptyMap(), mapOf(png to failed(2, pubkey = other)), setOf(png), me, emptySet()).isEmpty())
+        // 参加の確認中（招待なしで入ろうとした）の拒否は、確認する側が扱う。
+        assertTrue(buzzCommunitiesRemovedByRelay(emptyMap(), mapOf(png to failed(2)), setOf(png), me, setOf(png)).isEmpty())
+    }
+}

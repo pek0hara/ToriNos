@@ -207,6 +207,11 @@ class ChatAccount internal constructor(
     private val _restoringBuzz = MutableStateFlow<Set<String>>(emptySet())
     /** kind 10009 から復元を確かめている Buzz のリレー（確認中）。メモリだけに持つ。 */
     val restoringBuzz: StateFlow<Set<String>> = _restoringBuzz.asStateFlow()
+    private val _removedBuzz = MutableStateFlow<Set<String>>(emptySet())
+    /** 退会させられたので一覧から外したコミュニティ（知らせるため。メモリだけに持つ）。 */
+    val removedBuzz: StateFlow<Set<String>> = _removedBuzz.asStateFlow()
+    /** [checkBuzzMembership] で参加を確かめている最中のリレー。その拒否は退会とみなさない。 */
+    private val checkingBuzz = MutableStateFlow<Set<String>>(emptySet())
     private val buzzSyncMutex = Mutex()
     /** タブを開いたときに、一覧が確かに読めていなかった。読めたら合わせる。 */
     @kotlin.concurrent.Volatile
@@ -284,12 +289,16 @@ class ChatAccount internal constructor(
             }
             // Buzz のリレーに自分の鍵で認証できたら、そこにある自分の kind 0 が古くないか確かめる（接続はすでにあるので増やさない）。
             scope.launch {
+                var previous: Map<String, RelayAuthState> = emptyMap()
                 NostrRepository.relayAuthStates.collect { states ->
                     states.forEach { (url, state) ->
                         if (state is RelayAuthState.Authenticated && state.pubkey == pubkey && url in _buzz.value) {
                             syncOwnProfileOnce(url)
                         }
                     }
+                    buzzCommunitiesRemovedByRelay(previous, states, _buzz.value, pubkey, checkingBuzz.value)
+                        .forEach { url -> onRemovedFromBuzz(url) }
+                    previous = states
                 }
             }
             refreshJoinedGroups()
@@ -322,6 +331,24 @@ class ChatAccount internal constructor(
         NostrRepository.onRelayAuthPolicyChanged(url)
     }
 
+    /**
+     * コミュニティから外された（AUTH が `not a relay member` で拒否された）。端末の一覧から外し、知らせる。
+     * 10009 からは消さない（同期と同じく、1つのリレーの答えでほかの端末の保存を壊さない）。代わりに
+     * 「メンバーでない」と控え、10009 の版が変わるまで同期で一覧に戻さない。招待で参加し直せば戻る。
+     */
+    private suspend fun onRemovedFromBuzz(url: String) {
+        com.nostr.torinos.util.appLog("[BuzzSync] removed from $url")
+        removeBuzzCommunity(url)
+        val listId = mutex.withLock { latestList?.id }
+        skipUntilListChanges(url, listId, "removed by the community")
+        _removedBuzz.update { it + url }
+    }
+
+    /** 退会の知らせを閉じた。 */
+    fun dismissRemovedBuzz(relayUrl: String) {
+        _removedBuzz.update { it - relayUrl }
+    }
+
     /** このアカウントから外す（ToriNos の保存から消すだけで、コミュニティからの退会ではない）。 */
     suspend fun removeBuzzCommunity(relayUrl: String) {
         _buzz.update { it - relayUrl }
@@ -336,7 +363,9 @@ class ChatAccount internal constructor(
      */
     suspend fun checkBuzzMembership(relayUrl: String): BuzzMembershipCheck {
         awaitReady()
-        val result = fetchFiniteEvents(
+        checkingBuzz.update { it + relayUrl }
+        val result = try {
+            fetchFiniteEvents(
             SubscriptionSpec(
                 id = "buzz-check-${Random.nextLong().toULong().toString(16)}",
                 // 読めるか（AUTH が通るか）だけを見る。プロフィールの取得は ProfileRepository に任せるので kind 0 は使わない。
@@ -345,7 +374,10 @@ class ChatAccount internal constructor(
                 behavior = SubscriptionBehavior.Fetch(timeoutMillis = 20_000),
                 replayCachedEvents = false,
             ),
-        )
+            )
+        } finally {
+            checkingBuzz.update { it - relayUrl }
+        }
         return when (val outcome = result.relays[relayUrl]?.outcome) {
             RelayOutcome.Eose -> BuzzMembershipCheck.Member
             is RelayOutcome.Closed -> buzzMembershipFromClosed(

@@ -1,5 +1,6 @@
 package com.nostr.torinos.chat
 
+import com.nostr.torinos.network.RelayAuthState
 import com.nostr.torinos.network.normalizeRelayUrl
 import kotlinx.coroutines.CancellationException
 import kotlinx.serialization.json.Json
@@ -112,3 +113,24 @@ internal suspend fun readPrivateTagsStrict(content: String, decrypt: suspend (St
         null
     }
 }
+
+/**
+ * 参加中のコミュニティ [joined] のうち、今回新たに `not a relay member` で AUTH を拒否されたもの
+ * （退会させられた。Buzz は外した人の接続を切り、次の AUTH をこの理由で拒否する）。
+ * 前回と同じ状態（[previous]）のままの拒否は、参加し直す前のものかもしれないので見ない。
+ * 参加を確かめている最中（[checking]）の拒否は、確かめる側が扱う。
+ */
+internal fun buzzCommunitiesRemovedByRelay(
+    previous: Map<String, RelayAuthState>,
+    current: Map<String, RelayAuthState>,
+    joined: Set<String>,
+    pubkey: String,
+    checking: Set<String>,
+): Set<String> = current.filter { (url, state) ->
+    state is RelayAuthState.Failed &&
+        state.pubkey == pubkey &&
+        "not a relay member" in state.reason &&
+        url in joined &&
+        url !in checking &&
+        previous[url] != state
+}.keys

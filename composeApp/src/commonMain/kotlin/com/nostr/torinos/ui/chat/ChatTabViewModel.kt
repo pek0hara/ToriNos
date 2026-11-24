@@ -296,6 +296,8 @@ data class ChatTabUiState(
     val relays: List<ChatRelaySummary> = emptyList(),
     /** kind 10009 から復元を確かめている Buzz コミュニティ（確認中。開けない）。 */
     val restoringRelays: List<ChatRelaySummary> = emptyList(),
+    /** 退会させられたので一覧から外した Buzz コミュニティ。知らせて、閉じたら消す。 */
+    val removedCommunities: List<ChatRelaySummary> = emptyList(),
     val joinedRows: List<ChatGroupRow> = emptyList(),
     /** 個別のリレーを選んだときの、未参加のグループ。 */
     val otherRows: List<ChatGroupRow> = emptyList(),
@@ -485,6 +487,15 @@ class ChatTabViewModel(
             launch { account.groupsExpected.collect { expected -> _state.update { it.copy(groupsExpected = expected) } } }
             // 削除したチャンネルを一覧から外す（docs/buzz-admin-design.md 4.3）。
             launch { account.deletedChannels.collect { publish() } }
+            // 退会させられた Buzz コミュニティ（docs/buzz-community-sync-design.md 14 章）。選んでいたら「すべて」に戻す。
+            launch {
+                account.removedBuzz.collect { removed ->
+                    val selected = (_state.value.selection as? ChatSelection.Relay)?.relayUrl
+                    if (selected != null && selected in removed) select(ChatSelection.All)
+                    val summaries = removed.sorted().map { url -> info(url).let { i -> ChatRelaySummary(url, i?.name, GroupFlavor.Buzz, i?.icon) } }
+                    _state.update { it.copy(removedCommunities = summaries) }
+                }
+            }
             // 別の端末で参加した Buzz コミュニティの確認中の表示（docs/buzz-community-sync-design.md 4.1）。
             launch {
                 account.restoringBuzz.collect { restoring ->
@@ -542,6 +553,10 @@ class ChatTabViewModel(
         relayInfo.getOrPut(relayUrl) { RelayInformationRepository.fetch(relayUrl).getOrNull() }
 
     fun layoutOf(ref: GroupRef): GroupLayout = metadataByRef[ref]?.layout ?: GroupLayout.Chat
+
+    fun dismissRemovedCommunity(relayUrl: String) {
+        account?.dismissRemovedBuzz(relayUrl)
+    }
 
     /** 参加中の Buzz コミュニティを kind 10009 と合わせる（チャットタブを開いたとき）。 */
     fun syncBuzzCommunities() {

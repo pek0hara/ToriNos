@@ -719,6 +719,20 @@ fun ChatTabScreen(
         )
     }
 
+    state.removedCommunities.firstOrNull()?.let { removed ->
+        val name = removed.name?.takeIf { it.isNotBlank() } ?: removed.relayUrl.substringAfter("://")
+        AlertDialog(
+            onDismissRequest = { viewModel.dismissRemovedCommunity(removed.relayUrl) },
+            title = { Text("「$name」から外されました") },
+            text = {
+                Text("このコミュニティのメンバーではなくなったため、一覧から外しました。招待リンクをもらえば、また参加できます。")
+            },
+            confirmButton = {
+                TextButton(onClick = { viewModel.dismissRemovedCommunity(removed.relayUrl) }) { Text("OK") }
+            },
+        )
+    }
+
     if (state.join != JoinSheetState.Closed) {
         JoinGroupSheet(
             state = state.join,
