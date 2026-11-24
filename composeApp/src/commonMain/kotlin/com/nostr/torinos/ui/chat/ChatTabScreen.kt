@@ -59,6 +59,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.Stable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -85,7 +86,11 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.nostr.torinos.account.InteractiveSigner
 import com.nostr.torinos.account.LocalAccountSession
+import com.nostr.torinos.account.SignerAttention
+import com.nostr.torinos.util.logException
+import kotlin.coroutines.cancellation.CancellationException
 import com.nostr.torinos.account.accountSessionViewModel
 import com.nostr.torinos.chat.GroupFlavor
 import com.nostr.torinos.chat.GroupLayout
@@ -1038,6 +1043,8 @@ private fun JoinGroupSheet(
     /** 参加に使うアカウントの表示名（Buzz の招待で見せる）。 */
     accountName: String? = null,
 ) {
+    // シートの暗幕で画面上部の解錠の帯が押せないため、参加ボタンの中で解錠・再接続を済ませる。
+    val gate = rememberJoinSignerGate()
     ModalBottomSheet(
         onDismissRequest = onDismiss,
         sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
@@ -1046,7 +1053,7 @@ private fun JoinGroupSheet(
         Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp).padding(bottom = 24.dp)) {
             when (state) {
                 JoinSheetState.Closed -> Unit
-                is JoinSheetState.Buzz -> BuzzJoinContent(state, hasSigner, accountName, onBack, onBuzzConsent, onBuzzJoin)
+                is JoinSheetState.Buzz -> BuzzJoinContent(state, hasSigner, accountName, gate, onBack, onBuzzConsent, { gate.proceed(onBuzzJoin) })
                 is JoinSheetState.Input -> {
                     val clipboard = androidx.compose.ui.platform.LocalClipboard.current
                     val pasteScope = rememberCoroutineScope()
@@ -1148,10 +1155,11 @@ private fun JoinGroupSheet(
                         Spacer(Modifier.height(8.dp))
                         Text(it, style = MaterialTheme.typography.bodyMedium, maxLines = 6, overflow = TextOverflow.Ellipsis)
                     }
-                    state.error?.let {
+                    (gate.error ?: state.error)?.let {
                         Spacer(Modifier.height(8.dp))
                         Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
                     }
+                    if (hasSigner) gate.hint?.let { JoinSignerHint(it) }
                     Spacer(Modifier.height(16.dp))
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.align(Alignment.End)) {
                         TextButton(onClick = onBack) { Text("戻る") }
@@ -1161,8 +1169,9 @@ private fun JoinGroupSheet(
                             OutlinedButton(onClick = { onPreview(state.ref) }) { Text("中を見る") }
                         }
                         val canJoin = hasSigner && !(meta?.isClosed == true && state.inviteCode == null)
-                        Button(onClick = onJoin, enabled = canJoin && !state.isJoining) {
-                            if (state.isJoining) CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp) else Text("参加する")
+                        Button(onClick = { gate.proceed(onJoin) }, enabled = canJoin && !state.isJoining && !gate.busy) {
+                            if (state.isJoining || gate.busy) CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
+                            else Text(gate.prefix + "参加する")
                         }
                     }
                     if (hasSigner) {
@@ -1196,11 +1205,82 @@ internal fun chatRelativeTime(epochSeconds: Long): String {
     }
 }
 
+/**
+ * 参加の操作の前に、署名器の解錠・再接続を済ませる。
+ * 参加シートの暗幕の下では画面上部の帯（SignerStatusBanner）が押せないため、参加ボタン自体を「解錠して参加」にする。
+ */
+@Stable
+internal class JoinSignerGate(
+    val attention: SignerAttention?,
+    val busy: Boolean,
+    val error: String?,
+    val proceed: (() -> Unit) -> Unit,
+) {
+    /** 参加ボタンの頭に付ける言葉。 */
+    val prefix: String
+        get() = when (attention) {
+            SignerAttention.Locked -> "解錠して"
+            is SignerAttention.Disconnected -> "再接続して"
+            else -> ""
+        }
+
+    /** ボタンの上に出す説明。 */
+    val hint: String?
+        get() = when (attention) {
+            SignerAttention.Locked -> "参加の前に、パスキーで鍵を解錠します。"
+            is SignerAttention.Disconnected -> "署名器に接続できません（${attention.reason}）。参加の前に接続し直します。"
+            is SignerAttention.ApprovalRequired -> "署名器で、この操作を承認してください。"
+            null -> null
+        }
+}
+
+@Composable
+private fun rememberJoinSignerGate(): JoinSignerGate {
+    val signer = LocalAccountSession.current?.signer as? InteractiveSigner
+    val attention = signer?.attention?.collectAsState()?.value
+    val scope = rememberCoroutineScope()
+    var busy by remember(signer) { mutableStateOf(false) }
+    var error by remember(signer) { mutableStateOf<String?>(null) }
+    return JoinSignerGate(attention, busy, error) proceed@{ action ->
+        if (busy) return@proceed
+        error = null
+        val needs = attention
+        if (signer == null || (needs != SignerAttention.Locked && needs !is SignerAttention.Disconnected)) {
+            action()
+            return@proceed
+        }
+        busy = true
+        // パスキーの呼び出しは、ボタンを押したこの操作の中で始める（WebAuthn は利用者の操作を要る）。
+        scope.launch {
+            val ready = try {
+                if (needs == SignerAttention.Locked) signer.unlock() else signer.reconnect()
+                true
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                logException("JoinSignerGate", e, "Signer unlock before join failed")
+                error = e.message ?: if (needs == SignerAttention.Locked) "解錠できませんでした" else "接続できませんでした"
+                false
+            } finally {
+                busy = false
+            }
+            if (ready) action()
+        }
+    }
+}
+
+@Composable
+private fun JoinSignerHint(text: String) {
+    Spacer(Modifier.height(8.dp))
+    Text(text, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
+}
+
 @Composable
 private fun BuzzJoinContent(
     state: JoinSheetState.Buzz,
     hasSigner: Boolean,
     accountName: String?,
+    gate: JoinSignerGate,
     onBack: () -> Unit,
     onConsent: (Boolean?, Boolean?) -> Unit,
     onJoin: () -> Unit,
@@ -1256,22 +1336,24 @@ private fun BuzzJoinContent(
             }
         }
     }
-    state.error?.let {
+    (gate.error ?: state.error)?.let {
         Spacer(Modifier.height(8.dp))
         Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
     }
+    if (hasSigner) gate.hint?.let { JoinSignerHint(it) }
     Spacer(Modifier.height(12.dp))
     Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
         Spacer(Modifier.weight(1f))
         TextButton(onClick = onBack) { Text("戻る") }
-        Button(onClick = onJoin, enabled = hasSigner && state.canSubmit) {
-            if (state.isJoining) {
+        Button(onClick = onJoin, enabled = hasSigner && state.canSubmit && !gate.busy) {
+            if (state.isJoining || gate.busy) {
                 CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
             } else {
                 Text(
-                    when {
+                    // 解錠が要るときは「解錠して参加」。同意はチェックで済んでいるので言葉を重ねない。
+                    gate.prefix + when {
                         state.code == null -> "接続"
-                        policy != null -> "同意して参加"
+                        policy != null && gate.prefix.isEmpty() -> "同意して参加"
                         else -> "参加する"
                     },
                 )
