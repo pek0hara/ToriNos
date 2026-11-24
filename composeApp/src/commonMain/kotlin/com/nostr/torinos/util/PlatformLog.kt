@@ -63,6 +63,12 @@ internal inline fun signerTraceLog(message: () -> String) {
  */
 internal const val isTypingTraceEnabled = false
 
+/**
+ * trueにすると Buzz の検索（docs/buzz-search-design.md）をログ出力する。動作確認・計測用。
+ * 控えの読み込みの件数と時間、手元の照合の時間、リレーの返事の件数と時間を出す。入力の文字列・本文は出さない。
+ */
+internal const val isBuzzSearchTraceEnabled = false
+
 internal inline fun typingTraceLog(message: () -> String) {
     if (isTypingTraceEnabled) {
         platformLog("[Typing] ${message()}")

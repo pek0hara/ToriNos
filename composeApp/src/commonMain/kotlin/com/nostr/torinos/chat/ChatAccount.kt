@@ -1121,34 +1121,101 @@ class ChatAccount internal constructor(
     }
 
     /**
-     * コミュニティのメッセージを検索する（NIP-50、関連度順）。リレーが答えなかった・断ったときは null。
-     * 途中で切れても、届いた当たりがあればそれを返す。
+     * コミュニティのメッセージをリレーで検索する（docs/buzz-search-design.md 2.1）。
+     * [mode] が `/query` のときは [limit] 件の [page] ページ目。失敗したら WebSocket の全文一致（500 件、続き無し）で探し直す。
+     * どちらも答えなかったときは null。
      */
-    suspend fun searchBuzzMessages(relayUrl: String, query: String): List<NostrEvent>? {
+    suspend fun searchBuzzMessagesPage(
+        relayUrl: String,
+        query: String,
+        mode: BuzzRelaySearchMode,
+        limit: Int,
+        page: Int,
+    ): BuzzRelaySearchPage? {
         if (relayUrl !in _buzz.value) return null
-        // 確認なしで署名できるときは、デスクトップ版と同じ前方一致（`/query`、NIP-98）。
-        // 最後の語が短いとき・外部の署名器・失敗したときは WebSocket の全文検索（公式モバイル版と同じ）。
-        if (signsSilently && buzzPrefixSearchable(query)) {
+        if (mode != BuzzRelaySearchMode.Socket && signsSilently) {
             try {
                 val url = "${buzzHttpOrigin(relayUrl)}/query"
-                val body = buzzMessagePrefixQueryBody(query)
+                val body = buzzMessageQueryBody(query, prefix = mode == BuzzRelaySearchMode.Prefix, limit = limit, page = page)
                 val auth = signer.sign(content = "", kind = HTTP_AUTH_KIND, tags = nip98Tags(url, "POST", body))
                 val response = profileSearchHttp.postJson(url, body, nostrAuthorizationHeader(auth))
                 if (response.isSuccess) {
-                    parseBuzzEventArray(response.body) { com.nostr.torinos.crypto.isValidEvent(it) }?.let { return it }
+                    val events = parseBuzzEventArray(response.body) { com.nostr.torinos.crypto.isValidEvent(it) }
+                    // 数えるのは署名を確かめる前の件数（リレーがページを埋めたか）。
+                    val returned = runCatching { Json.parseToJsonElement(response.body).jsonArray.size }.getOrDefault(0)
+                    if (events != null) return BuzzRelaySearchPage(events, mayHaveMore = returned >= limit)
                 }
             } catch (e: CancellationException) {
                 throw e
             } catch (_: Throwable) {
-                // 全文検索で探し直す。
+                // WebSocket で探し直す。
             }
+            // 続きのページは WebSocket では読めない。最初のページのときだけ探し直す。
+            if (page > 1) return null
         }
-        val result = searchFetch(relayUrl, buzzMessageSearchFilter(query))
-        return when (result.relays[relayUrl]?.outcome) {
+        val filter = buzzMessageSearchFilter(query).copy(limit = BUZZ_SEARCH_PAGE_LIMIT)
+        val result = searchFetch(relayUrl, filter)
+        val events = when (result.relays[relayUrl]?.outcome) {
             RelayOutcome.Eose -> result.events
             is RelayOutcome.Closed -> null
             else -> result.events.takeIf { it.isNotEmpty() }
+        } ?: return null
+        return BuzzRelaySearchPage(events, mayHaveMore = false)
+    }
+
+    private val searchCorpusMutex = Mutex()
+    /** 手元の照合に使う最近の発言の控え（リレー → 控え）。このセッションの間だけ持つ。 */
+    private val searchCorpora = mutableMapOf<String, BuzzSearchCorpus>()
+
+    /**
+     * 手元の照合に使う最近の発言を読む（docs/buzz-search-design.md 2.2）。5 分以内に読んだ控えがあれば、
+     * それより新しい発言だけを足す。読めなかったときは前の控え（無ければ null）。
+     * 戻り値の second は、さらにさかのぼれそうか（最初の読み込みで 500 件そろった）。
+     */
+    suspend fun loadBuzzSearchCorpus(relayUrl: String): Pair<BuzzSearchCorpus, Boolean>? {
+        if (relayUrl !in _buzz.value) return null
+        val now = kotlin.time.Clock.System.now().toEpochMilliseconds()
+        val previous = searchCorpusMutex.withLock { searchCorpora[relayUrl] }
+        if (previous != null && now - previous.loadedAtMillis < SEARCH_CORPUS_REUSE_MILLIS) {
+            fetchCorpusPage(relayUrl, since = previous.newestMessageAt, until = null)?.let { previous.add(it.first) }
+            previous.loadedAtMillis = now
+            return previous to (previous.messageCount >= BUZZ_SEARCH_PAGE_LIMIT)
         }
+        val corpus = BuzzSearchCorpus(relayUrl, buzzRelayPubkey(relayUrl))
+        val (events, full) = fetchCorpusPage(relayUrl, since = null, until = null) ?: return previous?.let { it to true }
+        corpus.add(events)
+        corpus.loadedAtMillis = now
+        searchCorpusMutex.withLock { searchCorpora[relayUrl] = corpus }
+        return corpus to full
+    }
+
+    /** 控えを、いちばん古い発言より前へ 500 件さかのぼる。さらにさかのぼれそうなら true、読めなければ null。 */
+    suspend fun extendBuzzSearchCorpus(relayUrl: String, corpus: BuzzSearchCorpus): Boolean? {
+        val oldest = corpus.oldestMessageAt ?: return false
+        val (events, full) = fetchCorpusPage(relayUrl, since = null, until = oldest - 1) ?: return null
+        corpus.add(events)
+        return full
+    }
+
+    /** 発言と、削除・編集を 1 回の REQ で読む。second は発言が頼んだ数そろったか。 */
+    private suspend fun fetchCorpusPage(relayUrl: String, since: Long?, until: Long?): Pair<List<NostrEvent>, Boolean>? {
+        val result = keepingRelay(relayUrl) {
+            fetchFiniteEvents(
+                SubscriptionSpec(
+                    id = "buzz-search-corpus-${Random.nextLong().toULong().toString(16)}",
+                    filters = listOf(
+                        NostrFilter(kinds = BUZZ_SEARCH_MESSAGE_KINDS, since = since, until = until, limit = BUZZ_SEARCH_PAGE_LIMIT),
+                        NostrFilter(kinds = listOf(5, GROUP_DELETE_EVENT_KIND, BUZZ_EDIT_KIND), since = since, until = until, limit = BUZZ_SEARCH_PAGE_LIMIT),
+                    ),
+                    target = RelayTarget.Explicit(setOf(relayUrl)),
+                    behavior = SubscriptionBehavior.Fetch(timeoutMillis = 15_000),
+                    replayCachedEvents = false,
+                ),
+            )
+        }
+        if (!result.anyAnswered && result.events.isEmpty()) return null
+        val messages = result.events.count { it.kind in BUZZ_SEARCH_MESSAGE_KINDS }
+        return result.events to (messages >= BUZZ_SEARCH_PAGE_LIMIT)
     }
 
     /** `/profiles/search` が無いリレー（404 / 405）と、NIP-50 で探す期限。 */
@@ -1399,6 +1466,8 @@ private const val OWN_PROFILE_MAX_AGE_MS = 10 * 60 * 1000L
 private const val KEEP_ALIVE_ID = "0000000000000000000000000000000000000000000000000000000000000000"
 /** `/profiles/search` が無いリレーで、NIP-50 を使い続ける間（公式の `profileSearchRetry`）。 */
 private const val PROFILE_SEARCH_RETRY_MILLIS = 5 * 60 * 1000L
+/** 検索の控えを、開き直したときに使い回す間。 */
+private const val SEARCH_CORPUS_REUSE_MILLIS = 5 * 60 * 1000L
 
 private fun encodeTagsJson(tags: List<List<String>>): String =
     kotlinx.serialization.json.JsonArray(

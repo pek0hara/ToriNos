@@ -176,6 +176,7 @@ fun BuzzSearchScreen(
                     onOpenPerson = { person -> leave { onUserClick(person.pubkey) } },
                     onOpenMessage = openTarget,
                     onRetryMessages = viewModel::retryMessages,
+                    onLoadMore = viewModel::loadMore,
                 )
             }
         }
@@ -247,9 +248,9 @@ private fun SearchHint(modifier: Modifier = Modifier) {
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
         Spacer(Modifier.height(8.dp))
-        // リレーの全文検索は空白・記号で語を区切る（docs/buzz-search-design.md 2 章）。
+        // 手元の控えは部分一致、リレーは語の単位（docs/buzz-search-design.md 2 章）。
         Text(
-            "日本語は、空白や句読点で区切られた語ごとに探します。文の途中の一部だけでは見つからないことがあります",
+            "最近の発言は文の途中の一部でも見つかります。古い発言は語の単位で探します",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             textAlign = TextAlign.Center,
@@ -300,6 +301,7 @@ private fun SearchResults(
     onOpenPerson: (BuzzSearchPerson) -> Unit,
     onOpenMessage: (BuzzMessageHit) -> Unit,
     onRetryMessages: () -> Unit,
+    onLoadMore: () -> Unit,
 ) {
     val authors = remember(state.shownMessages) { state.shownMessages.map { it.author }.toSet() }
     val profiles by remember(authors) { ProfileRepository.observe(authors) }.collectAsState(emptyMap())
@@ -340,6 +342,18 @@ private fun SearchResults(
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                     TextButton(onClick = onRetryMessages) { Text("再試行") }
+                }
+            }
+        }
+        // 押したときだけ、リレーの続きと手元の控えを 500 件ずつさかのぼる（docs/buzz-search-design.md 2.2）。
+        if (state.showsLoadMore && !state.messagesLoading) {
+            item(key = "load-more") {
+                Box(modifier = Modifier.fillMaxWidth().padding(8.dp), contentAlignment = Alignment.Center) {
+                    if (state.loadingMore) {
+                        CircularProgressIndicator(modifier = Modifier.size(28.dp))
+                    } else {
+                        TextButton(onClick = onLoadMore) { Text("さらに古い発言も探す") }
+                    }
                 }
             }
         }

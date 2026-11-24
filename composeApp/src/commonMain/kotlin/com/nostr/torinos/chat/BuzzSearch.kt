@@ -59,7 +59,9 @@ private fun codePoints(value: String): List<String> {
 
 /** [label] が [needle]（小文字にしたもの）にどれだけ一致するか。一致しなければ null（公式の `matchRank`）。 */
 fun buzzMatchRank(label: String, needle: String): Int? {
-    val text = label.lowercase()
+    // ToriNos では大文字小文字・全角半角・カタカナひらがなをならして比べる（docs/buzz-search-design.md 2.3）。
+    val text = buzzNormalize(label)
+    @Suppress("NAME_SHADOWING") val needle = buzzNormalize(needle)
     if (text == needle) return BuzzMatchRank.EXACT
 
     var substring = false
@@ -105,7 +107,7 @@ data class BuzzSearchChannel(
     val joined: Boolean,
 )
 
-private fun channelNeedle(query: String): String = query.trim().lowercase().removePrefix("#")
+private fun channelNeedle(query: String): String = buzzNormalize(query.trim()).removePrefix("#")
 
 /**
  * チャンネルを検索の順に並べる（公式の `rankSearchChannels`）。名前の一致の良さ、アーカイブ済みは半段後ろ、
@@ -199,14 +201,39 @@ fun buzzPrefixSearchable(query: String): Boolean {
     return codePoints(last).size >= BUZZ_PREFIX_SEARCH_MIN_CHARS
 }
 
-/** 前方一致のメッセージ検索の `POST /query` の本文（フィルターの配列）。 */
-fun buzzMessagePrefixQueryBody(query: String): String = kotlinx.serialization.json.buildJsonArray {
+/** リレーへの送り方（docs/buzz-search-design.md 2.1）。 */
+enum class BuzzRelaySearchMode {
+    /** `/query`・前方一致（ページで続きを読める）。 */
+    Prefix,
+    /** `/query`・全文一致（ページで続きを読める）。 */
+    FullText,
+    /** WebSocket・全文一致（続きは無い）。外部の署名器のとき。 */
+    Socket,
+}
+
+fun buzzRelaySearchMode(query: String, signsSilently: Boolean): BuzzRelaySearchMode = when {
+    !signsSilently -> BuzzRelaySearchMode.Socket
+    buzzPrefixSearchable(query) -> BuzzRelaySearchMode.Prefix
+    else -> BuzzRelaySearchMode.FullText
+}
+
+/** リレーの検索の1ページ。[mayHaveMore] は頼んだ数そろった（続きがあるかもしれない）。 */
+data class BuzzRelaySearchPage(val events: List<NostrEvent>, val mayHaveMore: Boolean)
+
+/** 最初に頼む数（入力が止まるたび）。 */
+const val BUZZ_SEARCH_FIRST_LIMIT = 50
+/** 「さらに表示」で頼む数（`/query` の上限）、WebSocket の検索の数、手元へ読む数。 */
+const val BUZZ_SEARCH_PAGE_LIMIT = 500
+
+/** メッセージ検索の `POST /query` の本文（フィルターの配列）。`page` は 2 以上のときだけ付ける。 */
+fun buzzMessageQueryBody(query: String, prefix: Boolean, limit: Int, page: Int): String = kotlinx.serialization.json.buildJsonArray {
     add(
         buildJsonObject {
             put("kinds", kotlinx.serialization.json.buildJsonArray { BUZZ_SEARCH_MESSAGE_KINDS.forEach { add(JsonPrimitive(it)) } })
             put("search", query.trim())
-            put("search_mode", "prefix")
-            put("limit", BUZZ_SEARCH_MESSAGE_LIMIT)
+            if (prefix) put("search_mode", "prefix")
+            put("limit", limit)
+            if (page > 1) put("page", page)
         },
     )
 }.toString()
@@ -249,7 +276,7 @@ data class BuzzMessageHit(
     val target: BuzzSearchTarget,
 )
 
-private fun agentBody(content: String): String = runCatching {
+internal fun buzzAgentBody(content: String): String = runCatching {
     ((searchJson.parseToJsonElement(content) as JsonObject)["content"] as? JsonPrimitive)?.takeIf { it.isString }?.content
 }.getOrNull() ?: content
 
@@ -257,7 +284,13 @@ private fun agentBody(content: String): String = runCatching {
  * 検索の当たりを、リレーの並び（関連度順）のまま行にする。チャンネルがちょうど1つ（`h` が1つ）のものだけ。
  * 押したときは、フォーラム投稿はその投稿、コメント・スレッドの返信はルートのスレッド、それ以外はチャンネルを開く。
  */
-fun buzzMessageHits(events: List<NostrEvent>, relayUrl: String, relayPubkey: String?): List<BuzzMessageHit> {
+fun buzzMessageHits(
+    events: List<NostrEvent>,
+    relayUrl: String,
+    relayPubkey: String?,
+    /** 編集で差し替えた本文（発言の ID → 本文）。 */
+    editedBodies: Map<String, String> = emptyMap(),
+): List<BuzzMessageHit> {
     val seen = HashSet<String>()
     return events.mapNotNull { event ->
         if (event.kind !in BUZZ_SEARCH_MESSAGE_KINDS || !seen.add(event.id)) return@mapNotNull null
@@ -268,7 +301,7 @@ fun buzzMessageHits(events: List<NostrEvent>, relayUrl: String, relayPubkey: Str
             event.kind == BUZZ_FORUM_POST_KIND -> BuzzSearchTarget.Thread(ref, event.id)
             else -> buzzThreadRootId(event)?.let { BuzzSearchTarget.Thread(ref, it) } ?: BuzzSearchTarget.Channel(ref)
         }
-        val body = if (event.kind == BUZZ_AGENT_MESSAGE_KIND) agentBody(event.content) else event.content
+        val body = editedBodies[event.id] ?: if (event.kind == BUZZ_AGENT_MESSAGE_KIND) buzzAgentBody(event.content) else event.content
         BuzzMessageHit(
             id = event.id,
             ref = ref,
@@ -291,6 +324,19 @@ fun buzzSearchPreview(body: String): String {
         if (body[end - 1].isHighSurrogate()) end--
         return body.substring(0, end).replace(Regex("\\s+"), " ") + "…"
     }
+    val (text, media) = plainTextAndMedia(body)
+    return when {
+        text.isNotEmpty() && media > 0 -> "📷 $text"
+        text.isNotEmpty() -> text
+        media > 0 -> "📷 画像"
+        else -> ""
+    }
+}
+
+/** 照合用の平文（長さで切らない）。 */
+fun buzzSearchPlainText(body: String): String = plainTextAndMedia(body).first
+
+private fun plainTextAndMedia(body: String): Pair<String, Int> {
     val blocks = parseMarkdownLite(body)
     val media = blocks.count { it is MdBlock.Image }
     val text = blocks.mapNotNull { block ->
@@ -302,12 +348,7 @@ fun buzzSearchPreview(body: String): String {
             is MdBlock.Image -> null
         }
     }.joinToString(" ").replace(Regex("\\s+"), " ").trim()
-    return when {
-        text.isNotEmpty() && media > 0 -> "📷 $text"
-        text.isNotEmpty() -> text
-        media > 0 -> "📷 画像"
-        else -> ""
-    }
+    return text to media
 }
 
 // ---- 人 ----
@@ -323,4 +364,91 @@ fun buzzSearchPeople(events: List<NostrEvent>, me: String?): List<BuzzSearchPers
     }
     return latest.values.mapNotNull { event -> event.toProfile()?.let { BuzzSearchPerson(event.pubkey, it) } }
         .take(BUZZ_SEARCH_PEOPLE_SHOWN)
+}
+
+// ---- 正規化と手元の照合（docs/buzz-search-design.md 2.2・2.3） ----
+
+/** 小文字、全角英数・記号を半角、全角空白を空白、カタカナをひらがなにする。 */
+fun buzzNormalize(text: String): String {
+    val out = StringBuilder(text.length)
+    for (c in text) {
+        val folded = when (c) {
+            in '\uFF01'..'\uFF5E' -> c - 0xFEE0
+            '\u3000' -> ' '
+            in '\u30A1'..'\u30F6' -> c - 0x60
+            else -> c
+        }
+        out.append(folded.lowercaseChar())
+    }
+    return out.toString()
+}
+
+/** 手元の照合の一致の良さ。小さいほど良い。 */
+object BuzzLocalRank {
+    /** 前後が文字・数字でない（語全体）。 */
+    const val WHOLE_WORD = 0
+    /** 前が文字・数字でない（語の頭）。 */
+    const val WORD_START = 1
+    const val SUBSTRING = 2
+}
+
+/** 手元の照合の入力。含むべき語と含まない語（どちらも正規化済み）。 */
+data class BuzzLocalQuery(val include: List<String>, val exclude: List<String>)
+
+/** 入力を空白で語に分ける。`"` は外し、`-語` は除外。含むべき語が無ければ null。 */
+fun parseBuzzLocalQuery(query: String): BuzzLocalQuery? {
+    val words = buzzNormalize(query.replace("\"", " ")).split(Regex("\\s+")).filter { it.isNotEmpty() }
+    val exclude = words.filter { it.length > 1 && it.startsWith("-") }.map { it.removePrefix("-") }
+    val include = words.filter { !(it.length > 1 && it.startsWith("-")) }
+    return if (include.isEmpty()) null else BuzzLocalQuery(include, exclude)
+}
+
+private fun wordRank(text: String, word: String): Int? {
+    var best: Int? = null
+    var at = text.indexOf(word)
+    while (at >= 0) {
+        val startsWord = at == 0 || !text[at - 1].isLetterOrDigit()
+        val end = at + word.length
+        val endsWord = end == text.length || !text[end].isLetterOrDigit()
+        val rank = when {
+            startsWord && endsWord -> BuzzLocalRank.WHOLE_WORD
+            startsWord -> BuzzLocalRank.WORD_START
+            else -> BuzzLocalRank.SUBSTRING
+        }
+        if (best == null || rank < best) best = rank
+        if (best == BuzzLocalRank.WHOLE_WORD) break
+        at = text.indexOf(word, at + 1)
+    }
+    return best
+}
+
+/** 正規化済みの本文が入力に一致するか。すべての語を含み、除外の語を含まないとき、語の良さのうち悪いほう。 */
+fun buzzLocalMatchRank(normalizedText: String, query: BuzzLocalQuery): Int? {
+    if (query.exclude.any { normalizedText.contains(it) }) return null
+    var worst = BuzzLocalRank.WHOLE_WORD
+    for (word in query.include) {
+        val rank = wordRank(normalizedText, word) ?: return null
+        if (rank > worst) worst = rank
+    }
+    return worst
+}
+
+/** 手元の当たりを先に、そのあとにリレーの当たりで手元に無いもの（docs/buzz-search-design.md 2.4）。 */
+fun mergeBuzzSearchHits(local: List<BuzzMessageHit>, relay: List<BuzzMessageHit>): List<BuzzMessageHit> {
+    val seen = HashSet<String>()
+    return (local + relay).filter { seen.add(it.id) }
+}
+
+/**
+ * 手元のプロフィールから人を探す（外部の署名器のとき、docs/buzz-search-design.md 2.5）。
+ * `name`・`display_name` を正規化して部分一致。良さ → 候補の順で [BUZZ_SEARCH_PEOPLE_SHOWN] 人まで。
+ */
+fun buzzLocalPeople(candidates: List<BuzzSearchPerson>, query: String, me: String?): List<BuzzSearchPerson> {
+    val parsed = parseBuzzLocalQuery(query) ?: return emptyList()
+    return candidates.withIndex().mapNotNull { (index, person) ->
+        if (person.pubkey == me) return@mapNotNull null
+        val names = listOfNotNull(person.profile.displayName, person.profile.name).filter { it.isNotBlank() }
+        val rank = names.mapNotNull { buzzLocalMatchRank(buzzNormalize(it), parsed) }.minOrNull() ?: return@mapNotNull null
+        Triple(person, rank, index)
+    }.sortedWith(compareBy({ it.second }, { it.third })).take(BUZZ_SEARCH_PEOPLE_SHOWN).map { it.first }
 }

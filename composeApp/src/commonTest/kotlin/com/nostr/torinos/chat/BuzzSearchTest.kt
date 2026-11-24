@@ -145,11 +145,63 @@ class BuzzSearchTest {
     }
 
     @Test
-    fun prefixQueryBodyMatchesDesktop() {
+    fun relayModeFollowsSignerAndLastWord() {
+        assertEquals(BuzzRelaySearchMode.Prefix, buzzRelaySearchMode("Open", signsSilently = true))
+        assertEquals(BuzzRelaySearchMode.FullText, buzzRelaySearchMode("明日", signsSilently = true))
+        assertEquals(BuzzRelaySearchMode.FullText, buzzRelaySearchMode("open -sats", signsSilently = true))
+        assertEquals(BuzzRelaySearchMode.Socket, buzzRelaySearchMode("Open", signsSilently = false))
+    }
+
+    @Test
+    fun queryBodyCarriesModeLimitAndPage() {
         assertEquals(
-            """[{"kinds":[9,40002,45001,45003],"search":"open","search_mode":"prefix","limit":20}]""",
-            buzzMessagePrefixQueryBody(" open "),
+            """[{"kinds":[9,40002,45001,45003],"search":"open","search_mode":"prefix","limit":50}]""",
+            buzzMessageQueryBody(" open ", prefix = true, limit = 50, page = 1),
         )
+        assertEquals(
+            """[{"kinds":[9,40002,45001,45003],"search":"明日","limit":500,"page":2}]""",
+            buzzMessageQueryBody("明日", prefix = false, limit = 500, page = 2),
+        )
+    }
+
+    // ---- 正規化と手元の照合 ----
+
+    @Test
+    fun normalizeFoldsCaseWidthAndKatakana() {
+        assertEquals("opensats の しんせい", buzzNormalize("ＯｐｅｎＳａｔｓ　の　シンセイ"))
+        assertEquals("おーぷん", buzzNormalize("オープン"))
+    }
+
+    @Test
+    fun localMatchFindsMiddleOfJapaneseSentence() {
+        val text = buzzNormalize("明日！OpenSatsの申請進めようと思う！")
+        assertEquals(BuzzLocalRank.SUBSTRING, buzzLocalMatchRank(text, parseBuzzLocalQuery("申請")!!))
+        assertEquals(BuzzLocalRank.WORD_START, buzzLocalMatchRank(text, parseBuzzLocalQuery("open")!!))
+        assertEquals(BuzzLocalRank.WHOLE_WORD, buzzLocalMatchRank(text, parseBuzzLocalQuery("明日")!!))
+        // すべての語が要る。行の良さは悪いほうの語。
+        assertEquals(BuzzLocalRank.SUBSTRING, buzzLocalMatchRank(text, parseBuzzLocalQuery("明日 申請")!!))
+        assertNull(buzzLocalMatchRank(text, parseBuzzLocalQuery("明日 天気")!!))
+        // 除外と引用符。
+        assertNull(buzzLocalMatchRank(text, parseBuzzLocalQuery("明日 -申請")!!))
+        assertEquals(BuzzLocalRank.SUBSTRING, buzzLocalMatchRank(text, parseBuzzLocalQuery("\"申請進め\"")!!))
+        assertNull(parseBuzzLocalQuery("-申請"))
+        assertNull(parseBuzzLocalQuery("   "))
+    }
+
+    @Test
+    fun channelRankUsesNormalizedNames() {
+        assertEquals(BuzzMatchRank.PREFIX, buzzMatchRank("ＤＥＶ-開発", "dev"))
+        assertEquals(BuzzMatchRank.EXACT, buzzMatchRank("ザツダン", "ざつだん"))
+    }
+
+    // ---- まとめ方 ----
+
+    @Test
+    fun mergePutsLocalFirstAndDropsDuplicates() {
+        val a = event(9, "a"); val b = event(9, "b"); val c = event(9, "c")
+        val local = buzzMessageHits(listOf(b, a), relayUrl, relayKey)
+        val relay = buzzMessageHits(listOf(a, c), relayUrl, relayKey)
+        assertEquals(listOf(b.id, a.id, c.id), mergeBuzzSearchHits(local, relay).map { it.id })
     }
 
     // ---- メッセージの当たり ----
