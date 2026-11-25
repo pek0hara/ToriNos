@@ -22,7 +22,7 @@ internal class PublishResultSnackbarVisuals(result: RelayPublishResult, subject:
         else -> "${subject}を送信しました。成功${result.successCount}リレー 失敗${result.failureCount}リレー"
     }
     override val actionLabel: String? = null
-    override val withDismissAction: Boolean = false
+    override val withDismissAction: Boolean = true
     override val duration: SnackbarDuration =
         if (result.failureCount > 0) SnackbarDuration.Long else SnackbarDuration.Short
 }

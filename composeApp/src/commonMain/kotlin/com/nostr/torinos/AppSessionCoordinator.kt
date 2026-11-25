@@ -19,6 +19,7 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Sms
@@ -26,6 +27,7 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.DrawerState
 import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.ModalDrawerSheet
@@ -1343,6 +1345,13 @@ internal fun AppSessionCoordinator(
                                     publishFailureDialogRelays = failedRelays
                                     data.dismiss()
                                 },
+                            dismissAction = if (data.visuals.withDismissAction) {
+                                {
+                                    IconButton(onClick = { data.dismiss() }) {
+                                        Icon(Icons.Default.Close, contentDescription = "閉じる")
+                                    }
+                                }
+                            } else null,
                         ) {
                             Text(data.visuals.message)
                         }
