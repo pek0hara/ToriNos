@@ -13,6 +13,9 @@ import com.nostr.torinos.network.ProfileFetchPolicy
 import com.nostr.torinos.network.ProfileRepository
 import com.nostr.torinos.network.TargetEventLoader
 import com.nostr.torinos.network.TargetLoadState
+import com.nostr.torinos.network.SubscriptionBehavior
+import com.nostr.torinos.network.SubscriptionSpec
+import com.nostr.torinos.network.fetchFiniteEvents
 import androidx.lifecycle.viewModelScope
 import com.nostr.torinos.ui.SafeViewModel
 import com.nostr.torinos.ui.profile.FollowerCountStore
@@ -85,6 +88,12 @@ class NotificationsViewModel(
     private val targetLoader = TargetEventLoader(viewModelScope)
 
     private val seenItemIds = linkedSetOf<String>()
+    // 返信先・引用先の作者を確かめるまで一覧に出さない通知。キーは通知のイベントID。
+    private val pendingRelevance = linkedMapOf<String, PendingRelevance>()
+    // 引用リポストを `#q` で探すための自分の最近の投稿。端末に残し、起動時は取り直しを待たずに使う。
+    private var ownRecentPosts: List<OwnPostRef> = emptyList()
+    private var ownPostIds: Set<String> = emptySet()
+    private var ownPostsRefreshJob: Job? = null
     private val pendingPubkeys = linkedSetOf<String>()
     private val collectorJobs = mutableListOf<Job>()
     private var profileBatchJob: Job? = null
@@ -104,9 +113,12 @@ class NotificationsViewModel(
         startCollectors()
         startupSyncJob = launch {
             try {
+                setOwnRecentPosts(LocalNotificationStore.loadOwnRecentPosts(ownPubkey))
                 loadStoredNotifications()
                 loadKnownFollowers()
+                refreshOwnRecentPosts()
                 syncOnce()
+                ownPostsRefreshJob?.join()
                 // Target fetches own their full finite deadline, not the activity EOSE + 1s.
                 if (!liveSubscriptionsStarted) targetLoader.awaitIdle()
             } finally {
@@ -145,6 +157,7 @@ class NotificationsViewModel(
                         scheduleProfileFetch(state.event.pubkey)
                     }
                 }
+                settlePendingRelevance(targets)
             }
         }
         muteStore?.let { store ->
@@ -180,6 +193,7 @@ class NotificationsViewModel(
         if (liveSubscriptionsStarted) return
         liveSubscriptionsStarted = true
         scheduleMissingDetails()
+        refreshOwnRecentPosts()
         liveSubscriptionJob?.cancel()
         liveSubscriptionJob = launch {
             syncCoordinator.setVisible(
@@ -210,12 +224,46 @@ class NotificationsViewModel(
         kotlinx.coroutines.CoroutineScope(NonCancellable + Dispatchers.Main).launch { syncCoordinator.close() }
     }
 
-    private fun activityFilters(limit: Int): List<NostrFilter> = listOf(
+    private fun activityFilters(limit: Int): List<NostrFilter> = listOfNotNull(
         NostrFilter(kinds = listOf(1, 6, 16, 7), pTags = listOf(ownPubkey), limit = limit),
         NostrFilter(kinds = listOf(8), pTags = listOf(ownPubkey), limit = limit),
         NostrFilter(kinds = listOf(COMMENT_EVENT_KIND), rootKindTags = listOf("1"), pTags = listOf(ownPubkey), limit = limit),
         NostrFilter(kinds = listOf(COMMENT_EVENT_KIND), rootKindTags = listOf("1"), rootPubkeyTags = listOf(ownPubkey), limit = limit),
+        quoteFilter(ownRecentPosts.map { it.id }, limit),
     )
+
+    private fun setOwnRecentPosts(posts: List<OwnPostRef>) {
+        ownRecentPosts = posts
+        ownPostIds = posts.mapTo(hashSetOf()) { it.id }
+    }
+
+    /**
+     * 自分の最近の投稿を取り直す。増えた分は、その引用を追加で取り、開いている購読にも足す。
+     * 取れたリレーの分だけで進め、取れなかったときは保存済みの一覧を使い続ける。
+     */
+    private fun refreshOwnRecentPosts() {
+        if (ownPostsRefreshJob?.isActive == true) return
+        ownPostsRefreshJob = launch {
+            val result = fetchFiniteEvents(
+                SubscriptionSpec(
+                    id = "notif-$shortKey-own-posts-${Clock.System.now().toEpochMilliseconds()}",
+                    filters = listOf(ownRecentPostsFilter(ownPubkey)),
+                    behavior = SubscriptionBehavior.Fetch(10_000),
+                ),
+                settleAfterEoseMillis = OWN_POSTS_SETTLE_MS,
+            )
+            val merged = mergeOwnRecentPosts(ownRecentPosts, result.events, ownPubkey)
+            val added = merged.map { it.id }.filterNot { it in ownPostIds }
+            if (added.isEmpty()) return@launch
+            setOwnRecentPosts(merged)
+            LocalNotificationStore.saveOwnRecentPosts(ownPubkey, merged)
+            settlePendingRelevance(_state.value.targetStates)
+            syncCoordinator.updateActivityFilters(activityFilters(LIVE_SYNC_LIMIT))
+            quoteFilter(added, INITIAL_SYNC_LIMIT)?.let { filter ->
+                syncCoordinator.fetchActivity(listOf(filter), Clock.System.now().epochSeconds)
+            }
+        }
+    }
 
     private suspend fun handleActivityEvent(event: NostrEvent) {
         if (event.pubkey == ownPubkey) return
@@ -242,20 +290,30 @@ class NotificationsViewModel(
             scheduleProfileFetch(event.pubkey)
             return
         }
+        val ownIds = ownPostIds
+        val relevance = withContext(Dispatchers.Default) { notificationRelevance(event, ownPubkey, ownIds) }
+        if (relevance == NotificationRelevance.Unrelated) {
+            rememberSeenId(event.id)
+            return
+        }
         val resolved = withContext(Dispatchers.Default) { resolveNotificationTarget(event) }
         val targetEventId = (resolved.reference as? TargetReference.EventId)?.id
-        addItem(
-            NotificationItem(
-                id = event.id,
-                type = type,
-                actorPubkey = event.pubkey,
-                createdAt = event.createdAt,
-                receivedAt = event.createdAt,
-                targetEventId = targetEventId,
-                event = event,
-                targetReference = resolved.reference,
-            ),
+        val item = NotificationItem(
+            id = event.id,
+            type = type,
+            actorPubkey = event.pubkey,
+            createdAt = event.createdAt,
+            receivedAt = event.createdAt,
+            targetEventId = targetEventId,
+            event = event,
+            targetReference = resolved.reference,
         )
+        if (relevance is NotificationRelevance.NeedsTargetAuthor) {
+            if (!rememberSeenId(event.id)) return
+            holdUntilTargetAuthorKnown(item, relevance.eventIds)
+            return
+        }
+        addItem(item)
         scheduleProfileFetch(event.pubkey)
         resolved.embedded?.let { targetLoader.seedValidated(it) }
         if (targetEventId != null && _state.value.items.any { it.id == event.id }) {
@@ -293,10 +351,43 @@ class NotificationsViewModel(
 
     private fun addItem(item: NotificationItem) {
         if (!rememberSeenId(item.id)) return
+        insertItem(item)
+    }
+
+    private fun insertItem(item: NotificationItem) {
         _state.update { state ->
-            state.copy(items = (state.items + item).sortedByDescending { it.receivedAt }.take(MAX_ITEMS))
+            state.copy(
+                items = (state.items.filterNot { it.id == item.id } + item)
+                    .sortedByDescending { it.receivedAt }.take(MAX_ITEMS),
+            )
         }
         saveStoredNotifications()
+    }
+
+    private fun holdUntilTargetAuthorKnown(item: NotificationItem, eventIds: Set<String>) {
+        pendingRelevance[item.id] = PendingRelevance(item, eventIds)
+        eventIds.forEach(::scheduleTargetFetch)
+        retainTargets()
+        settlePendingRelevance(_state.value.targetStates)
+    }
+
+    private fun settlePendingRelevance(states: Map<String, TargetLoadState>) {
+        if (pendingRelevance.isEmpty()) return
+        var changed = false
+        pendingRelevance.values.toList().forEach { pending ->
+            val show = pending.eventIds.any { it in ownPostIds } ||
+                (decideByTargetAuthors(pending.eventIds, states, ownPubkey) ?: return@forEach)
+            pendingRelevance.remove(pending.item.id)
+            changed = true
+            if (show) {
+                insertItem(pending.item)
+                scheduleDetailsForItem(pending.item)
+            }
+        }
+        if (changed) {
+            retainTargets()
+            saveStoredNotifications()
+        }
     }
 
     fun markAllRead() {
@@ -339,7 +430,10 @@ class NotificationsViewModel(
     }
 
     private fun retainTargets() {
-        targetLoader.retain(_state.value.items.mapNotNull { it.targetEventId }.toSet())
+        targetLoader.retain(
+            _state.value.items.mapNotNull { it.targetEventId }.toSet() +
+                pendingRelevance.values.flatMap { it.eventIds },
+        )
     }
 
     private fun rememberSeenId(eventId: String): Boolean {
@@ -375,7 +469,13 @@ class NotificationsViewModel(
                 ) to resolved.embedded
             }
         }
-        val items = normalized.map { it.first }.filterNotMutedActors(muteStore?.mutedPubkeys?.value.orEmpty())
+        val unmuted = normalized.map { it.first }.filterNotMutedActors(muteStore?.mutedPubkeys?.value.orEmpty())
+        // 以前の版で保存した、自分に関係のない返信も同じ基準で振り分け直す。
+        val ownIds = ownPostIds
+        val relevance = withContext(Dispatchers.Default) {
+            unmuted.associate { item -> item.id to (item.event?.let { notificationRelevance(it, ownPubkey, ownIds) } ?: NotificationRelevance.Relevant) }
+        }
+        val items = unmuted.filter { relevance[it.id] == NotificationRelevance.Relevant }
         seenItemIds += stored.items.map { it.id }
         _state.update {
             it.copy(
@@ -390,15 +490,20 @@ class NotificationsViewModel(
             scheduleDetailsForItem(item)
         }
         retainTargets()
+        unmuted.forEach { item ->
+            (relevance[item.id] as? NotificationRelevance.NeedsTargetAuthor)?.let { holdUntilTargetAuthorKnown(item, it.eventIds) }
+        }
         if (items.size != stored.items.size) {
             LocalNotificationStore.save(
                 ownPubkey,
-                stored.copy(items = items),
+                stored.copy(items = items + pendingRelevance.values.map { it.item }),
             )
         }
     }
 
     private fun removeMutedNotifications(mutedPubkeys: Set<String>) {
+        val normalizedMuted = mutedPubkeys.mapTo(hashSetOf()) { it.trim().lowercase() }
+        pendingRelevance.values.removeAll { it.item.actorPubkey.trim().lowercase() in normalizedMuted }
         val current = _state.value
         val items = current.items.filterNotMutedActors(mutedPubkeys)
         if (items.size == current.items.size) return
@@ -411,6 +516,7 @@ class NotificationsViewModel(
         _state.value.items.forEach { item ->
             scheduleDetailsForItem(item)
         }
+        pendingRelevance.values.forEach { pending -> pending.eventIds.forEach(::scheduleTargetFetch) }
     }
 
     private fun scheduleDetailsForItem(item: NotificationItem) {
@@ -421,8 +527,10 @@ class NotificationsViewModel(
 
     private fun saveStoredNotifications() {
         val snapshot = _state.value
+        // 確認待ちも残しておき、終了しても次回の起動で振り分け直す。
         val stored = StoredNotifications(
-            items = snapshot.items.sortedByDescending { it.receivedAt }.take(MAX_ITEMS),
+            items = (snapshot.items + pendingRelevance.values.map { it.item })
+                .sortedByDescending { it.receivedAt }.take(MAX_ITEMS),
             readItemIds = snapshot.readItemIds,
         )
         launch {
@@ -454,8 +562,11 @@ class NotificationsViewModel(
         private const val INITIAL_SYNC_TIMEOUT_MS = 10_000L
         private const val AUXILIARY_FETCH_DRAIN_MS = 1_000L
         private const val PROFILE_MAX_AGE_MS = 15 * 60 * 1_000L
+        private const val OWN_POSTS_SETTLE_MS = 1_000L
     }
 }
+
+private class PendingRelevance(val item: NotificationItem, val eventIds: Set<String>)
 
 internal fun List<NotificationItem>.filterNotMutedActors(
     mutedPubkeys: Set<String>,

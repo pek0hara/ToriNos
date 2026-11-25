@@ -64,7 +64,48 @@ class NotificationSyncCoordinatorTest {
         coordinator.close()
     }
 
-    private class Fake(val spec: SubscriptionSpec, private val success: Boolean, private val full: Boolean = false) : SubscriptionSession {
+    @Test fun updatesOpenActivityLiveKeepingItsSinceAndLeavesFollowsAlone() = runTest {
+        val sessions = mutableListOf<Fake>()
+        val coordinator = NotificationSyncCoordinator(backgroundScope, "test", {}, {}, open = { spec ->
+            Fake(spec, true).also { sessions += it }
+        })
+        val now = FOLLOW_SYNC_OVERLAP_SECONDS + 500
+        coordinator.setVisible(true, activity, follows, now)
+        val quotes = activity + NostrFilter(kinds = listOf(1), qTags = listOf("q"), limit = 100)
+        coordinator.updateActivityFilters(quotes)
+        val live = sessions.filter { it.spec.behavior == SubscriptionBehavior.Live }
+        assertEquals(listOf(quotes.map { it.copy(since = 500, until = null) }), live[0].updates)
+        assertTrue(live[1].updates.isEmpty())
+        coordinator.close()
+    }
+
+    @Test fun updateWithoutLiveDoesNothing() = runTest {
+        val sessions = mutableListOf<Fake>()
+        val coordinator = NotificationSyncCoordinator(backgroundScope, "test", {}, {}, open = { spec ->
+            Fake(spec, true).also { sessions += it }
+        })
+        coordinator.updateActivityFilters(activity)
+        assertTrue(sessions.isEmpty())
+        coordinator.close()
+    }
+
+    @Test fun supplementalActivityFetchDeliversEvents() = runTest {
+        val received = mutableListOf<NostrEvent>()
+        val coordinator = NotificationSyncCoordinator(backgroundScope, "test", { received += it }, {}, open = { spec ->
+            Fake(spec, true, emitted = NostrEvent("x".repeat(64), "author", 99, 1, emptyList(), "", ""))
+        })
+        coordinator.fetchActivity(activity, until = 100)
+        assertEquals(listOf("x".repeat(64)), received.map { it.id })
+        coordinator.close()
+    }
+
+    private class Fake(
+        val spec: SubscriptionSpec,
+        private val success: Boolean,
+        private val full: Boolean = false,
+        private val emitted: NostrEvent? = null,
+    ) : SubscriptionSession {
+        val updates = mutableListOf<List<NostrFilter>>()
         override val id = spec.id
         override val expectedRelayUrls = setOf("a", "b")
         var closed = false
@@ -74,10 +115,11 @@ class NotificationSyncCoordinatorTest {
             if (full && spec.filters.first().kinds == listOf(3)) {
                 emit(SubscriptionSignal.Event("a", NostrEvent("id", "author", 99, 3, emptyList(), "", ""), false))
             }
+            emitted?.let { emit(SubscriptionSignal.Event("a", it, false)) }
             emit(SubscriptionSignal.FetchCompleted(mapOf("a" to RelayOutcome.Eose,
                 "b" to if (success) RelayOutcome.Eose else RelayOutcome.TimedOut), !success))
         }
-        override suspend fun update(filters: List<NostrFilter>, target: RelayTarget) = Unit
+        override suspend fun update(filters: List<NostrFilter>, target: RelayTarget) { updates += filters }
         override suspend fun close() { closed = true }
     }
 }

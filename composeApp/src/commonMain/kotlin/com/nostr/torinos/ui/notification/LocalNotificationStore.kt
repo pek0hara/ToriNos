@@ -50,6 +50,20 @@ object LocalNotificationStore {
         LocalSettingsStorage.putString(followSyncedAtKey(ownPubkey), epochSeconds.toString())
     }
 
+    suspend fun loadOwnRecentPosts(ownPubkey: String): List<OwnPostRef> {
+        val saved = LocalSettingsStorage.getString(ownRecentPostsKey(ownPubkey)) ?: return emptyList()
+        return runCatching { json.decodeFromString(ListSerializer(OwnPostRef.serializer()), saved) }.getOrNull().orEmpty()
+    }
+
+    suspend fun saveOwnRecentPosts(ownPubkey: String, posts: List<OwnPostRef>) {
+        LocalSettingsStorage.putString(
+            ownRecentPostsKey(ownPubkey),
+            json.encodeToString(ListSerializer(OwnPostRef.serializer()), posts),
+        )
+    }
+
+    private fun ownRecentPostsKey(ownPubkey: String): String = "notification_own_recent_posts_$ownPubkey"
+
     private fun notificationsKey(ownPubkey: String): String = "notifications_$ownPubkey"
 
     private fun knownFollowersKey(ownPubkey: String): String = "notification_known_followers_$ownPubkey"

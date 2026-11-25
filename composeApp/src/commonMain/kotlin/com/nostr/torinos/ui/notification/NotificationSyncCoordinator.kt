@@ -7,6 +7,7 @@ import com.nostr.torinos.model.NostrEvent
 import com.nostr.torinos.model.NostrFilter
 import com.nostr.torinos.network.FiniteFetchResult
 import com.nostr.torinos.network.NostrRepository
+import com.nostr.torinos.network.RelayTarget
 import com.nostr.torinos.network.SubscriptionBehavior
 import com.nostr.torinos.network.SubscriptionSession
 import com.nostr.torinos.network.SubscriptionSignal
@@ -45,6 +46,8 @@ internal class NotificationSyncCoordinator(
     private var visible = false
     private var closed = false
     private var sequence = 0L
+    // 開いている Live の since。フィルタを差し替えるときも同じ範囲を保つ。
+    private var liveSince: Long? = null
 
     suspend fun sync(
         activityFilters: List<NostrFilter>,
@@ -101,12 +104,11 @@ internal class NotificationSyncCoordinator(
     private suspend fun ensureLive(activity: List<NostrFilter>, follows: NostrFilter, now: Long) {
         if (sessions.isNotEmpty()) return
         try {
-            val liveSince = (now - FOLLOW_SYNC_OVERLAP_SECONDS).coerceAtLeast(0)
+            val since = (now - FOLLOW_SYNC_OVERLAP_SECONDS).coerceAtLeast(0)
+            liveSince = since
             listOf(activity to onActivity, listOf(follows) to onFollow).forEachIndexed { index, (filters, callback) ->
-                val session = open(spec("live-$index", filters.map {
-                    // フォロー差分が古い場合も、その範囲を切らない。
-                    it.copy(since = minOf(it.since ?: liveSince, liveSince), until = null)
-                }).copy(behavior = SubscriptionBehavior.Live))
+                val session = open(spec("live-$index", liveFilters(filters, since))
+                    .copy(behavior = SubscriptionBehavior.Live))
                 sessions += session
                 refactorTraceLog("Notification") { "live-open index=$index owned=${sessions.size}" }
                 jobs += scope.launch {
@@ -118,6 +120,27 @@ internal class NotificationSyncCoordinator(
             withContext(NonCancellable) { closeLive() }
             throw error
         }
+    }
+
+    // フォロー差分が古い場合も、その範囲を切らない。
+    private fun liveFilters(filters: List<NostrFilter>, since: Long) =
+        filters.map { it.copy(since = minOf(it.since ?: since, since), until = null) }
+
+    /** 開いている活動の Live だけフィルタを差し替える（引用を探す自分の投稿が増えたときなど）。 */
+    suspend fun updateActivityFilters(activityFilters: List<NostrFilter>) = mutex.withLock {
+        if (closed) return@withLock
+        val session = sessions.firstOrNull() ?: return@withLock
+        val since = liveSince ?: return@withLock
+        session.update(liveFilters(activityFilters, since), RelayTarget.AllEnabled)
+    }
+
+    /** 活動を追加で一度だけ取る。Live とは別に持ち、終われば閉じる。 */
+    suspend fun fetchActivity(activityFilters: List<NostrFilter>, until: Long): FiniteFetchResult {
+        mutex.withLock { check(!closed) }
+        return fetchFiniteEvents(
+            spec("activity-extra", activityFilters.map { it.copy(until = until) }),
+            open = open, onEvent = { _, event -> onActivity(event) },
+        )
     }
 
     private fun spec(name: String, filters: List<NostrFilter>) = SubscriptionSpec(

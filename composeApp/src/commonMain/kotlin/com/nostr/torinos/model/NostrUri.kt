@@ -156,6 +156,31 @@ fun decodeNpub(bech32: String): String? = runCatching {
     bytes.toHex()
 }.getOrNull()
 
+/** NIP-19 の nprofile から公開鍵（TLV 0 番）を取り出す。 */
+fun decodeNprofile(bech32: String): String? = runCatching {
+    val (hrp, bytes) = Bech32.decode(bech32)
+    if (hrp != "nprofile") return@runCatching null
+    var index = 0
+    while (index + 2 <= bytes.size) {
+        val type = bytes[index].toInt() and 0xFF
+        val length = bytes[index + 1].toInt() and 0xFF
+        index += 2
+        if (index + length > bytes.size) return@runCatching null
+        if (type == 0 && length == 32) return@runCatching bytes.copyOfRange(index, index + length).toHex()
+        index += length
+    }
+    null
+}.getOrNull()
+
+/** 本文中の `npub` / `nprofile` が指す公開鍵。 */
+fun extractMentionedPubkeys(text: String): Set<String> =
+    nostrUriRegex.findAll(text)
+        .mapNotNull { match ->
+            val value = match.groupValues[1]
+            decodeNpub(value) ?: decodeNprofile(value)
+        }
+        .toSet()
+
 fun encodeNevent(
     eventId: String,
     relayUrls: List<String> = emptyList(),
