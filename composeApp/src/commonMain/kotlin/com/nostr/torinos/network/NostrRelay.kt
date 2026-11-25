@@ -20,7 +20,6 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.channels.Channel
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -69,6 +68,7 @@ class NostrRelay(
     private val okWaitersMutex = Mutex()
     private val sendSignal = Channel<Unit>(Channel.CONFLATED)
     private var job: Job? = null
+    private val backoff = RelayRetryBackoff()
     /** [job] の付け替え（接続・切断・つなぎ直し）を1つずつ行う。 */
     private val jobLock = SynchronousLock()
 
@@ -77,8 +77,7 @@ class NostrRelay(
         _connectionState.value = RelayConnectionState.Connecting
         job = scope.launch(relayConnectionDispatcher) {
             try {
-                var retryDelay = 2_000L
-                val maxDelay = 30_000L
+                backoff.reset()
                 while (isActive) {
                     _connectionState.value = RelayConnectionState.Connecting
                     networkTraceLog { "[Relay] connecting to $url" }
@@ -89,7 +88,7 @@ class NostrRelay(
                             networkTraceLog { "[Relay] connected: $url" }
                             StartupTrace.mark("relay.firstConnected") { url }
                             StartupTrace.mark("relay.connected $url")
-                            retryDelay = 2_000L
+                            backoff.reset()
                             val session = outboxLock.withLock { outbox.openSession() }
                             connectedThisAttempt = true
                             healthTracker.onConnected()
@@ -146,10 +145,9 @@ class NostrRelay(
                     outboxLock.withLock { outbox.closeSession() }
                     _connectionState.value = RelayConnectionState.Disconnected
                     if (!isActive) break
-                    networkTraceLog { "[Relay] disconnected from $url, retrying in ${retryDelay / 1000}s" }
-                    FetchTrace.disconnected(url, retryDelay / 1000)
-                    delay(retryDelay)
-                    retryDelay = (retryDelay * 2).coerceAtMost(maxDelay)
+                    networkTraceLog { "[Relay] disconnected from $url, retrying in ${backoff.nextDelayMillis / 1000}s" }
+                    FetchTrace.disconnected(url, backoff.nextDelayMillis / 1000)
+                    backoff.await()
                 }
             } catch (e: CancellationException) {
                 throw e
@@ -267,6 +265,15 @@ class NostrRelay(
             true
         }
         if (shouldConnect && stillWanted()) connect(scope)
+    }
+
+    /**
+     * つなぎ直しを待っていたら、待たずにつなぎ直す。前面に戻ったときに呼ぶ。バックグラウンド中は通信できず、
+     * 待ちが最大まで延びていることがあり、そのままだと戻ってからしばらくつながらない。
+     */
+    fun retryNow() {
+        // つながっている間の知らせは残さない（ずっと後に切れたときに、待たずにつなぎ直してしまう）。
+        if (_connectionState.value != RelayConnectionState.Connected) backoff.wake()
     }
 
     fun disconnect() {

@@ -761,6 +761,15 @@ object NostrRepository {
         relayAuth.onPolicyChanged(relayUrl)
     }
 
+    /** 前面に戻った。つなぎ直しを待っているリレーは、待たずにつなぎ直す（[NostrRelay.retryNow]）。 */
+    fun onAppForeground() {
+        scope.launch {
+            val relays = stateMutex.withLock { activeRelays.values.map { it.relay } }
+            networkTraceLog { "[Repo] foreground: waking ${relays.size} relays" }
+            relays.forEach { it.retryNow() }
+        }
+    }
+
     /** 許可リストから外れたリレーに認証済みの接続が残っていれば、張り直して身元を捨てる。 */
     suspend fun dropRelayAuthIfDisallowed(relayUrl: String) {
         if (relayAuth.canAuthenticate(relayUrl)) return

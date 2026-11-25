@@ -20,6 +20,9 @@ import com.nostr.torinos.crypto.generatePrivateKey
 import com.nostr.torinos.crypto.toHex
 import com.nostr.torinos.model.NostrEvent
 import com.nostr.torinos.network.NostrRepository
+import com.nostr.torinos.util.SynchronousLock
+import com.nostr.torinos.util.signerTraceLog
+import com.nostr.torinos.util.withLock
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -27,6 +30,7 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 
 /**
  * ToriNos が署名・暗号化を頼む kind と操作。接続時に署名器へ伝え、署名器側で許可の範囲を決めてもらう。
@@ -54,7 +58,12 @@ internal fun clientPubkeyOf(clientSecretKey: String): String = derivePublicKey(c
 internal fun newNip46Transport(relays: List<String>, clientPubkey: String): Nip46Transport =
     RelayNip46Transport(relays, clientPubkey, NostrRepository.httpClient)
 
-/** リモート署名器にリレー経由で署名と暗号化を頼む。接続はセッションの終了で閉じる。 */
+/**
+ * リモート署名器にリレー経由で署名と暗号化を頼む。接続はセッションの終了で閉じる。
+ *
+ * バックグラウンド中や回線の切り替えで裏で切れた接続は、接続中に見えたまま何も届かず、自分では気づけない。
+ * そこで、応答がなかったときと前面に戻ったときに接続を古いものとし、待っている要求がなくなったら作り直す。
+ */
 internal class Nip46AccountSigner(
     override val pubkey: String,
     credential: SignerCredential.Nip46,
@@ -66,10 +75,17 @@ internal class Nip46AccountSigner(
     private val ownsScope = scope == null
     private val _attention = MutableStateFlow<SignerAttention?>(null)
     override val attention: StateFlow<SignerAttention?> = _attention.asStateFlow()
+    private val _attentionRequests = MutableStateFlow(0L)
+    // 応答がないたびに増やし、「後で」で閉じた帯を出し直す。
+    override val attentionRequests: StateFlow<Long> = _attentionRequests.asStateFlow()
     private val relays = credential.relays
     private val clientSecretKey = credential.clientSecretKey
     private val remoteSignerPubkey = credential.remoteSignerPubkey
+    /** [client] と [stale] の付け替えを1つずつ行う。 */
+    private val clientLock = SynchronousLock()
     private var client = newClient()
+    /** 今の接続が切れているかもしれない。待っている要求がなくなったら作り直す。 */
+    private var stale = false
 
     override val method: SignerMethod get() = SignerMethod.Nip46
     override val capabilities: Set<SignerCapability> = setOf(SignerCapability.Nip44, SignerCapability.Nip04)
@@ -85,14 +101,29 @@ internal class Nip46AccountSigner(
         },
     ).also { it.start() }
 
+    /** 古いとした接続は、待っている要求がなければここで作り直す。 */
+    private fun currentClient(): Nip46Client = clientLock.withLock {
+        if (stale && !client.hasPendingRequests) replaceClientLocked("stale")
+        client
+    }
+
+    private fun replaceClientLocked(reason: String) {
+        signerTraceLog { "nip46 rebuild connection ($reason)" }
+        client.close()
+        client = newClient()
+        stale = false
+    }
+
     private suspend fun call(method: String, params: List<String>): String {
         lease.ensureActive()
         return try {
-            client.request(method, params).also {
+            currentClient().request(method, params).also {
                 if (_attention.value is SignerAttention.Disconnected) _attention.value = null
             }
         } catch (e: SignerException.Timeout) {
+            clientLock.withLock { stale = true }
             _attention.value = SignerAttention.Disconnected("署名器から応答がありません")
+            _attentionRequests.update { it + 1 }
             throw e
         }.also { lease.ensureActive() }
     }
@@ -117,14 +148,21 @@ internal class Nip46AccountSigner(
 
     /** 接続を作り直し、応答があるかを確かめる。 */
     override suspend fun reconnect() {
-        client.close()
-        client = newClient()
+        clientLock.withLock { replaceClientLocked("reconnect") }
         call("ping", emptyList())
         _attention.value = null
     }
 
+    /** 前面に戻った。バックグラウンド中に切れていても気づけないので、作り直す（要求を待っていれば、その後で）。 */
+    override fun onAppForeground() {
+        clientLock.withLock {
+            stale = true
+            if (!client.hasPendingRequests) replaceClientLocked("foreground")
+        }
+    }
+
     override fun close() {
-        client.close()
+        clientLock.withLock { client.close() }
         if (ownsScope) scope.cancel()
     }
 }

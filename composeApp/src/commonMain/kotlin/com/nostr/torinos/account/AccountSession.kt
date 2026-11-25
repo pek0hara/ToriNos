@@ -248,6 +248,8 @@ class AccountSession internal constructor(
     /** アプリが前面に戻ったとき。 */
     internal fun onAppForeground() {
         if (!resources.lease.isActive) return
+        NostrRepository.onAppForeground()
+        (signer as? InteractiveSigner)?.onAppForeground()
         emojiPreferenceSync.onAppForeground()
         zaps.onAppForeground()
         badges.onForeground()

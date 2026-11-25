@@ -171,6 +171,9 @@ internal class Nip46Client(
     private val limiter = Semaphore(4)
     private var collector: Job? = null
 
+    /** 応答を待っている要求があるか。あれば接続を作り直さずに待つ。 */
+    val hasPendingRequests: Boolean get() = lock.withLock { waiters.isNotEmpty() }
+
     fun start() {
         if (collector != null) return
         collector = scope.launch { transport.incoming.collect(::handle) }

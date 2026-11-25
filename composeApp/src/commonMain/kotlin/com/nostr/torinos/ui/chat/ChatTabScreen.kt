@@ -178,6 +178,17 @@ fun ChatTabScreen(
         viewModel.refreshDm()
         viewModel.syncBuzzCommunities()
     }
+    // バックグラウンドから戻ったときも読み直す。タイムラインは購読せず読み切りなので、読み直さないと
+    // バックグラウンド中の投稿が出ず、通信できずに読めなかったリレーもそのままになる。
+    val lifecycle = androidx.lifecycle.compose.LocalLifecycleOwner.current.lifecycle
+    LaunchedEffect(lifecycle) {
+        var wasStarted = true
+        lifecycle.currentStateFlow.collect { lifecycleState ->
+            val started = lifecycleState.isAtLeast(androidx.lifecycle.Lifecycle.State.STARTED)
+            if (started && !wasStarted) viewModel.refreshJoined()
+            wasStarted = started
+        }
+    }
     // DM アイコンでもう一度押したときに戻る選択。
     var beforeDirect by remember { mutableStateOf<ChatSelection>(ChatSelection.All) }
     var buzzLinkChoice by remember { mutableStateOf<Pair<String, List<ChatRelaySummary>>?>(null) }

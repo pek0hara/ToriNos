@@ -31,6 +31,9 @@ interface InteractiveSigner {
 
     /** [SignerAttention.Disconnected] から接続し直す。 */
     suspend fun reconnect() {}
+
+    /** アプリが前面に戻った。バックグラウンド中に切れた接続を作り直すのに使う。 */
+    fun onAppForeground() {}
 }
 
 private val NoAttentionRequests: StateFlow<Long> = MutableStateFlow(0L).asStateFlow()

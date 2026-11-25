@@ -46,6 +46,7 @@ class Nip46Test {
         var respond: (method: String, params: List<String>) -> List<Pair<String?, String?>> = ::defaultResponse,
     ) {
         val requests = mutableListOf<Pair<String, List<String>>>()
+        var closed = false
         var lastId = ""
         var lastClient = ""
         private val channel = Channel<NostrEvent>(Channel.UNLIMITED)
@@ -75,7 +76,9 @@ class Nip46Test {
                     }.toString())
                 }
             }
-            override fun close() = Unit
+            override fun close() {
+                closed = true
+            }
         }
     }
 
@@ -102,13 +105,19 @@ class Nip46Test {
     )
 
     private fun signer(remote: FakeRemote, scope: CoroutineScope, lease: AccountSessionLease = AccountSessionLease()) =
-        Nip46AccountSigner(
+        signer(listOf(remote), scope, lease)
+
+    /** 接続を作るたびに [remotes] を順に使う（最後のものは使い回す）。 */
+    private fun signer(remotes: List<FakeRemote>, scope: CoroutineScope, lease: AccountSessionLease = AccountSessionLease()): Nip46AccountSigner {
+        var created = 0
+        return Nip46AccountSigner(
             pubkey = userPubkey,
             credential = SignerCredential.Nip46(clientSecret, signerPubkey, listOf("wss://relay.example")),
             lease = lease,
-            transportFactory = { _, _ -> remote.transport },
+            transportFactory = { _, _ -> remotes[minOf(created++, remotes.lastIndex)].transport },
             scope = scope,
         )
+    }
 
     @Test
     fun bunkerUriIsParsedAndValidated() {
@@ -257,5 +266,61 @@ class Nip46Test {
         val connected = pending.await()
         assertEquals(signerPubkey, connected.credential.remoteSignerPubkey)
         assertEquals(userPubkey, connected.pubkey)
+    }
+
+    @Test
+    fun requestAfterATimeoutUsesAFreshConnection() = runTest {
+        // 裏で切れた接続は、接続中に見えたまま何も届かない。次の要求では接続を作り直す。
+        val dead = FakeRemote(respond = { _, _ -> emptyList() })
+        val live = FakeRemote()
+        val signer = signer(listOf(dead, live), backgroundScope)
+        assertFailsWith<SignerException.Timeout> { signer.sign("本文") }
+        val event = signer.sign("本文")
+        assertEquals(userPubkey, event.pubkey)
+        assertTrue(dead.closed)
+        assertEquals(1, live.requests.size)
+        assertNull(signer.attention.value)
+    }
+
+    @Test
+    fun everyTimeoutAsksToShowTheBannerAgain() = runTest {
+        // 「後で」で帯を閉じた後も、また応答がなければ帯を出し直す。
+        val signer = signer(FakeRemote(respond = { _, _ -> emptyList() }), backgroundScope)
+        assertEquals(0L, signer.attentionRequests.value)
+        assertFailsWith<SignerException.Timeout> { signer.sign("本文") }
+        assertEquals(1L, signer.attentionRequests.value)
+        assertFailsWith<SignerException.Timeout> { signer.sign("本文") }
+        assertEquals(2L, signer.attentionRequests.value)
+    }
+
+    @Test
+    fun foregroundRebuildsTheConnection() = runTest {
+        // バックグラウンド中に切れていても気づけないので、前面に戻ったら作り直す。
+        val old = FakeRemote(respond = { _, _ -> emptyList() })
+        val fresh = FakeRemote()
+        val signer = signer(listOf(old, fresh), backgroundScope)
+        signer.onAppForeground()
+        assertTrue(old.closed)
+        assertEquals(userPubkey, signer.sign("本文").pubkey)
+        assertEquals(1, fresh.requests.size)
+        assertTrue(old.requests.isEmpty())
+    }
+
+    @Test
+    fun foregroundDuringARequestDoesNotCutItOff() = runTest {
+        // 待っている要求があれば、その応答を受け取ってから作り直す。
+        val old = FakeRemote(respond = { _, _ -> emptyList() })
+        val fresh = FakeRemote()
+        val signer = signer(listOf(old, fresh), backgroundScope)
+        val result = async { signer.encryptToSelf("text") }
+        runCurrent()
+        signer.onAppForeground()
+        assertTrue(!old.closed)
+        val ciphertext = Nip44.encrypt("text", userKey, userPubkey)
+        old.send(old.lastClient, """{"id":"${old.lastId}","result":"$ciphertext"}""")
+        assertEquals(ciphertext, result.await())
+        assertEquals(userPubkey, signer.sign("本文").pubkey)
+        assertTrue(old.closed)
+        assertEquals(1, fresh.requests.size)
     }
 }
