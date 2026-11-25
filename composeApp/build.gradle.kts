@@ -120,6 +120,7 @@ kotlin {
             implementation(libs.navigation.compose)
             implementation(libs.coil.compose)
             implementation(libs.coil.network.ktor3)
+            implementation(libs.coil.svg)
         }
         // runBlocking と実スレッドを前提にするテストは Wasm では動かせないため、mobileTest に置く。
         val commonTest by getting
