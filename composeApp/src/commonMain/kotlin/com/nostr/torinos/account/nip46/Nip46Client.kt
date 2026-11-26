@@ -40,6 +40,8 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 
+private const val CLOSED_MESSAGE = "署名器への接続を作り直したため、中断しました"
+
 /** NIP-46 の要求・応答に使う kind。 */
 internal const val NIP46_KIND = 24133
 
@@ -170,9 +172,7 @@ internal class Nip46Client(
     private val unmatched = MutableSharedFlow<Pair<String, Nip46Response>>(replay = 8, extraBufferCapacity = 16)
     private val limiter = Semaphore(4)
     private var collector: Job? = null
-
-    /** 応答を待っている要求があるか。あれば接続を作り直さずに待つ。 */
-    val hasPendingRequests: Boolean get() = lock.withLock { waiters.isNotEmpty() }
+    private var closed = false
 
     fun start() {
         if (collector != null) return
@@ -184,7 +184,10 @@ internal class Nip46Client(
         collector?.cancel()
         collector = null
         transport.close()
-        lock.withLock { waiters.values.toList().also { waiters.clear() } }.forEach { it.close() }
+        lock.withLock {
+            closed = true
+            waiters.values.toList().also { waiters.clear() }
+        }.forEach { it.close() }
     }
 
     private suspend fun handle(event: NostrEvent) {
@@ -227,7 +230,10 @@ internal class Nip46Client(
     private suspend fun awaitResponse(channel: Channel<Nip46Response>): String {
         var timeout = requestTimeoutMillis
         while (true) {
-            val response = withTimeoutOrNull(timeout) { channel.receive() } ?: throw SignerException.Timeout()
+            val response = withTimeoutOrNull(timeout) {
+                // 待っている間に閉じた（接続を作り直した）。
+                channel.receiveCatching().getOrNull() ?: throw SignerException.Unavailable(CLOSED_MESSAGE)
+            } ?: throw SignerException.Timeout()
             if (response.result == "auth_url" && !response.error.isNullOrBlank()) {
                 // 署名器での承認を待つ。承認されると同じ ID でもう一度応答が来る。
                 signerTraceLog { "nip46 auth_url id=${response.id}" }
@@ -247,7 +253,11 @@ internal class Nip46Client(
         val started = kotlin.time.TimeSource.Monotonic.markNow()
         signerTraceLog { "nip46 request id=$id method=$method signer=${remote.take(8)}" }
         val channel = Channel<Nip46Response>(capacity = 4)
-        lock.withLock { waiters[id] = channel }
+        lock.withLock {
+            // 順番待ちの間に閉じた接続では送らない（届かず、時間切れまで待つことになる）。
+            if (closed) throw SignerException.Unavailable(CLOSED_MESSAGE)
+            waiters[id] = channel
+        }
         try {
             val content = Nip44.encrypt(buildNip46Request(id, method, params), clientSecretKey, remote)
             val event = signEvent(

@@ -47,6 +47,7 @@ class Nip46Test {
     ) {
         val requests = mutableListOf<Pair<String, List<String>>>()
         var closed = false
+        val ids = mutableListOf<String>()
         var lastId = ""
         var lastClient = ""
         private val channel = Channel<NostrEvent>(Channel.UNLIMITED)
@@ -67,6 +68,7 @@ class Nip46Test {
                 val (id, method, params) = decodeNip46Request(Nip44.decrypt(event.content, signerSecret, event.pubkey))!!
                 requests += method to params
                 lastId = id
+                ids += id
                 lastClient = event.pubkey
                 respond(method, params).forEach { (result, error) ->
                     send(event.pubkey, buildJsonObject {
@@ -322,5 +324,54 @@ class Nip46Test {
         assertEquals(userPubkey, signer.sign("本文").pubkey)
         assertTrue(old.closed)
         assertEquals(1, fresh.requests.size)
+    }
+
+    @Test
+    fun requestsWaitingForASlotAreNotCutOffByForeground() = runTest {
+        // 同時に送るのは4件まで。5件目は順番待ちで、まだ応答を待つ表に載っていないが、作り直しで切らない。
+        val old = FakeRemote(respond = { _, _ -> emptyList() })
+        val fresh = FakeRemote()
+        val signer = signer(listOf(old, fresh), backgroundScope)
+        val results = (1..5).map { async { signer.encryptToSelf("text$it") } }
+        runCurrent()
+        assertEquals(4, old.ids.size)
+        signer.onAppForeground()
+        assertTrue(!old.closed)
+
+        old.ids.take(4).forEachIndexed { index, id ->
+            old.send(old.lastClient, """{"id":"$id","result":"c${index + 1}"}""")
+        }
+        runCurrent()
+        assertEquals(5, old.ids.size)
+        assertTrue(!old.closed)
+        old.send(old.lastClient, """{"id":"${old.ids[4]}","result":"c5"}""")
+        assertEquals(listOf("c1", "c2", "c3", "c4", "c5"), results.map { it.await() })
+
+        // すべて済んだら作り直し、次からは新しい接続を使う。
+        assertTrue(old.closed)
+        assertEquals(userPubkey, signer.sign("本文").pubkey)
+        assertEquals(1, fresh.requests.size)
+        assertNull(signer.attention.value)
+    }
+
+    @Test
+    fun requestsCutOffByReconnectFailAsSignerErrorsAndLeaveTheNewConnectionAlone() = runTest {
+        // 「再接続」で閉じた古い接続の要求は、署名器のエラーとしてすぐに終わる。新しい接続を古い扱いにしない。
+        val old = FakeRemote(respond = { _, _ -> emptyList() })
+        val fresh = FakeRemote()
+        val spare = FakeRemote()
+        val signer = signer(listOf(old, fresh, spare), backgroundScope)
+        val cutOff = (1..5).map { async { runCatching { signer.encryptToSelf("text$it") } } }
+        runCurrent()
+
+        signer.reconnect()
+
+        cutOff.forEach { assertIs<SignerException>(it.await().exceptionOrNull()) }
+        assertEquals(4, old.ids.size)
+        assertEquals(userPubkey, signer.sign("本文").pubkey)
+        assertEquals(listOf("ping", "sign_event"), fresh.requests.map { it.first })
+        assertTrue(spare.requests.isEmpty())
+        assertNull(signer.attention.value)
+        assertEquals(0L, signer.attentionRequests.value)
     }
 }

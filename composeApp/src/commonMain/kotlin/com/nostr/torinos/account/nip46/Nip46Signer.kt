@@ -62,7 +62,7 @@ internal fun newNip46Transport(relays: List<String>, clientPubkey: String): Nip4
  * リモート署名器にリレー経由で署名と暗号化を頼む。接続はセッションの終了で閉じる。
  *
  * バックグラウンド中や回線の切り替えで裏で切れた接続は、接続中に見えたまま何も届かず、自分では気づけない。
- * そこで、応答がなかったときと前面に戻ったときに接続を古いものとし、待っている要求がなくなったら作り直す。
+ * そこで、応答がなかったときと前面に戻ったときに接続を古いものとし、済んでいない要求がなくなったら作り直す。
  */
 internal class Nip46AccountSigner(
     override val pubkey: String,
@@ -81,10 +81,15 @@ internal class Nip46AccountSigner(
     private val relays = credential.relays
     private val clientSecretKey = credential.clientSecretKey
     private val remoteSignerPubkey = credential.remoteSignerPubkey
-    /** [client] と [stale] の付け替えを1つずつ行う。 */
+    /** [client]・[inFlight]・[stale] の読み書きを1つずつ行う。 */
     private val clientLock = SynchronousLock()
     private var client = newClient()
-    /** 今の接続が切れているかもしれない。待っている要求がなくなったら作り直す。 */
+    /**
+     * 今の接続で済んでいない要求の数。同時に送る数の上限で順番待ちのものも数える
+     * （[Nip46Client] の応答待ちの表には、送るまで載らない）。
+     */
+    private var inFlight = 0
+    /** 今の接続が切れているかもしれない。済んでいない要求がなくなったら作り直す。 */
     private var stale = false
 
     override val method: SignerMethod get() = SignerMethod.Nip46
@@ -101,31 +106,52 @@ internal class Nip46AccountSigner(
         },
     ).also { it.start() }
 
-    /** 古いとした接続は、待っている要求がなければここで作り直す。 */
-    private fun currentClient(): Nip46Client = clientLock.withLock {
-        if (stale && !client.hasPendingRequests) replaceClientLocked("stale")
+    /** 要求に使う接続を取る。古いとした接続は、済んでいない要求がなければここで作り直す。 */
+    private fun acquireClient(): Nip46Client = clientLock.withLock {
+        if (stale && inFlight == 0) replaceClientLocked("stale")
+        inFlight++
         client
+    }
+
+    /**
+     * [used] での要求が済んだ。[timedOut] なら、その接続を古いとする。
+     * もう作り直した後の接続なら何もせず、false を返す（新しい接続を古い扱いにしない）。
+     */
+    private fun releaseClient(used: Nip46Client, timedOut: Boolean): Boolean = clientLock.withLock {
+        if (used !== client) return@withLock false
+        inFlight--
+        if (timedOut) stale = true
+        if (stale && inFlight == 0) replaceClientLocked("stale")
+        true
     }
 
     private fun replaceClientLocked(reason: String) {
         signerTraceLog { "nip46 rebuild connection ($reason)" }
         client.close()
         client = newClient()
+        inFlight = 0
         stale = false
     }
 
     private suspend fun call(method: String, params: List<String>): String {
         lease.ensureActive()
-        return try {
-            currentClient().request(method, params).also {
-                if (_attention.value is SignerAttention.Disconnected) _attention.value = null
-            }
+        val used = acquireClient()
+        val result = try {
+            used.request(method, params)
         } catch (e: SignerException.Timeout) {
-            clientLock.withLock { stale = true }
-            _attention.value = SignerAttention.Disconnected("署名器から応答がありません")
-            _attentionRequests.update { it + 1 }
+            if (releaseClient(used, timedOut = true)) {
+                _attention.value = SignerAttention.Disconnected("署名器から応答がありません")
+                _attentionRequests.update { it + 1 }
+            }
             throw e
-        }.also { lease.ensureActive() }
+        } catch (e: Throwable) {
+            releaseClient(used, timedOut = false)
+            throw e
+        }
+        releaseClient(used, timedOut = false)
+        if (_attention.value is SignerAttention.Disconnected) _attention.value = null
+        lease.ensureActive()
+        return result
     }
 
     override suspend fun sign(content: String, kind: Int, tags: List<List<String>>, createdAt: Long?): NostrEvent {
@@ -157,7 +183,7 @@ internal class Nip46AccountSigner(
     override fun onAppForeground() {
         clientLock.withLock {
             stale = true
-            if (!client.hasPendingRequests) replaceClientLocked("foreground")
+            if (inFlight == 0) replaceClientLocked("foreground")
         }
     }
 
