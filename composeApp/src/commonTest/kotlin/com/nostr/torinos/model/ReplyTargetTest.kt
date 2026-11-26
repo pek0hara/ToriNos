@@ -76,9 +76,55 @@ class ReplyTargetTest {
                 .isSupportedTimelineComment(),
         )
         assertFalse(
-            valid.copy(tags = valid.tags.filterNot { it.firstOrNull() == "p" })
+            valid.copy(tags = valid.tags.map { if (it.firstOrNull() == "p") listOf("p", "someone-else") else it })
                 .isSupportedTimelineComment(),
         )
+        assertFalse(
+            valid.copy(tags = valid.tags.map { if (it.firstOrNull() == "P") listOf("P", "someone-else") else it })
+                .isSupportedTimelineComment(),
+        )
+    }
+
+    @Test
+    fun timelineCommentWithoutAuthorHintsIsStillAReply() {
+        // Ditto・Amethyst などは E/e の4番目や P/p を省くことがある。NIP-22 では作者の手がかりは必須ではない。
+        val bare = event(
+            kind = COMMENT_EVENT_KIND,
+            tags = listOf(
+                listOf("E", "root"),
+                listOf("K", "1"),
+                listOf("e", "parent", "wss://relay.example/"),
+                listOf("k", "1111"),
+            ),
+        )
+        assertTrue(bare.isSupportedTimelineComment())
+        assertTrue(
+            bare.copy(tags = bare.tags + listOf(listOf("P", "root-author"), listOf("p", "parent-author")))
+                .isSupportedTimelineComment(),
+        )
+        assertFalse(bare.copy(tags = bare.tags.filterNot { it.firstOrNull() == "E" }).isSupportedTimelineComment())
+        assertFalse(bare.copy(tags = bare.tags.filterNot { it.firstOrNull() == "e" }).isSupportedTimelineComment())
+    }
+
+    @Test
+    fun commentRootAuthorFallsBackToTheUppercasePTag() {
+        val target = event(
+            id = "comment",
+            pubkey = "comment-author",
+            kind = COMMENT_EVENT_KIND,
+            tags = listOf(
+                listOf("E", "root"),
+                listOf("K", "1"),
+                listOf("P", "root-author", "wss://p.example/"),
+                listOf("e", "parent", "", "parent-author"),
+                listOf("k", "1111"),
+                listOf("p", "parent-author"),
+            ),
+        ).toTimelineReplyTarget()!!
+
+        assertEquals("root-author", target.root.pubkey)
+        assertEquals("wss://p.example/", target.root.pubkeyRelayUrl)
+        assertEquals("comment", target.parent.id)
     }
 
     @Test

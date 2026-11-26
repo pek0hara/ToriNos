@@ -47,21 +47,30 @@ sealed interface ReplyTarget {
     }
 }
 
-/** ToriNos が通常タイムラインの返信として扱う、kind 1 配下の NIP-22 コメントかを検証する。 */
+/**
+ * ToriNos が通常タイムラインの返信として扱う、kind 1 配下の NIP-22 コメントかを検証する。
+ * 作者の手がかり（E/e の4番目、P/p）は省くクライアントがあるので必須にしない。あって食い違うときだけ断る。
+ * 返信するときに足りない root の作者は [com.nostr.torinos.network.resolveReplyTarget] が root から補う。
+ */
 fun NostrEvent.isSupportedTimelineComment(): Boolean {
     if (kind != COMMENT_EVENT_KIND) return false
     val rootEvent = tags.firstOrNull { it.firstOrNull() == "E" } ?: return false
     val rootKind = tags.firstOrNull { it.firstOrNull() == "K" }?.getOrNull(1)?.toIntOrNull()
-    val rootEventAuthor = rootEvent.getOrNull(3)?.takeIf { it.isNotBlank() } ?: return false
     val parentEvent = tags.lastOrNull { it.firstOrNull() == "e" } ?: return false
     val parentKind = tags.firstOrNull { it.firstOrNull() == "k" }?.getOrNull(1)?.toIntOrNull()
-    val parentEventAuthor = parentEvent.getOrNull(3)?.takeIf { it.isNotBlank() } ?: return false
     return rootKind == 1 &&
         (parentKind == 1 || parentKind == COMMENT_EVENT_KIND) &&
         rootEvent.getOrNull(1)?.isNotBlank() == true &&
-        tags.any { it.firstOrNull() == "P" && it.getOrNull(1) == rootEventAuthor } &&
         parentEvent.getOrNull(1)?.isNotBlank() == true &&
-        tags.any { it.firstOrNull() == "p" && it.getOrNull(1) == parentEventAuthor }
+        authorHintAgrees(rootEvent, "P") &&
+        authorHintAgrees(parentEvent, "p")
+}
+
+/** [eventTag] の4番目の pubkey と、[pubkeyTagName] のタグが両方あるなら一致する。 */
+private fun NostrEvent.authorHintAgrees(eventTag: List<String>, pubkeyTagName: String): Boolean {
+    val hinted = eventTag.getOrNull(3)?.takeIf { it.isNotBlank() } ?: return true
+    val tagged = tags.filter { it.firstOrNull() == pubkeyTagName }.mapNotNull { it.getOrNull(1)?.takeIf(String::isNotBlank) }
+    return tagged.isEmpty() || hinted in tagged
 }
 
 fun NostrEvent.toReplyTarget(noteContext: NoteContext): ReplyTarget? = when (noteContext) {
@@ -95,17 +104,18 @@ fun NostrEvent.toTimelineReplyTarget(): ReplyTarget.Timeline? = when (kind) {
     COMMENT_EVENT_KIND -> {
         val rootEventTag = tags.firstOrNull { it.firstOrNull() == "E" } ?: return null
         val rootId = rootEventTag.getOrNull(1)?.takeIf { it.isNotBlank() } ?: return null
-        val rootEventPubkey = rootEventTag.getOrNull(3)?.takeIf { it.isNotBlank() } ?: return null
+        val rootEventPubkey = rootEventTag.getOrNull(3)?.takeIf { it.isNotBlank() }
         val rootKind = tags.firstOrNull { it.firstOrNull() == "K" }
             ?.getOrNull(1)
             ?.toIntOrNull()
             ?.takeIf { it in 0..65535 }
             ?: return null
+        // E の4番目を省くクライアントがあるので、P だけでも root の作者とする。両方あって食い違うなら使わない。
         val rootPubkey = tags.firstOrNull { it.firstOrNull() == "P" }
             ?.getOrNull(1)
             ?.takeIf { it.isNotBlank() }
             ?: return null
-        if (rootPubkey != rootEventPubkey) return null
+        if (rootEventPubkey != null && rootPubkey != rootEventPubkey) return null
         ReplyTarget.Timeline(
             root = ReplyEventReference(
                 id = rootId,
