@@ -16,6 +16,8 @@ fun MainViewController() = ComposeUIViewController(
 ) {
     registerAppImageLoader()
     registerMemoryWarningObserver()
+    // 上のフラグで使えなくなるキーボード候補欄のペーストを補う。
+    com.nostr.torinos.ui.components.KeyboardPasteSupport()
     App()
 }
 
