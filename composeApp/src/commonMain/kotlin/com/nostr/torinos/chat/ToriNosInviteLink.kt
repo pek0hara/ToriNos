@@ -7,8 +7,8 @@ import kotlinx.coroutines.flow.asStateFlow
 
 /*
  * ToriNos の招待リンク（docs/buzz-invite-link-design.md）。
- * 配るのは Web 版の URL だけ。招待コードはフラグメント（# の後ろ）に入れ、サーバーやアクセスログに出さない。
- * `torinos://join` はアプリへ受け渡すときだけ使う。どちらもコミュニティ（ホスト）と招待コードの組を持つ。
+ * 招待の画面で作って配るのは `torinos://join`（アプリで直接開く）。Web 版の URL は招待コードをフラグメント
+ * （# の後ろ）に入れ、サーバーやアクセスログに出さない。どちらもコミュニティ（ホスト）と招待コードの組を持つ。
  */
 
 /** Web 版の起点。 */
@@ -23,10 +23,10 @@ private val TORINOS_WEB_PATHS = setOf(
 private const val TORINOS_APP_SCHEME = "torinos://"
 private const val MAX_INVITE_CODE_LENGTH = 256
 
-/** 配る招待リンク。 */
+/** Web 版の招待リンク。 */
 fun toriNosInviteLink(relayUrl: String, code: String): String = TORINOS_WEB_APP_URL + "#" + joinQuery(relayUrl, code)
 
-/** アプリへ受け渡すリンク（配らない）。 */
+/** アプリで直接開く招待リンク。招待の画面で配るのはこの形。 */
 fun toriNosAppInviteLink(relayUrl: String, code: String): String = TORINOS_APP_SCHEME + joinQuery(relayUrl, code)
 
 /**
@@ -38,11 +38,11 @@ fun toriNosAndroidIntentLink(relayUrl: String, code: String): String =
 
 private const val TORINOS_ANDROID_PACKAGE = "com.nostr.torinos"
 
-/** 発行した Buzz の招待から、配る招待リンクを作る。 */
+/** 発行した Buzz の招待から、配る招待リンク（`torinos://join?…`）を作る。 */
 fun toriNosInviteLinkFor(invite: MintedInvite): String? {
     val host = invite.url.removePrefix("https://").substringBefore('/').takeIf { it.isNotEmpty() } ?: return null
     val relayUrl = relayUrlOf(host) ?: return null
-    return toriNosInviteLink(relayUrl, invite.code)
+    return toriNosAppInviteLink(relayUrl, invite.code)
 }
 
 fun isToriNosInviteLink(value: String): Boolean = parseToriNosInviteLink(value.trim()) is GroupInput.BuzzInvite

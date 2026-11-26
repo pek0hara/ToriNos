@@ -88,6 +88,6 @@ class ToriNosInviteLinkTest {
     @Test
     fun mintedInviteBecomesAToriNosLink() {
         val minted = MintedInvite(code, "https://png.communities.buzz.xyz/invite/$code", 0, null, null)
-        assertEquals(toriNosInviteLink(relay, code), toriNosInviteLinkFor(minted))
+        assertEquals("torinos://join?relay=png.communities.buzz.xyz&code=$code", toriNosInviteLinkFor(minted))
     }
 }

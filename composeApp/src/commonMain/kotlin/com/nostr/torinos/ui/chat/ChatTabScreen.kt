@@ -1780,7 +1780,7 @@ private fun CommunityAdminSheetView(
                     HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
                     Text("作った招待", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     Text(
-                        "ToriNos のリンクは、スマホではアプリのインストールを案内し、PC ではそのままブラウザで参加できます。Buzz アプリを使う人には Buzz のリンクを渡してください。",
+                        "ToriNos のリンクは、ToriNos アプリを入れた端末で開くと参加の画面に進みます。Buzz アプリを使う人には Buzz のリンクを渡してください。",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
