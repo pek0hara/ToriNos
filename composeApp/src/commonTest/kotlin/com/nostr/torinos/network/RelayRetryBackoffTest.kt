@@ -65,4 +65,17 @@ class RelayRetryBackoffTest {
 
         assertTrue(currentTime - before <= 2_000L)
     }
+
+    /** 試行中に来た知らせは、その試行がつながったら捨てる。ずっと後に切れたとき、待たずにつなぎ直さないように。 */
+    @Test
+    fun wakeLeftFromAnAttemptThatConnectedIsForgotten() = runTest {
+        val backoff = RelayRetryBackoff(initialMillis = 2_000, maxMillis = 30_000)
+        backoff.wake()
+        backoff.reset()
+
+        val before = currentTime
+        backoff.await()
+
+        assertEquals(2_000L, currentTime - before)
+    }
 }

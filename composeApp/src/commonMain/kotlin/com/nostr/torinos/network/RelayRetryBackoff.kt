@@ -18,9 +18,11 @@ internal class RelayRetryBackoff(
     /** 次に待つ時間（ログ用）。 */
     val nextDelayMillis: Long get() = nextMillis
 
-    /** つながった。次に切れたら最初の間隔から待つ。 */
+    /** つながった（または試行を始める）。次に切れたら最初の間隔から待つ。それまでに来た [wake] は捨てる。 */
     fun reset() {
         nextMillis = initialMillis
+        // 残すと、ずっと後に切れたときに待たずにつなぎ直してしまう。
+        wakeSignal.tryReceive()
     }
 
     /** 次の試行まで待つ。[wake] が来たら切り上げ、間隔を最初に戻す。 */
