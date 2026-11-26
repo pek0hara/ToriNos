@@ -3,6 +3,9 @@ package com.nostr.torinos.model
 import com.nostr.torinos.network.normalizeRelayUrls
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 
 @Serializable
 data class ChannelMeta(
@@ -88,7 +91,6 @@ internal object ChannelMetadataResolver {
     }
 }
 
-private val channelJson = Json { ignoreUnknownKeys = true }
 private val channelContentJson = Json { encodeDefaults = true }
 
 /**
@@ -98,13 +100,26 @@ private val channelContentJson = Json { encodeDefaults = true }
 fun ChannelMeta.toChannelContent(): String =
     channelContentJson.encodeToString(ChannelMeta.serializer(), copy(relays = normalizeRelayUrls(relays)))
 
-/** kind:40 イベントの content から ChannelMeta をパース */
-fun NostrEvent.toChannelMeta(): ChannelMeta? = try {
-    channelJson.decodeFromString<ChannelMeta>(content).let { meta ->
-        meta.copy(relays = normalizeRelayUrls(meta.relays))
-    }
-} catch (_: Exception) {
-    null
+/**
+ * kind:40/41 イベントの content から ChannelMeta をパース。
+ * 他のクライアントは `"picture":null` や `"relays":{}` を書くことがあるので、
+ * 文字列でない値は空、文字列の配列でない relays は空として読み、チャンネルごと捨てない。
+ */
+fun NostrEvent.toChannelMeta(): ChannelMeta? {
+    val fields = try {
+        Json.parseToJsonElement(content) as? JsonObject
+    } catch (_: Exception) {
+        null
+    } ?: return null
+    fun text(key: String): String = (fields[key] as? JsonPrimitive)?.takeIf { it.isString }?.content.orEmpty()
+    val relays = (fields["relays"] as? JsonArray).orEmpty()
+        .mapNotNull { (it as? JsonPrimitive)?.takeIf { value -> value.isString }?.content }
+    return ChannelMeta(
+        name = text("name"),
+        about = text("about"),
+        picture = text("picture"),
+        relays = normalizeRelayUrls(relays),
+    )
 }
 
 private fun NostrEvent.isValidChannelMetadataUpdate(channelId: String, ownerPubkey: String): Boolean =

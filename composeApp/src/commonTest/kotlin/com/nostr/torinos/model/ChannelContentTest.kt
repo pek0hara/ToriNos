@@ -32,6 +32,23 @@ class ChannelContentTest {
     }
 
     @Test
+    fun nullOrMistypedFieldsFallBackToDefaults() {
+        // 他のクライアントは `"picture":null` や `"relays":{}` を書くことがある。チャンネルごと捨てない。
+        val event = NostrEvent(
+            "u", "owner", 1, 40, emptyList(),
+            """{"name":"Hangout","about":null,"is_private":false,"picture":null,"relays":{}}""",
+            "sig",
+        )
+        assertEquals(ChannelMeta(name = "Hangout"), event.toChannelMeta())
+        assertEquals(
+            ChannelMeta(name = "n", relays = listOf("wss://yabu.me")),
+            event.copy(content = """{"name":"n","picture":1,"relays":["wss://yabu.me",null,2]}""").toChannelMeta(),
+        )
+        assertEquals(null, event.copy(content = "[]").toChannelMeta())
+        assertEquals(null, event.copy(content = "not json").toChannelMeta())
+    }
+
+    @Test
     fun emptyRelaysAreWrittenExplicitly() {
         val json = Json.parseToJsonElement(ChannelMeta(name = "n").toChannelContent()).jsonObject
         assertEquals(0, json.getValue("relays").jsonArray.size)
