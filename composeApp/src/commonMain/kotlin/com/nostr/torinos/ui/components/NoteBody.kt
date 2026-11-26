@@ -153,7 +153,7 @@ internal fun QuotePreview(
                     onHashtagClick = null,
                 )
             }
-            HiddenTextContent(eventId = event.id, text = event.content)
+            HiddenTextContent(text = event.content)
             if (parsedContent.imageUrls.isNotEmpty()) {
                 if (showImagePreview || imagePreviewRevealed) {
                     ImagePreviewGrid(
