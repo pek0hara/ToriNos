@@ -2,6 +2,7 @@ package com.nostr.torinos.ui.notification
 
 import com.nostr.torinos.model.NostrEvent
 import com.nostr.torinos.model.extractMentionedPubkeys
+import com.nostr.torinos.model.extractNostrAddressReferences
 import com.nostr.torinos.model.extractNostrEventReferences
 import com.nostr.torinos.model.replyTargetId
 import com.nostr.torinos.network.TargetLoadState
@@ -14,7 +15,7 @@ import com.nostr.torinos.network.isFullEventId
  * 大量の `p` タグを付けたスパムが届くため。出すのは次のどれかに当たるときだけ。
  * - 本文で自分を言及している（npub / nprofile）
  * - 返信先が自分の投稿
- * - 自分の投稿や記事を引用・参照している
+ * - 自分の投稿や記事を引用・参照している（`q` タグ、本文の nevent / naddr、`a` タグ）
  */
 sealed interface NotificationRelevance {
     data object Relevant : NotificationRelevance
@@ -32,9 +33,12 @@ fun notificationRelevance(
 ): NotificationRelevance {
     if (event.kind != 1) return NotificationRelevance.Relevant
     if (ownPubkey in extractMentionedPubkeys(event.content)) return NotificationRelevance.Relevant
-    if (event.tags.any { it.firstOrNull() == "a" && it.getOrNull(1)?.split(':')?.getOrNull(1) == ownPubkey }) {
-        return NotificationRelevance.Relevant
-    }
+    // 記事などのアドレス（`kind:pubkey:d`）。返信の `a` タグ、引用の `q` タグ、本文の naddr のどれでも作者が分かる。
+    val addressAuthors = event.tags
+        .filter { (it.firstOrNull() == "a" || it.firstOrNull() == "q") && it.getOrNull(1)?.contains(':') == true }
+        .mapNotNull { it[1].split(':').getOrNull(1) } +
+        extractNostrAddressReferences(event.content).map { it.pubkey }
+    if (ownPubkey in addressAuthors) return NotificationRelevance.Relevant
 
     // (イベントID, 作者ヒント)。ヒントがあればそれを信じ、なければ取ってきて確かめる。
     val references = buildList {

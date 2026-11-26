@@ -4,6 +4,8 @@ import com.nostr.torinos.crypto.isValidEvent
 import com.nostr.torinos.model.NostrEvent
 import com.nostr.torinos.model.COMMENT_EVENT_KIND
 import com.nostr.torinos.model.channelRootId
+import com.nostr.torinos.model.extractNostrAddressReferences
+import com.nostr.torinos.model.extractNostrEventReferences
 import com.nostr.torinos.model.replyTargetId
 import com.nostr.torinos.model.toArticleMeta
 import com.nostr.torinos.network.isFullEventId
@@ -29,6 +31,11 @@ fun resolveNotificationTarget(
         isFullEventId(legacyId) -> TargetReference.EventId(legacyId)
         else -> TargetReference.Invalid
     })
+    if (isQuoteNote(event)) {
+        // 引用リポストは引用先が対象。記事だけを引用しているならアドレスしか分からない。
+        val quoted = quotedNoteIds(event).firstOrNull()
+        return ResolvedTargetReference(quoted?.let { TargetReference.EventId(it) } ?: TargetReference.AddressOnly)
+    }
     val eTag = event.tags.lastOrNull { it.firstOrNull() == "e" }
     val eventReferenceTag = eTag ?: event.tags.firstOrNull {
         event.kind == COMMENT_EVENT_KIND && it.firstOrNull() == "E"
@@ -47,6 +54,30 @@ fun resolveNotificationTarget(
     }
     return ResolvedTargetReference(reference, embedded.takeIf { reference is TargetReference.EventId })
 }
+
+/**
+ * 返信先（`mention` の印のない `e` タグ）がなく、投稿や記事を引用している kind 1。
+ * 返信しながら引用しているものは返信として扱う。
+ */
+fun isQuoteNote(event: NostrEvent): Boolean {
+    if (event.kind != 1) return false
+    if (event.tags.any { it.firstOrNull() == "e" && it.getOrNull(3) != "mention" }) return false
+    return quotedNoteIds(event).isNotEmpty() || quotesAddress(event)
+}
+
+fun notificationTypeForNote(event: NostrEvent): NotificationType =
+    if (isQuoteNote(event)) NotificationType.Quote else NotificationType.Reply
+
+/** 引用している投稿。`q` タグ、`mention` の `e` タグ、本文の nevent / note の順。 */
+private fun quotedNoteIds(event: NostrEvent): List<String> = (
+    event.tags.filter { it.firstOrNull() == "q" || (it.firstOrNull() == "e" && it.getOrNull(3) == "mention") }
+        .mapNotNull { it.getOrNull(1) } +
+        extractNostrEventReferences(event.content).map { it.eventId }
+    ).filter(::isFullEventId).distinct()
+
+private fun quotesAddress(event: NostrEvent): Boolean =
+    event.tags.any { it.firstOrNull() == "q" && it.getOrNull(1)?.contains(':') == true } ||
+        extractNostrAddressReferences(event.content).isNotEmpty()
 
 sealed interface NotificationTargetDestination {
     data class Thread(val eventId: String) : NotificationTargetDestination

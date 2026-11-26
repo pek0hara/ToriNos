@@ -35,6 +35,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.EmojiEvents
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.outlined.ChatBubbleOutline
+import androidx.compose.material.icons.outlined.FormatQuote
 import androidx.compose.material.icons.filled.PersonAdd
 import androidx.compose.material.icons.filled.Repeat
 import androidx.compose.material3.CircularProgressIndicator
@@ -210,7 +211,8 @@ private fun NotificationGroupRow(
     onRetryTarget: (String) -> Unit,
 ) {
     when (group.type) {
-        NotificationType.Reply -> ReplyNotification(group.latest, state, onUserClick, onOpenTarget, onRetryTarget)
+        NotificationType.Reply,
+        NotificationType.Quote -> ReplyNotification(group.latest, state, onUserClick, onOpenTarget, onRetryTarget)
         NotificationType.Like,
         NotificationType.Repost -> EngagementNotification(group, state, onUserClick, onOpenTarget, onRetryTarget)
         NotificationType.Follow -> Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp)) {
@@ -226,7 +228,10 @@ private fun NotificationGroupRow(
     }
 }
 
-/** 返信は本文が主役なので、まとめずに返信そのものを NoteCard で出す。返信先は NoteCard の引用で示す。 */
+/**
+ * 返信・引用は本文が主役なので、まとめずにその投稿を NoteCard で出す。
+ * 返信先は返信元として、引用先は引用として NoteCard の中に示す。
+ */
 @Composable
 private fun ReplyNotification(
     item: NotificationItem,
@@ -238,6 +243,8 @@ private fun ReplyNotification(
     val reply = item.event ?: return
     val targetState = item.targetEventId?.let { state.targetStates[it] }
     val parent = (targetState as? TargetLoadState.Resolved)?.event
+    val isQuote = item.type == NotificationType.Quote
+    val target = parent?.let { QuotedEvent(it, state.profiles[it.pubkey]) }
     val openThread: (String) -> Unit = { onOpenTarget(NotificationTargetDestination.Thread(it)) }
     Column(modifier = Modifier.fillMaxWidth().padding(top = 10.dp)) {
         Row(
@@ -245,9 +252,9 @@ private fun ReplyNotification(
             horizontalArrangement = Arrangement.spacedBy(6.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            NotificationIcon(icon = notificationIcon(NotificationType.Reply), tint = notificationAccent(NotificationType.Reply))
+            NotificationIcon(icon = notificationIcon(item.type), tint = notificationAccent(item.type))
             Text(
-                text = "返信",
+                text = if (isQuote) "引用" else "返信",
                 style = MaterialTheme.typography.labelMedium,
                 fontWeight = FontWeight.Bold,
                 color = MaterialTheme.colorScheme.primary,
@@ -276,7 +283,8 @@ private fun ReplyNotification(
                     reactionCount = 0,
                 ),
                 references = NoteReferencePresentation(
-                    replyParent = parent?.let { QuotedEvent(it, state.profiles[it.pubkey]) },
+                    quotedEvents = listOfNotNull(target.takeIf { isQuote }),
+                    replyParent = target.takeUnless { isQuote },
                 ),
                 policy = NoteCardPolicy(
                     showEngagement = false,
@@ -458,6 +466,7 @@ private fun notificationAccent(type: NotificationType): Color = when (type) {
     NotificationType.Like -> Color(0xFFE17055)
     NotificationType.Follow -> MaterialTheme.colorScheme.tertiary
     NotificationType.BadgeAward -> Color(0xFFD4A017)
+    NotificationType.Quote -> Color(0xFF2BAE66)
 }
 
 private fun notificationIcon(type: NotificationType): ImageVector = when (type) {
@@ -466,6 +475,7 @@ private fun notificationIcon(type: NotificationType): ImageVector = when (type) 
     NotificationType.Like -> Icons.Default.Favorite
     NotificationType.Follow -> Icons.Default.PersonAdd
     NotificationType.BadgeAward -> Icons.Default.EmojiEvents
+    NotificationType.Quote -> Icons.Outlined.FormatQuote
 }
 
 @Composable
@@ -499,6 +509,7 @@ private fun notificationTitleSuffix(type: NotificationType): String =
         NotificationType.Like -> "がいいね"
         NotificationType.Follow -> "がフォロー"
         NotificationType.BadgeAward -> "がバッジを授与"
+        NotificationType.Quote -> "が引用"
     }
 
 private fun shortPubkey(pubkey: String): String = pubkey.take(8) + "..." + pubkey.takeLast(8)

@@ -4,6 +4,7 @@ import com.nostr.torinos.crypto.Bech32
 import com.nostr.torinos.crypto.fromHex
 import com.nostr.torinos.crypto.hexToNpub
 import com.nostr.torinos.model.NostrEvent
+import com.nostr.torinos.model.encodeNaddr
 import com.nostr.torinos.model.encodeNevent
 import com.nostr.torinos.network.TargetFetchFailure
 import com.nostr.torinos.network.TargetLoadState
@@ -71,6 +72,18 @@ class NotificationRelevanceTest {
         assertEquals(NotificationRelevance.Relevant, notificationRelevance(
             note(listOf(listOf("e", parent, "", "reply"))), own, ownEventIds = setOf(parent),
         ))
+    }
+
+    @Test fun quoteOfOwnArticleIsRelevant() {
+        val address = "30023:$own:article"
+        assertEquals(NotificationRelevance.Relevant,
+            notificationRelevance(note(listOf(listOf("q", address, "wss://relay"))), own))
+        assertEquals(NotificationRelevance.Relevant,
+            notificationRelevance(note(emptyList(), "読んだ nostr:${encodeNaddr(30023, own, "article")}"), own))
+        assertEquals(NotificationRelevance.Unrelated,
+            notificationRelevance(note(listOf(listOf("q", "30023:$other:article"), listOf("p", own))), own))
+        assertEquals(NotificationRelevance.Unrelated,
+            notificationRelevance(note(listOf(listOf("p", own)), "nostr:${encodeNaddr(30023, other, "article")}"), own))
     }
 
     @Test fun replyToOwnArticleIsRelevant() {

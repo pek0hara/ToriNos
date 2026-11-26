@@ -54,6 +54,7 @@ enum class NotificationType {
     Like,
     Follow,
     BadgeAward,
+    Quote,
 }
 
 data class NotificationsState(
@@ -88,8 +89,7 @@ class NotificationsViewModel(
     private val targetLoader = TargetEventLoader(viewModelScope)
 
     private val seenItemIds = linkedSetOf<String>()
-    // 返信先・引用先の作者を確かめるまで一覧に出さない通知。キーは通知のイベントID。
-    private val pendingRelevance = linkedMapOf<String, PendingRelevance>()
+    private val pendingRelevance = PendingNotifications()
     // 引用リポストを `#q` で探すための自分の最近の投稿。端末に残し、起動時は取り直しを待たずに使う。
     private var ownRecentPosts: List<OwnPostRef> = emptyList()
     private var ownPostIds: Set<String> = emptySet()
@@ -273,7 +273,8 @@ class NotificationsViewModel(
             return
         }
         val type = when (event.kind) {
-            1, COMMENT_EVENT_KIND -> NotificationType.Reply
+            1 -> notificationTypeForNote(event)
+            COMMENT_EVENT_KIND -> NotificationType.Reply
             6, 16 -> NotificationType.Repost
             7 -> NotificationType.Like
             8 -> NotificationType.BadgeAward
@@ -365,26 +366,19 @@ class NotificationsViewModel(
     }
 
     private fun holdUntilTargetAuthorKnown(item: NotificationItem, eventIds: Set<String>) {
-        pendingRelevance[item.id] = PendingRelevance(item, eventIds)
+        pendingRelevance.hold(item, eventIds)
         eventIds.forEach(::scheduleTargetFetch)
         retainTargets()
         settlePendingRelevance(_state.value.targetStates)
     }
 
     private fun settlePendingRelevance(states: Map<String, TargetLoadState>) {
-        if (pendingRelevance.isEmpty()) return
-        var changed = false
-        pendingRelevance.values.toList().forEach { pending ->
-            val show = pending.eventIds.any { it in ownPostIds } ||
-                (decideByTargetAuthors(pending.eventIds, states, ownPubkey) ?: return@forEach)
-            pendingRelevance.remove(pending.item.id)
-            changed = true
-            if (show) {
-                insertItem(pending.item)
-                scheduleDetailsForItem(pending.item)
-            }
+        val settled = pendingRelevance.settle(states, ownPubkey, ownPostIds)
+        settled.shown.forEach { item ->
+            insertItem(item)
+            scheduleDetailsForItem(item)
         }
-        if (changed) {
+        if (settled.decided) {
             retainTargets()
             saveStoredNotifications()
         }
@@ -431,8 +425,7 @@ class NotificationsViewModel(
 
     private fun retainTargets() {
         targetLoader.retain(
-            _state.value.items.mapNotNull { it.targetEventId }.toSet() +
-                pendingRelevance.values.flatMap { it.eventIds },
+            _state.value.items.mapNotNull { it.targetEventId }.toSet() + pendingRelevance.targetIds,
         )
     }
 
@@ -464,18 +457,18 @@ class NotificationsViewModel(
             stored.items.map { item ->
                 val resolved = resolveNotificationTarget(item.event, item.targetEventId)
                 item.copy(
+                    // 以前の版は引用リポストも返信として保存していた。
+                    type = item.event?.takeIf { item.type == NotificationType.Reply && it.kind == 1 }
+                        ?.let(::notificationTypeForNote) ?: item.type,
                     targetEventId = (resolved.reference as? TargetReference.EventId)?.id,
                     targetReference = resolved.reference,
                 ) to resolved.embedded
             }
         }
         val unmuted = normalized.map { it.first }.filterNotMutedActors(muteStore?.mutedPubkeys?.value.orEmpty())
-        // 以前の版で保存した、自分に関係のない返信も同じ基準で振り分け直す。
         val ownIds = ownPostIds
-        val relevance = withContext(Dispatchers.Default) {
-            unmuted.associate { item -> item.id to (item.event?.let { notificationRelevance(it, ownPubkey, ownIds) } ?: NotificationRelevance.Relevant) }
-        }
-        val items = unmuted.filter { relevance[it.id] == NotificationRelevance.Relevant }
+        val triage = withContext(Dispatchers.Default) { triageStoredNotifications(unmuted, ownPubkey, ownIds) }
+        val items = triage.kept
         seenItemIds += stored.items.map { it.id }
         _state.update {
             it.copy(
@@ -490,20 +483,17 @@ class NotificationsViewModel(
             scheduleDetailsForItem(item)
         }
         retainTargets()
-        unmuted.forEach { item ->
-            (relevance[item.id] as? NotificationRelevance.NeedsTargetAuthor)?.let { holdUntilTargetAuthorKnown(item, it.eventIds) }
-        }
+        triage.held.forEach { (item, eventIds) -> holdUntilTargetAuthorKnown(item, eventIds) }
         if (items.size != stored.items.size) {
             LocalNotificationStore.save(
                 ownPubkey,
-                stored.copy(items = items + pendingRelevance.values.map { it.item }),
+                stored.copy(items = items + pendingRelevance.items),
             )
         }
     }
 
     private fun removeMutedNotifications(mutedPubkeys: Set<String>) {
-        val normalizedMuted = mutedPubkeys.mapTo(hashSetOf()) { it.trim().lowercase() }
-        pendingRelevance.values.removeAll { it.item.actorPubkey.trim().lowercase() in normalizedMuted }
+        pendingRelevance.removeMutedActors(mutedPubkeys)
         val current = _state.value
         val items = current.items.filterNotMutedActors(mutedPubkeys)
         if (items.size == current.items.size) return
@@ -516,7 +506,7 @@ class NotificationsViewModel(
         _state.value.items.forEach { item ->
             scheduleDetailsForItem(item)
         }
-        pendingRelevance.values.forEach { pending -> pending.eventIds.forEach(::scheduleTargetFetch) }
+        pendingRelevance.targetIds.forEach(::scheduleTargetFetch)
     }
 
     private fun scheduleDetailsForItem(item: NotificationItem) {
@@ -529,7 +519,7 @@ class NotificationsViewModel(
         val snapshot = _state.value
         // 確認待ちも残しておき、終了しても次回の起動で振り分け直す。
         val stored = StoredNotifications(
-            items = (snapshot.items + pendingRelevance.values.map { it.item })
+            items = (snapshot.items + pendingRelevance.items)
                 .sortedByDescending { it.receivedAt }.take(MAX_ITEMS),
             readItemIds = snapshot.readItemIds,
         )
@@ -565,8 +555,6 @@ class NotificationsViewModel(
         private const val OWN_POSTS_SETTLE_MS = 1_000L
     }
 }
-
-private class PendingRelevance(val item: NotificationItem, val eventIds: Set<String>)
 
 internal fun List<NotificationItem>.filterNotMutedActors(
     mutedPubkeys: Set<String>,
