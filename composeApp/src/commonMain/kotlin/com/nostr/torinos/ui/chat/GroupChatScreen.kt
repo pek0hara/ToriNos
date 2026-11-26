@@ -955,17 +955,9 @@ private fun ThreadNoticeRow(
             } else {
                 Text("元の投稿を読み込み中…", style = MaterialTheme.typography.bodySmall, color = muted, modifier = Modifier.padding(start = 48.dp))
             }
-            Row(modifier = Modifier.padding(start = 48.dp)) {
-                Text("╰", style = MaterialTheme.typography.bodyMedium, color = muted)
-                Spacer(Modifier.width(6.dp))
+            ThreadReplySummary(count = notice.count, onOpen = null, modifier = Modifier.padding(start = 48.dp)) {
                 TimelinePost(message, flavor, "", profiles, bodyActions, avatarSize = 28, collapse = BodyCollapse.ReplyPreview)
             }
-            Text(
-                "💬 返信 ${notice.count}件 ▸",
-                style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.primary,
-                modifier = Modifier.padding(start = 48.dp),
-            )
         }
     }
 }
@@ -1233,20 +1225,17 @@ private fun MessageRow(
                 }
                 // 返信がすぐ付いたスレッドは、最新の返信をここに出す（離れていればチャンネルの下の方に別の枠で出る）。
                 val latestReply = message.latestThreadReply
-                if (showThreadLink && latestReply != null) {
+                if (showThreadLink && (latestReply != null || message.threadReplyCount > 0)) {
                     val bodyActions = remember(actions) { actions.toTimelineBodyActions() }
-                    Row(modifier = Modifier.padding(top = 6.dp)) {
-                        Text("╰", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        Spacer(Modifier.width(6.dp))
-                        TimelinePost(latestReply, flavor, "", profiles, bodyActions, avatarSize = 28, collapse = BodyCollapse.ReplyPreview)
-                    }
-                }
-                if (showThreadLink && message.threadReplyCount > 0) {
-                    Text(
-                        "💬 返信 ${message.threadReplyCount}件 ▸",
-                        style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier.padding(top = 4.dp).clickable { actions.onOpenThread(message) },
+                    ThreadReplySummary(
+                        count = message.threadReplyCount,
+                        onOpen = { actions.onOpenThread(message) },
+                        // プレビューを長押ししても、発言のメニューを開く。
+                        onLongClick = { if (onExpandMuted == null) menuOpen = true },
+                        modifier = Modifier.padding(top = if (latestReply != null) 6.dp else 0.dp),
+                        preview = latestReply?.let { reply ->
+                            { TimelinePost(reply, flavor, "", profiles, bodyActions, avatarSize = 28, collapse = BodyCollapse.ReplyPreview) }
+                        },
                     )
                 }
             }

@@ -1,6 +1,7 @@
 package com.nostr.torinos.ui.chat
 
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -292,18 +293,10 @@ private fun TimelineRowItem(
             )
         }
         conversation.latestReply?.let { reply ->
-            Row(modifier = Modifier.padding(start = 48.dp)) {
-                Text("╰", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                Spacer(Modifier.width(6.dp))
+            // チャットの画面のスレッドの表示と同じ。行全体がスレッドを開く。
+            ThreadReplySummary(count = conversation.replyCount, onOpen = null, modifier = Modifier.padding(start = 48.dp)) {
                 TimelinePost(reply, group.flavor, group.ref.relayUrl, profiles, actions, avatarSize = 28, collapse = BodyCollapse.ReplyPreview)
             }
-            // チャットの画面の「返信 n件」と同じ表示。
-            Text(
-                "💬 返信 ${conversation.replyCount}件 ▸",
-                style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.primary,
-                modifier = Modifier.padding(start = 48.dp),
-            )
         }
     }
 }
@@ -365,6 +358,61 @@ internal fun TimelinePost(
             }
             if (message.edited) {
                 Text("（編集済み）", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        }
+    }
+}
+
+/**
+ * 元の投稿の下に出すスレッドの要約。最新の返信のプレビュー（[preview]）と返信の件数。
+ * 件数はプレビューと同じ列に下げ、プレビューで見えている分を除いて「他 n件」と出す。
+ * プレビューは押せる行にする。返信がプレビューの1件だけなら件数は出さず、▸ を付ける。
+ * [onOpen] が null なら（行全体がスレッドを開くとき）ここでは押せるようにしない。
+ */
+@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
+@Composable
+internal fun ThreadReplySummary(
+    count: Int,
+    onOpen: (() -> Unit)?,
+    modifier: Modifier = Modifier,
+    onLongClick: (() -> Unit)? = null,
+    preview: (@Composable () -> Unit)?,
+) {
+    val label = com.nostr.torinos.chat.threadReplyCountLabel(count, previewShown = preview != null)
+    val muted = MaterialTheme.colorScheme.onSurfaceVariant
+    val openModifier = if (onOpen != null) {
+        Modifier.combinedClickable(onClickLabel = "スレッドを開く", onClick = onOpen, onLongClick = onLongClick)
+    } else Modifier
+    Column(modifier) {
+        if (preview != null) {
+            val alone = label == null
+            Row(modifier = openModifier) {
+                Text("╰", style = MaterialTheme.typography.bodyMedium, color = muted)
+                Spacer(Modifier.width(6.dp))
+                Box(Modifier.weight(1f)) { preview() }
+                if (alone) {
+                    Text(
+                        "▸",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = muted,
+                        modifier = Modifier.align(Alignment.CenterVertically).padding(start = 4.dp),
+                    )
+                }
+            }
+        }
+        if (label != null) {
+            Row(modifier = Modifier.padding(top = 4.dp)) {
+                if (preview != null) {
+                    // プレビューの「╰」と同じ幅を空けて、返信のアイコンの列にそろえる。
+                    Text("╰", style = MaterialTheme.typography.bodyMedium, color = androidx.compose.ui.graphics.Color.Transparent)
+                    Spacer(Modifier.width(6.dp))
+                }
+                Text(
+                    label,
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.primary,
+                    modifier = openModifier,
+                )
             }
         }
     }
