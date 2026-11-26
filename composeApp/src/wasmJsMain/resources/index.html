@@ -13,6 +13,8 @@
     <link rel="icon" type="image/png" href="favicon.png">
     <!-- ページの解析より先に URL の # を外す必要があるため、head で同期的に読み込む。 -->
     <script src="initial-hash.js"></script>
+    <!-- WebGL のコンテキストを見張るため、composeApp.js より先に読み込む。 -->
+    <script src="blank-render-guard.js"></script>
     <style>
         html, body {
             margin: 0;
