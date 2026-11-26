@@ -1,5 +1,10 @@
 package com.nostr.torinos.ui.chat
 
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.graphics.compositeOver
+import androidx.compose.ui.graphics.Shape
+import androidx.compose.ui.graphics.Color
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -484,14 +489,14 @@ fun ChatTabScreen(
                         signedOut = !state.hasSigner,
                     )
                     else -> {
-                    // 未読のまとまりが新しく先頭に入ったとき、一覧は前の先頭の行に留まるので、見出しが画面の上に隠れる。
-                    // 先頭を見ていたなら、入った見出しが見えるように先頭へ戻す。
+                    // 未読のまとまりが新しく先頭に入ったとき、一覧は前の先頭の行に留まるので、未読の行が画面の上に隠れる。
+                    // 先頭を見ていたなら、入った未読の行が見えるように先頭へ戻す。
                     val hasUnread = state.joinedRows.any { it.unread }
                     if (hasUnread && !hadUnread[0] && groupsListState.firstVisibleItemIndex <= state.pendingCreations.size) {
                         groupsListState.requestScrollToItem(0)
                     }
                     hadUnread[0] = hasUnread
-                    LazyColumn(state = groupsListState, modifier = Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 88.dp)) {
+                    LazyColumn(state = groupsListState, modifier = Modifier.fillMaxSize(), contentPadding = PaddingValues(top = 6.dp, bottom = 88.dp)) {
                         items(state.pendingCreations, key = { "pc-" + it.ref.key }) { pending ->
                             PendingCreationBanner(
                                 pending = pending,
@@ -501,16 +506,14 @@ fun ChatTabScreen(
                                 onDiscard = { viewModel.discardCreation(pending) },
                             )
                         }
-                        // 未読のグループは先頭にまとめ、下のまとまりからは外す。
+                        // 未読のグループは先頭にまとめ、下のまとまりからは外す。見出しは付けず、カードの色で未読と分かるようにする。
                         val (unreadRows, readRows) = state.joinedRows.partition { it.unread }
                         if (unreadRows.isNotEmpty()) {
-                            item(key = "unread-header") { SectionHeader("未読") }
                             items(unreadRows, key = { "j-" + it.ref.key }) { row ->
                                 GroupRowItem(row, resolved = !state.isLoading, ownPubkey = ownPubkey, profiles = dmProfiles, onClick = { viewModel.markRead(row.ref); onOpenGroup(row.ref, row.layout) })
                             }
                         }
                         if (state.selection is ChatSelection.Relay) {
-                            if (readRows.isNotEmpty() || state.joinedRows.isEmpty()) item(key = "joined-header") { SectionHeader("参加中") }
                             if (state.joinedRows.isEmpty()) {
                                 if (state.isLoading) item(key = "joined-loading") { GroupRowPlaceholders(count = 3) }
                                 else item(key = "joined-empty") { EmptyLine("参加中のグループはありません") }
@@ -903,9 +906,17 @@ private fun GroupRowPlaceholders(count: Int = 6) {
 }
 
 @Composable
-internal fun GroupIcon(picture: String?, locked: Boolean, size: Int = 40, channel: Boolean = true, forum: Boolean = false) {
+internal fun GroupIcon(
+    picture: String?,
+    locked: Boolean,
+    size: Int = 40,
+    channel: Boolean = true,
+    forum: Boolean = false,
+    shape: Shape = CircleShape,
+    background: Color? = null,
+) {
     Box(
-        modifier = Modifier.size(size.dp).clip(CircleShape).background(MaterialTheme.colorScheme.surfaceVariant),
+        modifier = Modifier.size(size.dp).clip(shape).background(background ?: MaterialTheme.colorScheme.surfaceVariant),
         contentAlignment = Alignment.Center,
     ) {
         // Buzz と同じく、画像の無いチャンネルは「#」、非公開は鍵。フォーラムは吹き出し、複数人の DM などはチャンネルではないので人のマーク。
@@ -935,71 +946,71 @@ private fun GroupRowItem(
     val title = if (direct) dmDisplayName(participants, ownPubkey.orEmpty()) { profiles[it]?.bestName } else row.title
     // 読み込みが終わってもグループ情報も発言も無い行は、控えめに出す。
     val unresolved = resolved && row.isUnresolved
+    // 行はカードにする。未読のカードは背景を薄い青にして、見出しが無くても未読と分かるようにする。
+    val cardColor = if (row.unread) {
+        MaterialTheme.colorScheme.primary.copy(alpha = 0.10f).compositeOver(MaterialTheme.colorScheme.surface)
+    } else {
+        MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f).compositeOver(MaterialTheme.colorScheme.surface)
+    }
+    val textColor = if (row.unread) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant
     Row(
-        modifier = Modifier.fillMaxWidth().clickable(onClick = onClick).padding(horizontal = 16.dp, vertical = 10.dp),
-        verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 8.dp, vertical = 4.dp)
+            .clip(RoundedCornerShape(16.dp))
+            .background(cardColor)
+            .clickable(onClick = onClick)
+            .padding(horizontal = 12.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.Top,
     ) {
         val peer = participants.firstOrNull { it != ownPubkey } ?: participants.firstOrNull()
-        if (direct && peer != null && participants.count { it != ownPubkey } <= 1) {
-            ChatAvatar(pubkey = peer, name = profiles[peer]?.bestName, pictureUrl = profiles[peer]?.picture, size = 40)
-        } else {
-            GroupIcon(row.metadata?.picture, locked = !direct && row.metadata?.isPrivate == true, channel = !direct, forum = row.layout == GroupLayout.Forum)
-        }
-        Spacer(Modifier.width(12.dp))
-        // 見出しと時刻、本文と未読の点を、それぞれ同じ行に置く。行の高さは発言の有無で変えない。
-        Column(modifier = Modifier.weight(1f)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(
-                    text = title,
-                    style = MaterialTheme.typography.titleSmall,
-                    fontWeight = if (row.unread) FontWeight.Bold else FontWeight.SemiBold,
-                    color = if (unresolved) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.onSurface,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.weight(1f),
+        // 種類のアイコンは小さくし、見出しの行にそろえる。
+        Box(modifier = Modifier.padding(top = 1.dp)) {
+            if (direct && peer != null && participants.count { it != ownPubkey } <= 1) {
+                ChatAvatar(pubkey = peer, name = profiles[peer]?.bestName, pictureUrl = profiles[peer]?.picture, size = GROUP_ROW_ICON_SIZE)
+            } else {
+                GroupIcon(
+                    row.metadata?.picture,
+                    locked = !direct && row.metadata?.isPrivate == true,
+                    size = GROUP_ROW_ICON_SIZE,
+                    channel = !direct,
+                    forum = row.layout == GroupLayout.Forum,
+                    shape = RoundedCornerShape(7.dp),
+                    background = if (row.unread) MaterialTheme.colorScheme.primary.copy(alpha = 0.12f) else null,
                 )
-                row.lastMessage?.let {
-                    Spacer(Modifier.width(8.dp))
-                    Text(
-                        com.nostr.torinos.chat.chatListTime(it.createdAt, kotlin.time.Clock.System.now().epochSeconds),
-                        style = MaterialTheme.typography.labelSmall,
-                        color = if (row.unread) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
             }
-            Spacer(Modifier.height(2.dp))
+        }
+        Spacer(Modifier.width(10.dp))
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = title,
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = if (row.unread) FontWeight.Bold else FontWeight.SemiBold,
+                color = if (unresolved) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.onSurface,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Spacer(Modifier.height(4.dp))
             // 最新の発言がスレッドの返信なら、元の投稿を上に出し、返信は「╰」を付けてその下に出す（Google Chat と同じ形）。
+            // 送信者の名前は出さず、小さいアイコンで示す。返信は2行まで出す。
             val rootPreview = row.threadRootPreview.takeIf { !row.pending }
             if (rootPreview != null) {
-                Text(
-                    text = com.nostr.torinos.chat.chatPreviewWithSender(
-                        rootPreview,
-                        sender = row.threadRootAuthor,
-                        senderName = row.threadRootAuthor?.let { profiles[it]?.bestName },
-                        me = ownPubkey,
-                        oneOnOne = direct && participants.count { it != ownPubkey } <= 1,
-                    ),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = if (row.unread) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
+                PreviewLine(rootPreview, author = row.threadRootAuthor, profiles = profiles, color = textColor, maxLines = 1)
+                Spacer(Modifier.height(4.dp))
             }
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                if (rootPreview != null) {
-                    Text("╰", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    Spacer(Modifier.width(6.dp))
-                }
+            val preview = row.preview.takeIf { !row.pending }
+            if (preview != null) {
+                PreviewLine(
+                    preview,
+                    author = row.lastAuthor,
+                    profiles = profiles,
+                    color = textColor,
+                    maxLines = if (rootPreview != null) 2 else 1,
+                    reply = rootPreview != null,
+                )
+            } else {
                 val subtitle = when {
                     row.pending -> "承認待ち"
-                    row.preview != null -> com.nostr.torinos.chat.chatPreviewWithSender(
-                        row.preview!!,
-                        sender = row.lastAuthor,
-                        senderName = row.lastAuthor?.let { profiles[it]?.bestName },
-                        me = ownPubkey,
-                        // 1対1の DM では相手の名前を付けない。
-                        oneOnOne = direct && participants.count { it != ownPubkey } <= 1,
-                    )
                     row.metadata?.about?.isNotBlank() == true -> row.metadata.about
                     unresolved -> "グループ情報を読めません"
                     !resolved && row.metadata == null -> "読み込み中…"
@@ -1008,17 +1019,77 @@ private fun GroupRowItem(
                 Text(
                     text = subtitle.orEmpty(),
                     style = MaterialTheme.typography.bodySmall,
-                    color = if (row.unread) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant,
+                    color = textColor,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.weight(1f),
                 )
+            }
+        }
+        // 時刻と未読の件数は右上に固定する。
+        if (row.lastMessage != null || row.unread) {
+            Spacer(Modifier.width(8.dp))
+            Column(horizontalAlignment = Alignment.End) {
+                row.lastMessage?.let {
+                    Text(
+                        com.nostr.torinos.chat.chatListTime(it.createdAt, kotlin.time.Clock.System.now().epochSeconds),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = if (row.unread) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(top = 2.dp),
+                    )
+                }
                 if (row.unread) {
-                    Spacer(Modifier.width(8.dp))
+                    Spacer(Modifier.height(6.dp))
                     UnreadBadge(row.unreadCount)
                 }
             }
         }
+    }
+}
+
+private const val GROUP_ROW_ICON_SIZE = 24
+private const val PREVIEW_AVATAR_SIZE = 16
+
+/** 一覧のプレビューの1行。先頭に送信者の小さいアイコンを付け、URL はドメイン名だけにする。 */
+@Composable
+private fun PreviewLine(
+    text: String,
+    author: String?,
+    profiles: Map<String, NostrProfile>,
+    color: Color,
+    maxLines: Int,
+    reply: Boolean = false,
+) {
+    val linkColor = MaterialTheme.colorScheme.primary
+    val annotated = remember(text, linkColor) {
+        val short = com.nostr.torinos.chat.shortenPreviewLinks(text)
+        buildAnnotatedString {
+            append(short.text)
+            short.links.forEach { addStyle(SpanStyle(color = linkColor), it.first, it.last + 1) }
+        }
+    }
+    Row(verticalAlignment = Alignment.Top) {
+        if (reply) {
+            Text("╰", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Spacer(Modifier.width(6.dp))
+        }
+        if (author != null) {
+            ChatAvatar(
+                pubkey = author,
+                name = profiles[author]?.bestName,
+                pictureUrl = profiles[author]?.picture,
+                size = PREVIEW_AVATAR_SIZE,
+                modifier = Modifier.padding(top = 1.dp),
+            )
+            Spacer(Modifier.width(6.dp))
+        }
+        Text(
+            text = annotated,
+            style = MaterialTheme.typography.bodySmall,
+            color = color,
+            maxLines = maxLines,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f),
+        )
     }
 }
 

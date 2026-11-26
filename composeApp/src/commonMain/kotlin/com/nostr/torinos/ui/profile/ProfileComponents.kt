@@ -64,6 +64,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.platform.LocalClipboard
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.compose.runtime.collectAsState
 import coil3.compose.LocalPlatformContext
 import coil3.compose.SubcomposeAsyncImage
@@ -1060,7 +1061,12 @@ internal fun AvatarCircle(
             CenteredInitial(
                 text = letter.toString(),
                 color = Color.White,
-                style = if (size >= 48) MaterialTheme.typography.titleMedium else MaterialTheme.typography.labelLarge,
+                style = when {
+                    size >= 48 -> MaterialTheme.typography.titleMedium
+                    // 一覧のプレビューに付ける小さいアイコンでは、頭文字が丸からはみ出さないよう小さくする。
+                    size < 24 -> MaterialTheme.typography.labelSmall.copy(fontSize = (size * 0.55f).sp, lineHeight = (size * 0.55f).sp)
+                    else -> MaterialTheme.typography.labelLarge
+                },
             )
         }
     }

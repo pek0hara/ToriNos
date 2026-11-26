@@ -133,3 +133,30 @@ fun inviteSummary(invite: MintedInvite, zone: TimeZone = TimeZone.currentSystemD
     }
     return "${time.month.ordinal + 1}月${time.day}日 $clock まで · $uses"
 }
+
+/** 一覧のプレビュー。URL はドメイン名だけにし、その位置を [links] に持つ（リンクの色を付けるため）。 */
+data class ShortLinkPreview(val text: String, val links: List<IntRange>)
+
+private val previewUrlRegex = Regex("""https?://[^\s]+""", RegexOption.IGNORE_CASE)
+
+/** プレビューの `https://www.example.com/a/b` を `example.com` にする。ドメインを読めない URL はそのまま残す。 */
+fun shortenPreviewLinks(text: String): ShortLinkPreview {
+    val out = StringBuilder()
+    val links = mutableListOf<IntRange>()
+    var last = 0
+    for (match in previewUrlRegex.findAll(text)) {
+        // 文末の句読点や閉じかっこは URL に含めず、本文に残す。
+        val url = match.value.trimEnd { it in ".,;!?)]}>」』）】。、" }
+        val host = url.substringAfter("://")
+            .substringBefore('/').substringBefore('?').substringBefore('#')
+            .substringAfterLast('@').substringBefore(':')
+            .removePrefix("www.").removePrefix("WWW.")
+        if (host.isEmpty()) continue
+        out.append(text, last, match.range.first)
+        links += out.length until out.length + host.length
+        out.append(host)
+        last = match.range.first + url.length
+    }
+    out.append(text, last, text.length)
+    return ShortLinkPreview(out.toString(), links)
+}
