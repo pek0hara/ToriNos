@@ -18,3 +18,11 @@ fun MainViewController() = ComposeUIViewController(
     registerMemoryWarningObserver()
     App()
 }
+
+/**
+ * OS から渡された URL（`torinos://join?…`）を受け取る。招待なら預け、ログインの後に参加シートで確かめる
+ * （docs/buzz-invite-link-design.md 5.2）。URL には招待コードが入るのでログに出さない。
+ */
+fun handleOpenUrl(url: String) {
+    com.nostr.torinos.chat.pendingInvites.offerAppLink(url, kotlin.time.Clock.System.now().toEpochMilliseconds())
+}

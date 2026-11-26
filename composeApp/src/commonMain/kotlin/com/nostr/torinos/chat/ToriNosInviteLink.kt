@@ -29,6 +29,15 @@ fun toriNosInviteLink(relayUrl: String, code: String): String = TORINOS_WEB_APP_
 /** アプリへ受け渡すリンク（配らない）。 */
 fun toriNosAppInviteLink(relayUrl: String, code: String): String = TORINOS_APP_SCHEME + joinQuery(relayUrl, code)
 
+/**
+ * Android のブラウザから ToriNos アプリを開くリンク（配らない）。package を指定して、同じスキームを登録した
+ * 別のアプリに渡らないようにする。アプリが無ければ Chrome は Google Play を開く。
+ */
+fun toriNosAndroidIntentLink(relayUrl: String, code: String): String =
+    "intent://" + joinQuery(relayUrl, code) + "#Intent;scheme=torinos;package=$TORINOS_ANDROID_PACKAGE;end"
+
+private const val TORINOS_ANDROID_PACKAGE = "com.nostr.torinos"
+
 /** 発行した Buzz の招待から、配る招待リンクを作る。 */
 fun toriNosInviteLinkFor(invite: MintedInvite): String? {
     val host = invite.url.removePrefix("https://").substringBefore('/').takeIf { it.isNotEmpty() } ?: return null
@@ -110,6 +119,16 @@ class PendingInviteStore {
     /** 招待コード付きのリンクだけ預かる。預かれたら true。 */
     fun offer(text: String, nowMillis: Long): Boolean {
         val parsed = parseGroupInput(text) as? GroupInput.BuzzInvite ?: return false
+        _invite.value = PendingInvite(parsed.relayUrl, parsed.code, nowMillis)
+        return true
+    }
+
+    /**
+     * OS から渡されたリンク（`torinos://join?…`、段階3では Web 版の招待 URL）を預かる。預かれたら true。
+     * 貼り付けと違い、ToriNos の招待の形だけを受け付ける。リンクには招待コードが入るのでログに出さない。
+     */
+    fun offerAppLink(url: String, nowMillis: Long): Boolean {
+        val parsed = parseToriNosInviteLink(url.trim()) ?: return false
         _invite.value = PendingInvite(parsed.relayUrl, parsed.code, nowMillis)
         return true
     }

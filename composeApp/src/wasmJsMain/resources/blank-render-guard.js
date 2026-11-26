@@ -2,12 +2,17 @@
 // (WebKit Bug 329421)。Compose は WebGL の画面を作るところまで進むが、何も描かずに真っ白のままになる。
 // エラーは出ず、報告された最小の再現コードでも検出できないため、症状そのもので判定する:
 // WebGL のコンテキストができてから一定時間たっても、描画の呼び出しが一度も来なければ止まっているとみなす。
-// そのときは、ToriNos のアプリ（torinos://）で開くリンクを出す。iOS のブラウザはどれも WebKit なので、
+// そのときは、ToriNos のアプリ（torinos://、招待リンクで開いたなら torinos://join?…）で開くリンクを出す。iOS のブラウザはどれも WebKit なので、
 // iOS(iPadOS を含む)だけで見張る。描画が後から来たら、案内は消す。
 (() => {
     const isIos = /iPad|iPhone|iPod/.test(navigator.userAgent) ||
         (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
     if (!isIos) return;
+
+    // 招待リンク（#join?…）で開いたなら、その招待ごとアプリへ渡す（docs/buzz-invite-link-design.md 5.2）。
+    // initial-hash.js が取り出した値は、アプリ（Wasm）が読むと消えるので、ここで写しておく。
+    const invite = typeof window.__torinosLaunchInvite === 'string' ? window.__torinosLaunchInvite : null;
+    const appLink = invite ? 'torinos://' + invite.replace(/^#/, '') : 'torinos://';
 
     const WAIT_MS = 6000;
     const DRAW_METHODS = ['drawArrays', 'drawElements', 'drawArraysInstanced', 'drawElementsInstanced', 'drawRangeElements'];
@@ -74,10 +79,12 @@
             <div class="box">
                 <h1>このブラウザでは Web 版を表示できません</h1>
                 <p>iOS のブラウザ (WebKit) の不具合で、画面が真っ白のままになっています。iOS のアップデートで直る見込みです。</p>
-                <a class="open" href="torinos://">ToriNos アプリで開く</a>
+                <a class="open">ToriNos アプリで開く</a>
                 <p class="small">アプリが入っていない場合は、App Store で「ToriNos」を検索して入れてください。</p>
                 <button type="button">閉じて Web 版の読み込みを待つ</button>
             </div>`;
+        // URL 由来の値なので、HTML に埋め込まずに属性として入れる。
+        notice.querySelector('a.open').href = appLink;
         notice.querySelector('button').addEventListener('click', () => {
             notice.remove();
             notice = null;

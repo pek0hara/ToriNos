@@ -28,6 +28,8 @@ import com.nostr.torinos.chat.GroupInput
 import com.nostr.torinos.chat.inviteFromFragment
 import com.nostr.torinos.chat.parseGroupInput
 import com.nostr.torinos.chat.pendingInvites
+import com.nostr.torinos.chat.toriNosAndroidIntentLink
+import com.nostr.torinos.chat.toriNosAppInviteLink
 import com.nostr.torinos.chat.toriNosInviteLink
 import com.nostr.torinos.ui.setup.PhoneInviteLanding
 import kotlin.time.Clock
@@ -122,6 +124,10 @@ fun App() {
                 PhoneInviteLanding(
                     host = invite.relayUrl.substringAfter("://").trimEnd('/'),
                     link = link,
+                    appLink = when (phone) {
+                        PhoneBrowser.Android -> toriNosAndroidIntentLink(invite.relayUrl, invite.code)
+                        PhoneBrowser.Ios -> toriNosAppInviteLink(invite.relayUrl, invite.code)
+                    },
                     phone = phone,
                     onContinueInBrowser = {
                         pendingInvites.offer(link, Clock.System.now().toEpochMilliseconds())

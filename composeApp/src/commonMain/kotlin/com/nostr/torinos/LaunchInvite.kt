@@ -7,3 +7,6 @@ internal expect fun takeLaunchInviteFragment(): String?
 internal enum class PhoneBrowser { Android, Ios }
 
 internal expect fun currentPhoneBrowser(): PhoneBrowser?
+
+/** ブラウザからアプリへのリンク（`torinos://`・`intent://`）を、今のページで開く。アプリでは何もしない。 */
+internal expect fun openAppLink(url: String)

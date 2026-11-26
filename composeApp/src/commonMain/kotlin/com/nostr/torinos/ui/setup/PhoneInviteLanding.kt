@@ -30,6 +30,7 @@ import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.nostr.torinos.PhoneBrowser
+import com.nostr.torinos.openAppLink
 import com.nostr.torinos.ui.settings.setPlainText
 import kotlinx.coroutines.launch
 
@@ -40,14 +41,16 @@ internal const val TORINOS_PLAY_STORE_URL = "https://play.google.com/store/apps/
 internal val TORINOS_APP_STORE_URL: String? = null
 
 /**
- * スマホのブラウザで招待リンクを開いたときの入口（docs/buzz-invite-link-design.md 3）。
- * スマホではアプリで参加してもらう。リンクをコピーしてからストアへ案内し、アプリの最初の画面で貼ってもらう。
+ * スマホのブラウザで招待リンクを開いたときの入口（docs/buzz-invite-link-design.md 3、5.2）。
+ * スマホではアプリで参加してもらう。アプリを入れている人は［アプリで開く］（[appLink]）で参加シートへ進む。
+ * 入れていない人には、リンクをコピーしてからストアへ案内し、アプリの最初の画面で貼ってもらう。
  * この画面では、招待コードを使う通信も署名もしない。
  */
 @Composable
 internal fun PhoneInviteLanding(
     host: String,
     link: String,
+    appLink: String,
     phone: PhoneBrowser,
     onContinueInBrowser: () -> Unit,
     onClose: () -> Unit,
@@ -79,8 +82,18 @@ internal fun PhoneInviteLanding(
                 textAlign = TextAlign.Center,
             )
 
+            Button(onClick = { openAppLink(appLink) }, modifier = Modifier.fillMaxWidth().padding(top = 8.dp)) {
+                Text("ToriNos アプリで開く")
+            }
+            Text(
+                "アプリが開かないときは、次の手順で参加してください。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                textAlign = TextAlign.Center,
+            )
+
             Step("1. 招待リンクをコピーする")
-            Button(
+            OutlinedButton(
                 onClick = { scope.launch { clipboard.setPlainText(link); copied = true } },
                 modifier = Modifier.fillMaxWidth(),
             ) { Text(if (copied) "コピーしました" else "招待リンクをコピー") }

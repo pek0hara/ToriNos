@@ -1,7 +1,7 @@
 # Buzz の招待リンク（ToriNos から参加とログインまで） 設計
 
 - 作成日: 2026-11-22
-- ステータス: 段階1を実装済み（単体テストと Web 版のヘッドレス確認。アプリの実機・実在のコミュニティでの確認は未実施）。段階2以降は未実装
+- ステータス: 段階1・段階2を実装済み（段階2の確認は 5.6）。段階3は未実装
 - 関連: [nip29-buzz-design.md](nip29-buzz-design.md) の 2.1・2.2・6.1、[buzz-admin-design.md](buzz-admin-design.md) の 2.4（招待の発行）、[buzz-community-sync-design.md](buzz-community-sync-design.md)（kind 10009 の暗号化項目）、[web-private-key-login-design.md](web-private-key-login-design.md)、[signer-abstraction-design.md](signer-abstraction-design.md)
 - 目的: ToriNos で発行した1本のリンクから、受け取った人がアカウントを用意し、Buzz コミュニティへの参加まで迷わず終えられるようにする。
 
@@ -202,6 +202,33 @@ https://pek0hara.github.io/ToriNos/app/#join?relay=<host>&code=<code>
 - アプリ（Android・iOS）の実機で、インストール直後に貼り付けて参加する流れ。
 - App Store の URL が未定のため、iPhone の入口ページは「App Store で検索」の案内にしている（`TORINOS_APP_STORE_URL`）。Google Play の URL は `com.nostr.torinos` から作っている。
 
+### 5.6 段階2の実装（2026-11-26）
+
+iOS にも独自スキームを使うことにした（7章の1）。横取りの心配はあるが、横取りされても渡るのは招待（コミュニティと招待コード）だけで、鍵は渡らない（2.1）。
+
+| 内容 | 場所 |
+|---|---|
+| OS から渡されたリンクを預かる（ToriNos の招待の形だけ。`buzz://` などは受け付けない）。Android の `intent://` の作成 | `chat/ToriNosInviteLink.kt`（`offerAppLink`・`toriNosAndroidIntentLink`） |
+| Android: `torinos://join` の intent-filter。`singleTask` にして、起動中は `onNewIntent` で受け取る。作り直しと履歴からの起動では受け取らず、受け取ったら Intent から URL を消す | `androidApp/src/main/AndroidManifest.xml`、`MainActivity.kt` |
+| iOS: URL Types に `torinos`。`onOpenURL` から Kotlin の `handleOpenUrl` へ | `iosApp/iosApp/Info.plist`、`iOSApp.swift`、`MainViewController.kt` |
+| 入口ページの［ToriNos アプリで開く］。Android は `intent://…;package=com.nostr.torinos`、iOS は `torinos://join?…`。今のページの移動として開く | `ui/setup/PhoneInviteLanding.kt`、`App.kt`、`LaunchInvite*.kt`（`openAppLink`） |
+| iOS 27.2 の WebKit の不具合で Web 版が真っ白のときの案内（`blank-render-guard.js`）も、招待で開いたなら `torinos://join?…` を渡す | `wasmJsMain/resources/blank-render-guard.js` |
+
+受け取った招待は段階1の預かり（`pendingInvites`）に入れるので、そこから先（未ログインなら鍵設定、ログイン後に参加シート、確認まで何も送らない）は段階1と同じ。
+
+確認したこと:
+
+- 単体テスト: `AppLinkInviteTest`（torinos:// と Web の招待 URL を預かる、ほかの形を受け付けない、`intent://` の形）。
+- Android エミュレーター（デバッグ版）: `am start` で `torinos://join?…` を渡すと、起動していないときも起動中でも参加シートが開く。起動中は Activity が増えない。
+- iOS 27.2 シミュレーター: Safari で `#join?…` 付きで開く → 真っ白の案内 →［ToriNos アプリで開く］→「開く」→ 未ログインのアプリで鍵設定に「招待を受け取りました（ホスト）」が出る。
+- iOS 26.5 シミュレーター: 未ログインの Safari で入口ページに［ToriNos アプリで開く］が出る。
+
+未確認:
+
+- 入口ページのボタンを押してアプリが開くところ（iOS・Android とも）。Android の Chrome が `intent://` からアプリを開くところ。
+- アプリが入っていないときの動き（iOS Safari は「アドレスが無効」の表示、Android Chrome は Google Play）。
+- 実機。
+
 ## 6. 採らなかった案
 
 | 案 | 採らなかった理由 |
@@ -215,7 +242,7 @@ https://pek0hara.github.io/ToriNos/app/#join?relay=<host>&code=<code>
 
 ## 7. 未決事項
 
-1. 段階2で、iOS に独自スキームの［アプリで開く］を出すか。
+1. ~~段階2で、iOS に独自スキームの［アプリで開く］を出すか。~~ 出す（5.6）。
 2. 段階3のドメイン: `pek0hara.github.io` のルートか、独自ドメインか。独自ドメインに移す可能性があるなら、Web 利用者が増える前に決める。
 3. App Store の URL（入口ページの［App Store で入手］に使う）。
 
