@@ -215,6 +215,45 @@ class NostrUriTest {
     }
 
     @Test
+    fun replyTargetId_kind1MentionOnlyQuoteIsNotAReply() {
+        // 短歌 bot などが引用を `mention` の印つき e タグで書く。返信ではない。
+        val event = makeEvent(tags = listOf(listOf("e", "quoted", "", "mention")), content = "quote")
+        assertNull(event.replyTargetId())
+    }
+
+    @Test
+    fun replyTargetId_kind1DirectReplyToRootIgnoresMentions() {
+        // NIP-10: ルートへの直接の返信は `root` の印だけを持つ。
+        val event = makeEvent(
+            tags = listOf(listOf("e", "root", "", "root"), listOf("e", "quoted", "", "mention")),
+            content = "reply",
+        )
+        assertEquals("root", event.replyTargetId())
+    }
+
+    @Test
+    fun replyTargetId_kind1PrefersReplyMarker() {
+        val event = makeEvent(
+            tags = listOf(
+                listOf("e", "root", "", "root"),
+                listOf("e", "parent", "", "reply"),
+                listOf("e", "quoted", "", "mention"),
+            ),
+            content = "reply",
+        )
+        assertEquals("parent", event.replyTargetId())
+    }
+
+    @Test
+    fun replyTargetId_kind1PositionalUsesLastUnmentionedTag() {
+        val event = makeEvent(
+            tags = listOf(listOf("e", "root"), listOf("e", "parent", "wss://r.example/"), listOf("e", "quoted", "", "mention")),
+            content = "reply",
+        )
+        assertEquals("parent", event.replyTargetId())
+    }
+
+    @Test
     fun replyTargetId_kind1111UsesParentEventTag() {
         val event = makeEvent(
             tags = listOf(listOf("E", "root"), listOf("e", "parent")),

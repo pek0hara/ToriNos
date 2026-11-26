@@ -115,10 +115,12 @@ fun NostrEvent.replyTargetId(): String? {
         return tags.lastOrNull { it.firstOrNull() == "e" }?.getOrNull(1)
             ?: tags.firstOrNull { it.firstOrNull() == "E" }?.getOrNull(1)
     }
+    // NIP-10: `reply` の印、無ければ `root` の印（ルートへの直接の返信）。印の無い古い書き方は最後の e タグ。
+    // `mention` の印は引用なので返信先にしない。
     val eTags = tags.filter { it.firstOrNull() == "e" }
-    if (eTags.isEmpty()) return null
     return eTags.firstOrNull { it.getOrNull(3) == "reply" }?.getOrNull(1)
-        ?: eTags.lastOrNull()?.getOrNull(1)
+        ?: eTags.firstOrNull { it.getOrNull(3) == "root" }?.getOrNull(1)
+        ?: eTags.lastOrNull { it.getOrNull(3) != "mention" }?.getOrNull(1)
 }
 
 const val COMMENT_EVENT_KIND = 1111
