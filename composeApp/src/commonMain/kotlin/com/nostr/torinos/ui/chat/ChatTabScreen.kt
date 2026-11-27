@@ -943,6 +943,7 @@ private fun GroupRowItem(
 ) {
     val participants = row.metadata?.participants.orEmpty()
     val direct = row.layout == GroupLayout.Direct
+    val oneOnOne = direct && participants.count { it != ownPubkey } <= 1
     val title = if (direct) dmDisplayName(participants, ownPubkey.orEmpty()) { profiles[it]?.bestName } else row.title
     // 読み込みが終わってもグループ情報も発言も無い行は、控えめに出す。
     val unresolved = resolved && row.isUnresolved
@@ -966,7 +967,7 @@ private fun GroupRowItem(
         val peer = participants.firstOrNull { it != ownPubkey } ?: participants.firstOrNull()
         // 種類のアイコンは小さくし、見出しの行にそろえる。
         Box(modifier = Modifier.padding(top = 1.dp)) {
-            if (direct && peer != null && participants.count { it != ownPubkey } <= 1) {
+            if (direct && peer != null && oneOnOne) {
                 ChatAvatar(pubkey = peer, name = profiles[peer]?.bestName, pictureUrl = profiles[peer]?.picture, size = GROUP_ROW_ICON_SIZE)
             } else {
                 GroupIcon(
@@ -992,17 +993,17 @@ private fun GroupRowItem(
             )
             Spacer(Modifier.height(4.dp))
             // 最新の発言がスレッドの返信なら、元の投稿を上に出し、返信は「╰」を付けてその下に出す（Google Chat と同じ形）。
-            // 送信者の名前は出さず、小さいアイコンで示す。返信は2行まで出す。
+            // 送信者の名前は出さず、小さいアイコンで示す。1対1の DM は行のアイコンと重なるので付けない。返信は2行まで出す。
             val rootPreview = row.threadRootPreview.takeIf { !row.pending }
             if (rootPreview != null) {
-                PreviewLine(rootPreview, author = row.threadRootAuthor, profiles = profiles, color = textColor, maxLines = 1)
+                PreviewLine(rootPreview, author = row.threadRootAuthor.takeIf { !oneOnOne }, profiles = profiles, color = textColor, maxLines = 1)
                 Spacer(Modifier.height(4.dp))
             }
             val preview = row.preview.takeIf { !row.pending }
             if (preview != null) {
                 PreviewLine(
                     preview,
-                    author = row.lastAuthor,
+                    author = row.lastAuthor.takeIf { !oneOnOne },
                     profiles = profiles,
                     color = textColor,
                     maxLines = if (rootPreview != null) 2 else 1,
