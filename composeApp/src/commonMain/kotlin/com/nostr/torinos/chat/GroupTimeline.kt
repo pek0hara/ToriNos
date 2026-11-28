@@ -90,6 +90,11 @@ data class GroupConversation(
      * ルートも [root] に出す。
      */
     val rootHidden: Boolean = false,
+    /**
+     * 自分が関わっている。元の投稿か読めている返信（ミュートした人のものは除く）のどれかが、自分の投稿か、
+     * 自分を `p` で指している（docs/chat-joined-timeline-design.md 2.2）。
+     */
+    val involvesMe: Boolean = false,
 )
 
 private val HEX64 = Regex("^[0-9a-f]{64}$")
@@ -334,7 +339,7 @@ class GroupTimeline(
             if (base.author in hidden) {
                 // 人の返信が無ければ出さない。あれば元の投稿も出す（順番は人の返信の時刻で決める）。
                 return@mapNotNull conversation(root.id, null, repliesByRoot[root.id].orEmpty(), muted, hidden, ::message)
-                    ?.copy(root = rootMessage, rootHidden = true)
+                    ?.let { it.copy(root = rootMessage, rootHidden = true, involvesMe = it.involvesMe || involves(rootMessage)) }
             }
             conversation(root.id, rootMessage, repliesByRoot[root.id].orEmpty(), muted, hidden, ::message)
         }
@@ -356,6 +361,12 @@ class GroupTimeline(
         }
     }
 
+    /** 自分の発言か、自分を `p` で指している。 */
+    private fun involves(message: GroupMessage): Boolean {
+        val me = ownPubkey ?: return false
+        return message.author == me || message.event.tags.any { it.firstOrNull() == "p" && it.getOrNull(1) == me }
+    }
+
     private fun conversation(
         rootId: String,
         root: GroupMessage?,
@@ -369,7 +380,8 @@ class GroupTimeline(
         if (root == null && shown.isEmpty()) return null
         val latest = shown.lastOrNull()
         val activity = maxOf(root?.event?.createdAt ?: Long.MIN_VALUE, latest?.event?.createdAt ?: Long.MIN_VALUE)
-        return GroupConversation(rootId, root, latest, replies.size, activity)
+        val involvesMe = (listOfNotNull(root) + replies).any(::involves)
+        return GroupConversation(rootId, root, latest, replies.size, activity, involvesMe = involvesMe)
     }
 
     private val eventOrder = compareBy<NostrEvent> { it.createdAt }.thenBy { it.id }

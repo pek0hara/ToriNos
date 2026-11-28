@@ -30,10 +30,12 @@ class JoinedTimelineTest {
     private fun reply(root: Int) = listOf(listOf("e", id(root), "", "reply"))
 
     /** リレーごとの保存済みイベントにフィルターを当て、`limit` は新しい順に切る。 */
-    private class FakeRelays(val stored: Map<String, List<NostrEvent>>, val failing: Set<String> = emptySet()) {
+    private class FakeRelays(val stored: Map<String, List<NostrEvent>>, var failing: Set<String> = emptySet()) {
         val requests = mutableListOf<Pair<String, List<NostrFilter>>>()
         /** リレーごとの、答えを止めておく門。開くまで、そのリレーへの要求は返らない。 */
         val gates = mutableMapOf<String, CompletableDeferred<Unit>>()
+        /** リレーごとに、最初のこの回数の要求には答えない（起動直後の接続待ちなど）。 */
+        val failFirst = mutableMapOf<String, Int>()
         private var inFlight = 0
         /** 同時に答えを待っていた要求の数の最大。 */
         var maxInFlight = 0
@@ -48,6 +50,11 @@ class JoinedTimelineTest {
                 inFlight--
             }
             if (relayUrl in failing) return TimelineFetch(emptyList(), answered = false)
+            val left = failFirst[relayUrl] ?: 0
+            if (left > 0) {
+                failFirst[relayUrl] = left - 1
+                return TimelineFetch(emptyList(), answered = false)
+            }
             val events = filters.flatMap { filter ->
                 stored[relayUrl].orEmpty().filter { filter.matches(it) }
                     .sortedByDescending { it.createdAt }
@@ -73,6 +80,220 @@ class JoinedTimelineTest {
         assertEquals(listOf(id(1), id(4), id(3), id(2)), entries.map { it.conversation.rootId })
         assertEquals(GroupRef(buzzRelay, "b1"), entries.first().ref)
         assertEquals(id(5), entries.first().conversation.latestReply?.event?.id)
+    }
+
+    @Test
+    fun threadsOnlyKeepsThreadsIAmPartOf() = runTest {
+        val carol = "e".repeat(64)
+        val mention = listOf(listOf("p", me))
+        val relays = FakeRelays(mapOf(
+            buzzRelay to listOf(
+                ev(1, "b1"), ev(2, "b1", tags = reply(1), pubkey = me), // 自分が返信した
+                ev(3, "b1", pubkey = me), ev(4, "b1", tags = reply(3)), // 自分の元の投稿
+                ev(5, "b1"), ev(6, "b1", tags = reply(5) + mention), // 返信で自分を指している
+                ev(7, "b1"), ev(8, "b1", tags = reply(7)), // 関わっていない
+                ev(9, "b1", pubkey = me), // 返信の無い自分の投稿はスレッドではない
+                ev(10, "b1"), ev(11, "b1", tags = reply(10) + mention, pubkey = carol), // ミュートした人の返信だけ
+            ),
+            stdRelay to listOf(ev(12, "s1", kind = GROUP_THREAD_KIND, pubkey = me)), // 返信の無い kind 11
+        ))
+        val loader = JoinedTimelineLoader(me, relays::fetch, pageSize = 20)
+        loader.load(listOf(buzzGroup("b1"), stdGroup("s1")))
+
+        val threads = loader.entries(muted = setOf(carol)).filter { it.isMyThread }
+        assertEquals(listOf(id(12), id(5), id(3), id(1)), threads.map { it.conversation.rootId })
+    }
+
+    @Test
+    fun threadsOnlyCountsAHiddenBotRoot() = runTest {
+        val bot = "f".repeat(64)
+        val relays = FakeRelays(mapOf(
+            buzzRelay to listOf(ev(1, "b1", kind = BUZZ_AGENT_MESSAGE_KIND, pubkey = bot, tags = listOf(listOf("p", me)), content = """{"content":"agent"}"""), ev(2, "b1", tags = reply(1))),
+        ))
+        val loader = JoinedTimelineLoader(me, relays::fetch, pageSize = 20)
+        loader.load(listOf(buzzGroup("b1")))
+
+        val threads = loader.entries(hideBots = true).filter { it.isMyThread }
+        assertEquals(listOf(id(1)), threads.map { it.conversation.rootId })
+    }
+
+    // ---- 読み込みの見直し（docs/chat-joined-timeline-design.md 3.4） ----
+
+    @Test
+    fun myThreadOutsideTheRecentPageIsReadDirectly() = runTest {
+        val relays = FakeRelays(mapOf(
+            buzzRelay to listOf(
+                ev(1, "b1"), ev(2, "b1", tags = reply(1), pubkey = me), // 古いスレッドに自分が返信した
+                ev(3, "b1"), ev(4, "b1", tags = reply(3) + listOf(listOf("p", me))), // 古いスレッドでメンションされた
+                ev(10, "b1"), ev(11, "b1"), ev(12, "b1"), // 最近の投稿（ページは2件）
+            ),
+        ))
+        val loader = JoinedTimelineLoader(me, relays::fetch, pageSize = 2, readMine = true)
+        loader.load(listOf(buzzGroup("b1")))
+
+        assertEquals(listOf(id(3), id(1)), loader.myThreads().map { it.conversation.rootId })
+        // タイムラインは今まで通り、最近のページの範囲だけ（古い投稿を飛び飛びに混ぜない）。
+        assertEquals(listOf(id(12), id(11)), loader.entries().map { it.conversation.rootId })
+    }
+
+    @Test
+    fun myThreadsAreNotReadUnlessAsked() = runTest {
+        val relays = FakeRelays(mapOf(buzzRelay to listOf(ev(1, "b1"))))
+        JoinedTimelineLoader(me, relays::fetch, pageSize = 2).load(listOf(buzzGroup("b1")))
+        assertTrue(relays.requests.flatMap { it.second }.none { it.authors == listOf(me) || it.pTags == listOf(me) })
+    }
+
+    @Test
+    fun olderThreadsPageOnlyMyPosts() = runTest {
+        val relays = FakeRelays(mapOf(
+            buzzRelay to listOf(
+                ev(1, "b1"), ev(2, "b1", tags = reply(1), pubkey = me),
+                ev(3, "b1"), ev(4, "b1", tags = reply(3), pubkey = me),
+                ev(5, "b1"), ev(6, "b1", tags = reply(5), pubkey = me),
+                ev(20, "b1"), ev(21, "b1"),
+            ),
+        ))
+        val loader = JoinedTimelineLoader(me, relays::fetch, pageSize = 2, readMine = true)
+        loader.load(listOf(buzzGroup("b1")))
+        assertEquals(listOf(id(5), id(3)), loader.myThreads().map { it.conversation.rootId })
+        assertTrue(loader.canLoadOlderThreads)
+
+        relays.requests.clear()
+        loader.loadOlderThreads()
+        assertEquals(listOf(id(5), id(3), id(1)), loader.myThreads().map { it.conversation.rootId })
+        // 全員の投稿はさかのぼらない。
+        val paged = relays.requests.flatMap { it.second }.filter { it.until != null }
+        assertTrue(paged.isNotEmpty())
+        assertTrue(paged.all { it.authors == listOf(me) || it.pTags == listOf(me) })
+    }
+
+    private class Clock(var now: Long = 1_000_000L) {
+        fun read() = now
+    }
+
+    @Test
+    fun updateReadsOnlyWhatIsNewSinceTheLastLoad() = runTest {
+        val stored = mutableListOf(ev(100, "b1"), ev(110, "b1"))
+        val relays = FakeRelays(mapOf(buzzRelay to stored))
+        val clock = Clock()
+        val loader = JoinedTimelineLoader(me, relays::fetch, pageSize = 10, readMine = true, clock = clock::read)
+        loader.load(listOf(buzzGroup("b1")))
+
+        stored += ev(200, "b1")
+        stored += ev(210, "b1", tags = reply(110))
+        stored += ev(220, "b1", kind = 5, tags = listOf(listOf("e", id(100))))
+        relays.requests.clear()
+        clock.now += 5 * 60_000L
+        loader.update(listOf(buzzGroup("b1")))
+
+        assertEquals(listOf(id(110), id(200)), loader.entries().map { it.conversation.rootId })
+        assertEquals(id(210), loader.entries().first().conversation.latestReply?.event?.id)
+        // 最新の投稿（110）から 60 秒戻した時刻から読む。いちからは読まない。
+        val first = relays.requests.first().second
+        assertTrue(first.all { it.since == 110L - 60 })
+        assertTrue(relays.requests.flatMap { it.second }.none { it.since == null && it.ids == null && it.eTags == null && it.rootEventTags == null && it.dTags == null })
+    }
+
+    @Test
+    fun updateReloadsARelayWhenTooMuchHappened() = runTest {
+        val stored = mutableListOf(ev(100, "b1"))
+        val relays = FakeRelays(mapOf(buzzRelay to stored))
+        val clock = Clock()
+        val loader = JoinedTimelineLoader(me, relays::fetch, pageSize = 2, readMine = true, clock = clock::read)
+        loader.load(listOf(buzzGroup("b1")))
+
+        stored += listOf(ev(200, "b1"), ev(201, "b1"), ev(202, "b1"))
+        clock.now += 5 * 60_000L
+        relays.requests.clear()
+        loader.update(listOf(buzzGroup("b1")))
+
+        // 差分がページいっぱいなので、いちから読み直す（間の抜けたタイムラインにしない）。
+        assertTrue(relays.requests.flatMap { it.second }.any { it.since == null && it.limit == 2 && it.authors == null && it.pTags == null })
+        assertEquals(listOf(id(202), id(201)), loader.entries().map { it.conversation.rootId })
+    }
+
+    @Test
+    fun updateReloadsARelayAfterALongGap() = runTest {
+        val relays = FakeRelays(mapOf(buzzRelay to listOf(ev(100, "b1"))))
+        val clock = Clock()
+        val loader = JoinedTimelineLoader(me, relays::fetch, pageSize = 10, readMine = true, clock = clock::read)
+        loader.load(listOf(buzzGroup("b1")))
+
+        clock.now += 31 * 60_000L
+        relays.requests.clear()
+        loader.update(listOf(buzzGroup("b1")))
+        assertTrue(relays.requests.flatMap { it.second }.none { it.since != null })
+    }
+
+    @Test
+    fun aRelayThatAnsweredNothingIsReadOnceMore() = runTest {
+        val relays = FakeRelays(mapOf(buzzRelay to listOf(ev(100, "b1")), stdRelay to listOf(ev(101, "s1"))))
+        // 起動直後で、最初の要求（1ページ目と自分の投稿）に答えない。
+        relays.failFirst[buzzRelay] = 2
+        val loader = JoinedTimelineLoader(me, relays::fetch, pageSize = 10, readMine = true)
+        loader.load(listOf(buzzGroup("b1"), stdGroup("s1")))
+        assertEquals(listOf(id(101), id(100)), loader.entries().map { it.conversation.rootId })
+        assertEquals(emptySet(), loader.failedRelays)
+        // 読めたリレーは読み直さない。
+        assertEquals(1, relays.requests.count { (url, filters) -> url == stdRelay && filters.any { it.limit == 10 && it.authors == null && it.pTags == null } })
+    }
+
+    @Test
+    fun aRelayThatNeverAnswersIsReadOnlyTwice() = runTest {
+        val relays = FakeRelays(mapOf(buzzRelay to listOf(ev(100, "b1"))), failing = setOf(buzzRelay))
+        val loader = JoinedTimelineLoader(me, relays::fetch, pageSize = 10)
+        loader.load(listOf(buzzGroup("b1")))
+        assertEquals(setOf(buzzRelay), loader.failedRelays)
+        assertEquals(2, relays.requests.size)
+    }
+
+    @Test
+    fun updateKeepsThePreviousResultWhenTheReloadFails() = runTest {
+        val relays = FakeRelays(mapOf(buzzRelay to listOf(ev(100, "b1"))))
+        val clock = Clock()
+        val loader = JoinedTimelineLoader(me, relays::fetch, pageSize = 10, readMine = true, clock = clock::read)
+        loader.load(listOf(buzzGroup("b1")))
+
+        // 間が空いたのでいちから読むが、リレーが答えない（バックグラウンドから戻った直後など）。前の結果は消さない。
+        clock.now += 31 * 60_000L
+        relays.failing = setOf(buzzRelay)
+        loader.update(listOf(buzzGroup("b1")))
+        assertEquals(listOf(id(100)), loader.entries().map { it.conversation.rootId })
+        assertEquals(setOf(buzzRelay), loader.failedRelays)
+
+        // 次に答えたら、いちから読み直した結果に替える。
+        relays.failing = emptySet()
+        loader.update(listOf(buzzGroup("b1")))
+        assertEquals(listOf(id(100)), loader.entries().map { it.conversation.rootId })
+        assertEquals(emptySet(), loader.failedRelays)
+    }
+
+    @Test
+    fun updateReadsOnlyWhatIsNewWhenTheGroupsComeInAnotherOrder() = runTest {
+        val relays = FakeRelays(mapOf(buzzRelay to listOf(ev(100, "b1"), ev(101, "b2"))))
+        val clock = Clock()
+        val loader = JoinedTimelineLoader(me, relays::fetch, pageSize = 10, readMine = true, clock = clock::read)
+        loader.load(listOf(buzzGroup("b1"), buzzGroup("b2")))
+
+        clock.now += 5 * 60_000L
+        relays.requests.clear()
+        loader.update(listOf(buzzGroup("b2"), buzzGroup("b1")))
+        assertTrue(relays.requests.first().second.all { it.since == 101L - 60 })
+    }
+
+    @Test
+    fun updateReloadsOnlyTheRelaysThatChangedOrFailed() = runTest {
+        val relays = FakeRelays(mapOf(buzzRelay to listOf(ev(100, "b1")), stdRelay to listOf(ev(101, "s1"))), failing = setOf(stdRelay))
+        val clock = Clock()
+        val loader = JoinedTimelineLoader(me, relays::fetch, pageSize = 10, readMine = true, clock = clock::read)
+        loader.load(listOf(buzzGroup("b1"), stdGroup("s1")))
+
+        clock.now += 5 * 60_000L
+        relays.requests.clear()
+        loader.update(listOf(buzzGroup("b1"), buzzGroup("b2"), stdGroup("s1")))
+        // b2 が増えた buzz と、前回読めなかった std は、いちから読む。
+        assertTrue(relays.requests.filter { it.first == buzzRelay }.flatMap { it.second }.any { it.since == null && it.limit == 10 })
+        assertTrue(relays.requests.filter { it.first == stdRelay }.flatMap { it.second }.any { it.since == null && it.limit == 10 })
     }
 
     @Test

@@ -48,3 +48,22 @@ internal fun List<MdInline>.plainText(): String = joinToString("") { inline ->
 
 private fun isVideoUrl(url: String): Boolean =
     url.substringBefore('?').substringBefore('#').lowercase().let { it.endsWith(".mp4") || it.endsWith(".mov") || it.endsWith(".webm") }
+
+/** 一覧のプレビューで `:shortcode:` を絵にするための、発言の emoji タグ（小文字の shortcode → 画像の URL）。 */
+internal fun previewEmojiMap(event: com.nostr.torinos.model.NostrEvent): Map<String, String> {
+    // 発言の画面（GroupTimeline の messageEmojis）と同じく、同じ shortcode は先のタグを使う。
+    val result = linkedMapOf<String, String>()
+    event.tags.forEach { tag ->
+        val emoji = com.nostr.torinos.emoji.parseEmojiTag(tag) ?: return@forEach
+        result.getOrPut(emoji.shortcode.lowercase()) { emoji.imageUrl }
+    }
+    return result
+}
+
+/** [text] の中で、画像のある（[available] に入っている）`:shortcode:` の位置と小文字の shortcode。 */
+internal fun previewEmojiMatches(text: String, available: Set<String>): List<Pair<IntRange, String>> {
+    if (available.isEmpty()) return emptyList()
+    return com.nostr.torinos.emoji.CustomEmojiCodeRegex.findAll(text)
+        .mapNotNull { match -> match.groupValues[1].lowercase().takeIf { it in available }?.let { match.range to it } }
+        .toList()
+}

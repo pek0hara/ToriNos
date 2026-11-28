@@ -613,8 +613,8 @@ private fun PostRelaySettingsDialog(
         onSelectionChange = onSelectionChange,
         onDismiss = onDismiss,
         note = when {
-            allRecommendedRemoved -> "チャンネルの推奨リレーがすべて外れています。他のクライアントから見えにくくなります。"
-            recommendedRelayUrls.isNotEmpty() -> "チャンネルの推奨リレー: ${recommendedRelayUrls.size}件"
+            allRecommendedRemoved -> "トピックの推奨リレーがすべて外れています。他のクライアントから見えにくくなります。"
+            recommendedRelayUrls.isNotEmpty() -> "トピックの推奨リレー: ${recommendedRelayUrls.size}件"
             else -> null
         },
     )

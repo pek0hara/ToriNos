@@ -132,6 +132,10 @@ data class ChatGroupRow(
     /** スレッドの返信なら、その上に出すルートの1行（Google Chat のように「元の投稿 + 返信」で出す）。 */
     val threadRootPreview: String? get() = threadRoot?.let { previewOf(it, threadRootEditedBody) }
 
+    /** プレビューの `:shortcode:` を絵にするための emoji タグ。編集後の本文でも元の発言のタグを使う。 */
+    val previewEmojis: Map<String, String> get() = lastMessage?.let { com.nostr.torinos.chat.previewEmojiMap(it) }.orEmpty()
+    val threadRootEmojis: Map<String, String> get() = threadRoot?.let { com.nostr.torinos.chat.previewEmojiMap(it) }.orEmpty()
+
     private fun previewOf(event: NostrEvent, edited: String?): String? = when (event.kind) {
         BUZZ_FORUM_POST_KIND, GROUP_THREAD_KIND -> groupPostTitle(event)
         else -> {
@@ -184,6 +188,69 @@ internal fun splitArchivedRows(rows: List<ChatGroupRow>): Pair<List<ChatGroupRow
 
 internal fun groupRowsByRelay(rows: List<ChatGroupRow>): List<ChatRowSection> =
     rows.groupBy { it.ref.relayUrl }.map { (relayUrl, group) -> ChatRowSection(relayUrl, group) }
+
+/** タイムラインの読み方（docs/chat-joined-timeline-design.md 3.4.3）。 */
+internal enum class TimelineReload { None, Update, Full }
+
+/** 読み直してから、チャットタブに戻っても読まない時間。 */
+internal const val TIMELINE_FRESH_MILLIS = 60_000L
+
+/**
+ * タイムラインをどう読むか。同じグループを読んでいる途中なら待つ。[force]（タブに入った・バックグラウンドから
+ * 戻った）でなければ、グループが変わったときだけ読む。読み終えて間もなければ読まない。前の結果があれば差分で読む。
+ */
+internal fun timelineReload(
+    sameGroups: Boolean,
+    loading: Boolean,
+    force: Boolean,
+    hasLoader: Boolean,
+    millisSinceLoaded: Long?,
+): TimelineReload = when {
+    sameGroups && loading -> TimelineReload.None
+    sameGroups && !force -> TimelineReload.None
+    sameGroups && hasLoader && millisSinceLoaded != null && millisSinceLoaded < TIMELINE_FRESH_MILLIS -> TimelineReload.None
+    hasLoader -> TimelineReload.Update
+    else -> TimelineReload.Full
+}
+
+/** チャンネルの一覧の絞り込み（Google Chat のホームのチップ。docs/chat-joined-timeline-design.md 2.2）。 */
+enum class ChatListFilter { Both, Channels, Threads }
+
+/** チャンネルの一覧の1行。チャンネルか、関わっているスレッド。 */
+sealed interface ChatListItem {
+    val key: String
+    val lastActivity: Long
+    val relayUrl: String
+
+    data class Channel(val row: ChatGroupRow) : ChatListItem {
+        override val key: String get() = "j-" + row.ref.key
+        override val relayUrl: String get() = row.ref.relayUrl
+        override val lastActivity: Long get() = row.lastActivity
+    }
+
+    data class Thread(val row: ChatTimelineRow, val card: ChatGroupRow) : ChatListItem {
+        override val key: String get() = "t-" + row.entry.key
+        override val relayUrl: String get() = row.entry.ref.relayUrl
+        override val lastActivity: Long get() = row.entry.conversation.lastActivity
+    }
+}
+
+/**
+ * チャンネルの行がプレビューに出しているスレッドを除く（同じ投稿が2行に並ばないように）。[channels] は一覧に出す
+ * 全部のチャンネル（未読のものも）。
+ */
+internal fun threadsNotInChannelPreviews(threads: List<ChatTimelineRow>, channels: List<ChatGroupRow>): List<ChatTimelineRow> {
+    val shown = channels.flatMapTo(mutableSetOf()) { listOfNotNull(it.lastMessage?.id, it.threadRoot?.id) }
+    return threads.filter { thread ->
+        val conversation = thread.entry.conversation
+        conversation.rootId !in shown && conversation.latestReply?.event?.id !in shown
+    }
+}
+
+/** チャンネルとスレッドを、最後の動きの新しい順に混ぜる。同じ時刻ならチャンネルを先に。 */
+internal fun mergeChannelsAndThreads(channels: List<ChatGroupRow>, threads: List<ChatTimelineRow>): List<ChatListItem> =
+    (channels.map { ChatListItem.Channel(it) } + threads.map { ChatListItem.Thread(it, it.threadCard()) })
+        .sortedWith(compareByDescending<ChatListItem> { it.lastActivity }.thenBy { if (it is ChatListItem.Channel) 0 else 1 })
 
 /** 参加シートの状態。 */
 sealed interface JoinSheetState {
@@ -268,7 +335,28 @@ internal fun createRejectionMessage(kind: CreateRejection, reason: String): Stri
 enum class ChatListView { Groups, Timeline }
 
 /** タイムラインの1行。[group] はグループの見出し・アイコンに使う。 */
-data class ChatTimelineRow(val entry: com.nostr.torinos.chat.JoinedTimelineEntry, val group: ChatGroupRow)
+data class ChatTimelineRow(val entry: com.nostr.torinos.chat.JoinedTimelineEntry, val group: ChatGroupRow) {
+    /**
+     * 「スレッド」の一覧で、チャンネルの一覧と同じカードで出すための行（docs/chat-joined-timeline-design.md 2.2）。
+     * 元の投稿を上に、最新の返信を「╰」で下に出す。未読はチャンネルのものなので出さない。
+     */
+    fun threadCard(): ChatGroupRow {
+        val root = entry.conversation.root
+        val reply = entry.conversation.latestReply
+        val latest = reply ?: root
+        val shownRoot = root.takeIf { reply != null }
+        return group.copy(
+            lastMessage = latest?.event,
+            lastAuthor = latest?.author,
+            editedBody = latest?.body,
+            threadRoot = shownRoot?.event,
+            threadRootEditedBody = shownRoot?.body,
+            threadRootAuthor = shownRoot?.author,
+            unread = false,
+            unreadCount = null,
+        )
+    }
+}
 
 data class ChatTimelineState(
     val rows: List<ChatTimelineRow> = emptyList(),
@@ -283,6 +371,10 @@ data class ChatTimelineState(
     val imagesUnlocked: Boolean = false,
     /** bot（エージェント）の投稿を出さない（docs/chat-joined-timeline-design.md 2.1）。アカウントごとに保存する。 */
     val hideBots: Boolean = false,
+    /** 自分が関わっているスレッド（[rows] と同じ読み込みから。bot は隠さない）。 */
+    val threadRows: List<ChatTimelineRow> = emptyList(),
+    /** 自分が関わった投稿を、まださかのぼれる（「スレッド」だけのときの「さらに読み込む」）。 */
+    val canLoadOlderThreads: Boolean = false,
     /** bot を隠すと出なくなる投稿の数（読めている範囲）。 */
     val hiddenBotPosts: Int = 0,
     /** リレーで bot と分かった人。名前の横に Bot の印を出す。 */
@@ -291,6 +383,8 @@ data class ChatTimelineState(
 
 data class ChatTabUiState(
     val selection: ChatSelection = ChatSelection.All,
+    /** チャンネルのタブの絞り込み（両方・チャンネルだけ・スレッドだけ）。アカウントごとに保存する。 */
+    val listFilter: ChatListFilter = ChatListFilter.Both,
     val view: ChatListView = ChatListView.Groups,
     val timeline: ChatTimelineState = ChatTimelineState(),
     val relays: List<ChatRelaySummary> = emptyList(),
@@ -348,6 +442,25 @@ data class ChatTabUiState(
 
     /** タイムラインを出す。 */
     val showsTimeline: Boolean get() = showsViewToggle && view == ChatListView.Timeline
+
+    /** チャンネルのタブに絞り込み（「チャンネル」「スレッド」）を出す（リレー・コミュニティか、チャンネルのある「すべて」）。 */
+    val showsListFilter: Boolean
+        get() = hasSigner && !showsDmList && (selection is ChatSelection.Relay || (selection == ChatSelection.All && hasGroups))
+
+    /** 一覧に関わっているスレッドを出す（「両方」か「スレッド」）。タイムラインのタブでは出さない。 */
+    val showsThreadRows: Boolean get() = channelPageShowsThreads && !showsTimeline
+
+    /**
+     * チャンネルのページがスレッドを混ぜて描く。表示がタイムラインでも、ページ自体はこれで描く（スワイプで移る間に
+     * チャンネルだけを描いて、止まってからスレッドを差し込まないように）。読み込みの要否は [showsThreadRows] で決める。
+     */
+    val channelPageShowsThreads: Boolean get() = showsListFilter && listFilter != ChatListFilter.Channels
+
+    /** 一覧にチャンネルを出す（「スレッド」だけにしていなければ）。 */
+    val showsChannelRows: Boolean get() = !showsListFilter || listFilter != ChatListFilter.Threads
+
+    /** タイムラインの読み込みが要る（タイムラインか、一覧にスレッドを出している）。 */
+    val needsTimeline: Boolean get() = showsTimeline || showsThreadRows
 
     /** 選んでいるのが Buzz のコミュニティ（bot の切り替えを出す）。 */
     val selectsBuzzCommunity: Boolean
@@ -455,8 +568,14 @@ class ChatTabViewModel(
     private var timelineJob: Job? = null
     /** 読み込み中、または最後に読んだタイムラインのグループ。同じグループなら読み直さないことがある。 */
     private var timelineRequestedGroups: Set<com.nostr.torinos.chat.TimelineGroup>? = null
+    /** タイムラインを最後に読み終えた時刻（ミリ秒）。戻ってすぐは読み直さない（3.4.3）。 */
+    private var timelineLoadedAt: Long? = null
     /** 前回の一覧の控えを戻し終えた。タイムラインのグループは、これを待ってから数える（空と決めつけない）。 */
     private val snapshotRestored = kotlinx.coroutines.CompletableDeferred<Unit>()
+    /** 控えから戻して出しているスレッドの行。読み終えるまで差し替えない（3.5）。null なら控えを出していない。 */
+    private var restoredThreads: List<com.nostr.torinos.chat.JoinedTimelineEntry>? = null
+    /** 端末に控えてあるスレッド。保存するときに、今回読まなかったリレーの分を残すのに使う。 */
+    private var cachedThreads: List<com.nostr.torinos.chat.CachedThread> = emptyList()
     /** プロフィールを読みに行った作者（同じ人を何度も頼まない）。 */
     private val timelineAuthors = mutableSetOf<String>()
     /** 保存した選択を戻す前に利用者が選び直したら、戻さない。 */
@@ -478,7 +597,8 @@ class ChatTabViewModel(
         }
         if (account != null) {
             account.start()
-            launch { try { restoreSnapshot(account) } finally { snapshotRestored.complete(Unit) } }
+            // スレッドの控えも、タイムラインを読み始める前に戻す（3.5）。
+            launch { try { restoreSnapshot(account); restoreThreads(account) } finally { snapshotRestored.complete(Unit) } }
             launch { restoreSelection(account) }
             launch { restoreView(account) }
             mutedPubkeys?.let { flow -> launch { flow.collect { publishTimeline() } } }
@@ -631,6 +751,34 @@ class ChatTabViewModel(
             if (!buzzJoined.containsKey(relayUrl)) buzzJoined[relayUrl] = rows.map { it.ref }.toSet()
         }
         publish()
+    }
+
+    /** 前回の関わっているスレッドを、タイムラインを読み終えるまで出しておく（docs/chat-joined-timeline-design.md 3.5）。 */
+    private suspend fun restoreThreads(account: ChatAccount) {
+        val cached = com.nostr.torinos.chat.ChatThreadCache.load(account.pubkey)
+        cachedThreads = cached
+        if (cached.isEmpty() || timelineLoader != null || _state.value.timeline.threadRows.isNotEmpty()) return
+        // 選択はまだ戻していないことがあるので、保存した選択で絞る。
+        val selection = if (selectionTouched) _state.value.selection else decodeChatSelection(LocalSettingsStorage.getString(selectionKey(account.pubkey)))
+        if (selection == ChatSelection.Direct) return
+        val relayFilter = (selection as? ChatSelection.Relay)?.relayUrl
+        val shown = com.nostr.torinos.chat.restorableThreads(cached, relayFilter, mutedPubkeys?.value.orEmpty())
+        if (shown.isEmpty()) return
+        restoredThreads = shown.map { it.toEntry() }
+        val rows = shown.map { thread -> ChatTimelineRow(thread.toEntry(), row(GroupRef(thread.relayUrl, thread.groupId), thread.flavor)) }
+        _state.update { it.copy(timeline = it.timeline.copy(threadRows = rows)) }
+    }
+
+    /** 読み終えた関わっているスレッドを控える。答えなかったリレー・今回読まなかったリレーの分は前の控えを残す。 */
+    private fun saveThreads(fresh: List<com.nostr.torinos.chat.JoinedTimelineEntry>, loader: com.nostr.torinos.chat.JoinedTimelineLoader) {
+        val me = account?.pubkey ?: return
+        val answered = timelineRequestedGroups.orEmpty().map { it.ref.relayUrl }.toSet() - loader.failedRelays
+        val freshCached = fresh.map { entry ->
+            com.nostr.torinos.chat.CachedThread.of(entry, if (entry.ref.relayUrl in buzz) GroupFlavor.Buzz else GroupFlavor.Standard)
+        }
+        val merged = com.nostr.torinos.chat.mergeCachedThreads(freshCached, cachedThreads, keep = { it !in answered })
+        cachedThreads = merged
+        launch { com.nostr.torinos.chat.ChatThreadCache.save(me, merged) }
     }
 
     /** いまの参加中の一覧を、次に開いたときのために保存する。 */
@@ -882,6 +1030,11 @@ class ChatTabViewModel(
             _state.update { it.copy(timeline = it.timeline.copy(hideBots = true)) }
             publishTimeline()
         }
+        val filter = ChatListFilter.entries.firstOrNull { it.name == LocalSettingsStorage.getString(listFilterKey(account.pubkey)) }
+        if (filter != null && filter != _state.value.listFilter) {
+            _state.update { it.copy(listFilter = filter) }
+            refreshTimeline(force = false)
+        }
         val stored = LocalSettingsStorage.getString(viewKey(account.pubkey))
         if (stored != ChatListView.Timeline.name || _state.value.view == ChatListView.Timeline) return
         setView(ChatListView.Timeline, persist = false)
@@ -900,6 +1053,13 @@ class ChatTabViewModel(
         account?.pubkey?.let { me -> launch { LocalSettingsStorage.putString(hideBotsKey(me), hide.toString()) } }
         _state.update { it.copy(timeline = it.timeline.copy(hideBots = hide)) }
         publishTimeline()
+    }
+
+    /** チャンネルのタブの絞り込みを変える。スレッドを出すなら読む（読めていれば読み直さない）。 */
+    fun setListFilter(filter: ChatListFilter) {
+        account?.pubkey?.let { me -> launch { LocalSettingsStorage.putString(listFilterKey(me), filter.name) } }
+        _state.update { it.copy(listFilter = filter) }
+        refreshTimeline(force = false)
     }
 
     /** 参加中のグループ（選んでいるリレーのものだけ）。削除・非表示のチャンネルは外す。 */
@@ -921,20 +1081,55 @@ class ChatTabViewModel(
      * どちらでも取り消さない（起動直後は一覧の読み直しが続けて呼ばれるため。docs/chat-joined-timeline-design.md 3.3）。
      */
     fun refreshTimeline(force: Boolean = true) {
-        if (!_state.value.showsTimeline) return
+        if (!_state.value.needsTimeline) return
         val account = account ?: return
         launch {
             account.awaitReady()
             snapshotRestored.await()
             val groups = timelineGroups()
-            if (!_state.value.showsTimeline) return@launch
+            if (!_state.value.needsTimeline) return@launch
             // 参加中の一覧（kind 10009）を読む前や、一覧の読み直しの途中は、グループが無いと決めつけない。
             // 読めたら一覧の読み直しが走り、終わったときにここへ来る（空の一覧で「投稿がありません」を出さない）。
             if (groups.isEmpty() && (refreshJob?.isActive == true || !_state.value.hasLoaded)) return@launch
             // 並び順は一覧の読み直しで変わるので、集合で比べる。
-            if (groups.toSet() == timelineRequestedGroups && (timelineJob?.isActive == true || !force)) return@launch
-            startTimelineLoad(account, groups)
+            val reload = timelineReload(
+                sameGroups = groups.toSet() == timelineRequestedGroups,
+                loading = timelineJob?.isActive == true,
+                force = force,
+                hasLoader = timelineLoader != null,
+                millisSinceLoaded = timelineLoadedAt?.let { nowMillis() - it },
+            )
+            com.nostr.torinos.util.timelineTraceLog { "timeline reload=$reload force=$force" }
+            when (reload) {
+                TimelineReload.None -> Unit
+                TimelineReload.Update -> startTimelineUpdate(groups)
+                TimelineReload.Full -> startTimelineLoad(account, groups)
+            }
         }
+    }
+
+    private fun nowMillis(): Long = kotlin.time.Clock.System.now().toEpochMilliseconds()
+
+    /** 前の結果に差分を足す（3.4.3）。読み終わるまで前の結果を出しておく。 */
+    private fun startTimelineUpdate(groups: List<com.nostr.torinos.chat.TimelineGroup>) {
+        val loader = timelineLoader ?: return
+        timelineJob?.cancel()
+        timelineRequestedGroups = groups.toSet()
+        _state.update { it.copy(timeline = it.timeline.copy(isLoading = true)) }
+        val job = launch(start = CoroutineStart.LAZY) {
+            try {
+                loader.update(groups)
+                timelineLoadedAt = nowMillis()
+                if (timelineLoader === loader) publishTimeline(loaded = true)
+                com.nostr.torinos.util.timelineTraceLog { "timeline updated rows=${_state.value.timeline.rows.size} failed=${loader.failedRelays.size}" }
+            } finally {
+                if (timelineJob === coroutineContext[Job]) {
+                    _state.update { it.copy(timeline = it.timeline.copy(isLoading = false)) }
+                }
+            }
+        }
+        timelineJob = job
+        job.start()
     }
 
     /** 読み直す。前の結果を出しているときは、読み終わるまでそれを出しておく。まだ何も出していなければ、読めたリレーから出す。 */
@@ -945,7 +1140,8 @@ class ChatTabViewModel(
         com.nostr.torinos.util.timelineTraceLog { "timeline load groups=${groups.size} relays=${groups.map { it.ref.relayUrl }.distinct().size}" }
         val job = launch(start = CoroutineStart.LAZY) {
             try {
-                val loader = com.nostr.torinos.chat.JoinedTimelineLoader(account.pubkey, ::timelineFetch)
+                // チャンネルのタブに関わっているスレッドを出すので、自分が関わった投稿も読む（3.4.2）。
+                val loader = com.nostr.torinos.chat.JoinedTimelineLoader(account.pubkey, ::timelineFetch, readMine = true)
                 val progressive = _state.value.timeline.rows.isEmpty()
                 if (progressive) timelineLoader = loader
                 loader.load(groups) {
@@ -955,12 +1151,30 @@ class ChatTabViewModel(
                     }
                 }
                 timelineLoader = loader
+                timelineLoadedAt = nowMillis()
                 publishTimeline(loaded = true)
                 com.nostr.torinos.util.timelineTraceLog { "timeline loaded rows=${_state.value.timeline.rows.size} failed=${loader.failedRelays.size}" }
             } finally {
                 if (timelineJob === coroutineContext[Job]) {
                     _state.update { it.copy(timeline = it.timeline.copy(isLoading = false, isLoadingOlder = false)) }
                 }
+            }
+        }
+        timelineJob = job
+        job.start()
+    }
+
+    /** 関わっているスレッドを、さらに古いところまで読む（自分が関わった投稿だけをさかのぼる）。 */
+    fun loadOlderThreads() {
+        val loader = timelineLoader ?: return
+        if (timelineJob?.isActive == true || !loader.canLoadOlderThreads) return
+        _state.update { it.copy(timeline = it.timeline.copy(isLoadingOlder = true)) }
+        val job = launch(start = CoroutineStart.LAZY) {
+            try {
+                loader.loadOlderThreads()
+                if (timelineLoader === loader) publishTimeline()
+            } finally {
+                if (timelineJob === coroutineContext[Job]) _state.update { it.copy(timeline = it.timeline.copy(isLoadingOlder = false)) }
             }
         }
         timelineJob = job
@@ -991,9 +1205,23 @@ class ChatTabViewModel(
 
     private fun publishTimeline(loaded: Boolean = false) {
         val loader = timelineLoader ?: return
-        val entries = loader.entries(mutedPubkeys?.value.orEmpty(), hideBots = _state.value.timeline.hideBots)
+        val muted = mutedPubkeys?.value.orEmpty()
+        val entries = loader.entries(muted, hideBots = _state.value.timeline.hideBots)
+        // 「スレッド」の一覧は bot を隠さない（切り替えはタイムラインにだけある）。表示の下限でも切らない（3.4.2）。
+        val freshThreads = loader.myThreads(muted)
+        // 控えを出している間は、読み終えるまでスレッドの行を差し替えない。答えなかったリレーの分は控えを残す（3.5）。
+        val restored = restoredThreads
+        val threadEntries = when {
+            restored == null -> freshThreads
+            !loaded -> restored
+            else -> com.nostr.torinos.chat.mergeThreadEntries(freshThreads, restored, keep = { it in loader.failedRelays })
+        }
+        if (loaded) {
+            restoredThreads = null
+            saveThreads(freshThreads, loader)
+        }
         // 行に出す作者の名前を読んでおく（グループのリレーに先に聞く）。Buzz では本文でメンションされた人の名前も要る。
-        entries.flatMap { entry ->
+        (entries + threadEntries).distinctBy { it.key }.flatMap { entry ->
             val posts = listOfNotNull(entry.conversation.root, entry.conversation.latestReply)
             val mentioned = if (entry.ref.relayUrl in buzz) posts.flatMap { com.nostr.torinos.chat.buzzProfileTargets(it.event) } else emptyList()
             (posts.map { it.author } + mentioned).map { it to entry.ref.relayUrl }
@@ -1002,14 +1230,17 @@ class ChatTabViewModel(
             .forEach { (relayUrl, authors) ->
                 launch { ProfileRepository.ensureProfiles(authors.toSet(), ProfileFetchPolicy.CacheFirst(maxAgeMillis = 3_600_000), relayHint = relayUrl) }
             }
-        val rows = entries.map { entry ->
+        fun timelineRow(entry: com.nostr.torinos.chat.JoinedTimelineEntry) =
             ChatTimelineRow(entry, row(entry.ref, if (entry.ref.relayUrl in buzz) GroupFlavor.Buzz else GroupFlavor.Standard))
-        }
+        val rows = entries.map(::timelineRow)
+        val threadRows = threadEntries.map(::timelineRow)
         val failed = loader.failedRelays.map { url -> relayInfo[url]?.name?.takeIf { it.isNotBlank() } ?: url.substringAfter("://").trimEnd('/') }
         _state.update {
             it.copy(
                 timeline = it.timeline.copy(
                     rows = rows,
+                    threadRows = threadRows,
+                    canLoadOlderThreads = loader.canLoadOlderThreads,
                     loaded = it.timeline.loaded || loaded,
                     canLoadOlder = loader.canLoadOlder,
                     failedRelays = failed.sorted(),
@@ -1601,7 +1832,7 @@ class ChatTabViewModel(
         val input = (_state.value.join as? JoinSheetState.Input) ?: return
         when (val parsed = parseGroupInput(input.text)) {
             GroupInput.Invalid -> _state.update {
-                it.copy(join = input.copy(error = "グループのリンク（naddr）、招待リンク、リレーのアドレスを入力してください"))
+                it.copy(join = input.copy(error = "チャンネルのリンク（naddr）、招待リンク、リレーのアドレスを入力してください"))
             }
             GroupInput.BareBuzzCode -> _state.update {
                 it.copy(join = input.copy(error = "招待リンク全体を貼ってください"))
@@ -1799,6 +2030,8 @@ private fun selectionKey(pubkey: String) = "chat.selectedRelay.$pubkey"
 private fun viewKey(pubkey: String) = "chat.view.$pubkey"
 
 private fun hideBotsKey(pubkey: String) = "chat.hideBots.$pubkey"
+
+private fun listFilterKey(pubkey: String) = "chat.listFilter.$pubkey"
 
 /** 「すべて」は何も保存しない。リレーは URL をそのまま保存する。 */
 internal fun encodeChatSelection(selection: ChatSelection): String? = when (selection) {

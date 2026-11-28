@@ -391,7 +391,7 @@ private fun GroupRoomScreen(ref: GroupRef, mode: GroupRoomMode, navigation: Grou
                             modifier = if (opensParent) {
                                 Modifier.clickable(onClickLabel = "チャンネルを開く") { navigation.onOpenParent(ref) }
                             } else {
-                                Modifier.clickable(onClickLabel = "グループの情報") { infoOpen = true }
+                                Modifier.clickable(onClickLabel = "チャンネルの情報") { infoOpen = true }
                             },
                         ) {
                             val title = when (mode) {
@@ -445,13 +445,13 @@ private fun GroupRoomScreen(ref: GroupRef, mode: GroupRoomMode, navigation: Grou
                                 val link = if (isDirect) null else viewModel.shareLink()
                                 // スレッドの画面では見出しがチャンネルへの移動になるので、グループの情報はメニューから開く。
                                 if (mode is GroupRoomMode.Thread) {
-                                    ActionDropdownMenuItem("グループの情報", Icons.Outlined.Info, onClick = { menuOpen = false; infoOpen = true })
+                                    ActionDropdownMenuItem("チャンネルの情報", Icons.Outlined.Info, onClick = { menuOpen = false; infoOpen = true })
                                 }
                                 if (state.canEdit && mode !is GroupRoomMode.Thread) {
-                                    ActionDropdownMenuItem("グループを編集", Icons.Outlined.Edit, onClick = { menuOpen = false; viewModel.openEdit() })
+                                    ActionDropdownMenuItem("チャンネルを編集", Icons.Outlined.Edit, onClick = { menuOpen = false; viewModel.openEdit() })
                                 }
                                 if (link != null) {
-                                    ActionDropdownMenuItem("グループのリンクをコピー", Icons.Outlined.Link,
+                                    ActionDropdownMenuItem("チャンネルのリンクをコピー", Icons.Outlined.Link,
                                         onClick = { menuOpen = false; copyScope.launch { clipboard.setPlainText(link) } })
                                 }
                                 // Buzz の owner / admin の操作（docs/buzz-admin-design.md 3.2）。スレッドの画面には出さない。
@@ -483,7 +483,7 @@ private fun GroupRoomScreen(ref: GroupRef, mode: GroupRoomMode, navigation: Grou
                                         )
                                     } else {
                                         ActionDropdownMenuItem(
-                                            if (state.isLeaving) "退出しています…" else "グループから退出",
+                                            if (state.isLeaving) "退出しています…" else "チャンネルから退出",
                                             Icons.AutoMirrored.Outlined.ExitToApp,
                                             destructive = true,
                                             onClick = { menuOpen = false; if (!state.isLeaving) viewModel.leave(onLeft = navigation.onBack) },
@@ -718,7 +718,7 @@ private fun GroupBanners(state: GroupChatUiState, onAllowAuth: () -> Unit, onJoi
         state.authFailure != null -> Banner(text = "ログインできませんでした: ${state.authFailure}", action = null, onAction = {})
         state.readRestricted || (state.metadata?.isPrivate == true && state.membershipChecked && !state.isMember) ->
             Banner(
-                text = "メンバーだけが読めるグループです",
+                text = "メンバーだけが読めるチャンネルです",
                 action = if (state.composer == GroupComposerState.JoinToWrite) "参加する" else null,
                 onAction = onJoin,
             )
@@ -1484,10 +1484,10 @@ private fun GroupComposer(
                 ),
             )
         }
-        GroupComposerState.JoinToWrite -> ComposerNotice("このグループに参加すると書き込めます", action = "参加する", onAction = onJoin)
+        GroupComposerState.JoinToWrite -> ComposerNotice("このチャンネルに参加すると書き込めます", action = "参加する", onAction = onJoin)
         GroupComposerState.Pending -> ComposerNotice("参加の承認待ちです", action = null, onAction = {})
         GroupComposerState.ReadOnly -> ComposerNotice(
-            if (state.metadata?.isClosed == true) "招待制のグループです。招待リンクから参加してください" else "このグループは閲覧のみです",
+            if (state.metadata?.isClosed == true) "招待制のチャンネルです。招待リンクから参加してください" else "このチャンネルは閲覧のみです",
             action = null,
             onAction = {},
         )
@@ -1713,7 +1713,7 @@ private fun GroupEditDialog(
     ) {
         Column(modifier = Modifier.fillMaxWidth()) {
             com.nostr.torinos.ui.components.SheetHeader(
-                title = "グループを編集",
+                title = "チャンネルを編集",
                 onCancel = onDismiss,
                 onConfirm = onSave,
                 cancelEnabled = enabled,

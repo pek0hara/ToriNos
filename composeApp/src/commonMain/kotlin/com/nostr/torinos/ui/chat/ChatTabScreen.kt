@@ -1,13 +1,17 @@
 package com.nostr.torinos.ui.chat
 
 import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.foundation.text.appendInlineContent
+import androidx.compose.ui.unit.em
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.graphics.compositeOver
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.Color
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.pager.HorizontalPager
@@ -29,6 +33,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.ChatBubbleOutline
 import androidx.compose.material.icons.filled.ContentPaste
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
@@ -90,6 +95,8 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.isSpecified
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.sp
 import com.nostr.torinos.account.InteractiveSigner
 import com.nostr.torinos.account.LocalAccountSession
@@ -170,8 +177,12 @@ fun ChatTabScreen(
         state.joinedRows.filter { it.layout == GroupLayout.Direct }.flatMap { it.metadata?.participants.orEmpty() }.toSet()
     }
     // DM の見出しと、プレビューに付ける送信者の名前に使う。
-    val rowPeople = remember(dmPeople, state.joinedRows, state.archivedRows) {
-        dmPeople + (state.joinedRows + state.archivedRows).flatMap { listOfNotNull(it.lastAuthor, it.threadRootAuthor) }
+    // 「スレッド」の一覧の行（カードの形にしたもの）。送信者の名前とアイコンもここで読む。
+    val threadCards = remember(state.timeline.threadRows) { state.timeline.threadRows.map { it to it.threadCard() } }
+    val rowPeople = remember(dmPeople, state.joinedRows, state.archivedRows, threadCards) {
+        dmPeople + (state.joinedRows + state.archivedRows + threadCards.map { it.second })
+            .flatMap { listOfNotNull(it.lastAuthor, it.threadRootAuthor) } +
+            threadCards.filter { it.second.layout == GroupLayout.Direct }.flatMap { it.second.metadata?.participants.orEmpty() }
     }
     val dmProfiles by remember(rowPeople) {
         if (rowPeople.isEmpty()) flowOf(emptyMap()) else ProfileRepository.observe(rowPeople)
@@ -248,6 +259,11 @@ fun ChatTabScreen(
         }
     }
 
+    // 一覧のプレビューのカスタム絵文字は、タイムラインの画像と同じ認証で読む（Buzz の `/media/` は署名が要る）。
+    val previewEmojiAuth = remember(viewModel, state.timeline.imagesUnlocked) {
+        PreviewEmojiAuth(viewModel::timelineImageAuth, state.timeline.imagesUnlocked)
+    }
+    androidx.compose.runtime.CompositionLocalProvider(LocalPreviewEmojiAuth provides previewEmojiAuth) {
     Scaffold(
         contentWindowInsets = WindowInsets(0),
         topBar = {
@@ -268,7 +284,7 @@ fun ChatTabScreen(
                                 state.relays.firstOrNull { it.relayUrl == selection.relayUrl }
                             }
                             // ホームのフィードの切り替えと同じ形: 名前と補足の2行、全体を押して開く。
-                            HeaderSelectorButton(onClickLabel = "グループの切り替え", onClick = { selectorOpen = true }) {
+                            HeaderSelectorButton(onClickLabel = "リレー・コミュニティの切り替え", onClick = { selectorOpen = true }) {
                                 Column(modifier = Modifier.weight(1f, fill = false)) {
                                     val label = when (val selection = state.selection) {
                                         ChatSelection.All -> "すべて"
@@ -350,7 +366,7 @@ fun ChatTabScreen(
                                     color = MaterialTheme.colorScheme.outlineVariant,
                                 )
                                 HeaderDropdownMenuItem(
-                                    label = "グループに参加…",
+                                    label = "チャンネルに参加…",
                                     leadingIcon = { Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(18.dp)) },
                                     onClick = { selectorOpen = false; viewModel.openJoinSheet() },
                                 )
@@ -402,7 +418,7 @@ fun ChatTabScreen(
                 ServiceHeaderDivider()
                 // タイムラインも、参加中の一覧を読み直している間と自分の読み込みの間は、グループと同じ線を出す。
                 // 前の結果を出したまま差し替え、行が無いうちは一覧の側でスケルトンを出す。
-                val loading = state.isLoading || (state.showsTimeline && state.timeline.isLoading)
+                val loading = state.isLoading || (state.needsTimeline && state.timeline.isLoading)
                 // 読み込み中の線はタブの上（ヘッダー側）に出す。タブの下に出すと選択中の下線と紛れる。
                 if (state.showsViewToggle) {
                     // 線の分の高さは常に取っておき、出し入れでタブが上下に動かないようにする。
@@ -434,7 +450,7 @@ fun ChatTabScreen(
                     contentDescription = when (state.fabAction) {
                         ChatFabAction.NewEncryptedDm -> "新しい DM"
                         ChatFabAction.Menu -> "新規作成・参加"
-                        ChatFabAction.Join -> "グループに参加"
+                        ChatFabAction.Join -> "チャンネルに参加"
                     },
                 )
                 HeaderDropdownMenu(expanded = createMenuOpen, onDismissRequest = { createMenuOpen = false }) {
@@ -464,7 +480,7 @@ fun ChatTabScreen(
                         color = MaterialTheme.colorScheme.outlineVariant,
                     )
                     HeaderDropdownMenuItem(
-                        label = "グループに参加…",
+                        label = "チャンネルに参加…",
                         leadingIcon = { Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(18.dp)) },
                         onClick = { createMenuOpen = false; viewModel.openJoinSheet() },
                     )
@@ -508,6 +524,14 @@ fun ChatTabScreen(
                         }
                         // 未読のグループは先頭にまとめ、下のまとまりからは外す。見出しは付けず、カードの色で未読と分かるようにする。
                         val (unreadRows, readRows) = state.joinedRows.partition { it.unread }
+                        // 「両方」のときは、関わっているスレッドを既読のチャンネルの間に新しい順で混ぜる（Google Chat のホーム）。
+                        // チャンネルの行がプレビューに出しているスレッドは重ねて出さない。
+                        val mixedThreads = if (state.channelPageShowsThreads) {
+                            com.nostr.torinos.ui.chat.threadsNotInChannelPreviews(state.timeline.threadRows, state.joinedRows)
+                        } else {
+                            emptyList()
+                        }
+                        val openChannel: (ChatGroupRow) -> Unit = { row -> viewModel.markRead(row.ref); onOpenGroup(row.ref, row.layout) }
                         if (unreadRows.isNotEmpty()) {
                             items(unreadRows, key = { "j-" + it.ref.key }) { row ->
                                 GroupRowItem(row, resolved = !state.isLoading, ownPubkey = ownPubkey, profiles = dmProfiles, onClick = { viewModel.markRead(row.ref); onOpenGroup(row.ref, row.layout) })
@@ -516,28 +540,28 @@ fun ChatTabScreen(
                         if (state.selection is ChatSelection.Relay) {
                             if (state.joinedRows.isEmpty()) {
                                 if (state.isLoading) item(key = "joined-loading") { GroupRowPlaceholders(count = 3) }
-                                else item(key = "joined-empty") { EmptyLine("参加中のグループはありません") }
+                                else item(key = "joined-empty") { EmptyLine("参加中のチャンネルはありません") }
                             }
                         }
                         if (state.selection == ChatSelection.All) {
                             // リレー・コミュニティごとにまとめる（行ごとにホスト名を出すと、グループ名が削られて読めない）。
                             val relayLabels = state.relays.associateBy { it.relayUrl }
-                            groupRowsByRelay(readRows).forEach { section ->
-                                val relay = relayLabels[section.relayUrl]
-                                item(key = "s-" + section.relayUrl) {
+                            mergeChannelsAndThreads(readRows, mixedThreads).groupBy { it.relayUrl }.forEach { (relayUrl, sectionItems) ->
+                                val relay = relayLabels[relayUrl]
+                                item(key = "s-" + relayUrl) {
                                     SectionHeader(
-                                        (relay?.label ?: section.relayUrl.substringAfter("://")) +
+                                        (relay?.label ?: relayUrl.substringAfter("://")) +
                                             if (relay?.flavor == com.nostr.torinos.chat.GroupFlavor.Buzz) "  [Buzz]" else "",
                                     )
                                 }
-                                items(section.rows, key = { "j-" + it.ref.key }) { row ->
-                                    GroupRowItem(row, resolved = !state.isLoading, ownPubkey = ownPubkey, profiles = dmProfiles, onClick = { viewModel.markRead(row.ref); onOpenGroup(row.ref, row.layout) })
+                                items(sectionItems, key = { it.key }) { item ->
+                                    ChatListItemRow(item, resolved = !state.isLoading, ownPubkey = ownPubkey, profiles = dmProfiles, onOpenChannel = openChannel, onOpenThread = onOpenThread)
                                 }
                             }
                         } else {
                             val (directRows, groupRows) = readRows.partition { it.layout == GroupLayout.Direct }
-                            items(groupRows, key = { "j-" + it.ref.key }) { row ->
-                                GroupRowItem(row, resolved = !state.isLoading, ownPubkey = ownPubkey, profiles = dmProfiles, onClick = { viewModel.markRead(row.ref); onOpenGroup(row.ref, row.layout) })
+                            items(mergeChannelsAndThreads(groupRows, mixedThreads), key = { it.key }) { item ->
+                                ChatListItemRow(item, resolved = !state.isLoading, ownPubkey = ownPubkey, profiles = dmProfiles, onOpenChannel = openChannel, onOpenThread = onOpenThread)
                             }
                             if (directRows.isNotEmpty()) {
                                 item(key = "dm-header") { SectionHeader("DM") }
@@ -558,14 +582,14 @@ fun ChatTabScreen(
                                 item(key = "others-auth") {
                                     Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp)) {
                                         Text(
-                                            "このリレーはログインが必要です。公開鍵を伝えてログインすると、グループの一覧を読めます",
+                                            "このリレーはログインが必要です。公開鍵を伝えてログインすると、チャンネルの一覧を読めます",
                                             style = MaterialTheme.typography.bodyMedium,
                                         )
                                         TextButton(onClick = viewModel::allowBrowseAuth) { Text("ログインして読む") }
                                     }
                                 }
                             } else if (othersExpanded && state.otherRows.isEmpty() && !state.isLoading) {
-                                item(key = "others-empty") { EmptyLine("公開されているグループはありません") }
+                                item(key = "others-empty") { EmptyLine("公開されているチャンネルはありません") }
                             }
                             if (othersExpanded) {
                                 items(state.otherRows, key = { "o-" + it.ref.key }) { row ->
@@ -594,6 +618,62 @@ fun ChatTabScreen(
                             }
                         }
                     }
+                    }
+                }
+            }
+            // 「スレッド」: 関わっているスレッドを、チャンネルの一覧と同じカードで出す（docs/chat-joined-timeline-design.md 2.2）。
+            val threadsContent: @Composable BoxScope.() -> Unit = {
+                val timeline = state.timeline
+                val threadsLoading = state.isLoading || timeline.isLoading
+                // 読めなかったリレーは、読み直しが終わってからも答えなかったときだけ出す。
+                val failed = if (threadsLoading) emptyList() else timeline.failedRelays
+                when {
+                    threadCards.isEmpty() && (!timeline.loaded || threadsLoading) -> Column(Modifier.fillMaxSize()) { GroupRowPlaceholders() }
+                    threadCards.isEmpty() -> Column(Modifier.fillMaxSize()) {
+                        FailedRelaysNotice(failed)
+                        EmptyLine("関わっているスレッドはありません")
+                    }
+                    else -> LazyColumn(modifier = Modifier.fillMaxSize(), contentPadding = PaddingValues(top = 2.dp, bottom = 88.dp)) {
+                        if (failed.isNotEmpty()) item(key = "t-failed") { FailedRelaysNotice(failed) }
+                        items(threadCards, key = { "t-" + it.first.entry.key }) { (row, card) ->
+                            GroupRowItem(
+                                card,
+                                resolved = true,
+                                ownPubkey = ownPubkey,
+                                profiles = dmProfiles,
+                                thread = true,
+                                onClick = {
+                                    if (row.entry.opensThread) onOpenThread(row.entry.ref, row.entry.conversation.rootId)
+                                    else onOpenGroup(row.entry.ref, row.group.layout)
+                                },
+                            )
+                        }
+                        item(key = "t-more") {
+                            Box(Modifier.fillMaxWidth().padding(vertical = 8.dp), contentAlignment = Alignment.Center) {
+                                when {
+                                    timeline.isLoadingOlder -> CircularProgressIndicator(modifier = Modifier.size(24.dp), strokeWidth = 2.dp)
+                                    timeline.canLoadOlderThreads -> TextButton(onClick = viewModel::loadOlderThreads) { Text("さらに読み込む") }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            // チャンネルのページ。上の左に絞り込みのチップを置く（Google Chat のホーム）。何も選んでいなければ
+            // チャンネルとスレッドを混ぜ、「チャンネル」「スレッド」でどちらかだけにする。
+            val channelsContent: @Composable BoxScope.() -> Unit = {
+                if (!state.showsListFilter) {
+                    groupsContent()
+                } else {
+                    Column(Modifier.fillMaxSize()) {
+                        ChatListFilterChips(
+                            filter = state.listFilter,
+                            onChange = viewModel::setListFilter,
+                            modifier = Modifier.fillMaxWidth().padding(start = 12.dp, end = 12.dp, top = 4.dp),
+                        )
+                        Box(Modifier.fillMaxWidth().weight(1f)) {
+                            if (state.showsChannelRows) groupsContent() else threadsContent()
+                        }
                     }
                 }
             }
@@ -643,14 +723,15 @@ fun ChatTabScreen(
                 ) { page ->
                     Box(modifier = Modifier.fillMaxSize()) {
                         when (chatViewPages[page]) {
-                            ChatListView.Groups -> groupsContent()
+                            ChatListView.Groups -> channelsContent()
                             ChatListView.Timeline -> timelineContent()
                         }
                     }
                 }
-                else -> groupsContent()
+                else -> Box(Modifier.fillMaxSize()) { channelsContent() }
             }
         }
+    }
     }
 
     if (newDmOpen) {
@@ -810,7 +891,7 @@ private fun FindGroupsRow(count: Int?, expanded: Boolean, onToggle: () -> Unit) 
         Icon(Icons.Default.Add, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(20.dp))
         Spacer(Modifier.width(12.dp))
         Text(
-            text = "グループを探す" + (count?.takeIf { it > 0 }?.let { "（$it）" } ?: ""),
+            text = "チャンネルを探す" + (count?.takeIf { it > 0 }?.let { "（$it）" } ?: ""),
             style = MaterialTheme.typography.bodyLarge,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.weight(1f),
@@ -853,10 +934,10 @@ private fun ChatEmptyState(onJoin: () -> Unit, signedOut: Boolean = false) {
     ) {
         Icon(Icons.Default.Groups, contentDescription = null, modifier = Modifier.size(48.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
         Spacer(Modifier.height(12.dp))
-        Text("グループに参加していません", style = MaterialTheme.typography.titleMedium)
+        Text("チャンネルに参加していません", style = MaterialTheme.typography.titleMedium)
         Spacer(Modifier.height(4.dp))
         Text(
-            "招待リンクやグループのアドレスを貼ると、グループ（NIP-29・Buzz）に参加できます",
+            "招待リンクやチャンネルのアドレスを貼ると、チャンネル（NIP-29・Buzz）に参加できます",
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             textAlign = androidx.compose.ui.text.style.TextAlign.Center,
@@ -939,6 +1020,8 @@ private fun GroupRowItem(
     resolved: Boolean,
     ownPubkey: String? = null,
     profiles: Map<String, NostrProfile> = emptyMap(),
+    /** 「スレッド」の一覧の行。アイコンの右下にスレッドの印を付ける。 */
+    thread: Boolean = false,
     onClick: () -> Unit,
 ) {
     val participants = row.metadata?.participants.orEmpty()
@@ -980,46 +1063,75 @@ private fun GroupRowItem(
                     background = if (row.unread) MaterialTheme.colorScheme.primary.copy(alpha = 0.12f) else null,
                 )
             }
+            if (thread) {
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.BottomEnd)
+                        .offset(x = 5.dp, y = 5.dp)
+                        .size(16.dp)
+                        // カードの色の縁で、チャンネルのアイコンと重なって見えないように切り離す。
+                        .border(2.dp, cardColor, CircleShape)
+                        .padding(2.dp)
+                        .clip(CircleShape)
+                        .background(MaterialTheme.colorScheme.primaryContainer),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Icon(
+                        Icons.Outlined.ChatBubbleOutline,
+                        contentDescription = "スレッド",
+                        tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                        modifier = Modifier.size(9.dp),
+                    )
+                }
+            }
         }
         Spacer(Modifier.width(10.dp))
         Column(modifier = Modifier.weight(1f)) {
+            // スレッドの行は話題（元の投稿）が主役なので、チャンネル名は小さい灰色の見出しにする。
             Text(
                 text = title,
-                style = MaterialTheme.typography.titleSmall,
-                fontWeight = if (row.unread) FontWeight.Bold else FontWeight.SemiBold,
-                color = if (unresolved) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.onSurface,
+                style = if (thread) MaterialTheme.typography.labelMedium else MaterialTheme.typography.titleSmall,
+                fontWeight = when {
+                    thread -> FontWeight.Normal
+                    row.unread -> FontWeight.Bold
+                    else -> FontWeight.SemiBold
+                },
+                color = if (unresolved || thread) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.onSurface,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
-            Spacer(Modifier.height(4.dp))
+            Spacer(Modifier.height(if (thread) 2.dp else 4.dp))
             // 最新の発言がスレッドの返信なら、元の投稿を上に出し、返信は「╰」を付けてその下に出す（Google Chat と同じ形）。
             // 送信者の名前は出さず、小さいアイコンで示す。1対1の DM は行のアイコンと重なるので付けない。返信は2行まで出す。
             val rootPreview = row.threadRootPreview.takeIf { !row.pending }
             if (rootPreview != null) {
-                PreviewLine(rootPreview, author = row.threadRootAuthor.takeIf { !oneOnOne }, profiles = profiles, color = textColor, maxLines = 1)
+                PreviewLine(rootPreview, emojis = row.threadRootEmojis, author = row.threadRootAuthor.takeIf { !oneOnOne }, profiles = profiles, color = textColor, maxLines = 1, emphasized = thread)
                 Spacer(Modifier.height(4.dp))
             }
             val preview = row.preview.takeIf { !row.pending }
             if (preview != null) {
                 PreviewLine(
                     preview,
+                    emojis = row.previewEmojis,
                     author = row.lastAuthor.takeIf { !oneOnOne },
                     profiles = profiles,
                     color = textColor,
                     maxLines = if (rootPreview != null) 2 else 1,
                     reply = rootPreview != null,
+                    // 返信の無いスレッド（フォーラムの投稿など）は、この1行が元の投稿。
+                    emphasized = thread && rootPreview == null,
                 )
             } else {
                 val subtitle = when {
                     row.pending -> "承認待ち"
                     row.metadata?.about?.isNotBlank() == true -> row.metadata.about
-                    unresolved -> "グループ情報を読めません"
+                    unresolved -> "チャンネル情報を読めません"
                     !resolved && row.metadata == null -> "読み込み中…"
                     else -> "まだ発言がありません"
                 }
                 Text(
                     text = subtitle.orEmpty(),
-                    style = MaterialTheme.typography.bodySmall,
+                    style = MaterialTheme.typography.bodyMedium,
                     color = textColor,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
@@ -1047,30 +1159,101 @@ private fun GroupRowItem(
     }
 }
 
-private const val GROUP_ROW_ICON_SIZE = 24
-private const val PREVIEW_AVATAR_SIZE = 16
+/** 一覧の1行（チャンネルか、関わっているスレッド）。 */
+@Composable
+private fun ChatListItemRow(
+    item: ChatListItem,
+    resolved: Boolean,
+    ownPubkey: String?,
+    profiles: Map<String, NostrProfile>,
+    onOpenChannel: (ChatGroupRow) -> Unit,
+    onOpenThread: (GroupRef, String) -> Unit,
+) {
+    when (item) {
+        is ChatListItem.Channel ->
+            GroupRowItem(item.row, resolved = resolved, ownPubkey = ownPubkey, profiles = profiles, onClick = { onOpenChannel(item.row) })
+        is ChatListItem.Thread ->
+            GroupRowItem(
+                item.card,
+                resolved = true,
+                ownPubkey = ownPubkey,
+                profiles = profiles,
+                thread = true,
+                onClick = {
+                    val entry = item.row.entry
+                    if (entry.opensThread) onOpenThread(entry.ref, entry.conversation.rootId) else onOpenChannel(item.row.group)
+                },
+            )
+    }
+}
 
-/** 一覧のプレビューの1行。先頭に送信者の小さいアイコンを付け、URL はドメイン名だけにする。 */
+private const val GROUP_ROW_ICON_SIZE = 24
+private const val PREVIEW_AVATAR_SIZE = 20
+
+/** 一覧のプレビューのカスタム絵文字を読むときの認証。 */
+private class PreviewEmojiAuth(val imageAuth: suspend (String) -> ImageAuth, val imagesUnlocked: Boolean)
+
+private val LocalPreviewEmojiAuth = androidx.compose.runtime.compositionLocalOf { PreviewEmojiAuth({ ImageAuth.NotNeeded }, false) }
+
+/**
+ * 一覧のプレビューの1行。先頭に送信者の小さいアイコンを付け、URL はドメイン名だけにする。
+ * 発言の emoji タグにある `:shortcode:` は絵にする（読めないものは文字のまま）。
+ */
 @Composable
 private fun PreviewLine(
     text: String,
+    emojis: Map<String, String>,
     author: String?,
     profiles: Map<String, NostrProfile>,
     color: Color,
     maxLines: Int,
     reply: Boolean = false,
+    /** スレッドの行の元の投稿。見出しの代わりなので、大きく濃くする。 */
+    emphasized: Boolean = false,
 ) {
     val linkColor = MaterialTheme.colorScheme.primary
-    val annotated = remember(text, linkColor) {
+    val emojiAuth = LocalPreviewEmojiAuth.current
+    val emojiImages = rememberEmojiImages(emojis, emojiAuth.imageAuth, emojiAuth.imagesUnlocked)
+    val annotated = remember(text, linkColor, emojiImages.keys) {
         val short = com.nostr.torinos.chat.shortenPreviewLinks(text)
+        val emojiMatches = com.nostr.torinos.chat.previewEmojiMatches(short.text, emojiImages.keys)
         buildAnnotatedString {
-            append(short.text)
+            // 絵文字の代わりの文字は元と同じ長さなので、リンクの位置はずれない。
+            var cursor = 0
+            emojiMatches.forEach { (range, code) ->
+                append(short.text.substring(cursor, range.first))
+                appendInlineContent(previewEmojiId(code), short.text.substring(range))
+                cursor = range.last + 1
+            }
+            append(short.text.substring(cursor))
             short.links.forEach { addStyle(SpanStyle(color = linkColor), it.first, it.last + 1) }
         }
     }
+    val inlineContent = remember(emojiImages) {
+        emojiImages.entries.associate { (code, image) ->
+            previewEmojiId(code) to androidx.compose.foundation.text.InlineTextContent(
+                androidx.compose.ui.text.Placeholder(1.2f.em, 1.2f.em, androidx.compose.ui.text.PlaceholderVerticalAlign.Center),
+            ) { alt ->
+                NetworkImage(
+                    url = image.url,
+                    contentDescription = alt,
+                    contentScale = ContentScale.Fit,
+                    maxDecodeSizePx = 96,
+                    headers = image.headers,
+                    modifier = Modifier.fillMaxSize(),
+                )
+            }
+        }
+    }
+    // 文字サイズの設定で行の高さは変わるが、アイコンは固定の大きさなので、1行目の中央にくるよう下げる。
+    val textStyle = MaterialTheme.typography.bodyMedium
+    val avatarTop = with(LocalDensity.current) {
+        val lineHeight = if (textStyle.lineHeight.isSpecified) textStyle.lineHeight else textStyle.fontSize * 1.43f
+        ((lineHeight.toDp() - PREVIEW_AVATAR_SIZE.dp) / 2).coerceAtLeast(0.dp)
+    }
     Row(verticalAlignment = Alignment.Top) {
         if (reply) {
-            Text("╰", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text("╰", style = textStyle, color = MaterialTheme.colorScheme.onSurfaceVariant)
             Spacer(Modifier.width(6.dp))
         }
         if (author != null) {
@@ -1079,20 +1262,25 @@ private fun PreviewLine(
                 name = profiles[author]?.bestName,
                 pictureUrl = profiles[author]?.picture,
                 size = PREVIEW_AVATAR_SIZE,
-                modifier = Modifier.padding(top = 1.dp),
+                modifier = Modifier.padding(top = avatarTop),
             )
             Spacer(Modifier.width(6.dp))
         }
         Text(
             text = annotated,
-            style = MaterialTheme.typography.bodySmall,
-            color = color,
+            // 強調の有無は太さと色で分け、大きさはそろえる（行の高さ20がアイコンの20dpと合う）。
+            style = textStyle,
+            fontWeight = if (emphasized) FontWeight.SemiBold else null,
+            color = if (emphasized) MaterialTheme.colorScheme.onSurface else color,
             maxLines = maxLines,
             overflow = TextOverflow.Ellipsis,
+            inlineContent = inlineContent,
             modifier = Modifier.weight(1f),
         )
     }
 }
+
+private fun previewEmojiId(shortcode: String) = "emoji:$shortcode"
 
 /** 未読の件数のバッジ。件数が分からなければ点だけ。 */
 @Composable
@@ -1174,7 +1362,7 @@ private fun JoinGroupSheet(
                         onValueChange = onInputChange,
                         modifier = Modifier.fillMaxWidth(),
                         shape = RoundedCornerShape(16.dp),
-                        placeholder = { Text("グループ名・招待リンク・アドレス", maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                        placeholder = { Text("チャンネル名・招待リンク・アドレス", maxLines = 1, overflow = TextOverflow.Ellipsis) },
                         leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
                         isError = state.error != null,
                         supportingText = when {
@@ -1241,8 +1429,8 @@ private fun JoinGroupSheet(
                     Spacer(Modifier.height(8.dp))
                     val meta = state.metadata
                     val flags = buildList {
-                        if (meta == null && state.needsAuth) add("このリレーはログインが必要なため、グループ情報を読めません")
-                        else if (meta == null) add("グループ情報を読めませんでした")
+                        if (meta == null && state.needsAuth) add("このリレーはログインが必要なため、チャンネル情報を読めません")
+                        else if (meta == null) add("チャンネル情報を読めませんでした")
                         if (meta?.isPrivate == true) add("メンバーだけが読めます")
                         if (meta?.isRestricted == true) add("メンバーだけが書けます")
                         if (meta?.isClosed == true) add(if (state.inviteCode != null) "招待制（招待コードあり）" else "招待制です")
@@ -1511,11 +1699,11 @@ private fun CreateChannelSheet(
             val forum = state.type == NewGroupType.Forum
             ChatSheetHeader(
                 icon = if (forum) Icons.Outlined.Forum else if (buzz) Icons.Default.Tag else Icons.Default.Groups,
-                title = if (forum) "新しいフォーラム" else if (buzz) "新しいチャンネル" else "新しいグループ",
+                title = if (forum) "新しいフォーラム" else if (buzz) "新しいチャンネル" else "新しいチャンネル",
                 subtitle = when {
                     forum -> "タイトル付きの投稿にコメントを付けていく形式です"
                     buzz -> "コミュニティのメンバーと話す場所を作ります"
-                    else -> "このリレーに NIP-29 のグループを作ります"
+                    else -> "このリレーに NIP-29 のチャンネルを作ります"
                 },
             )
             CreateTargetCard(state.targets, state.target, enabled = !state.isSubmitting, onTarget = onTarget)

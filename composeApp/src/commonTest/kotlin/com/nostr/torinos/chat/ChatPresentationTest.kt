@@ -160,4 +160,18 @@ class ChatPresentationTest {
         // 時計のずれで少し未来の発言も、今日として時刻を出す。
         assertEquals("08:31", chatListTime(epoch(2026, 11, 18, 8, 31), now, tokyo))
     }
+
+    // ---- 投稿の時刻 ----
+
+    @Test
+    fun postTimeKeepsTheClockForRecentDays() {
+        val now = epoch(2026, 11, 18, 8, 30)
+        assertEquals("00:05", chatPostTime(epoch(2026, 11, 18, 0, 5), now, tokyo))
+        assertEquals("昨日 23:59", chatPostTime(epoch(2026, 11, 17, 23, 59), now, tokyo))
+        assertEquals("11月15日 12:00", chatPostTime(epoch(2026, 11, 15, 12, 0), now, tokyo))
+        assertEquals("1月2日 09:07", chatPostTime(epoch(2026, 1, 2, 9, 7), now, tokyo))
+        // 去年より前は時刻より日付が要る。
+        assertEquals("2025年10月3日", chatPostTime(epoch(2025, 10, 3, 12, 0), now, tokyo))
+        assertEquals("08:31", chatPostTime(epoch(2026, 11, 18, 8, 31), now, tokyo))
+    }
 }

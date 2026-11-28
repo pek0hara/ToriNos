@@ -61,9 +61,9 @@ internal fun JoinSheetHeader() {
         }
         Spacer(Modifier.width(12.dp))
         Column {
-            Text("グループに参加", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+            Text("チャンネルに参加", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
             Text(
-                "公開グループを探すか、招待リンク・アドレスから参加します",
+                "公開チャンネルを探すか、招待リンク・アドレスから参加します",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -112,7 +112,7 @@ internal fun PublicGroupResults(
         )
         Spacer(Modifier.width(6.dp))
         Text(
-            "公開グループ",
+            "公開チャンネル",
             style = MaterialTheme.typography.titleSmall,
             fontWeight = FontWeight.Bold,
         )
@@ -242,7 +242,7 @@ private fun JoinEmptyState(searching: Boolean, enabled: Boolean, onPaste: () -> 
             }
             Spacer(Modifier.height(12.dp))
             Text(
-                if (searching) "見つかりませんでした" else "公開グループはまだありません",
+                if (searching) "見つかりませんでした" else "公開チャンネルはまだありません",
                 style = MaterialTheme.typography.titleSmall,
                 fontWeight = FontWeight.Bold,
             )
@@ -251,7 +251,7 @@ private fun JoinEmptyState(searching: Boolean, enabled: Boolean, onPaste: () -> 
                 if (searching) {
                     "別の名前で探すか、招待リンク・アドレスを貼り付けてください"
                 } else {
-                    "登録しているリレーに公開グループがありません。招待リンクやリレーのアドレスから参加できます"
+                    "登録しているリレーに公開チャンネルがありません。招待リンクやリレーのアドレスから参加できます"
                 },
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,

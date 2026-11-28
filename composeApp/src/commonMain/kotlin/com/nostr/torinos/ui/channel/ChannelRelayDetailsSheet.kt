@@ -40,9 +40,9 @@ internal fun ChannelRelayDetailsSheet(
             Text("リレー", style = MaterialTheme.typography.titleMedium)
             Text(
                 text = if (ready.relayContext.recommendedRelays.isEmpty()) {
-                    "このチャンネルには推奨リレーがありません。あなたのリレーで閲覧・投稿します。"
+                    "このトピックには推奨リレーがありません。あなたのリレーで閲覧・投稿します。"
                 } else {
-                    "チャンネル情報の推奨リレーと、あなたのリレーを合わせて使います。"
+                    "トピック情報の推奨リレーと、あなたのリレーを合わせて使います。"
                 },
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,

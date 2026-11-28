@@ -170,6 +170,17 @@ fun channelRoleLabel(role: ChannelRole?): String? = when (role) {
     else -> null
 }
 
+/** リレーが「アーカイブ済み」として断った（Buzz の `channel is archived`。`not archived` は含めない）。 */
+fun isChannelArchivedRejection(reason: String): Boolean = "channel is archived" in reason.lowercase()
+
+/**
+ * 拒否理由でアーカイブ済みと分かったときの、表示に使うグループ情報。変えないときは null。
+ * Buzz は通話（huddle）が終わるとチャンネルをアーカイブするが、kind 39000 を出し直さないため、
+ * 39000 からはアーカイブ済みと分からない。
+ */
+fun archivedFromRejection(metadata: GroupMetadata?, reason: String): GroupMetadata? =
+    metadata?.takeIf { !it.isArchived && isChannelArchivedRejection(reason) }?.copy(isArchived = true)
+
 /**
  * 管理の命令（チャンネル・コミュニティ）の拒否理由を表示用の文にする（docs/buzz-admin-design.md 3.6）。
  * 知らない文言は原文を添える。
@@ -184,6 +195,7 @@ fun adminRejectionMessage(reason: String): String {
         "cannot remove yourself" in lower || "cannot change your own role" in lower -> "自分には使えません"
         "cannot remove the relay owner" in lower || "cannot change the relay owner" in lower || "cannot set role to owner" in lower -> "オーナーには使えません"
         "member not found" in lower -> "すでにメンバーではありません"
+        isChannelArchivedRejection(lower) -> "アーカイブ済みのチャンネルです"
         "temporarily unavailable" in lower -> "一時的に変更できません。しばらくしてからお試しください"
         lower.startsWith("auth-required:") || lower.startsWith("restricted:") -> "ログインできていないか、権限がありません"
         text.isEmpty() -> "受け付けられませんでした"

@@ -297,7 +297,7 @@ fun ChannelScreen(
             AppTopBar(
                 title = {
                     val ready = state as? ChannelViewModel.UiState.Ready
-                    val title = ready?.channelMeta?.name?.ifBlank { "チャンネル" } ?: "チャンネル"
+                    val title = ready?.channelMeta?.name?.ifBlank { "トピック" } ?: "トピック"
                     Column {
                         Text(
                             text = title,
@@ -627,7 +627,7 @@ private fun EditThreadDialog(
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("チャンネルを編集") },
+        title = { Text("トピックを編集") },
         text = {
             Column(
                 modifier = Modifier.heightIn(max = 520.dp).verticalScroll(rememberScrollState()),
@@ -646,7 +646,7 @@ private fun EditThreadDialog(
                         titleValue = it
                         onTitleChange(it.text)
                     },
-                    label = { Text("チャンネル名") },
+                    label = { Text("トピック名") },
                     singleLine = true,
                     enabled = !state.isSaving,
                     modifier = Modifier.fillMaxWidth().avoidStaleAccessibilityFocus(),
@@ -732,7 +732,7 @@ private fun EditThreadDialog(
             selected = state.selectedRelays,
             onSelectionChange = onRelaySelectionChange,
             onDismiss = { showRelayDialog = false },
-            note = "チャンネル情報に保存され、参加者がメッセージを読み書きするリレーになります。",
+            note = "トピック情報に保存され、参加者がメッセージを読み書きするリレーになります。",
             onAddCustomRelay = onAddCustomRelay,
         )
     }
@@ -749,7 +749,7 @@ private fun ChannelDetailRelayPendingContent(
         contentWindowInsets = WindowInsets(0),
         topBar = {
             AppTopBar(
-                title = { Text("チャンネル") },
+                title = { Text("トピック") },
                 navigationIcon = {
                     IconButton(onClick = onBack) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "戻る")
@@ -837,7 +837,7 @@ private fun ThreadInfoDialog(
 ) {
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("チャンネル情報") },
+        title = { Text("トピック情報") },
         text = {
             Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
                 ChannelInfoContent(
@@ -857,7 +857,7 @@ private fun ThreadInfoDialog(
         },
         dismissButton = if (canEdit) {
             {
-                TextButton(onClick = onEditClick) { Text("チャンネルを編集") }
+                TextButton(onClick = onEditClick) { Text("トピックを編集") }
             }
         } else {
             null

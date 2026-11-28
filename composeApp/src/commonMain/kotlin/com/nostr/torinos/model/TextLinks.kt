@@ -58,7 +58,7 @@ fun findTextLinks(
  * [channelName] はチャンネル ID から名前を引く（同じコミュニティの中だけで分かる）。
  */
 fun groupLinkLabel(uri: String, channelName: (String) -> String? = { null }): String {
-    if (!uri.startsWith("buzz://", ignoreCase = true)) return "💬 グループへのリンク"
+    if (!uri.startsWith("buzz://", ignoreCase = true)) return "💬 チャンネルへのリンク"
     val channel = com.nostr.torinos.chat.parseBuzzLink(uri) as? com.nostr.torinos.chat.BuzzLink.Channel
     val name = channel?.let { channelName(it.channelId) }?.takeIf { it.isNotBlank() }
     return if (name != null) "#$name" else "💬 Buzz のメッセージ"

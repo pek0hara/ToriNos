@@ -79,6 +79,7 @@ import com.nostr.torinos.chat.CommunityRosterLoad
 import com.nostr.torinos.chat.adminRejectionMessage
 import com.nostr.torinos.chat.applyPendingRoles
 import com.nostr.torinos.chat.buildAdminDeletion
+import com.nostr.torinos.chat.archivedFromRejection
 import com.nostr.torinos.chat.buildChannelArchive
 import com.nostr.torinos.chat.buildChannelDelete
 import com.nostr.torinos.chat.buildChannelPutUser
@@ -1148,7 +1149,10 @@ class GroupChatViewModel(
                         _state.update { it.copy(replyTo = null, editing = null, attachments = emptyList(), sentEventId = sentId) }
                         onSent()
                     }
-                    is GroupPublishOutcome.Rejected -> notice("送信できませんでした: ${outcome.reason}")
+                    is GroupPublishOutcome.Rejected -> {
+                        learnArchived(outcome.reason)
+                        notice("送信できませんでした: ${outcome.reason}")
+                    }
                     is GroupPublishOutcome.Failed -> notice("送信できませんでした: ${outcome.reason}")
                 }
             } finally {
@@ -1223,14 +1227,14 @@ class GroupChatViewModel(
         if (messageId in _state.value.reactingMessageIds) return GroupReactionResult.Ignored
         val ownId = ownReactionIdFor(message.reactions, option)
         if (ownId == null && !isGroupReactionSendable(option, flavor)) {
-            notice("この絵文字はこのグループでは使えません")
+            notice("この絵文字はこのチャンネルでは使えません")
             return GroupReactionResult.Ignored
         }
         val draft = if (ownId != null) {
             buildGroupDeletion(ref.groupId, listOf(ownId))
         } else {
             runCatching { buildGroupReaction(ref.groupId, message.event, option, flavor) }.getOrElse {
-                notice("この絵文字はこのグループでは使えません")
+                notice("この絵文字はこのチャンネルでは使えません")
                 return GroupReactionResult.Ignored
             }
         }
@@ -1240,7 +1244,10 @@ class GroupChatViewModel(
             try {
                 when (val outcome = account.publishToGroup(ref, draft)) {
                     is GroupPublishOutcome.Published -> onEvents(listOf(outcome.event))
-                    is GroupPublishOutcome.Rejected -> notice("リアクションできませんでした: ${outcome.reason}")
+                    is GroupPublishOutcome.Rejected -> {
+                        learnArchived(outcome.reason)
+                        notice("リアクションできませんでした: ${outcome.reason}")
+                    }
                     is GroupPublishOutcome.Failed -> notice("リアクションできませんでした: ${outcome.reason}")
                 }
             } finally {
@@ -1413,7 +1420,7 @@ class GroupChatViewModel(
                     val edited = sheet.current.withEdit(sheet.edit, flavor)
                     savedEdit = sheet.current.createdAt to edited
                     _state.update { it.copy(editSheet = null, metadata = edited) }
-                    notice("グループ情報を更新しました")
+                    notice("チャンネル情報を更新しました")
                 }
                 is GroupPublishOutcome.Rejected -> {
                     val message = when (classifyCreateRejection(outcome.reason)) {
@@ -1573,7 +1580,11 @@ class GroupChatViewModel(
                         recomputeState()
                         notice(if (archived) "アーカイブしました" else "アーカイブを解除しました")
                     }
-                    is GroupPublishOutcome.Rejected -> notice("変更できませんでした: ${adminRejectionMessage(outcome.reason)}")
+                    is GroupPublishOutcome.Rejected -> when {
+                        // 通話の終わりなどで、39000 に出ないままアーカイブされていた。解除できるようにする。
+                        archived && learnArchived(outcome.reason) -> notice("すでにアーカイブされていました。メニューから解除できます")
+                        else -> notice("変更できませんでした: ${adminRejectionMessage(outcome.reason)}")
+                    }
                     is GroupPublishOutcome.Failed -> notice("変更できませんでした: ${outcome.reason}")
                 }
             } finally {
@@ -1655,6 +1666,21 @@ class GroupChatViewModel(
         val host = buzzMediaHost(url, setOf(ref.relayUrl)) ?: return ImageAuth.NotNeeded
         if (!_state.value.imagesUnlocked) return ImageAuth.NeedsConsent
         return runCatching { ImageAuth.Header(account.blossomAuthorization(host)) }.getOrElse { ImageAuth.Failed }
+    }
+
+    /**
+     * リレーが「アーカイブ済み」として断ったら、アーカイブ済みとして表示する（解除をメニューに出す）。
+     * Buzz は通話が終わるとチャンネルをアーカイブするが 39000 を出し直さないので、拒否理由で知るしかない。
+     * リレーがこれより新しい 39000 を出したら、そちらに従う。変えたら true。
+     */
+    private fun learnArchived(reason: String): Boolean {
+        if (flavor != GroupFlavor.Buzz) return false
+        val current = _state.value.metadata
+        val marked = archivedFromRejection(current, reason) ?: return false
+        savedEdit = current!!.createdAt to marked
+        _state.update { it.copy(metadata = marked) }
+        recomputeState()
+        return true
     }
 
     private fun notice(message: String) {

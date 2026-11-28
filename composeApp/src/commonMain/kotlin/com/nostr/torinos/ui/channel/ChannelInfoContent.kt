@@ -89,7 +89,7 @@ internal fun ChannelInfoContent(
             info.meta.picture.takeIf { it.isNotBlank() }?.let { picture ->
                 NetworkImage(
                     url = picture,
-                    contentDescription = "チャンネル画像",
+                    contentDescription = "トピック画像",
                     modifier = Modifier.size(64.dp).clip(RoundedCornerShape(10.dp)),
                     contentScale = ContentScale.Crop,
                     maxDecodeSizePx = 256,
@@ -138,7 +138,7 @@ internal fun ChannelInfoContent(
                 }
             }
         }
-        InfoValue("チャンネルID（kind 40）", info.channelId, monospace = true)
+        InfoValue("トピックID（kind 40）", info.channelId, monospace = true)
         info.createdAt?.let { InfoValue("作成日時", formatTimestamp(it)) }
         info.createClient?.let { InfoValue("作成クライアント", it) }
         info.updatedAt?.let { InfoValue("最終更新日時", formatTimestamp(it)) }

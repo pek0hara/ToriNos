@@ -211,7 +211,7 @@ fun ChannelListScreen(
                 AppFloatingActionButton(
                     onClick = viewModel::showCreateDialog,
                     icon = Icons.Default.Add,
-                    contentDescription = "新規チャンネル",
+                    contentDescription = "新規トピック",
                 )
             }
         },
@@ -230,7 +230,7 @@ fun ChannelListScreen(
                     ) {
                         CircularProgressIndicator()
                         Text(
-                            text = "チャンネルを読み込み中…",
+                            text = "トピックを読み込み中…",
                             style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
@@ -246,14 +246,14 @@ fun ChannelListScreen(
                         ) {
                             CircularProgressIndicator()
                             Text(
-                                text = "チャンネルを読み込み中…",
+                                text = "トピックを読み込み中…",
                                 style = MaterialTheme.typography.bodyMedium,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
                         }
                     } else if (s.channels.isEmpty()) {
                         Column(modifier = Modifier.align(Alignment.Center)) {
-                            Text("チャンネルがありません")
+                            Text("トピックがありません")
                             if (s.canLoadMore) {
                                 TextButton(onClick = viewModel::loadMore) { Text("再読み込み") }
                             }
@@ -322,7 +322,7 @@ fun ChannelListScreen(
     if (deleteDialog != null) {
         AlertDialog(
             onDismissRequest = { if (!deleteDialog.isDeleting) viewModel.dismissDeleteDialog() },
-            title = { Text(if (deleteDialog.deleteFromRelays) "チャンネルを削除" else "キャッシュを削除") },
+            title = { Text(if (deleteDialog.deleteFromRelays) "トピックを削除" else "キャッシュを削除") },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text(
@@ -524,7 +524,7 @@ private fun ChannelRow(
                 ) {
                     Icon(
                         imageVector = Icons.Default.MoreVert,
-                        contentDescription = "チャンネルメニュー",
+                        contentDescription = "トピックメニュー",
                         modifier = Modifier.size(20.dp),
                     )
                 }
@@ -532,7 +532,7 @@ private fun ChannelRow(
                     expanded = menuExpanded,
                     onDismissRequest = { menuExpanded = false },
                 ) {
-                    ActionDropdownMenuItem("チャンネル詳細", Icons.Outlined.Info, onClick = {
+                    ActionDropdownMenuItem("トピック詳細", Icons.Outlined.Info, onClick = {
                         menuExpanded = false
                         onDetailClick()
                     })
@@ -542,7 +542,7 @@ private fun ChannelRow(
                     })
                     if (onChannelDeleteClick != null) {
                         ActionDropdownMenuDivider()
-                        ActionDropdownMenuItem("チャンネルを削除", Icons.Outlined.Delete, destructive = true, onClick = {
+                        ActionDropdownMenuItem("トピックを削除", Icons.Outlined.Delete, destructive = true, onClick = {
                             menuExpanded = false
                             onChannelDeleteClick()
                         })

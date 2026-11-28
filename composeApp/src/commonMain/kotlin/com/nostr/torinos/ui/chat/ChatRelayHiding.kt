@@ -134,7 +134,7 @@ internal fun HideChatRelayDialog(relay: ChatRelaySummary, onConfirm: () -> Unit,
                     )
                 }
                 Text(
-                    "切り替えメニューと「すべて」の一覧から外し、このリレーのグループを読み込まなくなります。" +
+                    "切り替えメニューと「すべて」の一覧から外し、このリレーのチャンネルを読み込まなくなります。" +
                         "参加はそのままで、この端末だけの設定です。設定の「チャット」からいつでも戻せます。",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,

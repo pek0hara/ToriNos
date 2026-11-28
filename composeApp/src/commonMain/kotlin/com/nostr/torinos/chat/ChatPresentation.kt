@@ -71,6 +71,22 @@ fun chatListTime(epochSeconds: Long, nowEpochSeconds: Long, zone: TimeZone = Tim
     }
 }
 
+/**
+ * 投稿に添える時刻。一覧（[chatListTime]）と違い、会話の流れを追えるよう昨日以降も時刻を残す。
+ * 今日なら `22:05`、昨日なら「昨日 22:05」、今年なら「11月15日 22:05」、それより前なら「2025年10月3日」。
+ */
+fun chatPostTime(epochSeconds: Long, nowEpochSeconds: Long, zone: TimeZone = TimeZone.currentSystemDefault()): String {
+    val date = chatLocalDate(epochSeconds, zone)
+    val today = chatLocalDate(nowEpochSeconds, zone)
+    val clock = chatClockTime(epochSeconds, zone)
+    return when {
+        date >= today -> clock
+        date == today.minus(1, DateTimeUnit.DAY) -> "昨日 $clock"
+        date.year == today.year -> "${date.month.ordinal + 1}月${date.day}日 $clock"
+        else -> "${date.year}年${date.month.ordinal + 1}月${date.day}日"
+    }
+}
+
 /** 前の発言とまとめて表示する間隔（秒）。 */
 const val CHAT_GROUPING_SECONDS = 300L
 

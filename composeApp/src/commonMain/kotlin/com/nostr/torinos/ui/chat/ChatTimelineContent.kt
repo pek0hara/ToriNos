@@ -15,9 +15,12 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.icons.Icons
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilterChip
+import androidx.compose.material.icons.filled.Tag
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.outlined.ChatBubbleOutline
 import androidx.compose.material.icons.outlined.SmartToy
@@ -42,7 +45,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.nostr.torinos.chat.GroupLayout
 import com.nostr.torinos.chat.GroupMessage
-import com.nostr.torinos.chat.chatListTime
+import com.nostr.torinos.chat.chatPostTime
 import com.nostr.torinos.chat.dmDisplayName
 import com.nostr.torinos.chat.splitTodayEntries
 import com.nostr.torinos.model.NostrProfile
@@ -51,13 +54,13 @@ import com.nostr.torinos.ui.components.AppTab
 import com.nostr.torinos.ui.components.BotBadge
 import kotlinx.coroutines.flow.flowOf
 
-/** 「グループ / タイムライン」の並び。タブと横スワイプのページで同じ順にする。 */
+/** 「チャンネル / タイムライン」の並び。タブと横スワイプのページで同じ順にする。 */
 internal val chatViewPages = listOf(ChatListView.Groups, ChatListView.Timeline)
 
-/** 「グループ / タイムライン」の切り替え。アプリ内の他のタブと同じ下線タブ（[AppTab]）。 */
+/** 「チャンネル / タイムライン」の切り替え。アプリ内の他のタブと同じ下線タブ（[AppTab]）。 */
 @Composable
 internal fun ChatViewToggle(view: ChatListView, onSelect: (ChatListView) -> Unit) {
-    val options = chatViewPages.map { it to if (it == ChatListView.Groups) "グループ" else "タイムライン" }
+    val options = chatViewPages.map { it to if (it == ChatListView.Groups) "チャンネル" else "タイムライン" }
     PrimaryTabRow(
         selectedTabIndex = options.indexOfFirst { it.first == view }.coerceAtLeast(0),
         containerColor = MaterialTheme.colorScheme.background,
@@ -122,7 +125,7 @@ internal fun ChatTimelineContent(
             FailedRelaysNotice(failedRelays)
             onHideBotsChange?.let { BotFilterRow(state.hideBots, state.hiddenBotPosts, it) }
             Text(
-                if (state.hideBots && onHideBotsChange != null) "bot 以外の投稿がありません" else "参加中のグループに投稿がありません",
+                if (state.hideBots && onHideBotsChange != null) "bot 以外の投稿がありません" else "参加中のチャンネルに投稿がありません",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 textAlign = TextAlign.Center,
@@ -143,11 +146,18 @@ internal fun ChatTimelineContent(
                             if (index == 0) onHideBotsChange?.let { BotFilterToggle(state.hideBots, state.hiddenBotPosts, it) }
                         }
                     }
-                    items(entries, key = { "tl-" + it.key }) { entry ->
-                        if (entry !== entries.first()) HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                    itemsIndexed(entries, key = { _, it -> "tl-" + it.key }) { i, entry ->
                         val row = byKey.getValue(entry.key)
+                        // 同じチャンネルの会話が続くあいだは見出しを1回にし、区切り線も本文の列からにする。
+                        val continues = entries.getOrNull(i - 1)?.let { byKey[it.key]?.group?.ref } == row.group.ref
+                        if (i > 0) {
+                            HorizontalDivider(
+                                color = MaterialTheme.colorScheme.outlineVariant,
+                                modifier = if (continues) Modifier.padding(start = TimelinePostTextStart) else Modifier,
+                            )
+                        }
                         CompositionLocalProvider(LocalChatBots provides state.bots) {
-                            TimelineRowItem(row, ownPubkey, profiles, actions, onClick = { onOpen(row) })
+                            TimelineRowItem(row, ownPubkey, profiles, actions, showHeader = !continues, onClick = { onOpen(row) })
                         }
                     }
                 }
@@ -160,6 +170,31 @@ internal fun ChatTimelineContent(
                     }
                 }
             }
+        }
+    }
+}
+
+/**
+ * チャンネルのタブの絞り込み（Google Chat のホームのチップ。docs/chat-joined-timeline-design.md 2.2）。
+ * どちらも選んでいなければ両方を混ぜて出す。選べるのはどちらか一方で、選んでいるものを押すと両方に戻る。
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+internal fun ChatListFilterChips(filter: ChatListFilter, onChange: (ChatListFilter) -> Unit, modifier: Modifier = Modifier) {
+    Row(modifier, horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+        listOf(
+            Triple(ChatListFilter.Channels, "チャンネル", Icons.Filled.Tag),
+            Triple(ChatListFilter.Threads, "スレッド", Icons.Outlined.ChatBubbleOutline),
+        ).forEach { (option, label, icon) ->
+            val selected = filter == option
+            FilterChip(
+                selected = selected,
+                onClick = { onChange(if (selected) ChatListFilter.Both else option) },
+                label = { Text(label) },
+                leadingIcon = {
+                    Icon(if (selected) Icons.Filled.Check else icon, contentDescription = null, modifier = Modifier.size(16.dp))
+                },
+            )
         }
     }
 }
@@ -181,8 +216,8 @@ private fun BotFilterToggle(hideBots: Boolean, hiddenCount: Int, onChange: (Bool
     val color = if (hideBots) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
     val label = when {
         !hideBots -> "bot を表示中"
-        hiddenCount > 0 -> "bot 非表示 · $hiddenCount"
-        else -> "bot 非表示"
+        hiddenCount > 0 -> "bot ${hiddenCount}件を非表示"
+        else -> "bot を非表示"
     }
     TextButton(
         onClick = { onChange(!hideBots) },
@@ -200,7 +235,7 @@ private fun BotFilterToggle(hideBots: Boolean, hiddenCount: Int, onChange: (Bool
 }
 
 @Composable
-private fun FailedRelaysNotice(relays: List<String>) {
+internal fun FailedRelaysNotice(relays: List<String>) {
     if (relays.isEmpty()) return
     Text(
         "読めなかったリレーがあります: " + relays.joinToString("、"),
@@ -226,6 +261,9 @@ private fun TimelineSectionHeader(text: String, trailing: @Composable () -> Unit
     }
 }
 
+/** 会話の行の左右の余白（12dp）＋アイコン（40dp）＋間（8dp）。続きの会話の区切り線をここから引く。 */
+private val TimelinePostTextStart = 60.dp
+
 /** 画像の読み込みとリンク（行の中の本文から使う）。 */
 internal class TimelineBodyActions(
     val imageAuth: suspend (String) -> ImageAuth,
@@ -248,6 +286,8 @@ private fun TimelineRowItem(
     ownPubkey: String?,
     profiles: Map<String, NostrProfile>,
     actions: TimelineBodyActions,
+    /** false なら、直前の会話と同じチャンネルなのでチャンネル名の見出しを省く。 */
+    showHeader: Boolean = true,
     onClick: () -> Unit,
 ) {
     val group = row.group
@@ -259,7 +299,7 @@ private fun TimelineRowItem(
         modifier = Modifier.fillMaxWidth().clickable(onClick = onClick).padding(horizontal = 12.dp, vertical = 10.dp),
         verticalArrangement = Arrangement.spacedBy(6.dp),
     ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
+        if (showHeader) Row(verticalAlignment = Alignment.CenterVertically) {
             GroupIcon(group.metadata?.picture, locked = !direct && group.metadata?.isPrivate == true, channel = !direct, forum = group.layout == GroupLayout.Forum, size = 20)
             Spacer(Modifier.width(6.dp))
             Text(
@@ -330,7 +370,7 @@ internal fun TimelinePost(
                 if (isChatBot(message, profile)) BotBadge(Modifier.padding(start = 4.dp))
                 Spacer(Modifier.width(6.dp))
                 Text(
-                    chatListTime(message.event.createdAt, now),
+                    chatPostTime(message.event.createdAt, now),
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )

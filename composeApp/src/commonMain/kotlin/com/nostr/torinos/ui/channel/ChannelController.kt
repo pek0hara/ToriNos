@@ -685,7 +685,7 @@ internal class ChannelController(
         val ready = _state.value as? UiState.Ready ?: return
         if (state.phase != ChannelPublishUiState.Phase.PartialSuccess ||
             !reportedEditPartialEvents.add(eventId)) return
-        _state.value = ready.copy(engagementError = "チャンネル情報を保存しました（${state.summary}）")
+        _state.value = ready.copy(engagementError = "トピック情報を保存しました（${state.summary}）")
     }
 
     fun saveThreadMeta() {
@@ -698,11 +698,11 @@ internal class ChannelController(
         }
         // UI の表示条件だけに頼らず、署名前に所有者であることを再検証する(第16.10節)。
         if (ownPubkey == null || ownPubkey != currentChannelOwnerPubkey) {
-            _state.value = current.copy(editDialog = dialog.copy(error = "チャンネルの作成者だけが編集できます"))
+            _state.value = current.copy(editDialog = dialog.copy(error = "トピックの作成者だけが編集できます"))
             return
         }
         if (dialog.sourceEventId != effectiveMetadataSourceEventId) {
-            _state.value = current.copy(editDialog = dialog.copy(error = "別の端末でチャンネル情報が更新されました。閉じて開き直してください"))
+            _state.value = current.copy(editDialog = dialog.copy(error = "別の端末でトピック情報が更新されました。閉じて開き直してください"))
             return
         }
         _state.value = current.copy(editDialog = dialog.copy(isSaving = true, error = null))
@@ -721,8 +721,8 @@ internal class ChannelController(
             val result = publication.publish(
                 dialog = "edit-$channelId-${dialog.sessionId}", observerScope = scope,
                 validate = {
-                    check(ownPubkey == currentChannelOwnerPubkey) { "チャンネルの作成者だけが編集できます" }
-                    check(dialog.sourceEventId == effectiveMetadataSourceEventId) { "チャンネル情報が更新されました。開き直してください" }
+                    check(ownPubkey == currentChannelOwnerPubkey) { "トピックの作成者だけが編集できます" }
+                    check(dialog.sourceEventId == effectiveMetadataSourceEventId) { "トピック情報が更新されました。開き直してください" }
                 },
                 content = meta.toChannelContent(),
                 kind = 41,

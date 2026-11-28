@@ -213,8 +213,8 @@ fun describeGroupInput(input: GroupInput): String? {
     fun host(url: String) = url.substringAfter("://").trimEnd('/')
     return when (input) {
         is GroupInput.BuzzInvite -> "Buzz の招待 · ${host(input.relayUrl)}"
-        is GroupInput.Group -> (if (input.inviteCode != null) "グループ（招待コードあり）" else "グループ") + " · ${host(input.ref.relayUrl)}"
-        is GroupInput.Relay -> "リレーのグループ一覧 · ${host(input.relayUrl)}"
+        is GroupInput.Group -> (if (input.inviteCode != null) "チャンネル（招待コードあり）" else "チャンネル") + " · ${host(input.ref.relayUrl)}"
+        is GroupInput.Relay -> "リレーのチャンネル一覧 · ${host(input.relayUrl)}"
         GroupInput.BareBuzzCode, GroupInput.Invalid -> null
     }
 }

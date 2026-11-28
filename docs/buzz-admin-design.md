@@ -50,6 +50,7 @@
 
 - 変更の後、リレーは新しい 39000 / 39001 / 39002 を出す。`#d` でチャンネルを指定した購読（チャット画面が張っている）には、EOSE の後も新しいものが届く。
 - 39000 には `["join_role", r]` が常に、`["unlisted"]` が設定中に付く。
+- 通話（huddle）のチャンネルは、通話が終わるとリレーがアーカイブする（`audio/handler.rs` の `CommittedRoomEnd`）。このとき 39000 は出し直されず、`["archived", "true"]` が付かないまま残る（TTL 切れの reaper は出し直す）。そのため ToriNos は投稿・リアクション・アーカイブが `invalid: channel is archived` で断られたら、アーカイブ済みとして表示し、メニューに「アーカイブを解除する」を出す（`archivedFromRejection`、`GroupChatViewModel.learnArchived`。リレーがより新しい 39000 を出したらそちらに従う）。解除（9002 `["archived", "false"]`）はアーカイブ済みのチャンネルにも通り、TTL の期限も延びる。
 
 ### 2.3 コミュニティの命令（NIP-43）
 

@@ -5,15 +5,15 @@ import androidx.compose.material.icons.automirrored.filled.Article
 import androidx.compose.material.icons.filled.Groups
 import androidx.compose.material.icons.filled.EmojiEmotions
 import androidx.compose.material.icons.filled.Forum
-import androidx.compose.material.icons.filled.Sms
+import androidx.compose.material.icons.filled.Campaign
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.graphics.vector.ImageVector
 
 enum class ServiceTab(val label: String, val icon: ImageVector) {
     Articles("記事", Icons.AutoMirrored.Filled.Article),
-    Channels("チャンネル", Icons.Default.Forum),
-    Status("ステータス", Icons.Default.Sms),
+    Channels("トピック", Icons.Default.Forum),
+    Status("ステータス", Icons.Default.Campaign),
     Emojis("絵文字", Icons.Default.EmojiEmotions),
     /** NIP-29 のグループ。 */
     Chat("チャット", Icons.Default.Groups),

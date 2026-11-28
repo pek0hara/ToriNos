@@ -150,7 +150,7 @@ internal fun ChannelCreateSheet(
                         Text("キャンセル", maxLines = 1)
                     }
                     Text(
-                        text = "新規チャンネル",
+                        text = "新規トピック",
                         style = MaterialTheme.typography.titleMedium,
                         modifier = Modifier.weight(1f).padding(horizontal = 8.dp),
                         maxLines = 1,
@@ -196,7 +196,7 @@ internal fun ChannelCreateSheet(
                     OutlinedTextField(
                         value = dialog.name,
                         onValueChange = onNameChange,
-                        label = { Text("チャンネル名 *") },
+                        label = { Text("トピック名 *") },
                         singleLine = true,
                         enabled = !locked,
                         modifier = Modifier.fillMaxWidth().avoidStaleAccessibilityFocus(),
@@ -228,7 +228,7 @@ internal fun ChannelCreateSheet(
                     )
                     ComposerBodyEditor(
                         state = body,
-                        placeholder = "チャンネルの最初のメッセージ",
+                        placeholder = "トピックの最初のメッセージ",
                         textModifier = Modifier
                             .heightIn(min = 140.dp)
                             .border(1.dp, MaterialTheme.colorScheme.outlineVariant, MaterialTheme.shapes.small),
@@ -269,7 +269,7 @@ internal fun ChannelCreateSheet(
             text = {
                 Text(
                     if (dialog.isRetryingFirstPost) {
-                        "チャンネルは作成済みです。未送信の最初の投稿は破棄されます。"
+                        "トピックは作成済みです。未送信の最初の投稿は破棄されます。"
                     } else {
                         "入力した内容は保存されません。"
                     },
@@ -308,7 +308,7 @@ internal fun ChannelIconPicker(
             if (picture.isNotBlank()) {
                 PreviewImage(
                     data = picture,
-                    contentDescription = "チャンネルアイコン",
+                    contentDescription = "トピックアイコン",
                     contentScale = ContentScale.Crop,
                     modifier = Modifier.fillMaxSize(),
                 )
@@ -405,7 +405,7 @@ private fun ExpandableRelaySelector(
         )
         if (expanded) {
             Text(
-                text = "チャンネル情報に保存され、参加者がメッセージを読み書きするリレーです（最大10件）。",
+                text = "トピック情報に保存され、参加者がメッセージを読み書きするリレーです（最大10件）。",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )

@@ -592,7 +592,7 @@ class ChatAccount internal constructor(
     private suspend fun updateList(change: GroupsListChange, userInitiated: Boolean) {
         // 書く直前に読み直す。起動時に読んだ版を土台にすると、その後に他のクライアントで変えた分を消してしまう。
         refreshJoinedGroups()
-        check(listConfirmed) { "参加中のグループの一覧を読めなかったため、保存できませんでした" }
+        check(listConfirmed) { "参加中のチャンネルの一覧を読めなかったため、保存できませんでした" }
         mutex.withLock {
             val base = latestList
             // 暗号化項目は読めたときだけ書き換える。読めないのを空として扱うと、ほかのクライアントが入れた項目を消してしまう。

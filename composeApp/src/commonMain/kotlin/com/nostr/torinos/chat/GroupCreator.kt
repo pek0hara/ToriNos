@@ -189,8 +189,8 @@ class GroupCreator(
         val edit = gateway.sign(buildStandardEditMetadata(current.spec))
         return when (val outcome = gateway.publish(current.ref, edit)) {
             is GroupPublishOutcome.Published -> finishCreated(current)
-            is GroupPublishOutcome.Rejected -> GroupCreateResult.Unfinished("グループは作成されましたが、名前を設定できませんでした: ${outcome.reason}")
-            is GroupPublishOutcome.Failed -> GroupCreateResult.Unfinished("グループは作成されましたが、名前を設定できませんでした: ${outcome.reason}")
+            is GroupPublishOutcome.Rejected -> GroupCreateResult.Unfinished("チャンネルは作成されましたが、名前を設定できませんでした: ${outcome.reason}")
+            is GroupPublishOutcome.Failed -> GroupCreateResult.Unfinished("チャンネルは作成されましたが、名前を設定できませんでした: ${outcome.reason}")
         }
     }
 

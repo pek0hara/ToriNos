@@ -69,7 +69,7 @@ internal fun ChannelDetailsDialog(
         ) {
             Column(modifier = Modifier.fillMaxSize()) {
                 AppTopBar(
-                    title = "チャンネル詳細",
+                    title = "トピック詳細",
                     navigationIcon = {
                         IconButton(onClick = onDismiss) {
                             Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "戻る")
@@ -134,7 +134,7 @@ private fun ChannelOverview(state: ChannelListViewModel.DetailDialogState) {
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             Text(
-                text = "現在のチャンネル情報",
+                text = "現在のトピック情報",
                 style = MaterialTheme.typography.labelLarge,
                 color = MaterialTheme.colorScheme.primary,
             )

@@ -74,7 +74,7 @@ internal class JoinedChannelRepository(
         } catch (error: Throwable) {
             return Result.failure(error)
         }
-        if (!fetched.answered) return Result.failure(IllegalStateException("参加中チャンネルの一覧を取得できませんでした"))
+        if (!fetched.answered) return Result.failure(IllegalStateException("参加中トピックの一覧を取得できませんでした"))
         val candidates = fetched.events + listOfNotNull(latestEvent)
         latestEvent = JoinedChannelList.latest(candidates, ownerPubkey)
         val joined = JoinedChannelList.joinedIds(latestEvent).toSet()

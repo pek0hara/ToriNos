@@ -658,7 +658,7 @@ class ChannelListViewModel(
         ChannelCreateNoticeStore.enqueue(ChannelCreateNoticeStore.Notice(
             eventId = event.id,
             pubkey = event.pubkey,
-            message = if (kind == 40) "チャンネル作成: ${state.summary}" else "最初の投稿: ${state.summary}",
+            message = if (kind == 40) "トピック作成: ${state.summary}" else "最初の投稿: ${state.summary}",
         ))
     }
 
@@ -736,7 +736,7 @@ class ChannelListViewModel(
                             isCreating = false,
                             createdChannel = channelEvent,
                             publishState = publishState,
-                            error = "チャンネルは作成しました。最初の投稿を送信できませんでした（$reason）",
+                            error = "トピックは作成しました。最初の投稿を送信できませんでした（$reason）",
                         ),
                     )
                     return@launch

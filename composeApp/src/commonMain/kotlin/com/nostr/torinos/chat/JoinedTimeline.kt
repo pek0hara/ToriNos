@@ -5,6 +5,7 @@ import com.nostr.torinos.model.NostrFilter
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.datetime.TimeZone
 import com.nostr.torinos.util.timelineTraceLog
 import kotlin.time.TimeSource
@@ -14,6 +15,14 @@ const val JOINED_TIMELINE_PAGE_SIZE = 100
 private const val REPLIES_LIMIT = 500
 private const val IDS_PER_FILTER = 100
 private const val TARGETS_PER_FILTER = 200
+/** 差分を読むとき、前回読めた最新の投稿からさかのぼる秒数（リレーに届くのが遅れた投稿を取りこぼさない）。 */
+private const val UPDATE_OVERLAP_SECONDS = 60L
+/** 前回読んでからこれ以上たったリレーは、差分ではなくいちから読む（docs/chat-joined-timeline-design.md 3.4.3）。 */
+const val TIMELINE_FULL_RELOAD_AFTER_MILLIS = 30 * 60_000L
+/** 何も答えなかったリレーを、もう一度読むまでの待ち時間（起動直後・復帰直後の接続待ちを越える）。 */
+private const val RETRY_DELAY_MILLIS = 2_000L
+/** 差分で読む削除・編集の上限。 */
+private const val UPDATE_EDITS_LIMIT = 500
 
 /** タイムラインに含める参加中のグループ。 */
 data class TimelineGroup(val ref: GroupRef, val flavor: GroupFlavor, val relayPubkey: String?)
@@ -32,6 +41,9 @@ data class JoinedTimelineEntry(val ref: GroupRef, val conversation: GroupConvers
             if (conversation.latestReply != null) return true
             return root.event.kind == BUZZ_FORUM_POST_KIND || root.event.kind == GROUP_THREAD_KIND
         }
+
+    /** 「スレッド」で絞ったときに出す（自分が関わっているスレッド。docs/chat-joined-timeline-design.md 2.2）。 */
+    val isMyThread: Boolean get() = opensThread && conversation.involvesMe
 }
 
 /** 「今日」と「昨日以前」に分ける（端末の日付）。 */
@@ -52,6 +64,10 @@ class JoinedTimelineLoader(
     private val ownPubkey: String?,
     private val fetch: suspend (relayUrl: String, filters: List<NostrFilter>) -> TimelineFetch,
     private val pageSize: Int = JOINED_TIMELINE_PAGE_SIZE,
+    /** 自分が関わった投稿（自分の投稿とメンション）も狙って読む（docs/chat-joined-timeline-design.md 3.4.2）。 */
+    private val readMine: Boolean = false,
+    /** 今の時刻（ミリ秒）。差分といちからの読み分けに使う。 */
+    private val clock: () -> Long = { kotlin.time.Clock.System.now().toEpochMilliseconds() },
 ) {
     private inner class RelayState(val relayUrl: String, val groups: List<TimelineGroup>) {
         val flavor = groups.first().flavor
@@ -67,6 +83,14 @@ class JoinedTimelineLoader(
         var shown = false
         /** bot（エージェントの発言 40002 を出した人と、メンバー一覧 39002 で役割が bot の人）。Buzz だけ。 */
         val bots = mutableSetOf<String>()
+        /** 読めた投稿のうち最新の `created_at`（差分の `since` のもと）。 */
+        var newest: Long? = null
+        /** 最後に読み終えた時刻（ミリ秒）と、そのときリレーが最後まで答えたか。 */
+        var loadedAt: Long? = null
+        var answered = false
+        /** 自分が関わった投稿のうち最古のもの（「スレッド」のさかのぼりの `until`）と、まだ古いものがありそうか。 */
+        var mineOldest: Long? = null
+        var mineCanLoadOlder = false
 
         val chatKinds = if (flavor == GroupFlavor.Buzz) {
             listOf(GROUP_CHAT_KIND, BUZZ_AGENT_MESSAGE_KIND, BUZZ_FORUM_POST_KIND, BUZZ_FORUM_COMMENT_KIND)
@@ -86,6 +110,9 @@ class JoinedTimelineLoader(
 
     val canLoadOlder: Boolean get() = relays.any { it.bounding }
 
+    /** 自分が関わった投稿を、まださかのぼれるリレーがある。 */
+    val canLoadOlderThreads: Boolean get() = relays.any { it.shown && it.mineCanLoadOlder }
+
     /**
      * 読む。リレーごとに並行して読み、1つ読み終えるたびに [onRelayLoaded] を呼ぶ。そのときの [entries] は、
      * 読み終えたリレーの分だけで作る（docs/chat-joined-timeline-design.md 3.3）。
@@ -96,13 +123,69 @@ class JoinedTimelineLoader(
         val failed = coroutineScope {
             states.map { state ->
                 async {
-                    val answered = loadPage(state, until = null)
+                    val answered = loadFirstPage(state)
                     onRelayLoaded()
                     state.relayUrl.takeUnless { answered }
                 }
             }.awaitAll()
         }.filterNotNull().toSet()
         failedRelays = failed
+    }
+
+    /**
+     * 読み直す（docs/chat-joined-timeline-design.md 3.4.3）。グループが同じで、前回最後まで読めていて、
+     * [TIMELINE_FULL_RELOAD_AFTER_MILLIS] より最近に読んだリレーは、前回の最新の投稿から後だけを読む。差分が
+     * ページいっぱいだったリレーと、それ以外のリレーは、いちから読む。読んでいる間も前の結果を出せる。
+     */
+    suspend fun update(groups: List<TimelineGroup>) {
+        val now = clock()
+        val previous = relays.associateBy { it.relayUrl }
+        val targets = groups.groupBy { it.ref.relayUrl }.map { (relayUrl, list) ->
+            val old = previous[relayUrl]
+            // グループの並びは呼ぶたびに変わりうるので、中身だけを比べる。
+            val sameGroups = old != null && old.groups.toSet() == list.toSet()
+            val reusable = old != null && sameGroups && old.shown && old.answered && old.newest != null &&
+                old.loadedAt?.let { now - it < TIMELINE_FULL_RELOAD_AFTER_MILLIS } == true
+            when {
+                reusable -> UpdateTarget(old!!, reuse = true, previous = null)
+                // いちから読む間も、グループが同じなら前の結果を出しておく。読めなかったら前の結果を残す。
+                sameGroups && old!!.shown -> UpdateTarget(RelayState(relayUrl, list), reuse = false, previous = old)
+                else -> UpdateTarget(RelayState(relayUrl, list), reuse = false, previous = null)
+            }
+        }
+        relays = targets.map { it.previous ?: it.state }
+        val failed = coroutineScope {
+            targets.map { target ->
+                async {
+                    val state = target.state
+                    val answered = if (target.reuse) loadNewer(state) else loadFirstPage(state)
+                    if (target.previous != null && state.shown) replaceRelay(target.previous, state)
+                    state.relayUrl.takeUnless { answered }
+                }
+            }.awaitAll()
+        }.filterNotNull().toSet()
+        failedRelays = failed
+    }
+
+    private inner class UpdateTarget(val state: RelayState, val reuse: Boolean, val previous: RelayState?)
+
+    private fun replaceRelay(old: RelayState, new: RelayState) {
+        relays = relays.map { if (it === old) new else it }
+    }
+
+    /** 自分が関わった投稿を、さらに古いところまで読む（「スレッド」の「さらに読み込む」）。全員の投稿はさかのぼらない。 */
+    suspend fun loadOlderThreads() {
+        val targets = relays.filter { it.shown && it.mineCanLoadOlder }
+        coroutineScope {
+            targets.map { state ->
+                async {
+                    val mine = fetchMine(state, until = state.mineOldest)
+                    val fresh = mine.events.filter { it.id !in state.ids }
+                    add(state, fresh)
+                    followUp(state, fresh, firstPage = false)
+                }
+            }.awaitAll()
+        }
     }
 
     /** 表示の下限を決めているリレーだけ、さらに古いページを読む。 */
@@ -133,6 +216,21 @@ class JoinedTimelineLoader(
             .sortedWith(compareByDescending<JoinedTimelineEntry> { it.conversation.lastActivity }.thenBy { it.key })
     }
 
+    /**
+     * 自分が関わっているスレッド（`isMyThread`）。最後の動きの新しい順。タイムラインと違い、表示の下限で切らない
+     * （狙って読んだ古いスレッドも出す。docs/chat-joined-timeline-design.md 3.4.2）。bot は隠さない。
+     */
+    fun myThreads(muted: Set<String> = emptySet()): List<JoinedTimelineEntry> =
+        relays
+            .filter { it.shown }
+            .flatMap { state ->
+                state.timelines.flatMap { (groupId, timeline) ->
+                    timeline.conversations(muted).map { JoinedTimelineEntry(GroupRef(state.relayUrl, groupId), it) }
+                }
+            }
+            .filter { it.isMyThread }
+            .sortedWith(compareByDescending<JoinedTimelineEntry> { it.conversation.lastActivity }.thenBy { it.key })
+
     /** 読めたリレーで bot と分かった人（名前の横に Bot の印を出す）。 */
     fun bots(): Set<String> = relays.filter { it.started }.flatMapTo(mutableSetOf()) { it.bots }
 
@@ -147,24 +245,103 @@ class JoinedTimelineLoader(
 
     private fun floor(): Long? = relays.filter { it.bounding }.mapNotNull { it.oldest }.maxOrNull()
 
+    /**
+     * いちから読む。何も答えなかったリレーは、少し待ってもう一度だけ読む（起動直後や、しばらくして戻った直後は
+     * 接続・認証が間に合わず答えないことがある）。一部でも読めたリレーは読み直さない。
+     */
+    private suspend fun loadFirstPage(state: RelayState): Boolean {
+        if (loadPage(state, until = null)) return true
+        if (state.started) return false
+        delay(RETRY_DELAY_MILLIS)
+        timelineTraceLog { "${host(state)} retry" }
+        return loadPage(state, until = null)
+    }
+
     /** 1ページを読み、続き（ルート・返信・削除・編集）も読む。リレーが最後まで答えたら true。 */
     private suspend fun loadPage(state: RelayState, until: Long?): Boolean {
         val started = TimeSource.Monotonic.markNow()
-        val page = fetch(
-            state.relayUrl,
-            listOf(NostrFilter(kinds = state.chatKinds, hTags = state.groupIds, until = until, limit = pageSize)),
-        )
+        val firstPage = !state.started
+        val (page, mine) = coroutineScope {
+            val page = async {
+                fetch(
+                    state.relayUrl,
+                    listOf(NostrFilter(kinds = state.chatKinds, hTags = state.groupIds, until = until, limit = pageSize)),
+                )
+            }
+            // 自分が関わった投稿は、1ページ目と同時に読む（3.4.2）。
+            val mine = async { if (readMine && firstPage) fetchMine(state, until = null) else null }
+            page.await() to mine.await()
+        }
         timelineTraceLog { "${host(state)} page until=$until n=${page.events.size} answered=${page.answered} ${started.elapsedNow().inWholeMilliseconds}ms" }
         if (!page.answered && page.events.isEmpty()) return false
         val fresh = state.pager.onPage(page.events, page.answered)
         page.events.minOfOrNull { it.createdAt }?.let { min -> state.oldest = minOf(state.oldest ?: min, min) }
-        val firstPage = !state.started
+        page.events.maxOfOrNull { it.createdAt }?.let { max -> state.newest = maxOf(state.newest ?: max, max) }
         state.started = true
-        add(state, fresh)
-        val followUp = followUp(state, fresh, firstPage)
+        val mineFresh = mine?.events.orEmpty().filter { it.id !in state.ids && fresh.none { f -> f.id == it.id } }
+        add(state, fresh + mineFresh)
+        val followUp = followUp(state, fresh + mineFresh, firstPage)
         state.shown = true
+        val answered = page.answered && followUp && (mine?.answered ?: true)
+        if (until == null) {
+            state.loadedAt = clock()
+            state.answered = answered
+        }
         timelineTraceLog { "${host(state)} done ${started.elapsedNow().inWholeMilliseconds}ms" }
-        return page.answered && followUp
+        return answered
+    }
+
+    /** 自分の投稿と、自分を `p` で指している投稿（3.4.2）。[until] があればそこからさかのぼる。 */
+    private suspend fun fetchMine(state: RelayState, until: Long?, since: Long? = null): TimelineFetch {
+        val me = ownPubkey ?: return TimelineFetch(emptyList(), answered = true)
+        val result = traced(state, "mine", mineFilters(state, me, until, since))
+        if (since == null) {
+            result.events.minOfOrNull { it.createdAt }?.let { min -> state.mineOldest = minOf(state.mineOldest ?: min, min) }
+            // どちらかのフィルターがいっぱいなら、まだ古いものがある。答えがそろわなければ、次にまた試せるようにする。
+            val authored = result.events.count { it.pubkey == me }
+            val mentioned = result.events.count { event -> event.tags.any { it.firstOrNull() == "p" && it.getOrNull(1) == me } }
+            state.mineCanLoadOlder = !result.answered || authored >= pageSize || mentioned >= pageSize
+        }
+        return result
+    }
+
+    private fun mineFilters(state: RelayState, me: String, until: Long?, since: Long?) = listOf(
+        NostrFilter(kinds = state.chatKinds, hTags = state.groupIds, authors = listOf(me), since = since, until = until, limit = pageSize),
+        NostrFilter(kinds = state.chatKinds, hTags = state.groupIds, pTags = listOf(me), since = since, until = until, limit = pageSize),
+    )
+
+    /**
+     * 前回の最新の投稿から後だけを読む（3.4.3）。投稿・自分が関わった投稿・削除と編集を1回の要求で読み、新しく
+     * 読めた投稿の続きも読む。投稿がページいっぱいだったら、間が抜けないように、このリレーだけいちから読む。
+     */
+    private suspend fun loadNewer(state: RelayState): Boolean {
+        val since = (state.newest ?: return loadPage(state, until = null)) - UPDATE_OVERLAP_SECONDS
+        val me = ownPubkey
+        val filters = buildList {
+            add(NostrFilter(kinds = state.chatKinds, hTags = state.groupIds, since = since, limit = pageSize))
+            if (readMine && me != null) addAll(mineFilters(state, me, until = null, since = since))
+            add(NostrFilter(kinds = listOf(5, GROUP_DELETE_EVENT_KIND, BUZZ_EDIT_KIND), hTags = state.groupIds, since = since, limit = UPDATE_EDITS_LIMIT))
+        }
+        val result = traced(state, "newer since=$since", filters)
+        if (!result.answered && result.events.isEmpty()) return false
+        // 自分が関わった投稿は投稿のフィルターの一部なので、投稿の種類の数がそのまま投稿のフィルターの答えの数。
+        val posts = result.events.filter { it.kind in state.chatKinds }
+        if (posts.size >= pageSize) {
+            timelineTraceLog { "${host(state)} newer overflow n=${posts.size}, reload" }
+            // 読み直している間も、読めなかったときも、前の結果を出しておく。
+            val fresh = RelayState(state.relayUrl, state.groups)
+            val answered = loadPage(fresh, until = null)
+            if (fresh.shown) replaceRelay(state, fresh)
+            return answered
+        }
+        val newPosts = posts.filter { it.id !in state.ids }
+        add(state, result.events.filter { it.id !in state.ids })
+        posts.maxOfOrNull { it.createdAt }?.let { max -> state.newest = maxOf(state.newest ?: max, max) }
+        val followUp = followUp(state, newPosts, firstPage = false)
+        val answered = result.answered && followUp
+        state.loadedAt = clock()
+        state.answered = answered
+        return answered
     }
 
     private suspend fun followUp(state: RelayState, fresh: List<NostrEvent>, firstPage: Boolean): Boolean {

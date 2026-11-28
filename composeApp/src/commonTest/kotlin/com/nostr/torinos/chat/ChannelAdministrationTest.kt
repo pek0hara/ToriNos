@@ -291,5 +291,29 @@ class ChannelAdministrationTest {
         assertEquals("ログインできていないか、権限がありません", adminRejectionMessage("auth-required: not authenticated"))
         assertEquals("受け付けられませんでした（error: boom）", adminRejectionMessage("error: boom"))
         assertEquals("受け付けられませんでした", adminRejectionMessage(""))
+        assertEquals("アーカイブ済みのチャンネルです", adminRejectionMessage("invalid: channel is archived"))
+    }
+
+    // ---- 39000 に出ていないアーカイブ ----
+
+    @Test
+    fun archiveRejectionMarksTheChannelArchivedSoItCanBeUnarchived() {
+        // Buzz は通話（huddle）が終わるとチャンネルをアーカイブするが、39000 を出し直さない。
+        // 拒否理由で知ったら、アーカイブ済みとして扱い、解除を出す。
+        val marked = archivedFromRejection(stream, "invalid: channel is archived")!!
+        assertTrue(marked.isArchived)
+        assertEquals(stream.createdAt, marked.createdAt)
+        val authority = channelAuthority(marked, mapOf(me to ChannelRole.Owner), me)
+        assertTrue(authority.canUnarchive)
+        assertFalse(authority.canArchive)
+    }
+
+    @Test
+    fun otherRejectionsDoNotMarkTheChannelArchived() {
+        assertNull(archivedFromRejection(stream, "restricted: only members can post in this channel"))
+        assertNull(archivedFromRejection(stream, "invalid: channel is not archived"))
+        // 既にアーカイブ済み、または情報が無いときは何もしない。
+        assertNull(archivedFromRejection(archived, "invalid: channel is archived"))
+        assertNull(archivedFromRejection(null, "invalid: channel is archived"))
     }
 }

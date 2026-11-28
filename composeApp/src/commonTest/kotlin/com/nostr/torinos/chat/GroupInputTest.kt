@@ -94,14 +94,14 @@ class GroupInputTest {
             describeGroupInput(GroupInput.BuzzInvite("wss://png.communities.buzz.xyz", "abc")),
         )
         assertEquals(
-            "グループ · groups.example.com",
+            "チャンネル · groups.example.com",
             describeGroupInput(GroupInput.Group(GroupRef("wss://groups.example.com", "g1"), inviteCode = null, relayPubkey = null)),
         )
         assertEquals(
-            "グループ（招待コードあり） · groups.example.com",
+            "チャンネル（招待コードあり） · groups.example.com",
             describeGroupInput(GroupInput.Group(GroupRef("wss://groups.example.com", "g1"), inviteCode = "x", relayPubkey = null)),
         )
-        assertEquals("リレーのグループ一覧 · relay.example.com", describeGroupInput(GroupInput.Relay("wss://relay.example.com")))
+        assertEquals("リレーのチャンネル一覧 · relay.example.com", describeGroupInput(GroupInput.Relay("wss://relay.example.com")))
         assertEquals(null, describeGroupInput(GroupInput.Invalid))
         assertEquals(null, describeGroupInput(GroupInput.BareBuzzCode))
     }

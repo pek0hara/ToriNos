@@ -158,7 +158,7 @@ private fun DmEmptyState(state: DmInboxState, showJoinHint: Boolean, onJoinGroup
             TextButton(onClick = onJoinGroup) {
                 Icon(Icons.Default.Groups, contentDescription = null, modifier = Modifier.size(18.dp))
                 Spacer(Modifier.width(6.dp))
-                Text("NIP-29 のグループに参加する")
+                Text("NIP-29 のチャンネルに参加する")
             }
         }
     }

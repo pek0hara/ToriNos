@@ -28,7 +28,7 @@ class TextLinksTest {
     @Test
     fun labels() {
         assertEquals("💬 Buzz のメッセージ", groupLinkLabel("buzz://message?channel=a&id=b"))
-        assertEquals("💬 グループへのリンク", groupLinkLabel("nostr:naddr1xyz"))
+        assertEquals("💬 チャンネルへのリンク", groupLinkLabel("nostr:naddr1xyz"))
         assertEquals("@アリス", profileLinkLabel("0123456789abcdef0123", "アリス"))
         assertEquals("@01234567…cdef0123", profileLinkLabel("0123456789abcdef0123", " "))
         assertEquals(true, isGroupLinkUri("buzz://channel/abc"))
