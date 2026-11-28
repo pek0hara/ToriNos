@@ -476,6 +476,29 @@ class JournalControllerTest {
     }
 
     @Test
+    fun reactionsReceivedTogetherAreShownBeforeTheRelayFinishes() = runTest {
+        // 実機: キャッシュから4件が同時に届き、リレーのEOSEが4秒以上遅れた間、1件しか表示されなかった。
+        val note = post(hexId(1))
+        val reactions = (1..4).map { reaction("r$it", targetId = note.id) }
+        val engagement = FakeEngagement(reactions)
+        val finish = CompletableDeferred<Unit>()
+        engagement.finishGate = finish
+        val controller = controller(FakeRelay(note), engagement)
+        controller.setRelayUrl("wss://memo")
+        settle()
+
+        controller.setVisibleNoteIds(setOf(note.id))
+        settle()
+        testScheduler.advanceTimeBy(ENGAGEMENT_BATCH_TEST_MS)
+        settle()
+
+        assertEquals(4, controller.state.value.engagementOf(note.id).summary.reactionCount)
+        finish.complete(Unit)
+        settle()
+        assertEquals(4, controller.state.value.engagementOf(note.id).summary.reactionCount)
+    }
+
+    @Test
     fun resultsForAMonthThatWasLeftAreDropped() = runTest {
         val relay = FakeRelay(post("september"))
         val gate = CompletableDeferred<Unit>()
@@ -1063,6 +1086,8 @@ class JournalControllerTest {
         var downRelay: String? = null
         var downRelayRecovered = false
         val downRelayEvents = mutableListOf<NostrEvent>()
+        /** イベントを渡し終えてから、取り終えたと返すまで待つ（リレーのEOSEが遅い）。 */
+        var finishGate: CompletableDeferred<Unit>? = null
 
         override suspend fun fetch(noteIds: Set<String>, relayUrl: String?, onEvent: (NostrEvent) -> Unit): JournalFetchStatus {
             requests += noteIds
@@ -1074,6 +1099,7 @@ class JournalControllerTest {
                 return JournalFetchStatus(complete = true)
             }
             events.forEach(onEvent)
+            finishGate?.await()
             return if (down == null) {
                 JournalFetchStatus(complete = true)
             } else {
@@ -1111,3 +1137,6 @@ class JournalControllerTest {
             NostrEvent(id = "signed", pubkey = OWNER, createdAt = 0, kind = kind, tags = tags, content = content, sig = "sig")
     }
 }
+
+/** `JournalController`の途中経過を反映する間隔（`ENGAGEMENT_STATE_BATCH_MS`）。 */
+private const val ENGAGEMENT_BATCH_TEST_MS = 100L

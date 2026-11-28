@@ -84,6 +84,9 @@ internal class NostrJournalEngagementSource(
         onEvent: (NostrEvent) -> Unit,
     ): JournalFetchStatus {
         val ids = noteIds.toList()
+        // TODO(調査用・一時): どこから何件届いたか（キャッシュ再生を含む）。
+        val byRelay = linkedMapOf<String, Int>()
+        val startedAt = kotlin.time.TimeSource.Monotonic.markNow()
         return collectFetch(
             openSession = openSession,
             spec = SubscriptionSpec(
@@ -108,8 +111,15 @@ internal class NostrJournalEngagementSource(
                 behavior = SubscriptionBehavior.Fetch(timeoutMillis),
             ),
             onEvent = onEvent,
+            onRelayEvent = { url, _ -> byRelay[url] = (byRelay[url] ?: 0) + 1 },
             settleMillis = settleMillis,
-        ).status
+        ).status.also { status ->
+            journalTraceLog {
+                "engagement-source notes=${ids.size} target=${relayUrl ?: "all"} byRelay=$byRelay " +
+                    "complete=${status.complete} allRelays=${status.allRelaysFinished} retry=${status.retryRelays} " +
+                    "elapsed=${startedAt.elapsedNow().inWholeMilliseconds}ms"
+            }
+        }
     }
 }
 

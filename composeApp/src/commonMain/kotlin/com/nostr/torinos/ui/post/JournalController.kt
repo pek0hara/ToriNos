@@ -61,6 +61,7 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -816,12 +817,28 @@ internal class JournalController(
             val aggregator = JournalEngagementAggregator(noteIds, ownPubkey)
             val dirty = mutableSetOf<String>()
             var lastEmission = 0L
+            var pendingFlush: Job? = null
 
             fun emitProgress(force: Boolean) {
                 if (dirty.isEmpty()) return
                 val now = clock.nowMillis()
-                if (!force && now - lastEmission < ENGAGEMENT_STATE_BATCH_MS) return
+                val wait = ENGAGEMENT_STATE_BATCH_MS - (now - lastEmission)
+                if (!force && wait > 0) {
+                    // 間引いた分は、次のイベントや取得の完了を待たずに間隔が明けたら出す。
+                    // リレーのEOSEが遅いと、まとめて届いた残りがその間ずっと表示されないため。
+                    if (pendingFlush == null) {
+                        pendingFlush = launch {
+                            delay(wait)
+                            pendingFlush = null
+                            emitProgress(force = true)
+                        }
+                    }
+                    return
+                }
+                pendingFlush?.cancel()
+                pendingFlush = null
                 val progress = aggregator.snapshot(dirty.toSet())
+                log { "engagement progress ${progress.reactionTrace()} force=$force" }
                 update { it.copy(engagement = it.engagement.mergeProgressive(progress)) }
                 dirty.clear()
                 lastEmission = now
@@ -830,17 +847,28 @@ internal class JournalController(
             // 取り直したリレーからも同じイベントが届くため、数えるのは1回だけにする。
             val counted = mutableSetOf<String>()
             var received = 0
-            val status = engagementSource.fetch(noteIds, relayUrl) { event ->
-                received += 1
-                if (counted.add(event.id)) dirty += aggregator.add(event)
-                emitProgress(force = false)
+            val status = try {
+                engagementSource.fetch(noteIds, relayUrl) { event ->
+                    received += 1
+                    if (counted.add(event.id)) dirty += aggregator.add(event)
+                    emitProgress(force = false)
+                }
+            } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                // TODO(調査用・一時)
+                log {
+                    "engagement cancelled notes=${noteIds.size} events=$received " +
+                        "unflushed=${dirty.size} shown=${aggregator.snapshot().reactionTrace()}"
+                }
+                throw cancelled
             }
+            pendingFlush?.cancel()
             val snapshot = aggregator.snapshot()
             log {
                 "engagement notes=${noteIds.size} events=$received withData=${snapshot.size} " +
                     "complete=${status.complete} allRelays=${status.allRelaysFinished} retry=${status.retryRelays} " +
                     "cachedNotes=${store.value.engagement.size}"
             }
+            log { "engagement result ${snapshot.reactionTrace()}" }
             if (status.complete) {
                 commitEngagement(noteIds, snapshot, status.allRelaysFinished)
                 dirty.clear()
@@ -887,6 +915,7 @@ internal class JournalController(
                 val retried = engagementSource.fetch(noteIds, retryUrl) { event ->
                     if (counted.add(event.id)) aggregator.add(event)
                 }
+                log { "engagement retry url=$retryUrl complete=${retried.complete} ${aggregator.snapshot().reactionTrace()}" }
                 if (retried.complete) {
                     val snapshot = aggregator.snapshot()
                     commitEngagement(noteIds, snapshot, allRelaysFinished = false)
@@ -1052,3 +1081,7 @@ private const val CANDIDATE_LIMIT = 30
 private const val CANDIDATE_CACHE_MS = 5 * 60 * 1_000L
 /** 取得の途中で候補を並べ直す間隔。短すぎると並びが細かく動き、長すぎると最初の表示が遅れる。 */
 private const val CANDIDATE_PARTIAL_INTERVAL_MS = 200L
+
+// TODO(調査用・一時): 投稿IDの先頭8文字とリアクション数。
+private fun Map<String, JournalNoteEngagement>.reactionTrace(): String =
+    entries.joinToString(prefix = "[", postfix = "]") { (id, e) -> "${id.take(8)}=${e.summary.reactionCount}" }
