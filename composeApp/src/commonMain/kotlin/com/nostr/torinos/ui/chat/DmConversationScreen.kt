@@ -77,7 +77,14 @@ fun DmConversationScreen(conversationKey: String, onBack: () -> Unit) {
     LaunchedEffect(messages.size) { inbox?.markRead(conversationKey) }
     LaunchedEffect(Unit) { inbox?.start() }
 
-    var draft by rememberSaveable(conversationKey) { mutableStateOf("") }
+    // 下書きは画面を離れても残す。DM の中身なので端末には書かず、セッションの間だけ持つ。
+    val drafts = session?.dmDrafts
+    val draftKey = "dm:$conversationKey"
+    var draft by rememberSaveable(conversationKey) { mutableStateOf(drafts?.draft(draftKey)?.text.orEmpty()) }
+    LaunchedEffect(drafts, draftKey) {
+        val stored = drafts?.awaitDraft(draftKey) ?: return@LaunchedEffect
+        if (draft.isEmpty()) draft = stored.text
+    }
     var sending by remember { mutableStateOf(false) }
     var notice by remember { mutableStateOf<String?>(null) }
     val scope = rememberCoroutineScope()
@@ -125,14 +132,17 @@ fun DmConversationScreen(conversationKey: String, onBack: () -> Unit) {
             notice?.let { NoticeText(it) }
             AppMessageComposer(
                 text = draft,
-                onTextChange = { draft = it; notice = null },
+                onTextChange = { draft = it; notice = null; drafts?.update(draftKey, it) },
                 onSend = {
                     val text = draft
                     sending = true
                     scope.launch {
                         try {
                             when (val result = inbox?.send(peers, text)) {
-                                is DmSendResult.Sent, is DmSendResult.Failed -> draft = ""
+                                is DmSendResult.Sent, is DmSendResult.Failed -> {
+                                    draft = ""
+                                    drafts?.clear(draftKey)
+                                }
                                 is DmSendResult.NoRelayList -> notice = "この人は DM の受け取り先（kind 10050）を設定していないため、送れません"
                                 is DmSendResult.Refused -> notice = "送れませんでした: ${result.message}"
                                 DmSendResult.Empty, null -> Unit

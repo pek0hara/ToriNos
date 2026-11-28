@@ -84,6 +84,12 @@ class AccountSession internal constructor(
             resources.onClose(account::close)
         }
     }
+    /** グループチャットの入力欄の下書き。画面を離れてもアプリが止められても残るよう、端末に保存する。 */
+    internal val chatDrafts by lazy { com.nostr.torinos.chat.ChatDraftStore(pubkey, resources.scope) }
+    /** DM の入力欄の下書き。開封した DM と同じく、端末には書かずセッションの間だけ持つ。 */
+    internal val dmDrafts by lazy {
+        com.nostr.torinos.chat.ChatDraftStore(pubkey, resources.scope, com.nostr.torinos.chat.MemoryChatDraftStorage())
+    }
     /** NIP-17 の DM の受信箱（docs/dm-feature-design.md §8.4.4）。開封した内容はメモリーにだけ持つ。 */
     internal val dm: com.nostr.torinos.dm.DmInbox by lazy {
         com.nostr.torinos.dm.DmInbox(

@@ -207,9 +207,36 @@ private fun GroupRoomScreen(ref: GroupRef, mode: GroupRoomMode, navigation: Grou
     var infoOpen by remember { mutableStateOf(false) }
     /** 取り返しのつかない管理の操作の確認（docs/buzz-admin-design.md 7章）。 */
     var confirm by remember { mutableStateOf<AdminConfirm?>(null) }
-    var input by remember(ref, mode) { mutableStateOf("") }
+    /** 入力欄の下書き。画面を離れても、アプリが止められても、戻ったら続きから書ける。 */
+    val drafts = session?.chatDrafts
+    val draftKey = "group:${ref.key}:$modeKey"
+    var input by remember(ref, mode) { mutableStateOf(drafts?.draft(draftKey)?.text.orEmpty()) }
     /** メンションの候補から選んだ人（Buzz）。送るときに本文に `@表示名` が残っている人だけを宛先にする。 */
-    var mentionPicks by remember(ref, mode) { mutableStateOf(emptyList<com.nostr.torinos.chat.MentionCandidate>()) }
+    var mentionPicks by remember(ref, mode) { mutableStateOf(drafts?.draft(draftKey)?.mentions.orEmpty().toMentionCandidates()) }
+    /** 端末から下書きを読み終える前に書き始めたら、読んだ下書きで上書きしない。 */
+    var inputTouched by remember(ref, mode) { mutableStateOf(false) }
+    LaunchedEffect(drafts, draftKey) {
+        val draft = drafts?.awaitDraft(draftKey) ?: return@LaunchedEffect
+        if (!inputTouched && input.isEmpty() && state.editing == null) {
+            input = draft.text
+            mentionPicks = draft.mentions.toMentionCandidates()
+        }
+    }
+    // 編集中の本文は下書きにしない（元の投稿の書き換えなので）。
+    fun saveDraft() {
+        if (state.editing == null) drafts?.update(draftKey, input, mentionPicks.map { com.nostr.torinos.chat.ChatDraftMention(it.pubkey, it.name) })
+    }
+    fun restoreDraft() {
+        val draft = drafts?.draft(draftKey)
+        input = draft?.text.orEmpty()
+        mentionPicks = draft?.mentions.orEmpty().toMentionCandidates()
+    }
+    LaunchedEffect(drafts, lifecycleState) {
+        if (!lifecycleState.isAtLeast(androidx.lifecycle.Lifecycle.State.RESUMED)) drafts?.flush()
+    }
+    androidx.compose.runtime.DisposableEffect(drafts, draftKey) {
+        onDispose { drafts?.flush() }
+    }
     /** メンションの候補を一度出したら、メンバー全員のプロフィールも見る（名前と画像を出すため）。 */
     var mentionMembersWanted by remember(ref, mode) { mutableStateOf(false) }
     var composingPost by remember { mutableStateOf(false) }
@@ -558,13 +585,35 @@ private fun GroupRoomScreen(ref: GroupRef, mode: GroupRoomMode, navigation: Grou
                     input = input,
                     onInputChange = {
                         input = it
+                        inputTouched = true
                         viewModel.onInputEdited(it)
+                        saveDraft()
                     },
                     onSend = {
                         val mentions = com.nostr.torinos.chat.mentionedPubkeys(input, mentionPicks)
-                        viewModel.send(input, mentions = mentions) { input = ""; mentionPicks = emptyList() }
+                        val wasEditing = state.editing != null
+                        viewModel.send(input, mentions = mentions) {
+                            if (wasEditing) {
+                                restoreDraft()
+                            } else {
+                                input = ""
+                                mentionPicks = emptyList()
+                                drafts?.clear(draftKey)
+                            }
+                        }
                     },
-                    onCancelReply = { viewModel.setReplyTo(null); viewModel.startEditing(null); input = ""; mentionPicks = emptyList() },
+                    onCancelReply = {
+                        val wasEditing = state.editing != null
+                        viewModel.setReplyTo(null)
+                        viewModel.startEditing(null)
+                        if (wasEditing) {
+                            restoreDraft()
+                        } else {
+                            input = ""
+                            mentionPicks = emptyList()
+                            drafts?.clear(draftKey)
+                        }
+                    },
                     onJoin = { viewModel.join() },
                     replyName = state.replyTo?.let { profiles[it.author]?.bestName ?: it.author.take(8) },
                     placeholder = when (mode) {
@@ -587,7 +636,7 @@ private fun GroupRoomScreen(ref: GroupRef, mode: GroupRoomMode, navigation: Grou
                                     viewModel.ensureMemberProfiles()
                                 }
                             },
-                            onPicked = { picked -> mentionPicks = mentionPicks + picked },
+                            onPicked = { picked -> mentionPicks = mentionPicks + picked; saveDraft() },
                             picked = mentionPicks,
                         )
                     } else {
@@ -2426,3 +2475,6 @@ private fun rememberCommunityEmojiHeaders(
         { url -> if (buzzMediaHost(url, setOf(relayUrl)) == null) emptyMap() else headers }
     }
 }
+
+private fun List<com.nostr.torinos.chat.ChatDraftMention>.toMentionCandidates() =
+    map { com.nostr.torinos.chat.MentionCandidate(it.pubkey, it.name) }
