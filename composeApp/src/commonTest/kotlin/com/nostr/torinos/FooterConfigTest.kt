@@ -9,94 +9,94 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class FooterConfigTest {
-    private val defaultOrder = listOf(
-        FooterItem.Feed,
-        FooterItem.Journal,
-        FooterItem.Articles,
-        FooterItem.Channels,
-        FooterItem.Status,
-        FooterItem.Emojis,
-        FooterItem.Chat,
-    )
+    private val defaultBar = listOf(FooterItem.Feed, FooterItem.Journal, FooterItem.Chat)
+    private val defaultMenu =
+        listOf(FooterItem.Channels, FooterItem.Articles, FooterItem.Emojis, FooterItem.Status, FooterItem.Settings)
+
+    /** 設定はメニューの末尾に固定なので、メニューへ足した項目は設定の手前に入る。 */
+    private fun defaultMenuPlus(vararg items: FooterItem) = defaultMenu.dropLast(1) + items + FooterItem.Settings
 
     @Test
-    fun chatIsShownByDefault() {
-        // 招待リンクを持ってきた人が参加の場所を見つけられるよう、最初から出す。
-        assertTrue(FooterConfig.Default.isVisible(FooterItem.Chat))
-        assertEquals(ServiceTab.Chat, FooterConfig.Default.serviceTabs.last())
+    fun defaultPutsFeedJournalChatInTheBarAndTheRestInTheMenu() {
+        assertEquals(defaultBar, FooterConfig.Default.barItems)
+        assertEquals(defaultMenu, FooterConfig.Default.menuItems)
     }
 
     @Test
-    fun chatHiddenByTheUserStaysHiddenAndCanBeShownAgain() {
-        val hidden = FooterConfig.parse("home,journal,articles,channels,!status,!emojis,!chat")
-        assertFalse(hidden.isVisible(FooterItem.Chat))
-        val shown = hidden.show(FooterItem.Chat)
-        assertTrue(shown.isVisible(FooterItem.Chat))
-        assertEquals(shown, shown.show(FooterItem.Chat))
-    }
+    fun togglePlacementMovesItemToTheEndOfTheOtherSide() {
+        val config = FooterConfig.Default.togglePlacement(FooterItem.Journal)
+        assertEquals(listOf(FooterItem.Feed, FooterItem.Chat), config.barItems)
+        assertEquals(defaultMenuPlus(FooterItem.Journal), config.menuItems)
 
-    @Test
-    fun storedConfigFromBeforeChatShowsChat() {
-        // チャットが無かった版の保存値には chat が無い。既定どおり表示にする。
-        val config = FooterConfig.parse("home,!journal,articles,channels,!status,!emojis")
-        assertTrue(config.isVisible(FooterItem.Chat))
-        assertFalse(config.isVisible(FooterItem.Journal))
-    }
-
-    @Test
-    fun defaultShowsHomeJournalArticlesChannelsAndChat() {
-        assertEquals(defaultOrder, FooterConfig.Default.order)
+        val back = config.togglePlacement(FooterItem.Articles)
+        assertEquals(listOf(FooterItem.Feed, FooterItem.Chat, FooterItem.Articles), back.barItems)
         assertEquals(
-            listOf(FooterItem.Feed, FooterItem.Journal, FooterItem.Articles, FooterItem.Channels, FooterItem.Chat),
-            FooterConfig.Default.visibleItems,
+            listOf(FooterItem.Channels, FooterItem.Emojis, FooterItem.Status, FooterItem.Journal, FooterItem.Settings),
+            back.menuItems,
         )
-        assertEquals(setOf(FooterItem.Status, FooterItem.Emojis), FooterConfig.Default.hidden)
     }
 
     @Test
-    fun missingItemsKeepTheirDefaultVisibility() {
-        val config = FooterConfig.parse("channels,home")
+    fun feedStaysInTheBar() {
+        assertFalse(FooterItem.Feed.canMoveToMenu)
+        assertEquals(FooterConfig.Default, FooterConfig.Default.togglePlacement(FooterItem.Feed))
+        assertEquals(listOf(FooterItem.Feed), FooterConfig.parse("v2:~home,~journal").barItems.take(1))
+        assertFalse(FooterConfig.parse("v2:~home").isInMenu(FooterItem.Feed))
+    }
 
+    @Test
+    fun moveSwapsWithinTheSameSideAndStopsAtEnds() {
+        val bar = FooterConfig.Default.move(FooterItem.Chat, -1)
+        assertEquals(listOf(FooterItem.Feed, FooterItem.Chat, FooterItem.Journal), bar.barItems)
+        assertEquals(defaultMenu, bar.menuItems)
+        assertEquals(FooterConfig.Default, bar.move(FooterItem.Chat, 1))
+
+        val menu = FooterConfig.Default.move(FooterItem.Channels, 1)
         assertEquals(
-            listOf(
-                FooterItem.Channels,
-                FooterItem.Feed,
-                FooterItem.Journal,
-                FooterItem.Articles,
-                FooterItem.Status,
-                FooterItem.Emojis,
-                FooterItem.Chat,
-            ),
-            config.order,
+            listOf(FooterItem.Articles, FooterItem.Channels, FooterItem.Emojis, FooterItem.Status, FooterItem.Settings),
+            menu.menuItems,
         )
-        assertEquals(setOf(FooterItem.Status, FooterItem.Emojis), config.hidden)
+        assertEquals(defaultBar, menu.barItems)
+
+        assertEquals(FooterConfig.Default, FooterConfig.Default.move(FooterItem.Feed, -1))
+        assertEquals(FooterConfig.Default, FooterConfig.Default.move(FooterItem.Chat, 1))
+        assertEquals(FooterConfig.Default, FooterConfig.Default.move(FooterItem.Channels, -1))
+        assertEquals(FooterConfig.Default, FooterConfig.Default.move(FooterItem.Settings, 1))
     }
 
     @Test
-    fun storedVisibilityOverridesDefault() {
-        val config = FooterConfig.parse("home,journal,articles,channels,status,emojis")
-
-        assertTrue(config.isVisible(FooterItem.Status))
-        assertTrue(config.isVisible(FooterItem.Emojis))
+    fun settingsStaysLastInTheMenu() {
+        // 並べ替えでは動かず、隣の項目も設定の後ろへは行かない。
+        assertEquals(FooterConfig.Default, FooterConfig.Default.move(FooterItem.Settings, -1))
+        assertEquals(FooterConfig.Default, FooterConfig.Default.move(FooterItem.Status, 1))
+        assertFalse(FooterConfig.Default.canMove(FooterItem.Settings, -1))
+        assertFalse(FooterConfig.Default.canMove(FooterItem.Status, 1))
+        assertTrue(FooterConfig.Default.canMove(FooterItem.Status, -1))
+        // 保存値で途中にあっても末尾に置き直す。
+        assertEquals(
+            listOf(FooterItem.Channels, FooterItem.Articles, FooterItem.Emojis, FooterItem.Status, FooterItem.Settings),
+            FooterConfig.parse("v2:home,journal,chat,~settings,~channels,~articles,~emojis,~status").menuItems,
+        )
     }
 
     @Test
-    fun serializeRoundTripsOrderAndHiddenItems() {
-        val config = FooterConfig(
-            order = listOf(
-                FooterItem.Feed,
-                FooterItem.Articles,
-                FooterItem.Journal,
-                FooterItem.Channels,
-                FooterItem.Status,
-                FooterItem.Emojis,
-                FooterItem.Chat,
-            ),
-            hidden = setOf(FooterItem.Journal, FooterItem.Chat),
-        )
+    fun settingsMovedToTheBarCanBeReordered() {
+        val config = FooterConfig.Default.togglePlacement(FooterItem.Settings)
+        assertEquals(defaultBar + FooterItem.Settings, config.barItems)
+
+        val moved = config.move(FooterItem.Settings, -1)
+        assertEquals(listOf(FooterItem.Feed, FooterItem.Journal, FooterItem.Settings, FooterItem.Chat), moved.barItems)
+    }
+
+    @Test
+    fun serializeRoundTripsOrderAndPlacement() {
+        val config = FooterConfig.Default
+            .togglePlacement(FooterItem.Chat)
+            .togglePlacement(FooterItem.Articles)
+            .move(FooterItem.Articles, -1)
         val stored = config.serialize()
 
-        assertEquals("home,articles,!journal,channels,status,emojis,!chat", stored)
+        assertEquals("v2:home,articles,journal,~channels,~emojis,~status,~chat,~settings", stored)
         assertEquals(config, FooterConfig.parse(stored))
     }
 
@@ -105,89 +105,65 @@ class FooterConfigTest {
         assertEquals(FooterConfig.Default, FooterConfig.parse(null))
         assertEquals(FooterConfig.Default, FooterConfig.parse(""))
         assertEquals(FooterConfig.Default, FooterConfig.parse(",,!,unknown"))
+        assertEquals(FooterConfig.Default, FooterConfig.parse("v2:,,~,unknown"))
     }
 
     @Test
-    fun parseIgnoresUnknownAndDuplicateIdsAndAppendsMissingItems() {
-        val config = FooterConfig.parse("emojis,unknown,status,emojis,!status")
+    fun parseIgnoresUnknownAndDuplicateIdsAndAppendsMissingItemsOnTheirDefaultSide() {
+        val config = FooterConfig.parse("v2:~chat,unknown,emojis,~chat,home")
+
+        assertEquals(listOf(FooterItem.Emojis, FooterItem.Feed, FooterItem.Journal), config.barItems)
+        assertEquals(
+            listOf(FooterItem.Chat, FooterItem.Channels, FooterItem.Articles, FooterItem.Status, FooterItem.Settings),
+            config.menuItems,
+        )
+    }
+
+    @Test
+    fun legacyValuePutsServicesAndHiddenItemsInTheMenu() {
+        // メニューが無かった頃の保存値。「!」は非表示。隠していた項目もメニューから開けるようにする。
+        val config = FooterConfig.parse("chat,home,!journal,articles,channels,!status,!emojis")
+
+        assertEquals(listOf(FooterItem.Chat, FooterItem.Feed), config.barItems)
+        assertEquals(defaultMenuPlus(FooterItem.Journal), config.menuItems)
+    }
+
+    @Test
+    fun legacyValueWithoutChatKeepsChatInTheBar() {
+        val config = FooterConfig.parse("home,journal,articles,channels,!status,!emojis")
+
+        assertEquals(defaultBar, config.barItems)
+        assertEquals(defaultMenu, config.menuItems)
+    }
+
+    @Test
+    fun everythingButFeedCanLeaveTheMenuEmpty() {
+        val config = defaultMenu.fold(FooterConfig.Default) { acc, item -> acc.togglePlacement(item) }
+
+        assertEquals(emptyList(), config.menuItems)
+        assertEquals(defaultBar + defaultMenu, config.barItems)
+        assertEquals(config, FooterConfig.parse(config.serialize()))
+    }
+
+    @Test
+    fun settingsIsNeverTheLaunchScreen() {
+        assertEquals(FooterItem.Feed, FooterConfig.Default.launchItem(FooterItem.Settings))
+        assertNull(footerItemOf("settings", ServiceTab.Chat))
+    }
+
+    @Test
+    fun legacyFeedIsNeverHidden() {
+        assertFalse(FooterConfig.parse("!home,journal").isInMenu(FooterItem.Feed))
+    }
+
+    @Test
+    fun servicePagesIncludeBothSides() {
+        val config = FooterConfig.Default.togglePlacement(FooterItem.Chat)
 
         assertEquals(
-            listOf(
-                FooterItem.Emojis,
-                FooterItem.Status,
-                FooterItem.Feed,
-                FooterItem.Journal,
-                FooterItem.Articles,
-                FooterItem.Channels,
-                FooterItem.Chat,
-            ),
-            config.order,
+            listOf(ServiceTab.Channels, ServiceTab.Articles, ServiceTab.Emojis, ServiceTab.Status, ServiceTab.Chat),
+            config.serviceTabs,
         )
-        // 保存値に無い項目は既定の表示状態で足す(チャットは既定で表示)。
-        assertEquals(emptySet(), config.hidden)
-    }
-
-    @Test
-    fun homeIsAlwaysVisible() {
-        assertTrue(FooterConfig.parse("!home,journal").isVisible(FooterItem.Feed))
-        assertEquals(FooterConfig.Default, FooterConfig.Default.toggleVisible(FooterItem.Feed))
-    }
-
-    @Test
-    fun toggleVisibleHidesAndShowsItem() {
-        val hidden = FooterConfig.Default.toggleVisible(FooterItem.Channels)
-
-        assertFalse(hidden.isVisible(FooterItem.Channels))
-        assertEquals(listOf(FooterItem.Feed, FooterItem.Journal, FooterItem.Articles, FooterItem.Chat), hidden.visibleItems)
-        assertEquals(FooterConfig.Default, hidden.toggleVisible(FooterItem.Channels))
-
-        val shown = FooterConfig.Default.toggleVisible(FooterItem.Emojis)
-        assertTrue(shown.isVisible(FooterItem.Emojis))
-    }
-
-    @Test
-    fun moveSwapsWithNeighborAndStopsAtEnds() {
-        val movedUp = FooterConfig.Default.move(FooterItem.Articles, -1)
-        assertEquals(
-            listOf(
-                FooterItem.Feed,
-                FooterItem.Articles,
-                FooterItem.Journal,
-                FooterItem.Channels,
-                FooterItem.Status,
-                FooterItem.Emojis,
-                FooterItem.Chat,
-            ),
-            movedUp.order,
-        )
-        assertEquals(FooterConfig.Default, movedUp.move(FooterItem.Articles, 1))
-        assertEquals(FooterConfig.Default, FooterConfig.Default.move(FooterItem.Feed, -1))
-        assertEquals(FooterConfig.Default, FooterConfig.Default.move(FooterItem.Chat, 1))
-    }
-
-    @Test
-    fun hiddenStatePersistsThroughMove() {
-        val config = FooterConfig.Default.toggleVisible(FooterItem.Channels).move(FooterItem.Channels, -1)
-
-        assertFalse(config.isVisible(FooterItem.Channels))
-        assertEquals(FooterConfig.parse(config.serialize()), config)
-    }
-
-    @Test
-    fun servicePagesFollowFooterOrderWithoutHiddenItems() {
-        val config = FooterConfig(
-            order = listOf(
-                FooterItem.Feed,
-                FooterItem.Status,
-                FooterItem.Journal,
-                FooterItem.Articles,
-                FooterItem.Channels,
-                FooterItem.Emojis,
-            ),
-            hidden = setOf(FooterItem.Channels),
-        )
-
-        assertEquals(listOf(ServiceTab.Status, ServiceTab.Articles, ServiceTab.Emojis), config.serviceTabs)
     }
 
     @Test
@@ -237,23 +213,19 @@ class FooterConfigTest {
         // 旧名「ホーム」の保存値をそのまま読めるようにする。
         assertEquals(FooterItem.Feed, FooterItem.fromStorageId("home"))
         assertEquals("フィード", FooterItem.Feed.label)
-        assertFalse(FooterItem.Feed.canHide)
     }
 
     @Test
     fun launchItemIsTheLastOpenedTab() {
         assertEquals(FooterItem.Channels, FooterConfig.Default.launchItem(FooterItem.Channels))
         assertEquals(FooterItem.Journal, FooterConfig.Default.launchItem(FooterItem.Journal))
-        // フッターの並び順には左右されない。
-        assertEquals(FooterItem.Feed, FooterConfig.parse("chat,journal,home").launchItem(FooterItem.Feed))
+        // メニューへ移したタブも開き直す。
+        assertEquals(FooterItem.Chat, FooterConfig.Default.togglePlacement(FooterItem.Chat).launchItem(FooterItem.Chat))
     }
 
     @Test
     fun launchItemFallsBackToFeed() {
-        // 一度も記録していないとき。
-        assertEquals(FooterItem.Feed, FooterConfig.parse("chat,journal,home").launchItem(null))
-        // 最後に開いたタブを、その後フッターから隠したとき。
-        assertEquals(FooterItem.Feed, FooterConfig.parse("home,journal,!articles").launchItem(FooterItem.Articles))
+        assertEquals(FooterItem.Feed, FooterConfig.parse("v2:chat,journal,home").launchItem(null))
     }
 
     @Test

@@ -21,6 +21,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.KeyboardArrowUp
+import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Sms
 import androidx.compose.material3.AlertDialog
@@ -502,10 +503,9 @@ internal fun AppSessionCoordinator(
             selectFooterRoute("services")
         }
 
-        // 通常の投稿などにあるグループへのリンク。チャットタブを表示にして、そこで開く。
+        // 通常の投稿などにあるグループへのリンク。チャットタブで開く。
         // 渡す関数は作り直さない（変わるたびに、リンクを表示している画面が全部作り直されるため）。
         val latestGroupLinkAction = androidx.compose.runtime.rememberUpdatedState<(String) -> Unit> { link ->
-            DisplayPreferencesStore.setFooterConfig(DisplayPreferencesStore.footerConfig.value.show(FooterItem.Chat))
             pendingGroupLink = link
             // フッターの切り替えと同じ導線で移る（今のタブに積んだ画面を閉じ、タブのスタックを壊さない）。
             selectServiceTab(ServiceTab.Chat)
@@ -517,6 +517,7 @@ internal fun AppSessionCoordinator(
             when (item) {
                 FooterItem.Feed -> selectFooterRoute("feed")
                 FooterItem.Journal -> if (ownPubkey != null) selectFooterRoute("journal")
+                FooterItem.Settings -> Unit
                 else -> selectServiceTab(checkNotNull(item.serviceTab))
             }
         }
@@ -1248,13 +1249,14 @@ internal fun AppSessionCoordinator(
                 else -> currentServiceTab
             }
             // ボトムバーとNavigationRailで同じ導線を、設定の並び順で共有する。
-            val footerDestinations = footerConfig.visibleItems.map { item ->
+            fun footerDestination(item: FooterItem) = run {
                 MainDestination(
                     icon = item.icon,
                     label = item.label,
                     selected = when (item) {
                         FooterItem.Feed -> currentRoute == "feed"
                         FooterItem.Journal -> currentRoute == "journal"
+                        FooterItem.Settings -> currentRoute == "settings"
                         else -> isServiceRoute && activeServiceTab == item.serviceTab
                     },
                     onClick = when (item) {
@@ -1280,12 +1282,23 @@ internal fun AppSessionCoordinator(
                                 }
                             }
                         }
+                        FooterItem.Settings -> {
+                            { openSettings() }
+                        }
                         else -> {
                             { selectServiceTab(checkNotNull(item.serviceTab)) }
                         }
                     },
                 )
             }
+            // 設定でメニューへ移した項目は、右端の「メニュー」にまとめる。メニューが空ならメニュー自体を出さない。
+            val footerDestinations = footerConfig.barItems.map(::footerDestination)
+            // 設定はタブを切り替えないので、メニューでは区切り線の下に分ける。
+            val footerMenuEntries = footerConfig.menuItems.filter { it != FooterItem.Settings }.map(::footerDestination)
+            val footerMenuTrailingEntries = footerConfig.menuItems.filter { it == FooterItem.Settings }.map(::footerDestination)
+            // 広い画面のレールは下端に設定を固定で置くので、フッターの設定に従う並びからは除く。
+            val railDestinations = footerConfig.barItems.filter { it != FooterItem.Settings }.map(::footerDestination)
+            val railMenuEntries = footerMenuEntries
             AppScaffold(
                 // Web はページ遷移でレールが出入りすると本文の位置がずれるため、詳細画面でも常に出す。
                 navigationRail = if (isWideLayout && (hasBottomBar || isWebPlatform)) {
@@ -1300,7 +1313,7 @@ internal fun AppSessionCoordinator(
                                     verticalArrangement = Arrangement.spacedBy(4.dp, Alignment.CenterVertically),
                                     horizontalAlignment = Alignment.CenterHorizontally,
                                 ) {
-                                    footerDestinations.forEach { destination ->
+                                    railDestinations.forEach { destination ->
                                         NavigationRailItem(
                                             icon = {
                                                 Icon(
@@ -1313,6 +1326,21 @@ internal fun AppSessionCoordinator(
                                             selected = destination.selected,
                                             colors = appNavigationRailItemColors(),
                                             onClick = destination.onClick,
+                                        )
+                                    }
+                                    if (railMenuEntries.isNotEmpty()) FooterMenuButton(railMenuEntries) { selected, _, onClick ->
+                                        NavigationRailItem(
+                                            icon = {
+                                                Icon(
+                                                    Icons.Default.Menu,
+                                                    contentDescription = null,
+                                                    modifier = Modifier.size(if (selected) 26.dp else 24.dp),
+                                                )
+                                            },
+                                            label = { Text(FooterMenuLabel) },
+                                            selected = selected,
+                                            colors = appNavigationRailItemColors(),
+                                            onClick = onClick,
                                         )
                                     }
                                 }
@@ -1454,6 +1482,8 @@ internal fun AppSessionCoordinator(
                         ) {
                             AppBottomBarRow(
                                 destinations = footerDestinations,
+                                menuEntries = footerMenuEntries,
+                                menuTrailingEntries = footerMenuTrailingEntries,
                                 modifier = Modifier.graphicsLayer { alpha = 1f - activeFeedChromeCollapseFraction() },
                             )
                         }
@@ -1578,9 +1608,6 @@ internal fun AppSessionCoordinator(
                                                 } else {
                                                     nav.navigate(GroupChatRoute(ref.relayUrl, ref.groupId))
                                                 }
-                                            },
-                                            onGroupJoined = {
-                                                DisplayPreferencesStore.setFooterConfig(footerConfig.show(FooterItem.Chat))
                                             },
                                             pendingLink = pendingGroupLink,
                                             onPendingLinkConsumed = { pendingGroupLink = null },
